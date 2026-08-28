@@ -56,6 +56,7 @@ struct ToolchainIdentity {
     toolchain_dir: PathBuf,
     rustup_binary: FileIdentity,
     rustc_binary: FileIdentity,
+    channel_manifest: FileIdentity,
     components_manifest: FileIdentity,
 }
 
@@ -526,12 +527,21 @@ fn toolchain_identity(
     key: &CargoPrepareMemoKey,
     toolchain_dir: &Path,
 ) -> Option<ToolchainIdentity> {
+    if !matches!(
+        crate::toolchain_readiness::classify_toolchain_dir(toolchain_dir),
+        crate::toolchain_readiness::ToolchainReadiness::Ready
+    ) {
+        return None;
+    }
     let rustc = rustc_binary_path(toolchain_dir)?;
+    let channel_manifest =
+        toolchain_dir.join(crate::toolchain_readiness::TOOLCHAIN_CHANNEL_MANIFEST);
     let components = toolchain_dir.join("lib").join("rustlib").join("components");
     Some(ToolchainIdentity {
         toolchain_dir: normalize_existing_path(toolchain_dir),
         rustup_binary: file_identity(&key.rustup_binary, false)?,
         rustc_binary: file_identity(&rustc, false)?,
+        channel_manifest: file_identity(&channel_manifest, true)?,
         components_manifest: file_identity(&components, true)?,
     })
 }

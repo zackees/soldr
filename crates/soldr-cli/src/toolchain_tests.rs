@@ -160,6 +160,8 @@ fn cargo_prepare_memo_rejects_changed_or_missing_toolchain() {
     std::fs::create_dir_all(toolchain.join("lib").join("rustlib")).expect("create rustlib");
     std::fs::write(&key.rustup_binary, b"rustup").expect("write rustup");
     std::fs::write(toolchain.join("bin").join("rustc"), b"rustc").expect("write rustc");
+    let channel_manifest = toolchain.join(crate::toolchain_readiness::TOOLCHAIN_CHANNEL_MANIFEST);
+    std::fs::write(&channel_manifest, b"manifest-version = '2'\n").expect("write channel manifest");
     let components = toolchain.join("lib").join("rustlib").join("components");
     std::fs::write(&components, b"rustc-test\n").expect("write components");
 
@@ -177,6 +179,17 @@ fn cargo_prepare_memo_rejects_changed_or_missing_toolchain() {
     std::fs::write(&components, b"rustc-test\nrustfmt-preview-test\n").expect("change components");
     let changed = toolchain_identity(&key, &toolchain).expect("changed identity");
     assert_ne!(original, changed);
+
+    std::fs::write(&channel_manifest, b"manifest-version = '3'\n")
+        .expect("change channel manifest");
+    let channel_changed = toolchain_identity(&key, &toolchain).expect("channel identity");
+    assert_ne!(changed, channel_changed);
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    assert_ne!(
+        cargo_prepare_memo_path(&paths, &key, changed),
+        cargo_prepare_memo_path(&paths, &key, channel_changed),
+        "a changed channel manifest must invalidate Cargo's warm-prepare memo"
+    );
 
     std::fs::remove_dir_all(&toolchain).expect("remove fake toolchain");
     assert!(toolchain_identity(&key, &toolchain).is_none());
@@ -198,6 +211,11 @@ fn cargo_prepare_memo_rejects_ambiguous_alias_toolchains() {
         std::fs::create_dir_all(toolchain.join("lib").join("rustlib")).expect("create rustlib");
         std::fs::write(toolchain.join("bin").join("rustc"), host).expect("write rustc");
         std::fs::write(
+            toolchain.join(crate::toolchain_readiness::TOOLCHAIN_CHANNEL_MANIFEST),
+            b"manifest-version = '2'\n",
+        )
+        .expect("write channel manifest");
+        std::fs::write(
             toolchain.join("lib").join("rustlib").join("components"),
             format!("rustc-{host}\n"),
         )
@@ -213,6 +231,124 @@ fn cargo_prepare_memo_rejects_ambiguous_alias_toolchains() {
         memoized_toolchain_dir(&paths, &key).is_none(),
         "an alias with multiple installed hosts must prepare conservatively"
     );
+}
+
+#[test]
+fn dylint_blessed_and_cargo_share_the_readiness_matrix() {
+    use crate::dylint_toolchain_readiness::{
+        dylint_toolchain_readiness_at, DylintToolchainReadiness,
+    };
+    use crate::toolchain_readiness::{
+        native_rustc_path, probe_toolchain_state, toolchain_dir_name, ToolchainReadiness,
+        TOOLCHAIN_CHANNEL_MANIFEST,
+    };
+
+    let root = tempfile::tempdir().expect("temp dir");
+    let channel = "nightly-2026-01-18";
+    let host = crate::pyo3_detect::host_triple();
+    let mut key = test_memo_key(root.path());
+    key.channel = channel.to_string();
+    std::fs::write(&key.rustup_binary, b"rustup").expect("write rustup");
+    let toolchain = key
+        .rustup_home
+        .join("toolchains")
+        .join(toolchain_dir_name(channel, host));
+
+    for (name, manifest, rustc, components, expected) in [
+        (
+            "directory-only",
+            false,
+            false,
+            false,
+            ToolchainReadiness::Partial(crate::toolchain_readiness::MissingToolchainEvidence {
+                channel_manifest: true,
+                native_rustc: true,
+            }),
+        ),
+        (
+            "rustc-only",
+            false,
+            true,
+            false,
+            ToolchainReadiness::Partial(crate::toolchain_readiness::MissingToolchainEvidence {
+                channel_manifest: true,
+                native_rustc: false,
+            }),
+        ),
+        (
+            "manifest-only",
+            true,
+            false,
+            false,
+            ToolchainReadiness::Partial(crate::toolchain_readiness::MissingToolchainEvidence {
+                channel_manifest: false,
+                native_rustc: true,
+            }),
+        ),
+        (
+            "components-only",
+            false,
+            false,
+            true,
+            ToolchainReadiness::Partial(crate::toolchain_readiness::MissingToolchainEvidence {
+                channel_manifest: true,
+                native_rustc: true,
+            }),
+        ),
+        ("complete", true, true, true, ToolchainReadiness::Ready),
+    ] {
+        let _ = std::fs::remove_dir_all(&toolchain);
+        std::fs::create_dir_all(&toolchain).expect("create toolchain dir");
+        if manifest {
+            std::fs::create_dir_all(toolchain.join("lib/rustlib")).expect("manifest parent");
+            std::fs::write(
+                toolchain.join(TOOLCHAIN_CHANNEL_MANIFEST),
+                b"manifest = '2'\n",
+            )
+            .expect("channel manifest");
+        }
+        if rustc {
+            let path = native_rustc_path(&toolchain);
+            std::fs::create_dir_all(path.parent().expect("rustc parent")).expect("rustc parent");
+            std::fs::write(path, b"rustc").expect("rustc");
+        }
+        if components {
+            let path = toolchain.join("lib/rustlib/components");
+            std::fs::create_dir_all(path.parent().expect("components parent"))
+                .expect("components parent");
+            std::fs::write(path, b"rustc\n").expect("components");
+        }
+
+        assert_eq!(
+            probe_toolchain_state(&key.rustup_home, channel, host),
+            expected,
+            "blessed readiness for {name}"
+        );
+        match (
+            expected,
+            dylint_toolchain_readiness_at(&key.rustup_home, channel),
+        ) {
+            (ToolchainReadiness::Ready, DylintToolchainReadiness::Ready { .. }) => {}
+            (ToolchainReadiness::Partial(_), DylintToolchainReadiness::Partial { .. }) => {}
+            (_, actual) => panic!("Dylint readiness drifted for {name}: {actual:?}"),
+        }
+        assert_eq!(
+            toolchain_identity(&key, &toolchain).is_some(),
+            matches!(expected, ToolchainReadiness::Ready),
+            "Cargo memo must require base Ready plus components for {name}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&toolchain);
+    assert_eq!(
+        probe_toolchain_state(&key.rustup_home, channel, host),
+        ToolchainReadiness::Missing
+    );
+    assert!(matches!(
+        dylint_toolchain_readiness_at(&key.rustup_home, channel),
+        DylintToolchainReadiness::Missing
+    ));
+    assert!(toolchain_identity(&key, &toolchain).is_none());
 }
 
 #[cfg(test)]
