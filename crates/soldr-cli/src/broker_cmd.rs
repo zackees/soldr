@@ -255,7 +255,9 @@ fn run_broker_status(json: bool) -> Result<(), SoldrError> {
 /// broker re-adopts each live daemon through its deterministic protobuf claim.
 fn run_broker_stop() -> Result<(), SoldrError> {
     let socket_path = broker_control_socket_path()?;
-    let Some(broker_pid) = stop_verified_broker(&socket_path, "stop")? else {
+    let VerifiedBrokerStop::Stopped { broker_pid, .. } =
+        stop_verified_broker(&socket_path, "stop", None, None, true)?
+    else {
         println!("soldr broker: not running (nothing to stop)");
         return Ok(());
     };
@@ -263,18 +265,60 @@ fn run_broker_stop() -> Result<(), SoldrError> {
     Ok(())
 }
 
-/// The complete, PID-verified broker teardown shared by `broker stop` and
-/// `broker remove`. Returns `Ok(None)` when nothing is bound at `socket_path`,
-/// or the stopped broker's PID. `operation` only names the caller in
-/// diagnostics.
-fn stop_verified_broker(socket_path: &str, operation: &str) -> Result<Option<u32>, SoldrError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BrokerShutdownPath {
+    Cooperative,
+    Terminated,
+    Forced,
+}
+
+impl BrokerShutdownPath {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cooperative => "cooperative",
+            Self::Terminated => "terminated",
+            Self::Forced => "forced",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerifiedBrokerStop {
+    NotRunning,
+    IdentityChanged,
+    Stopped {
+        broker_pid: u32,
+        shutdown_path: BrokerShutdownPath,
+    },
+}
+
+/// The complete, PID-verified broker teardown shared by explicit removal and
+/// the soldr#2920 known-bad exception. An expected instance re-probes STATUS
+/// immediately before signaling, so a winner can never retire a broker that
+/// replaced the one whose compatibility it classified.
+fn stop_verified_broker(
+    socket_path: &str,
+    operation: &str,
+    expected_instance: Option<&str>,
+    retirement_lease: Option<&crate::broker_lease::BrokerLease>,
+    emit_diagnostics: bool,
+) -> Result<VerifiedBrokerStop, SoldrError> {
     use running_process::broker::backend_lifecycle::verify_pid::{
         force_kill_pid, signal_terminate,
     };
 
     let Some(snapshot) = broker_status_snapshot(socket_path, operation)? else {
-        return Ok(None);
+        return Ok(VerifiedBrokerStop::NotRunning);
     };
+    if let Some(expected_instance) = expected_instance {
+        if snapshot
+            .get("broker_instance")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_instance)
+        {
+            return Ok(VerifiedBrokerStop::IdentityChanged);
+        }
+    }
     let broker_pid = snapshot
         .get("broker_pid")
         .and_then(serde_json::Value::as_u64)
@@ -298,9 +342,10 @@ fn stop_verified_broker(socket_path: &str, operation: &str) -> Result<Option<u32
     // the accept loop's worker scope joins, and exits. Brokers that predate the
     // SHUTDOWN verb answer exit_code 2 (or the request errors), and we fall back
     // to terminating the broker by its verified PID.
+    maintain_retirement_lease(retirement_lease)?;
     let cooperative = try_cooperative_shutdown(socket_path);
-    if cooperative {
-        println!(
+    if cooperative && emit_diagnostics {
+        eprintln!(
             "soldr broker: requested cooperative shutdown (drain deadline {}ms)",
             broker_stop_deadline().as_millis()
         );
@@ -308,15 +353,21 @@ fn stop_verified_broker(socket_path: &str, operation: &str) -> Result<Option<u32
 
     // Stop only the verified broker PID. Daemons intentionally outlive the
     // broker and are re-adopted from their deterministic protobuf claims.
+    let mut shutdown_path = BrokerShutdownPath::Cooperative;
     let mut terminate: Vec<(&str, u32)> = Vec::new();
     if !cooperative {
+        shutdown_path = BrokerShutdownPath::Terminated;
         terminate.push(("broker", broker_pid));
     }
     for (kind, pid) in &terminate {
+        maintain_retirement_lease(retirement_lease)?;
         if verified_broker_generation(*pid) != Some(broker_start_token) {
             continue;
         }
         if let Err(err) = signal_terminate(*pid) {
+            if !emit_diagnostics {
+                continue;
+            }
             eprintln!("soldr broker: could not signal {kind} pid {pid} to terminate: {err}");
         }
     }
@@ -326,6 +377,7 @@ fn stop_verified_broker(socket_path: &str, operation: &str) -> Result<Option<u32
     let watch: Vec<(&str, u32, u64)> = vec![("broker", broker_pid, broker_start_token)];
     let deadline = std::time::Instant::now() + broker_stop_deadline();
     loop {
+        maintain_retirement_lease(retirement_lease)?;
         let alive: Vec<(&str, u32, u64)> = watch
             .iter()
             .copied()
@@ -335,21 +387,48 @@ fn stop_verified_broker(socket_path: &str, operation: &str) -> Result<Option<u32
             break;
         }
         if std::time::Instant::now() >= deadline {
+            shutdown_path = BrokerShutdownPath::Forced;
             for (kind, pid, token) in &alive {
-                eprintln!(
-                    "soldr broker: {kind} pid {pid} did not exit within the stop deadline; \
-                     force-killing"
-                );
+                maintain_retirement_lease(retirement_lease)?;
+                if emit_diagnostics {
+                    eprintln!(
+                        "soldr broker: {kind} pid {pid} did not exit within the stop deadline; \
+                         force-killing"
+                    );
+                }
                 if verified_broker_generation(*pid) == Some(*token) {
-                    let _ = force_kill_pid(*pid);
+                    force_kill_pid(*pid).map_err(|error| {
+                        SoldrError::Other(format!(
+                            "soldr broker: could not force-kill verified {kind} pid {pid}: {error}"
+                        ))
+                    })?;
                 }
             }
-            break;
+            let reap_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            while std::time::Instant::now() < reap_deadline {
+                maintain_retirement_lease(retirement_lease)?;
+                if watch
+                    .iter()
+                    .all(|(_, pid, token)| verified_broker_generation(*pid) != Some(*token))
+                {
+                    return Ok(VerifiedBrokerStop::Stopped {
+                        broker_pid,
+                        shutdown_path,
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            return Err(SoldrError::Other(format!(
+                "soldr broker: verified broker pid {broker_pid} survived forced {operation}; refusing endpoint/image cleanup"
+            )));
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    Ok(Some(broker_pid))
+    Ok(VerifiedBrokerStop::Stopped {
+        broker_pid,
+        shutdown_path,
+    })
 }
 
 /// One admin STATUS round trip, parsed. `Ok(None)` means nothing is bound —
@@ -425,7 +504,9 @@ fn run_broker_remove() -> Result<(), SoldrError> {
         }
     }
 
-    let Some(broker_pid) = stop_verified_broker(&socket_path, "remove")? else {
+    let VerifiedBrokerStop::Stopped { broker_pid, .. } =
+        stop_verified_broker(&socket_path, "remove", None, None, true)?
+    else {
         // The broker exited between the diagnostic probe and the stop request.
         println!("soldr broker: not running (nothing to remove)");
         return Ok(());
@@ -454,6 +535,143 @@ fn run_broker_remove() -> Result<(), SoldrError> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KnownBadBrokerRetirementOutcome {
+    Retired {
+        broker_pid: u32,
+        shutdown_path: BrokerShutdownPath,
+        staged_image_removed: bool,
+    },
+    AlreadyExited,
+    IdentityChanged,
+}
+
+impl KnownBadBrokerRetirementOutcome {
+    pub(crate) const fn outcome(self) -> &'static str {
+        match self {
+            Self::Retired { .. } => "retired",
+            Self::AlreadyExited => "already_exited",
+            Self::IdentityChanged => "identity_changed",
+        }
+    }
+
+    pub(crate) const fn shutdown_path(self) -> &'static str {
+        match self {
+            Self::Retired { shutdown_path, .. } => shutdown_path.as_str(),
+            Self::AlreadyExited | Self::IdentityChanged => "not_signaled",
+        }
+    }
+}
+
+/// Retire exactly the verified generation selected by soldr#2920 policy.
+///
+/// The second STATUS probe is bound to `expected_instance`; an endpoint race
+/// becomes `IdentityChanged`, never a signal or file deletion. Any stop or
+/// cleanup error returns before staging a replacement, so one invocation never
+/// spins a retirement loop.
+pub(crate) fn retire_known_bad_broker(
+    socket_path: &str,
+    expected_instance: &str,
+    image: &std::path::Path,
+    lease: &crate::broker_lease::BrokerLease,
+) -> Result<KnownBadBrokerRetirementOutcome, SoldrError> {
+    finalize_known_bad_broker_retirement(
+        stop_verified_broker(
+            socket_path,
+            "known-bad broker retirement",
+            Some(expected_instance),
+            Some(lease),
+            false,
+        ),
+        |broker_pid, _shutdown_path| {
+            #[cfg(debug_assertions)]
+            test_pause_after_known_bad_stop();
+            maintain_retirement_lease(Some(lease))?;
+            crate::broker_spawn::retire_admission_endpoint(socket_path)
+                .map_err(SoldrError::Other)?;
+            maintain_retirement_lease(Some(lease))?;
+            remove_staged_broker_image(image).map_err(|error| {
+                SoldrError::Other(format!(
+                    "soldr broker: stopped known-bad broker pid {broker_pid} but could not remove \
+                     staged image {}: {error}",
+                    image.display()
+                ))
+            })
+        },
+    )
+}
+
+/// Renew and fence the resurrection lease across the entire known-bad
+/// retirement transaction. Manual `broker stop`/`remove` deliberately pass
+/// no lease; only the automatic exception has authority to replace resources.
+fn maintain_retirement_lease(
+    lease: Option<&crate::broker_lease::BrokerLease>,
+) -> Result<(), SoldrError> {
+    let Some(lease) = lease else {
+        return Ok(());
+    };
+    lease
+        .renew()
+        .map_err(|error| SoldrError::Other(error.to_string()))?;
+    lease
+        .check_fence()
+        .map_err(|error| SoldrError::Other(error.to_string()))
+}
+
+/// Test-only race seam: the lease must still fence cleanup if a stopped
+/// known-bad broker leaves its owner paused long enough for another front door
+/// to take the lease and stage a replacement. Production retirement never
+/// reads these variables.
+#[cfg(debug_assertions)]
+fn test_pause_after_known_bad_stop() {
+    let Some(milliseconds) = std::env::var("SOLDR_TEST_KNOWN_BAD_STOP_PAUSE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+    else {
+        return;
+    };
+    if let Some(path) = std::env::var_os("SOLDR_TEST_KNOWN_BAD_STOP_READY_FILE") {
+        let _ = std::fs::write(path, b"stopped\n");
+    }
+    let continue_file =
+        std::env::var_os("SOLDR_TEST_KNOWN_BAD_STOP_CONTINUE_FILE").map(std::path::PathBuf::from);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(milliseconds);
+    while std::time::Instant::now() < deadline {
+        if continue_file.as_ref().is_none_or(|path| path.exists()) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// Convert a verified stop into retirement cleanup. Keeping cleanup behind this
+/// small boundary lets the failure and identity-change cases prove that they
+/// cannot unlink the admission endpoint or delete a staged image.
+fn finalize_known_bad_broker_retirement<F>(
+    verified_stop: Result<VerifiedBrokerStop, SoldrError>,
+    cleanup: F,
+) -> Result<KnownBadBrokerRetirementOutcome, SoldrError>
+where
+    F: FnOnce(u32, BrokerShutdownPath) -> Result<bool, SoldrError>,
+{
+    match verified_stop? {
+        VerifiedBrokerStop::NotRunning => Ok(KnownBadBrokerRetirementOutcome::AlreadyExited),
+        VerifiedBrokerStop::IdentityChanged => Ok(KnownBadBrokerRetirementOutcome::IdentityChanged),
+        VerifiedBrokerStop::Stopped {
+            broker_pid,
+            shutdown_path,
+        } => {
+            let staged_image_removed = cleanup(broker_pid, shutdown_path)?;
+            Ok(KnownBadBrokerRetirementOutcome::Retired {
+                broker_pid,
+                shutdown_path,
+                staged_image_removed,
+            })
+        }
+    }
+}
+
 /// Delete the staged broker image, reporting whether one was there. Windows can
 /// still hold a sharing lock on the executable for a short window after the
 /// process it backed has exited, so a first `PermissionDenied` is retried
@@ -467,6 +685,78 @@ fn remove_staged_broker_image(image: &std::path::Path) -> std::io::Result<bool> 
             Err(error) if std::time::Instant::now() >= deadline => return Err(error),
             Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
         }
+    }
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::{
+        finalize_known_bad_broker_retirement, BrokerShutdownPath, KnownBadBrokerRetirementOutcome,
+        VerifiedBrokerStop,
+    };
+    use crate::core::SoldrError;
+
+    #[test]
+    fn retirement_reprobe_identity_change_never_enters_cleanup() {
+        let mut cleanup_called = false;
+        let outcome = finalize_known_bad_broker_retirement(
+            Ok(VerifiedBrokerStop::IdentityChanged),
+            |_, _| {
+                cleanup_called = true;
+                Ok(true)
+            },
+        )
+        .expect("identity change is a safe non-error outcome");
+        assert_eq!(outcome, KnownBadBrokerRetirementOutcome::IdentityChanged);
+        assert!(
+            !cleanup_called,
+            "a post-lease STATUS identity change must retain the socket and staged image"
+        );
+    }
+
+    #[test]
+    fn retirement_stop_or_force_failure_never_enters_cleanup() {
+        let mut cleanup_called = false;
+        let error = finalize_known_bad_broker_retirement(
+            Err(SoldrError::Other(
+                "verified broker survived forced retirement".into(),
+            )),
+            |_, _| {
+                cleanup_called = true;
+                Ok(true)
+            },
+        )
+        .expect_err("failed stop must block endpoint/image cleanup");
+        assert!(error.to_string().contains("survived forced retirement"));
+        assert!(
+            !cleanup_called,
+            "a termination failure must preserve the socket and staged image for operator recovery"
+        );
+    }
+
+    #[test]
+    fn retirement_cleans_up_only_after_a_verified_stop() {
+        let mut cleanup = Vec::new();
+        let outcome = finalize_known_bad_broker_retirement(
+            Ok(VerifiedBrokerStop::Stopped {
+                broker_pid: 42,
+                shutdown_path: BrokerShutdownPath::Forced,
+            }),
+            |pid, path| {
+                cleanup.push((pid, path));
+                Ok(true)
+            },
+        )
+        .expect("verified stop may clean up");
+        assert_eq!(cleanup, vec![(42, BrokerShutdownPath::Forced)]);
+        assert_eq!(
+            outcome,
+            KnownBadBrokerRetirementOutcome::Retired {
+                broker_pid: 42,
+                shutdown_path: BrokerShutdownPath::Forced,
+                staged_image_removed: true,
+            }
+        );
     }
 }
 
