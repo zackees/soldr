@@ -810,9 +810,45 @@ jobs:
     needs: e2e-macos-x64-build
     uses: ./.github/workflows/_ci-target-run.yml
     with:
-      runs_on: macos-15-intel
+      # macos-15 is ARM64; target-run verifies this archive through Rosetta,
+      # never by substituting ARM execution (soldr#2968).
+      runs_on: macos-15
       target: x86_64-apple-darwin
       artifact_name: soldr-ci-e2e-macos-x64
+      target_execution: x86_64-rosetta
+
+  # This cannot depend on e2e-macos-x64: the observed failure is precisely a
+  # target-run that never receives a runner. It starts after the artifact
+  # producer and reports bounded queue starvation from an ordinary Ubuntu VM.
+  e2e-macos-x64-queue-watchdog:
+    name: observe x86_64-apple-darwin target-run queue
+    needs: e2e-macos-x64-build
+    if: ${{ needs.e2e-macos-x64-build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 1
+      - name: Set up diagnostics interpreter
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - name: Observe bounded macOS x86 queue admission (soldr#2968)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python .github/scripts/target_run_queue_watchdog.py
+          --repo "$GITHUB_REPOSITORY"
+          --run-id "$GITHUB_RUN_ID"
+          --token "$GH_TOKEN"
+          --job-prefix "target-run x86_64-apple-darwin"
+          --runner "macos-15"
+          --grace-seconds 900
+          --poll-seconds 30
+          --github-summary "$GITHUB_STEP_SUMMARY"
 
   # ---------- macOS ARM64 ----------
   e2e-macos-arm64-build:
