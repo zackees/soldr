@@ -383,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_timeout_drains_pipe_filling_child_then_kills_and_reaps_it() {
+    fn hard_wall_clock_timeout_drains_pipe_filling_child_then_kills_and_reaps_it() {
         if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
             return;
         }
@@ -403,8 +403,8 @@ mod tests {
         );
         let message = error.to_string();
         assert!(
-            message.contains("produced no output for 1 seconds"),
-            "the timeout must measure post-drain silence: {message}"
+            message.contains("timed out after 1 seconds"),
+            "the hard probe timeout must remain wall-clock based: {message}"
         );
         assert!(message.contains("killed child process"), "{message}");
         assert!(message.contains("reaped child process"), "{message}");
@@ -455,37 +455,67 @@ mod tests {
         format!("ping -n {} 127.0.0.1 >nul", seconds + 1)
     }
 
-    /// A shell that prints, sleeps, prints again -- outliving the budget while
-    /// never being silent for it.
+    /// A child that makes immediate, regular progress on both captured
+    /// streams. The generic output watchdog must treat either stream as
+    /// progress; a true wall-clock probe uses a separate test above.
     fn chatty_command(chunks: usize, gap_secs: u64) -> Command {
         if host_is_windows() {
-            let mut command = Command::new("cmd");
-            command.arg("/C").arg(format!(
-                "for /L %i in (1,1,{chunks}) do @(echo tick & {}) & echo done",
-                windows_sleep(gap_secs)
-            ));
+            let mut command = Command::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!(
+                    "1..{chunks} | ForEach-Object {{ Write-Output stdout-progress; [Console]::Error.WriteLine('stderr-progress'); Start-Sleep -Seconds {gap_secs} }}; Write-Output done"
+                ),
+            ]);
             command
         } else {
             let mut command = Command::new("sh");
             command.arg("-c").arg(format!(
-                "i=0; while [ $i -lt {chunks} ]; do echo tick; sleep {gap_secs}; i=$((i+1)); done; echo done"
+                "i=0; while [ $i -lt {chunks} ]; do echo stdout-progress; echo stderr-progress >&2; sleep {gap_secs}; i=$((i+1)); done; echo done"
             ));
             command
         }
     }
 
-    /// soldr#2974: the budget is silence, not runtime. This command runs ~6s
-    /// against a 2s budget and must finish, because it never stops talking.
-    /// Under the previous `wait_timeout(budget)` it was killed at 2s.
+    fn generic_chatty_inactivity_budget() -> Duration {
+        if host_is_windows() {
+            // Windows target-run startup and pipe scheduling are routinely
+            // slower than Linux. The child prints immediately and repeatedly,
+            // then exceeds this budget, so this remains a real inactivity
+            // regression rather than a tiny timing assertion.
+            Duration::from_secs(10)
+        } else {
+            Duration::from_secs(2)
+        }
+    }
+
+    /// soldr#2974: the budget is silence, not runtime. This command runs
+    /// materially longer than the selected inactivity budget and must finish,
+    /// because it never stops talking on either stream. Under the previous
+    /// `wait_timeout(budget)` it was killed at that budget.
     #[test]
     fn a_command_that_keeps_producing_output_outlives_the_budget() {
-        let _guard = EnvGuard::set(COMMAND_OUTPUT_TIMEOUT_ENV_VAR, "2");
-        let mut command = chatty_command(6, 1);
+        let budget = generic_chatty_inactivity_budget();
+        let budget_secs = budget.as_secs().to_string();
+        let _guard = EnvGuard::set(COMMAND_OUTPUT_TIMEOUT_ENV_VAR, &budget_secs);
+        let chunks = usize::try_from(budget.as_secs() + 2).expect("short test budget");
+        let mut command = chatty_command(chunks, 1);
+        let started = Instant::now();
         let output = command_output_with_timeout(&mut command, "chatty probe")
             .expect("a continuously-progressing command must not be killed");
         assert!(output.status.success(), "{output:?}");
+        assert!(
+            started.elapsed() > budget,
+            "the child must outlast the inactivity budget while both streams progress"
+        );
         let text = String::from_utf8_lossy(&output.stdout);
         assert!(text.contains("done"), "child was cut short: {text:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("stderr-progress"),
+            "stderr progress must also reset the generic watchdog"
+        );
     }
 
     /// The other half: silence still expires, and the message says so.

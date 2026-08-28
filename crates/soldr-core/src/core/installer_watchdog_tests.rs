@@ -102,6 +102,24 @@ fn quiet_wait_command() -> Command {
         unix_shell("sleep 2")
     }
 }
+/// Deliberately outlives the Windows ten-second stall budget. Keep this
+/// separate from `quiet_wait_command`: active-work tests need their short
+/// successful child, whereas a true-stall fixture must not accidentally exit
+/// before the platform's real watchdog threshold.
+fn true_stall_command() -> Command {
+    if is_windows_test_host() {
+        let mut command = Command::new("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep -Seconds 30",
+        ]);
+        command
+    } else {
+        unix_shell("sleep 2")
+    }
+}
 fn delayed_path_command() -> Command {
     if is_windows_test_host() {
         let mut command = Command::new("powershell.exe");
@@ -245,7 +263,7 @@ fn captured_chatty_command_reaches_the_safety_ceiling_and_is_reaped() {
 #[test]
 fn a_true_stall_reports_category_phase_and_elapsed_times() {
     let error = wait_for_test_child(
-        quiet_wait_command(),
+        true_stall_command(),
         InstallerWatchdogConfig::for_test(test_stall_timeout(), test_safety_timeout()),
         NeverProgress,
     )
