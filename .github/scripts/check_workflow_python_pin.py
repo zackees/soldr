@@ -93,6 +93,38 @@ BASELINE: frozenset[tuple[str, str]] = frozenset(
 CONTINUATION_PATTERN = re.compile(r"\\s*\n\s*")
 
 
+def shell_command_prefix(line: str, script_start: int) -> str:
+    """Return the shell command segment immediately before a script path.
+
+    A prior ``uv run`` on a compound shell line cannot route a later command:
+    ``uv run ... ci/one.py && python3 ci/two.py`` still executes the second
+    script under the runner's Python. Keep quote-aware handling here so a
+    separator in an argument is not mistaken for shell syntax.
+    """
+    command_start = 0
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < script_start:
+        char = line[index]
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == ";":
+            command_start = index + 1
+        elif char in {"&", "|"} and line[index + 1 : index + 2] == char:
+            command_start = index + 2
+            index += 1
+        index += 1
+    return line[command_start:script_start]
+
+
 def unrouted_script_invocations(runs: str) -> list[str]:
     """Repo-script invocations in `runs` that are not routed through `uv run`.
 
@@ -107,14 +139,14 @@ def unrouted_script_invocations(runs: str) -> list[str]:
       backslash did not match a single-line pattern, so wrapping a long
       command for readability made a correctly pinned job report as unpinned.
 
-    Continuations are folded first, then each line carrying a script path must
-    have `uv run` ahead of it on that same line.
+    Continuations are folded first, then each shell command carrying a script
+    path must have `uv run` ahead of it in that same command segment.
     """
     joined = CONTINUATION_PATTERN.sub(" ", runs)
     unrouted = []
     for line in joined.splitlines():
         for match in SCRIPT_PATTERN.finditer(line):
-            if "uv run" not in line[: match.start()]:
+            if "uv run" not in shell_command_prefix(line, match.start()):
                 unrouted.append(line.strip())
                 break
     return unrouted
@@ -134,10 +166,11 @@ def uv_script_invocations_missing_option(
     missing = []
     for line in joined.splitlines():
         for match in SCRIPT_PATTERN.finditer(line):
-            invocations = list(UV_RUN_PATTERN.finditer(line[: match.start()]))
+            prefix = shell_command_prefix(line, match.start())
+            invocations = list(UV_RUN_PATTERN.finditer(prefix))
             if not invocations:
                 continue
-            options = line[invocations[-1].end() : match.start()]
+            options = prefix[invocations[-1].end() :]
             if not option.search(options):
                 missing.append(line.strip())
                 break

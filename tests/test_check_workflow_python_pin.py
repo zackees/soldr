@@ -213,6 +213,52 @@ jobs:
     assert guard.unpinned_jobs(tmp_path) == {("release.yml", "build")}
 
 
+@pytest.mark.parametrize("separator", ["&&", ";"])
+def test_shell_command_boundaries_bind_each_script_to_its_own_uv_run(
+    guard, tmp_path, separator
+):
+    """A routed command cannot certify a later bare command on the same line."""
+    write_workflow(
+        tmp_path,
+        "release.yml",
+        f"""
+jobs:
+  routed:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --python 3.13 ci/one.py {separator} uv run --python 3.13 ci/two.py
+  bare:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --python 3.13 ci/one.py {separator} python3 ci/two.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {("release.yml", "bare")}
+
+
+@pytest.mark.parametrize("separator", ["&&", ";"])
+def test_release_flags_do_not_cross_shell_command_boundaries(
+    guard, tmp_path, separator
+):
+    """A release script must carry its own Python and isolation flags."""
+    write_workflow(
+        tmp_path,
+        "release-auto.yml",
+        f"""
+jobs:
+  compliant:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --no-project --python 3.13 ci/one.py {separator} uv run --no-project --python 3.13 ci/two.py
+  inherited-flags:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --no-project --python 3.13 ci/one.py {separator} uv run python ci/two.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {("release-auto.yml", "inherited-flags")}
+
+
 def test_a_container_job_is_not_flagged(guard, tmp_path):
     """The image is pinned in the workflow, so the interpreter cannot drift."""
     write_workflow(
