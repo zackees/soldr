@@ -659,11 +659,29 @@ mod tests {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "1..6 | ForEach-Object { Write-Output progress; Start-Sleep -Milliseconds 500 }",
+                "1..8 | ForEach-Object { Write-Output stdout-progress; [Console]::Error.WriteLine('stderr-progress'); Start-Sleep -Milliseconds 250 }",
             ]);
             command
         } else {
-            unix_shell("i=0; while [ $i -lt 10 ]; do echo progress; sleep 0.15; i=$((i + 1)); done")
+            unix_shell("i=0; while [ $i -lt 16 ]; do printf '%s\\n' stdout-progress; printf '%s\\n' stderr-progress >&2; sleep 0.15; i=$((i + 1)); done")
+        }
+    }
+
+    /// Keep both capture readers busy forever. The capture-mode safety test
+    /// must use real pipe progress, not the synthetic `AlwaysProgress` probe,
+    /// so a stall timeout would be a failure of the reader path itself.
+    fn chatty_capture_command() -> Command {
+        if is_windows_test_host() {
+            let mut command = Command::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "while ($true) { Write-Output stdout-progress; [Console]::Error.WriteLine('stderr-progress'); Start-Sleep -Milliseconds 50 }",
+            ]);
+            command
+        } else {
+            unix_shell("while :; do printf '%s\\n' stdout-progress; printf '%s\\n' stderr-progress >&2; sleep 0.05; done")
         }
     }
 
@@ -705,9 +723,13 @@ mod tests {
     // trigger (`a_true_stall…` at 0.53s). Every pairing below keeps at
     // least 3x between the event being asserted and the budget that must
     // not fire first.
+    // soldr#2988: PowerShell startup can delay the first observed byte on
+    // hosted Windows GNU runners, so this test-only margin is deliberately
+    // wider. `steady_progress_command` still proves both real pipe readers
+    // reset the watchdog, and the finite safety ceiling remains a cleanup cap.
     fn test_stall_timeout() -> Duration {
         if is_windows_test_host() {
-            Duration::from_millis(2500)
+            Duration::from_secs(10)
         } else {
             Duration::from_millis(500)
         }
@@ -715,7 +737,7 @@ mod tests {
 
     fn test_safety_timeout() -> Duration {
         if is_windows_test_host() {
-            Duration::from_secs(10)
+            Duration::from_secs(30)
         } else {
             Duration::from_secs(5)
         }
@@ -726,6 +748,14 @@ mod tests {
             Duration::from_millis(500)
         } else {
             Duration::from_millis(45)
+        }
+    }
+
+    fn test_capture_safety_timeout() -> Duration {
+        if is_windows_test_host() {
+            Duration::from_secs(2)
+        } else {
+            Duration::from_secs(1)
         }
     }
 
@@ -785,6 +815,31 @@ mod tests {
             String::from_utf8_lossy(&output.stdout).contains("rustc"),
             "captured lookup output was lost: {output:?}"
         );
+    }
+
+    #[test]
+    fn captured_chatty_command_reaches_the_safety_ceiling_and_is_reaped() {
+        let safety_timeout = test_capture_safety_timeout();
+        let mut command = chatty_capture_command();
+        let started = Instant::now();
+        let error = run_installer_command_output(
+            &mut command,
+            "chatty capture",
+            "manager-which",
+            InstallerWatchdogConfig::for_test(Duration::from_secs(10), safety_timeout),
+        )
+        .expect_err(
+            "the safety ceiling must stop even a capture command that keeps both pipes busy",
+        );
+
+        assert!(
+            started.elapsed() < safety_timeout + Duration::from_secs(3),
+            "the watchdog must kill and reap the chatty capture command within its bounded safety ceiling"
+        );
+        let message = error.to_string();
+        assert!(message.contains("category=safety-ceiling"), "{message}");
+        assert!(message.contains("phase=manager-which"), "{message}");
+        assert!(message.contains("killed installer process"), "{message}");
     }
 
     #[test]
