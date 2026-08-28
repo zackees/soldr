@@ -17,6 +17,7 @@ pub(crate) async fn run_cargo_front_door(
     // mutating build-session state. Malformed configuration is a user-facing
     // error, not a reason to launch a child that would need cleanup.
     let cargo_wait_timeout = cargo_wait_timeout()?;
+    crate::startup_trace::phase(crate::startup_trace::phase::CARGO_FRONT_DOOR_ENTERED);
 
     // soldr#2545 pre-spawn sweep: a front door nested inside a Soldr-owned
     // lineage (build scripts, tools re-invoking `soldr cargo`) must fail
@@ -150,6 +151,9 @@ pub(crate) async fn run_cargo_front_door(
         .or(explicit_toolchain);
     let cargo = resolve_toolchain_binary_for_channel("cargo", effective_toolchain)?;
     let rustc = resolve_toolchain_binary_for_channel("rustc", effective_toolchain)?;
+    crate::startup_trace::phase(
+        crate::startup_trace::phase::CARGO_FRONT_DOOR_TOOLCHAIN_RESOLVED,
+    );
     // Deliberately uncached for the ambient default (`binaries.rs`), so this
     // is up to two `rustup which` subprocesses on every invocation.
     profile.mark("resolve_toolchain_binaries");
@@ -587,6 +591,7 @@ pub(crate) async fn run_cargo_front_door(
     // Everything above is pure soldr overhead the user pays before Cargo
     // starts. Emit the breakdown here so the total excludes Cargo itself.
     profile.finish_labeled("cargo front door", "pre_spawn_tail");
+    crate::startup_trace::phase(crate::startup_trace::phase::CARGO_FRONT_DOOR_PRE_SPAWN);
     let cargo_run_result: CargoRunResult = if capture_cargo_artifacts {
         let target_dir = cache_plan
             .target_dir_for_hooks(args)
