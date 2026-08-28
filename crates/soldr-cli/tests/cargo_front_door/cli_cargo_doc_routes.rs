@@ -16,7 +16,33 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) -> String {
+fn fake_cargo_doc_hold_script(log_path: &Path) -> String {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        format!(
+            "@echo off\n\
+             echo cargo-doc phase=%~1 hold-descendant=ready>>\"{}\"\n\
+             ping -n 120 127.0.0.1 > nul\n",
+            log_path.display()
+        )
+    } else {
+        format!(
+            "#!/bin/sh\n\
+             echo \"cargo-doc phase=$1 hold-descendant=ready\" >> \"{}\"\n\
+             exec /bin/sleep 120\n",
+            log_path.display()
+        )
+    }
+}
+
+fn fake_cargo_doc_script(
+    log_path: &Path,
+    source_path: &Path,
+    rustdoc: &Path,
+    hold_script: &Path,
+) -> String {
     let output_dir = fake_rustc_output_dir(log_path);
     if matches!(
         soldr_platform::host::facts::os(),
@@ -35,8 +61,7 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
                echo cargo-doc phase=route-ready>>\"{0}\"\n\
                echo cargo-doc phase=before-wrapper>>\"{0}\"\n\
                if /I \"%SOLDR_TEST_CARGO_DOC_HOLD_PHASE%\"==\"before-wrapper\" (\n\
-                 echo cargo-doc phase=before-wrapper hold-descendant=spawned>>\"{0}\"\n\
-                 start \"\" /b cmd /c \"ping -n 120 127.0.0.1 > nul\"\n\
+                 start \"\" /b \"%ComSpec%\" /d /c call \"{4}\" before-wrapper\n\
                  ping -n 120 127.0.0.1 > nul\n\
                )\n\
                if defined RUSTC_WRAPPER (\n\
@@ -49,8 +74,7 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
                echo cargo-doc phase=after-wrapper>>\"{0}\"\n\
                echo cargo-doc phase=before-rustdoc>>\"{0}\"\n\
                if /I \"%SOLDR_TEST_CARGO_DOC_HOLD_PHASE%\"==\"before-rustdoc\" (\n\
-                 echo cargo-doc phase=before-rustdoc hold-descendant=spawned>>\"{0}\"\n\
-                 start \"\" /b cmd /c \"ping -n 120 127.0.0.1 > nul\"\n\
+                 start \"\" /b \"%ComSpec%\" /d /c call \"{4}\" before-rustdoc\n\
                  ping -n 120 127.0.0.1 > nul\n\
                )\n\
                call \"%rustdoc%\" \"{1}\"\n\
@@ -74,7 +98,8 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
             log_path.display(),
             source_path.display(),
             rustdoc.display(),
-            output_dir.display()
+            output_dir.display(),
+            hold_script.display()
         )
     } else {
         format!(
@@ -88,8 +113,7 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
              doc_phase() {{\n\
                echo \"cargo-doc phase=$1\" >> \"{0}\"\n\
                if [ \"${{SOLDR_TEST_CARGO_DOC_HOLD_PHASE:-}}\" = \"$1\" ]; then\n\
-                 /bin/sleep 120 &\n\
-                 echo \"cargo-doc phase=$1 hold-descendant=$!\" >> \"{0}\"\n\
+                 \"{4}\" \"$1\" &\n\
                  wait \"$!\"\n\
                fi\n\
              }}\n\
@@ -120,7 +144,8 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
             log_path.display(),
             source_path.display(),
             rustdoc.display(),
-            output_dir.display()
+            output_dir.display(),
+            hold_script.display()
         )
     }
 }
@@ -135,10 +160,12 @@ fn install_fake_cargo_doc_toolchain(
         .to_path_buf();
     let rustdoc = fake_script_path(&tool_dir, "rustdoc");
     let zccache = fake_script_path(&tool_dir, "zccache");
+    let hold_script = fake_script_path(&tool_dir, "cargo-doc-hold");
     write_fake_script(&rustc, &fake_rustc_script(log_path));
+    write_fake_script(&hold_script, &fake_cargo_doc_hold_script(log_path));
     write_fake_script(
         &cargo,
-        &fake_cargo_doc_script(log_path, source_path, &rustdoc),
+        &fake_cargo_doc_script(log_path, source_path, &rustdoc, &hold_script),
     );
     write_fake_script(&zccache, &fake_zccache_script(log_path));
     (rustup, cargo, rustc, rustdoc, zccache)
@@ -312,9 +339,15 @@ fn cargo_doc_route_phase(
             continue;
         }
         if let Some(hold_phase) = hold_phase {
-            let hold_marker = format!("{hold_phase} hold-descendant=");
-            if marker.starts_with(&hold_marker) && next > 0 && SEQUENCE[next - 1] == hold_phase {
-                held = true;
+            let hold_prefix = format!("{hold_phase} hold-descendant=");
+            let hold_marker = format!("{hold_phase} hold-descendant=ready");
+            if marker.starts_with(&hold_prefix) && next > 0 && SEQUENCE[next - 1] == hold_phase {
+                if marker == &hold_marker {
+                    held = true;
+                }
+                // Fixture observations such as `spawned` only say the parent
+                // intends to launch a child. They cannot start the short hold
+                // budget: Windows `start` returns before that child exists.
                 continue;
             }
         }
@@ -647,10 +680,21 @@ fn cargo_doc_route_hold_budget_waits_for_matching_descendant_marker() {
             .expect("wrapper state before descendant"),
         CargoDocRoutePhase::Wrapper
     );
+    let pre_spawn = vec![
+        "route-ready".to_string(),
+        "before-wrapper".to_string(),
+        "before-wrapper hold-descendant=spawned".to_string(),
+    ];
+    assert_eq!(
+        cargo_doc_route_phase(&pre_spawn, Some("before-wrapper"))
+            .expect("pre-spawn marker remains wrapper state"),
+        CargoDocRoutePhase::Wrapper,
+        "a parent-side marker must not start the two-second descendant budget"
+    );
     let ready = vec![
         "route-ready".to_string(),
         "before-wrapper".to_string(),
-        "before-wrapper hold-descendant=2718".to_string(),
+        "before-wrapper hold-descendant=ready".to_string(),
     ];
     let phase = cargo_doc_route_phase(&ready, Some("before-wrapper"))
         .expect("matching descendant marker starts hold phase");
