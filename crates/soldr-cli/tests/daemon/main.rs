@@ -21,3 +21,4 @@ mod daemon_restart_warmth;
 mod daemon_rss_ceiling;
 mod daemon_stall_harness;
 mod inherited_stdio_spawns_mark_spoke;
+mod wasm32_wasip1_threads_materialization;
