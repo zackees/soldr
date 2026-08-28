@@ -59,6 +59,24 @@ WORKSPACE_CRATES = [
     "soldr-daemon",
 ]
 
+# The triples soldr ships, spelled out rather than derived from
+# `ci/canonical-targets.json`. Two guards assert over this same list -- the
+# target-removal contract and the Dylint driver-asset check -- so a contract
+# edit that drops one has to answer to both, instead of quietly shrinking the
+# set each of them checks. Dropping a target is a reviewed decision
+# (soldr#2469 step 2.1): it needs a `compatibility_decisions` entry and this
+# list updated in the same PR.
+RELEASE_INCLUDED_TRIPLES = [
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
+
 # Canonical Dylint CI policy shared by the nightly-agreement and process-
 # boundary guards. The full rustup toolchain key is also the target-directory
 # key, keeping nightly artifacts separate from the project's Rust 1.95 tree.

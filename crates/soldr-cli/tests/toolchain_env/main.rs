@@ -17,6 +17,7 @@ mod cli_toolchain_home_boundary;
 mod doctor_standalone_zccache;
 mod msvc_host_discovery_windows;
 mod python_compat_sysroot;
+mod rustup_child_exit_guard;
 mod save_auto_defender_exclude;
 mod save_bench;
 mod save_roundtrip;

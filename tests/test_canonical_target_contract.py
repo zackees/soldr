@@ -7,7 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-from conftest import load_script_module
+from conftest import RELEASE_INCLUDED_TRIPLES, load_script_module
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "ci" / "canonical-targets.json"
@@ -395,16 +395,7 @@ def test_target_removal_requires_a_compatibility_decision() -> None:
     the v0.9.1 supported set; when a future release intentionally drops a
     target, add a compatibility_decisions entry naming it (and update the
     baseline here in the same reviewed PR)."""
-    baseline_v0_9_1 = {
-        "x86_64-pc-windows-msvc",
-        "aarch64-pc-windows-msvc",
-        "x86_64-apple-darwin",
-        "aarch64-apple-darwin",
-        "x86_64-unknown-linux-gnu",
-        "aarch64-unknown-linux-gnu",
-        "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl",
-    }
+    baseline_v0_9_1 = set(RELEASE_INCLUDED_TRIPLES)
     contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
     assert "compatibility_decisions" in contract, (
         "canonical-targets.json must carry the compatibility_decisions "

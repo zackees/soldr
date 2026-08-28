@@ -229,6 +229,20 @@ jobs:
           set -euo pipefail
           uv run --no-project --python 3.13 python .github/scripts/check_zccache_asset.py
 
+      # soldr#2945 — the lint libraries are now the authority on Dylint's
+      # nightly, but nothing checked that the nightly they declare has drivers
+      # published. Soldr fetches a prebuilt driver and refuses to build one
+      # (binary-or-exit, #2432/#2484), so re-pinning `dylints/*/rust-
+      # toolchain.toml` to an undriven nightly compiles, tests, lints and
+      # merges — then breaks Dylint on every host until someone runs it. This
+      # asserts the exact `<version>-<nightly>` driver asset exists for every
+      # release-included canonical triple, not just the CI host's. Skipped, not
+      # failed, when the catalogue is unreachable — same policy as above.
+      - name: Dylint driver published for every shipped triple
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.13 python .github/scripts/check_dylint_driver_assets.py
+
       # soldr#2013 — nothing ran `tests/` on CI, so it decayed silently: a test
       # asserting on a workflow #1982 deleted, two lints that scanned nothing
       # and reported clean (#2008), and a manifest-coupled assertion (#2004).
