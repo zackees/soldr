@@ -63,7 +63,7 @@ docker build \
 # Default cargo invocation: run the cook_index integration tests gated
 # on the Docker harness marker.
 if [ "$#" -eq 0 ]; then
-    set -- cargo test --workspace --test daemon_cook_index -- --include-ignored
+    set -- cargo test --workspace --test cook_dylint -- --include-ignored daemon_cook_index::
 fi
 
 # Per-run wipe of `cook-soldr-home` keeps the harness-gated tests

@@ -92,7 +92,7 @@ workspace = true
 
 # Thin library entry that re-exports the modules consumed by integration
 # tests under `tests/`. Production code goes through the `[[bin]]` target
-# below; lib.rs only exists so `tests/save_roundtrip.rs` & co. can keep
+# below; lib.rs only exists so `tests/toolchain_env/save_roundtrip.rs` & co. can keep
 # `use soldr_cli::cache_lib::save::*`-style imports after the four-crate
 # collapse landed.
 [lib]

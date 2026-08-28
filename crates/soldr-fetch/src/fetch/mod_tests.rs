@@ -207,7 +207,8 @@ fn resolver_order_parses_default_and_subsets() {
 fn resolver_order_env_var_skips_embed_when_unset() {
     // Defensive: ensure the canonical "all on" form keeps embed on.
     // The actual env-var override is exercised in the integration
-    // test under `tests/embed_first_resolver.rs` (touching the live
+    // test under `crates/soldr-cli/tests/fetch_tools/embed_first_resolver.rs`
+    // (touching the live
     // process env from a unit test is racy).
     let order = ResolverOrder::all();
     assert!(order.try_embed && order.try_live && order.try_api);

@@ -18,5 +18,5 @@ The matching network-gated acceptance test is opt-in because a cold run
 downloads the catalogue toolchain:
 
 ```bash
-SOLDR_TEST_NETWORK=1 soldr cargo test -p soldr-cli --test cli_cc -- --ignored
+SOLDR_TEST_NETWORK=1 soldr cargo test -p soldr-cli --test fetch_tools -- --ignored cli_cc::
 ```

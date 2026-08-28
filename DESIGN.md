@@ -139,7 +139,7 @@ cache is hosted *inside* it as an embedded service — wrapper invocations
 ferry each compile to the daemon over the `Request::Compile` IPC verb. No
 standalone `zccache-daemon` or `zccache-download-daemon` process is ever
 spawned, and nothing in soldr may reach the upstream lazy-spawn entry
-points (enforced by `crates/soldr-cli/tests/no_standalone_spawn_lint.rs`).
+points (enforced by `crates/soldr-cli/tests/guards/no_standalone_spawn_lint.rs`).
 
 Compiler shims are named `rustc`, `clippy-driver`, or `zccache-soldr`, but a
 long-lived daemon process must never inherit one of those executable

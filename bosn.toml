@@ -58,7 +58,7 @@ cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo
 
 [task.ci-test-acceptance]
 stack = "cook"
-cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test cli_ci_test"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test guards -E 'test(/^cli_ci_test::/)'"
 
 [task.ci-test-report-unit]
 stack = "cook"
@@ -70,11 +70,11 @@ cmd = "cd /repo && CARGO_TARGET_DIR=/target CARGO_BUILD_JOBS=1 SOLDR_JOBS=1 /opt
 
 [task.hydrate-alias-test]
 stack = "cook"
-cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --test cli_save hydrate_primary_and_load_alias_restore_the_same_archive"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --test toolchain_env cli_save::hydrate_primary_and_load_alias_restore_the_same_archive"
 
 [task.test-rematerialization]
 stack = "cook"
-cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cache --lib && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --lib cook::tests:: && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --test cli_save"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cache --lib && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --lib cook::tests:: && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --test toolchain_env cli_save::"
 
 [task.clippy-rematerialization]
 stack = "cook"

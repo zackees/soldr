@@ -33,6 +33,43 @@ experimental = ["wrapper-scripts"]
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 2, grace-period = "30s" }
 
+# =====================================================================
+# soldr#2934 -- READ THIS BEFORE EDITING ANY `filter = ` LINE BELOW.
+#
+# The 98 standalone integration-test files under `crates/soldr-cli/tests/`
+# were consolidated into 8 linked test binaries -- `broker`, `daemon`,
+# `cargo_front_door`, `cache_gc`, `cook_dylint`, `fetch_tools`,
+# `toolchain_env`, `guards`. Each former file is now a `mod` declared by its
+# category's `main.rs`, which changes both halves of every filter here:
+#
+#   * `binary(cli_broker_routes)` names nothing anymore. The binary is
+#     `broker`; the old file is the module `cli_broker_routes` inside it.
+#   * libtest now reports those tests as `<module>::<test_name>`, so a bare
+#     `test(=some_test_name)` no longer matches either.
+#
+# A filter that matches nothing IS NOT AN ERROR IN NEXTEST. It is silently
+# ignored: the test drops back to the default 60s x 2 = 120s budget, and the
+# failure surfaces weeks later as a bogus TIMEOUT with nothing pointing at
+# this file. So whenever a test is renamed, or moves between modules, or a
+# module is renamed, re-verify every filter naming it. `cargo nextest list
+# -E '<filter>'` prints the selected set; an empty set means the filter is
+# dead and the budget below is not being granted to anything.
+#
+# Module-prefix form used below: `binary(<category>) & test(/^<module>::/)`.
+# `test(/.../)` is nextest's regex matcher (alongside `=` exact-match and `~`
+# substring); `^` anchors the module name to the start of the test name so it
+# cannot match mid-path. The `binary(...)` conjunct is not strictly required
+# -- module names are unique across the tree -- but it tightens the match and
+# documents which `--test <name>` binary to reach for when reproducing.
+# Individual tests keep the exact form, now module-qualified:
+# `test(=<module>::<test_name>)`.
+#
+# Tests in `crates/soldr-daemon/tests/` and `crates/soldr-cache/tests/` did
+# NOT move and keep their own per-file binaries, so their filters are bare
+# names. Unit tests living in a crate's `src/` are named by their full module
+# path (e.g. `daemon::session_serve::tests::<test_name>`) and always were.
+# =====================================================================
+
 # These tests cold-start or directly control the broker/daemon runtime. They
 # must share one group: separate one-thread groups still run concurrently and
 # contend for the same bounded route-start and shutdown paths on shared runners.
@@ -40,11 +77,16 @@ slow-timeout = { period = "60s", terminate-after = 2, grace-period = "30s" }
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = 'binary(agent_worktree_share) + binary(cli_daemon_builds) + binary(cli_daemon_flush_caches) + binary(cli_daemon_lifecycle) + binary(cli_daemon_single_instance) + binary(cli_daemon_target_touch) + binary(daemon_cache_maintenance) + binary(daemon_restart_warmth) + binary(daemon_stall_harness)'
+filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_stall_harness)::/))'
 test-group = 'soldr-runtime'
 
+# Note the `daemon` binary carries three more modules -- `cli_debug_trace_observer`,
+# `daemon_ack_best_effort`, `inherited_stdio_spawns_mark_spoke` -- and the
+# `broker` binary three more -- `broker_identity_pipe`, `broker_identity_unix`,
+# `isolated_daemon_shared_copy`. They were never in this group, so the module
+# lists stay explicit rather than collapsing to a bare `binary(daemon)`.
 [[profile.default.overrides]]
-filter = 'binary(cli_broker_resurrection) + binary(cli_broker_routes) + binary(cli_broker_single_instance) + binary(cli_broker_status) + binary(cli_broker_stop) + binary(cli_build_alias_parity) + binary(cli_build_fetch_overlap) + binary(cli_jobs_routing) + binary(cli_kill_matrix) + test(=gc_list_json_reports_built_project_target_dir)'
+filter = '(binary(broker) & test(/^(cli_broker_resurrection|cli_broker_routes|cli_broker_single_instance|cli_broker_status|cli_broker_stop|cli_build_alias_parity|cli_build_fetch_overlap|cli_jobs_routing|cli_kill_matrix)::/)) + test(=cli_gc::gc_list_json_reports_built_project_target_dir)'
 test-group = 'soldr-runtime'
 
 # soldr#2336: these three drive `isolated_soldr_command`, which scrubs every
@@ -56,10 +98,10 @@ test-group = 'soldr-runtime'
 # on soldr's own "broker route start timed out" -- a starvation failure no
 # nextest budget can fix, because the deadline that expired was soldr's.
 [[profile.default.overrides]]
-filter = 'test(=toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=toolchain_link_emits_schema_v1_json_payload) + test(=toolchain_link_force_overwrites_user_modified_shim) + test(=cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
+filter = 'test(=cli_toolchain::toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=cli_toolchain::toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cli_toolchain::toolchain_link_emits_schema_v1_json_payload) + test(=cli_toolchain::toolchain_link_force_overwrites_user_modified_shim) + test(=cli_toolchain_home_boundary::cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
 test-group = 'soldr-runtime'
 
-# These binaries run real Cargo front doors from isolated homes. On hosted
+# These modules run real Cargo front doors from isolated homes. On hosted
 # Windows, launching several of their cold builds at once has produced clusters
 # of 120s timeouts while neighboring tests complete (soldr#2697). Keep their
 # shared pressure serial without coupling them to broker/daemon lifecycle tests.
@@ -75,10 +117,11 @@ test-group = 'soldr-runtime'
 # larger private budget.
 #
 # soldr#2737 promoted `cli_cargo_basic` from a per-test entry to the whole
-# binary: 19 of its 21 tests drive `isolated_soldr_command`, so it has the
-# same profile as the three binaries above rather than being a mixed bag with
-# a few cold builds in it. `cli_dylint_wrapper` has the same shape: its fake
-# compiler chains still cold-start isolated Soldr front doors, and the
+# unit (then the `cli_cargo_basic` binary, now the `cli_cargo_basic` module of
+# `cargo_front_door`): 19 of its 21 tests drive `isolated_soldr_command`, so it
+# has the same profile as the three modules above rather than being a mixed bag
+# with a few cold builds in it. `cli_dylint_wrapper` has the same shape: its
+# fake compiler chains still cold-start isolated Soldr front doors, and the
 # prescribed `soldr ci-test` run measured two of them at 121s when they raced
 # each other versus 63-78s in isolation (soldr#2867). Three separate rounds
 # had already added the `cli_cargo_basic` tests one at a time (soldr#2696,
@@ -86,22 +129,29 @@ test-group = 'soldr-runtime'
 # job 97088274620) -- that drip was the signal. The subsumed per-test entry
 # for `cargo_without_timeout_allows_progress_cpu_and_lock_waits` is gone with
 # it. The remaining `test(=...)` entries stay per-test on purpose: they live
-# in binaries that are NOT predominantly cold front doors, and a fast test
+# in modules that are NOT predominantly cold front doors, and a fast test
 # added to one of those should not inherit a whole-runner reservation.
 #
 # soldr#2720 named the next one on a docs-only PR (run 32530365077):
-# `exec_cargo_build_routes_through_child_shims_and_zccache` drives
+# `cli_exec::exec_cargo_build_routes_through_child_shims` drives
 # `isolated_soldr_command` for `soldr exec cargo build`, so it cold-starts
 # its own broker and daemon. Its cargo/rustc/zccache are fake scripts, so
 # the 120.208s was soldr cold-start under contention, not tool work.
-# Test-scoped rather than `binary(cli_exec)`: that binary holds one test
-# today, but a fast test added to it later should not inherit a
-# whole-runner reservation.
+# Test-scoped rather than module-scoped: that module holds one test today,
+# but a fast test added to it later should not inherit a whole-runner
+# reservation.
+#
+# soldr#2934 note: this entry previously named
+# `test(=exec_cargo_build_routes_through_child_shims_and_zccache)`, a test that
+# does not exist anywhere in the tree -- the `_and_zccache` suffix was dropped
+# from the function at some point and the filter was never updated, so the
+# reservation described above had silently not been in effect. Repaired to the
+# real name.
 [test-groups.soldr-cargo-cold-builds]
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = 'binary(cli_cargo_basic) + binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers) + binary(cli_dylint_wrapper) + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled) + test(=cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=exec_cargo_build_routes_through_child_shims_and_zccache)'
+filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + test(=cli_rust_plan::cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
 test-group = 'soldr-cargo-cold-builds'
 threads-required = "num-cpus"
 
@@ -122,24 +172,36 @@ run-wrapper = "timeout-diagnostics"
 # `windows_stop_start_is_immediately_status_ready`, whose broker route start
 # is legitimately slow on windows-gnu: measured at 89.8s against the 90s the
 # fixture allows it, so the bounds have to nest rather than race.
+#
+# The three `session_*` tests are soldr-daemon *lib* unit tests living under
+# `crates/soldr-daemon/src/daemon/`, so their names carry the full module path.
+# They were written here as bare names and therefore matched nothing; soldr#2934
+# repaired them alongside the soldr-cli migration. `env_dedup_micro_benchmark`
+# is an integration test in `crates/soldr-daemon/tests/env_dedup_bench.rs`,
+# which did not move and still has its own binary -- the bare name is correct.
 [[profile.default.overrides]]
-filter = 'test(=session_endpoint_serves_real_compile_via_mux) + test(=session_compile_e2e_real_rustc_through_the_bridge) + test(=session_client_disconnect_mid_compile_aborts_without_reply) + test(=windows_long_path_publication_survives_fresh_worktree_reuse) + test(=windows_deep_cache_root_keeps_staged_linker_path_short) + test(=env_dedup_micro_benchmark) + test(=cargo_test_recovers_after_daemon_stop_without_herd_spawning) + test(=graceful_daemon_restart_serves_the_next_build_warm) + test(=hard_killed_daemon_loses_at_most_one_save_batch) + test(=windows_stop_start_is_immediately_status_ready)'
+filter = 'test(=daemon::session_endpoint::tests::session_endpoint_serves_real_compile_via_mux) + test(=daemon::session_serve::tests::session_compile_e2e_real_rustc_through_the_bridge) + test(=daemon::session_serve::tests::session_client_disconnect_mid_compile_aborts_without_reply) + test(=agent_worktree_share::windows_long_path_publication_survives_fresh_worktree_reuse) + test(=agent_worktree_share::windows_deep_cache_root_keeps_staged_linker_path_short) + test(=env_dedup_micro_benchmark) + test(=cli_daemon_lifecycle::cargo_test_recovers_after_daemon_stop_without_herd_spawning) + test(=daemon_restart_warmth::graceful_daemon_restart_serves_the_next_build_warm) + test(=daemon_restart_warmth::hard_killed_daemon_loses_at_most_one_save_batch) + test(=cli_daemon_lifecycle::windows_stop_start_is_immediately_status_ready)'
 slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
 
 # 240s: daemon single-instance races, which spin up two daemons and wait for
 # one to lose.
+#
+# soldr#2934: this entry also named `no_spawn_guard_leaves_no_daemon_runtime_copy`,
+# which does not exist anywhere in the workspace under that or any near name --
+# it had been dead well before the consolidation. Dropped rather than left as a
+# no-op term. If that test is reintroduced, re-add it module-qualified.
 [[profile.default.overrides]]
-filter = 'test(=two_daemons_against_one_root_never_coexist) + test(=losing_daemon_leaves_the_state_db_openable) + test(=no_spawn_guard_leaves_no_daemon_runtime_copy)'
+filter = 'test(=cli_daemon_single_instance::two_daemons_against_one_root_never_coexist) + test(=cli_daemon_single_instance::losing_daemon_leaves_the_state_db_openable)'
 slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 
 # 180s: toolchain-preparation memo invalidation and rustup passthrough, both
 # of which shell out to a real toolchain.
 [[profile.default.overrides]]
-filter = 'test(=cargo_front_door_invalidates_toolchain_preparation_memo) + test(=rustup_passthrough_forwards_args_unchanged_for_unscoped_subcommands) + test(=prod_dev_daemons_and_manual_orphan_maintenance_are_isolated)'
+filter = 'test(=cli_cargo_wrappers::cargo_front_door_invalidates_toolchain_preparation_memo) + test(=cli_toolchain::rustup_passthrough_forwards_args_unchanged_for_unscoped_subcommands) + test(=daemon_cache_maintenance::prod_dev_daemons_and_manual_orphan_maintenance_are_isolated)'
 slow-timeout = { period = "60s", terminate-after = 3, grace-period = "30s" }
 
 [[profile.default.overrides]]
-filter = 'test(=issue_2476_sigstop_owner_is_fenced_after_lease_expiry)'
+filter = 'test(=cli_broker_resurrection::issue_2476_sigstop_owner_is_fenced_after_lease_expiry)'
 slow-timeout = { period = "60s", terminate-after = 3, grace-period = "30s" }
 threads-required = "num-cpus"
 
@@ -147,20 +209,20 @@ threads-required = "num-cpus"
 # bare-fmt labels), each paying a cold broker start with a full executable
 # image hash (soldr#2517). soldr#2624 observations 3-4: timed out at exactly
 # 120s twice on contended windows-msvc target-runs while stub siblings in the
-# same binary legitimately ran 49-85s — the length is real cold-start work
+# same module legitimately ran 49-85s — the length is real cold-start work
 # x2, not a hang (the second strike's retained output shows the first soldr
 # child still executing, and the run passed on a quieter runner).
 [[profile.default.overrides]]
-filter = 'test(=cargo_fmt_routes_rustfmt_through_zccache_formatter)'
+filter = 'test(=cli_cargo_wrappers::cargo_fmt_routes_rustfmt_through_zccache_formatter)'
 slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 
-# 240s: this binary drives fake compiler chains through isolated Soldr homes.
+# 240s: this module drives fake compiler chains through isolated Soldr homes.
 # The ci-test cold proof measured the two competing front doors at 121s each;
 # after reserving the cold-build group, the longest single front door still
 # crossed the default boundary at 123s. Keep the usual 60s diagnostics while
 # allowing the same four-period budget as the other multi-front-door fixtures.
 [[profile.default.overrides]]
-filter = 'binary(cli_dylint_wrapper)'
+filter = 'binary(cargo_front_door) & test(/^cli_dylint_wrapper::/)'
 slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 
 # 240s: the `toolchain link` pair and the cargo-fmt home-boundary test, for
@@ -173,24 +235,24 @@ slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 # `toolchain_link_writes_every_routed_tool_into_shim_dir` PASSED at 116.202s
 # -- 3.8s inside the 120s wall -- while its strictly-more-work sibling
 # `toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary` timed out
-# at exactly 120s. Their env-plumbing neighbours in the same binaries finished
+# at exactly 120s. Their env-plumbing neighbours in the same modules finished
 # in 1.8s and 3.0s, so this is cold-start cost on the slowest lane, not a hang.
 #
 # soldr#2729: the same lane later named the other two members of that
-# binary on `main` itself (run 32536450196) --
+# module on `main` itself (run 32536450196) --
 # `toolchain_link_emits_schema_v1_json_payload` at 120.251s and
 # `toolchain_link_force_overwrites_user_modified_shim` at 120.223s. Same
 # `isolated_soldr_command` cold start, same treatment: they were simply
 # not among the two observed when the pair above was measured.
 [[profile.default.overrides]]
-filter = 'test(=toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=toolchain_link_emits_schema_v1_json_payload) + test(=toolchain_link_force_overwrites_user_modified_shim) + test(=cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
+filter = 'test(=cli_toolchain::toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=cli_toolchain::toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cli_toolchain::toolchain_link_emits_schema_v1_json_payload) + test(=cli_toolchain::toolchain_link_force_overwrites_user_modified_shim) + test(=cli_toolchain_home_boundary::cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
 slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 
 # 240s: the soldr#2442 kill-matrix — each test cold-starts a broker and
 # daemon (sometimes twice), pays the soldr#2517 image-hash cost per start,
 # and then waits bounded recovery deadlines after real SIGKILLs.
 [[profile.default.overrides]]
-filter = 'binary(cli_kill_matrix)'
+filter = 'binary(broker) & test(/^cli_kill_matrix::/)'
 slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 
 # Inherits `[profile.default]`, so the timeouts above apply here too. That is
