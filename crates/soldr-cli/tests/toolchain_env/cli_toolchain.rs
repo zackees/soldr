@@ -27,6 +27,50 @@ fn install_fake_toolchain_plugin_cargo(log_path: &Path) -> PathBuf {
     cargo
 }
 
+fn fake_rustup_panic_script() -> String {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        "@echo off\necho fake rustup panic: component target should be known 1>&2\nexit /b 101\n"
+            .to_string()
+    } else {
+        "#!/bin/sh\nprintf '%s\\n' 'fake rustup panic: component target should be known' >&2\nexit 101\n"
+            .to_string()
+    }
+}
+
+#[test]
+fn rustup_passthrough_preserves_a_failing_child_diagnostic() {
+    let workspace = unique_temp_dir("rustup-passthrough-panic");
+    let tools = workspace.join("tools");
+    fs::create_dir_all(&tools).expect("tool directory");
+    let rustup = fake_script_path(&tools, "rustup");
+    write_fake_script(&rustup, &fake_rustup_panic_script());
+
+    let output = isolated_soldr_command()
+        .args(["rustup", "show"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .output()
+        .expect("run soldr rustup passthrough");
+
+    assert_eq!(
+        output.status.code(),
+        Some(101),
+        "child status must propagate"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("fake rustup panic"),
+        "child stderr was lost: {stderr}"
+    );
+    assert!(
+        !stderr.contains("soldr emitted no diagnostic and ran no child process"),
+        "a child diagnostic must not be followed by Soldr's false fault annotation: {stderr}"
+    );
+}
+
 // Given a 180s nextest budget (see `.config/nextest.toml`) as a smoke proof that
 // the watchdog macro composes cleanly with an existing integration
 // test that spawns the soldr binary as a subprocess.

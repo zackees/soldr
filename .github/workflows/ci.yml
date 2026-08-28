@@ -229,6 +229,11 @@ jobs:
           set -euo pipefail
           uv run --no-project --python 3.13 python .github/scripts/check_zccache_asset.py
 
+      - name: Pinned Dylint nightly has catalogued driver assets
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.13 python .github/scripts/check_dylint_driver_assets.py
+
       # soldr#2013 — nothing ran `tests/` on CI, so it decayed silently: a test
       # asserting on a workflow #1982 deleted, two lints that scanned nothing
       # and reported clean (#2008), and a manifest-coupled assertion (#2004).
