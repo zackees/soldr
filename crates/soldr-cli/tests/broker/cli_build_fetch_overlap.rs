@@ -188,8 +188,11 @@ impl Harness {
             // output at all, so three rounds of hypotheses have been guesswork.
             // Every `command_output_with_timeout` call defaults to 60s, so two
             // of them exhaust the budget in silence. Capping it here converts
-            // any such stall into `<context> timed out after 20 seconds`, which
-            // names the caller instead of hanging.
+            // any such stall into `<context> produced no output for 20
+            // seconds`, which names the caller instead of hanging. soldr#2974
+            // made the budget measure silence rather than total runtime, so
+            // this only bites a child that is genuinely producing nothing --
+            // which is exactly the stall being guarded against here.
             .env("SOLDR_COMMAND_OUTPUT_TIMEOUT_SECS", "20")
             // soldr#2159: and the invariant itself, rather than one more
             // opt-out. Four separate fetch paths have opened up under this
