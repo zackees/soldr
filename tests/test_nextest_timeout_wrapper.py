@@ -46,6 +46,21 @@ def _module_alternation(expressions: str, binary: str) -> set[str]:
     return modules
 
 
+def _exact_module_tests(expressions: str, binary: str, module: str) -> set[str]:
+    """Tests a full-name `test(/^module::(a|b)$/)` conjunct reserves."""
+
+    import re
+
+    pattern = re.compile(
+        rf"binary\({re.escape(binary)}\) & test\(/\^{re.escape(module)}::"
+        r"\(([A-Za-z0-9_|]+)\)\$/\)"
+    )
+    tests: set[str] = set()
+    for match in pattern.finditer(expressions):
+        tests.update(match.group(1).split("|"))
+    return tests
+
+
 def _start_wrapper(child: str, env: dict[str, str]) -> subprocess.Popen[str]:
     """Return a live wrapper so the test can inject SIGTERM before waiting."""
 
@@ -274,8 +289,9 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     # What the reservation cares about is which members are in it, which the
     # loop below states and the exclusions further down still pin.
     #
-    # soldr#2934: those five `binary(...)` terms are now one module alternation
-    # inside the `cargo_front_door` binary.
+    # soldr#2934 made these a module alternation inside the
+    # `cargo_front_door` binary. Keep every cold module explicit so a future
+    # module move cannot silently escape the exclusive reservation.
     cold_modules = _module_alternation(cold_filter, "cargo_front_door")
     for cold_module in (
         "cli_cargo_basic",
@@ -285,6 +301,33 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
         "cli_dylint_wrapper",
     ):
         assert cold_module in cold_modules, cold_filter
+    assert "cli_cargo_doc_routes" not in cold_modules, cold_filter
+    # soldr#2944: only the six doc-route tests that launch a cold front door
+    # share this reservation. A module-wide rule also serialized phase/budget
+    # parser units and the direct-rustdoc check. Pin both membership and the
+    # deliberately excluded tests so a future route move cannot silently
+    # escape, nor can unrelated units accidentally enter the costly group.
+    doc_route_tests = _exact_module_tests(
+        cold_filter, "cargo_front_door", "cli_cargo_doc_routes"
+    )
+    assert doc_route_tests == {
+        "cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct",
+        "bare_doc_keeps_rustc_wrapped_but_rustdoc_direct",
+        "cargo_doc_route_deadline_kills_wrapper_hold_tree",
+        "bare_doc_route_deadline_kills_rustdoc_hold_tree",
+        "cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct",
+        "rustdoc_path_shim_reenters_direct_passthrough_without_zccache",
+    }, cold_filter
+    for excluded_doc_test in (
+        "rustdoc_driver_is_intentionally_direct_without_zccache",
+        "cargo_doc_route_phase_rejects_wrapper_without_route_ready",
+        "cargo_doc_route_phase_tracks_wrapper_then_rustdoc",
+        "cargo_doc_route_phase_rejects_skipped_marker",
+        "cargo_doc_route_phase_rejects_regression",
+        "cargo_doc_route_hold_budget_waits_for_matching_descendant_marker",
+        "cargo_doc_route_execution_budget_leaves_cleanup_headroom",
+    ):
+        assert excluded_doc_test not in doc_route_tests, cold_filter
     assert (
         "test(=cli_rust_plan::cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled)"
         in cold_filter
