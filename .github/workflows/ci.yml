@@ -816,6 +816,9 @@ jobs:
       target: x86_64-apple-darwin
       artifact_name: soldr-ci-e2e-macos-x64
       target_execution: x86_64-rosetta
+      # Rosetta's translated complete archive replay exceeded the reusable
+      # 30-minute default; keep the 55-minute allowance local to this lane.
+      extended_replay: true
 
   # This cannot depend on e2e-macos-x64: the observed failure is precisely a
   # target-run that never receives a runner. It starts after the artifact
