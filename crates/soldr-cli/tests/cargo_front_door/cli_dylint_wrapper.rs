@@ -182,6 +182,22 @@ fn install_conflicting_rustup(root: &Path) -> PathBuf {
 echo "rustup argv=$*" >> "{log}"
 case "${{1:-}}" in
   which) printf '%s\n' "{rustc}"; exit 0 ;;
+  toolchain)
+    case "${{2:-}}" in
+      install)
+        channel="${{3:-}}"
+        if [ "${{4:-}}" != "--profile" ] || [ "${{5:-}}" != "minimal" ] || [ "${{6:-}}" != "--no-self-update" ]; then
+          echo "unexpected fake rustup install invocation: $*" >&2
+          exit 87
+        fi
+        toolchain_dir="$RUSTUP_HOME/toolchains/$channel"
+        mkdir -p "$toolchain_dir/bin" "$toolchain_dir/lib/rustlib"
+        : > "$toolchain_dir/bin/rustc"
+        : > "$toolchain_dir/lib/rustlib/multirust-channel-manifest.toml"
+        exit 0
+        ;;
+    esac
+    ;;
   component)
     case "${{2:-}}" in
       list) printf '%s\n' 'rustc-dev-x86_64-unknown-linux-gnu'; exit 0 ;;
@@ -351,9 +367,11 @@ fn dylint_component_conflict_preserves_rustup_stderr_and_names_reset() {
         soldr_cli::pyo3_detect::host_triple()
     );
     let rustup = install_conflicting_rustup(&root);
+    let rustup_home = root.join("rustup-home");
     let output = dylint_command(&root)
         .env_remove("SOLDR_DYLINT_PREPARED_IDENTITY")
         .env("SOLDR_TEST_RUSTUP_BIN", rustup)
+        .env("RUSTUP_HOME", &rustup_home)
         .args(["dylint", "--all"])
         .output()
         .expect("run soldr dylint with a conflicting rustup component");
@@ -383,6 +401,12 @@ fn dylint_component_conflict_preserves_rustup_stderr_and_names_reset() {
         "a child-explained rustup failure must not be annotated as a Soldr fault: {stderr}"
     );
     let log = fs::read_to_string(root.join("tool.log")).expect("read fake tool log");
+    assert!(
+        log.contains(&format!(
+            "rustup argv=toolchain install {channel} --profile minimal --no-self-update"
+        )),
+        "the cold Dylint path must install the qualified nightly before adding components: {log}"
+    );
     assert!(
         log.contains("rustup argv=component add --toolchain") && log.contains(" rust-src"),
         "the required rust-src add did not reach fake rustup: {log}"
