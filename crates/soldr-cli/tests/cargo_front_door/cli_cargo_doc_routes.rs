@@ -163,7 +163,9 @@ fn write_rustdoc_source(cache_root: &Path) -> PathBuf {
 // Before fake Cargo can accept `doc`, the real front door may contend with
 // parallel test routes while it resolves toolchain/bootstrap state. This is
 // deliberately the only cold-start allowance; every post-ready route stage
-// below remains independently bounded.
+// below remains independently bounded. The route as a whole also has an
+// absolute monotonic execution deadline. It leaves one reap budget and one
+// shared pipe-drain budget before Nextest's 120-second ceiling.
 const CARGO_DOC_ROUTE_STARTUP_BUDGET: Duration = Duration::from_secs(90);
 const CARGO_DOC_ROUTE_READY_BUDGET: Duration = Duration::from_secs(15);
 // The wrapper phase can cold-start a nested Soldr/daemon generation before
@@ -173,6 +175,7 @@ const CARGO_DOC_ROUTE_WRAPPER_BUDGET: Duration = Duration::from_secs(60);
 const CARGO_DOC_ROUTE_RUSTDOC_BUDGET: Duration = Duration::from_secs(15);
 const CARGO_DOC_ROUTE_HOLD_PHASE_BUDGET: Duration = Duration::from_secs(2);
 const CARGO_DOC_ROUTE_REAP_BUDGET: Duration = Duration::from_secs(5);
+const CARGO_DOC_ROUTE_EXECUTION_BUDGET: Duration = Duration::from_secs(105);
 const CARGO_DOC_ROUTE_POLL: Duration = Duration::from_millis(25);
 
 struct CargoDocRouteOutput {
@@ -186,6 +189,7 @@ struct CargoDocRouteTimeout {
     phase: CargoDocRoutePhase,
     phase_markers: Vec<String>,
     phase_elapsed: Duration,
+    total_elapsed: Duration,
     diagnostics: String,
 }
 
@@ -284,45 +288,52 @@ fn cargo_doc_route_phase(
     markers: &[String],
     hold_phase: Option<&str>,
 ) -> Result<CargoDocRoutePhase, String> {
-    let has_ready = markers.iter().any(|marker| marker == "route-ready");
-    let has_wrapper = markers.iter().any(|marker| {
-        marker == "before-wrapper"
-            || marker == "after-wrapper"
-            || marker.starts_with("before-wrapper ")
-    });
-    let has_rustdoc = markers.iter().any(|marker| {
-        marker == "before-rustdoc"
-            || marker == "after-rustdoc"
-            || marker.starts_with("before-rustdoc ")
-    });
+    const SEQUENCE: [&str; 5] = [
+        "route-ready",
+        "before-wrapper",
+        "after-wrapper",
+        "before-rustdoc",
+        "after-rustdoc",
+    ];
 
-    if (has_wrapper || has_rustdoc) && !has_ready {
-        return Err(format!(
-            "fixture advanced to wrapper/rustdoc without the required route-ready marker: {markers:?}"
-        ));
-    }
-    if has_rustdoc && !has_wrapper {
-        return Err(format!(
-            "fixture advanced to rustdoc without a wrapper transition: {markers:?}"
-        ));
-    }
-    if let Some(hold_phase) = hold_phase {
-        let hold_marker = format!("{hold_phase} hold-descendant=");
-        if markers
-            .iter()
-            .any(|marker| marker.starts_with(&hold_marker))
-        {
-            return Ok(CargoDocRoutePhase::InjectedHoldReady);
+    let mut next = 0;
+    let mut held = false;
+    for marker in markers {
+        if held {
+            return Err(format!(
+                "fixture advanced after the hold descendant marker: {markers:?}"
+            ));
         }
+        if SEQUENCE
+            .get(next)
+            .is_some_and(|expected| marker == expected)
+        {
+            next += 1;
+            continue;
+        }
+        if let Some(hold_phase) = hold_phase {
+            let hold_marker = format!("{hold_phase} hold-descendant=");
+            if marker.starts_with(&hold_marker) && next > 0 && SEQUENCE[next - 1] == hold_phase {
+                held = true;
+                continue;
+            }
+        }
+        let expected = SEQUENCE.get(next).copied().unwrap_or("route completion");
+        return Err(format!(
+            "fixture phase sequence expected {expected:?}, got {marker:?}: {markers:?}"
+        ));
     }
-    if has_rustdoc {
-        Ok(CargoDocRoutePhase::Rustdoc)
-    } else if has_wrapper {
-        Ok(CargoDocRoutePhase::Wrapper)
-    } else if has_ready {
-        Ok(CargoDocRoutePhase::RouteReady)
+
+    if held {
+        Ok(CargoDocRoutePhase::InjectedHoldReady)
     } else {
-        Ok(CargoDocRoutePhase::Startup)
+        Ok(match next {
+            0 => CargoDocRoutePhase::Startup,
+            1 => CargoDocRoutePhase::RouteReady,
+            2 | 3 => CargoDocRoutePhase::Wrapper,
+            4 | 5 => CargoDocRoutePhase::Rustdoc,
+            _ => unreachable!("fixed phase sequence bounds the cursor"),
+        })
     }
 }
 
@@ -417,6 +428,7 @@ fn timeout_cargo_doc_route(
         phase,
         phase_markers,
         phase_elapsed: phase_started.elapsed(),
+        total_elapsed: context.started.elapsed(),
         diagnostics,
     }))
 }
@@ -473,6 +485,7 @@ fn run_cargo_doc_route(route: CargoDocRoute<'_>) -> Result<CargoDocRouteResult, 
     let mut phase = CargoDocRoutePhase::Startup;
     let mut phase_started = started;
     let mut phase_deadline = phase_started + phase.budget();
+    let route_deadline = started + CARGO_DOC_ROUTE_EXECUTION_BUDGET;
     loop {
         let markers = cargo_doc_phase_markers(&read_route_log(log_path));
         let observed_phase = match cargo_doc_route_phase(&markers, hold_phase) {
@@ -507,7 +520,7 @@ fn run_cargo_doc_route(route: CargoDocRoute<'_>) -> Result<CargoDocRouteResult, 
             phase_started = Instant::now();
             phase_deadline = phase_started + phase.budget();
         }
-        if Instant::now() >= phase_deadline {
+        if Instant::now() >= route_deadline || Instant::now() >= phase_deadline {
             return timeout_cargo_doc_route(
                 &mut child,
                 CargoDocRouteTimeoutContext {
@@ -600,6 +613,33 @@ fn cargo_doc_route_phase_tracks_wrapper_then_rustdoc() {
 }
 
 #[test]
+fn cargo_doc_route_phase_rejects_skipped_marker() {
+    let markers = vec!["route-ready".to_string(), "after-wrapper".to_string()];
+    let error = cargo_doc_route_phase(&markers, None)
+        .expect_err("wrapper completion cannot skip its before-wrapper marker");
+    assert!(
+        error.contains("before-wrapper"),
+        "skipped-marker diagnostic should name the missing transition: {error}"
+    );
+}
+
+#[test]
+fn cargo_doc_route_phase_rejects_regression() {
+    let markers = vec![
+        "route-ready".to_string(),
+        "before-wrapper".to_string(),
+        "after-wrapper".to_string(),
+        "before-wrapper".to_string(),
+    ];
+    let error = cargo_doc_route_phase(&markers, None)
+        .expect_err("a repeated wrapper marker must not move the route backwards");
+    assert!(
+        error.contains("before-rustdoc"),
+        "regression diagnostic should name the next monotonic transition: {error}"
+    );
+}
+
+#[test]
 fn cargo_doc_route_hold_budget_waits_for_matching_descendant_marker() {
     let before_marker = vec!["route-ready".to_string(), "before-wrapper".to_string()];
     assert_eq!(
@@ -616,6 +656,17 @@ fn cargo_doc_route_hold_budget_waits_for_matching_descendant_marker() {
         .expect("matching descendant marker starts hold phase");
     assert_eq!(phase, CargoDocRoutePhase::InjectedHoldReady);
     assert_eq!(phase.budget(), CARGO_DOC_ROUTE_HOLD_PHASE_BUDGET);
+}
+
+#[test]
+fn cargo_doc_route_execution_budget_leaves_cleanup_headroom() {
+    assert!(
+        CARGO_DOC_ROUTE_EXECUTION_BUDGET
+            + CARGO_DOC_ROUTE_REAP_BUDGET
+            + CARGO_DOC_ROUTE_REAP_BUDGET
+            < Duration::from_secs(120),
+        "absolute execution deadline must leave root-reap and shared pipe-drain headroom below Nextest's 120-second ceiling"
+    );
 }
 
 fn expected_link_shim_path(dir: &Path, tool: &str) -> PathBuf {
@@ -788,6 +839,15 @@ fn assert_cargo_doc_held_phase(label: &str, args: &[&str], hold_phase: &str) {
                 + Duration::from_secs(5),
         "route {label} exceeded its hold-marker + cleanup budget ({:?})\n{}",
         timeout.phase_elapsed,
+        timeout.diagnostics
+    );
+    assert!(
+        timeout.total_elapsed
+            < CARGO_DOC_ROUTE_EXECUTION_BUDGET
+                + CARGO_DOC_ROUTE_REAP_BUDGET
+                + CARGO_DOC_ROUTE_REAP_BUDGET,
+        "route {label} exceeded its absolute execution + cleanup budget ({:?})\n{}",
+        timeout.total_elapsed,
         timeout.diagnostics
     );
 }
