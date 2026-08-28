@@ -773,7 +773,7 @@ mod tests {
             &mut command,
             "manager lookup",
             "manager-which",
-            InstallerWatchdogConfig::for_test(Duration::from_secs(3), Duration::from_secs(5)),
+            InstallerWatchdogConfig::for_test(Duration::from_secs(6), Duration::from_secs(10)),
         )
         .expect("installer watchdog must not apply the generic one-second silence budget");
         match prior {
