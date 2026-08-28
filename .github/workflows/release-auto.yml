@@ -875,6 +875,31 @@ jobs:
           uv run --no-project --python 3.13 .github/scripts/verify_pypi_wheels.py
           --version "$PYPI_VERSION"
 
+  # soldr#2972: source CI cannot prove that the public PyPI wheel resolves the
+  # lint-library nightly. Run the same fresh-home smoke after PyPI visibility
+  # has settled, before the terminal release result can turn green.
+  smoke-published-dylint:
+    name: Smoke published Dylint on Windows x64
+    needs:
+      - prepare
+      - publish-pypi
+    if: always() && needs.prepare.outputs.should_release == 'true' && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped')
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
+      - name: Install and exercise the published Dylint surface
+        shell: bash
+        run: uv run --no-project --python 3.13 ci/smoke_published_dylint.py --expected-version "${{ needs.prepare.outputs.version }}"
+
   publish-npm:
     name: Publish npm package
     needs:
@@ -952,11 +977,16 @@ jobs:
       - publish
       - verify_github_release
       - publish-pypi
+      - smoke-published-dylint
       - publish-npm
     if: always() && needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      - name: Require published Dylint smoke
+        if: needs.smoke-published-dylint.result != 'success'
+        shell: bash
+        run: exit 1
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       # soldr#2763: pin the interpreter this job's scripts run under. The
       # runner image's `python3` drifts per platform -- v0.9.3 died on macOS
