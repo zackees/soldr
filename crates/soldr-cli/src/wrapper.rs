@@ -557,7 +557,7 @@ fn try_publish_stdin_source(path: &std::path::Path, bytes: &[u8]) -> Result<bool
 }
 
 // Routing logic + `TargetTouchPath` live in `wrapper_target.rs` so the
-// integration tests in `tests/cli_wrapper_perf.rs` can drive
+// integration tests in `tests/cargo_front_door/cli_wrapper_perf.rs` can drive
 // `record_target_dir_in_registry` in-process via the lib's
 // `pub mod wrapper_target;` declaration. Re-exported here so existing
 // bin-side call sites in this file keep working unchanged.

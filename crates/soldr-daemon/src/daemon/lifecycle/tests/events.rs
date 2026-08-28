@@ -45,7 +45,8 @@ mod lifecycle_event_tests {
     // soldr#1808 requires extending this log "without breaking readers that
     // ignore unknown fields". The stricter property is the one worth pinning:
     // a record with no attribution must serialize exactly as it did before,
-    // because `tests/cli_daemon_lifecycle.rs` matches the raw substring
+    // because `crates/soldr-cli/tests/daemon/cli_daemon_lifecycle.rs`
+    // matches the raw substring
     // `"event":"spawn"` rather than parsing. Absent fields must vanish, not
     // appear as nulls.
     #[test]

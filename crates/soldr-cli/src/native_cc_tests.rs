@@ -283,7 +283,7 @@ fn inject_sets_cc_cxx_and_known_wrapper_when_default_on() {
     // its inherited env. Simpler still: just verify the function
     // didn't error and that the side-effects-on-state behave
     // correctly via the unit tests below. End-to-end coverage is
-    // the integration test under tests/cli_cargo_native_cc.rs.
+    // the integration test under tests/cargo_front_door/cli_cargo_native_cc.rs.
 }
 
 #[test]

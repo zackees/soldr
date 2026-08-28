@@ -23,7 +23,7 @@
 //
 // Detection takes its inputs as arguments rather than reading the process
 // environment, so the tests never mutate a shared variable. That is not
-// incidental tidiness: `tests/env_lock_lint.rs` requires every mutated
+// incidental tidiness: `tests/guards/env_lock_lint.rs` requires every mutated
 // variable to sit under a single barrier, and `RUSTFLAGS` is already mutated
 // under two others. A pure core sidesteps the question — only
 // [`requested_crt_linkage`] touches the environment, and it does nothing but

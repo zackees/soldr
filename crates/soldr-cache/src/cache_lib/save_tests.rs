@@ -311,7 +311,8 @@ fn profile_line_handles_empty_latencies() {
 // whose parent path conflicts with a pre-existing regular file makes
 // create_dir_all fail. Gives us a deterministic, OS-agnostic failure
 // injection without patching production code. The first-error-wins
-// semantic is exercised end-to-end in tests/save_roundtrip.rs.
+// semantic is exercised end-to-end in
+// crates/soldr-cli/tests/toolchain_env/save_roundtrip.rs.
 #[test]
 fn extract_one_returns_error_with_failing_path() {
     let tmp = tempfile::tempdir().unwrap();

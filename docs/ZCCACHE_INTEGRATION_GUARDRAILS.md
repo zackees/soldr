@@ -29,19 +29,26 @@ new work.
 Run these hard gates for zccache integration refactor waves:
 
 ```powershell
-soldr --no-cache cargo nextest run -p soldr-cli --test no_standalone_spawn_lint
-soldr --no-cache cargo nextest run -p soldr-cli --test zccache_trampoline_gate
-soldr --no-cache cargo nextest run -p soldr-cli --test cli_cargo_wrappers
-soldr --no-cache cargo nextest run -p soldr-cli --test cli_rust_plan
-soldr --no-cache cargo nextest run -p soldr-cli --test cli_cache
+soldr --no-cache cargo nextest run -p soldr-cli --test guards -E 'test(/^no_standalone_spawn_lint::/)'
+soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^zccache_trampoline_gate::/)'
+soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^cli_cargo_wrappers::/)'
+soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^cli_rust_plan::/)'
+soldr --no-cache cargo nextest run -p soldr-cli --test cache_gc -E 'test(/^cli_cache::/)'
 soldr --no-cache cargo nextest run -p soldr-cli --lib cache::session::tests
 soldr --no-cache cargo nextest run -p soldr-cli --lib native_cc::tests
-soldr --no-cache cargo nextest run -p soldr-cli --test cli_cargo_native_cc
-soldr --no-cache cargo nextest run -p soldr-cli --test cli_wrapper_perf
-soldr --no-cache cargo nextest run -p soldr-cli --test no_timed_test_guard
+soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^cli_cargo_native_cc::/)'
+soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^cli_wrapper_perf::/)'
+soldr --no-cache cargo nextest run -p soldr-cli --test guards -E 'test(/^no_timed_test_guard::/)'
 uv run --no-sync pytest tests/test_zccache_integration_guardrails.py tests/test_zccache_runtime_contract.py tests/test_setup_soldr_action.py tests/test_setup_soldr_exporter.py tests/test_setup_soldr_ensure_soldr.py -q
 node scripts/test-npm-package.js
 ```
+
+Since soldr#2934 the soldr-cli integration tests are grouped into a handful of
+category targets (`guards`, `cargo_front_door`, `cache_gc`, …) whose sibling
+`.rs` files are modules of that one target. `--test <category>` therefore
+selects the whole category, so each guardrail command pairs it with an
+`-E 'test(/^<module>::/)'` filter that narrows the run back down to the single
+module the guardrail owns.
 
 Run these report-only canaries when a wave touches performance-sensitive
 zccache behavior:

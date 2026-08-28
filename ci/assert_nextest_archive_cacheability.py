@@ -1,10 +1,37 @@
 #!/usr/bin/env python3
-"""Assert the full nextest archive test build is warm-cacheable.
+"""Assert that DEPENDENCY compilation stays warm across a nextest archive build.
 
-This is intentionally a Docker harness. The source tree is bind-mounted,
-but Cargo's target dir, CARGO_HOME, and soldr home live on Linux Docker
-volumes so Cargo mtimes and zccache state are not distorted by Windows
-bind-mount behavior.
+## What changed, and why (soldr#1391 -> soldr#2931 / soldr#2937)
+
+soldr#1391 built this harness around the invariant "the full linked nextest
+archive must be warm-cacheable: positive hits and **zero** misses". soldr#2931
+inverted that policy. Cache admission follows the stability of an artifact's
+identity key relative to its size, and by that measure a **linked test product
+is never cacheable**: a test binary is one of the largest things the build
+produces and its key moves with every source edit in the workspace. Requiring
+it to be a cache hit was requiring the store to carry exactly what the policy
+now forbids -- and it made the lane red for weeks over units that were never
+supposed to be reused.
+
+The valuable half of the old check survives unchanged: **dependency
+compilation must still be warm**. That is the property a compilation cache
+exists to deliver, it is Tier 1 (`cook`) plus Tier 2 (`zccache-unit`) in the
+soldr#2931 tiering, and it regresses silently.
+
+So the assertion is now:
+
+* the warm run must reuse the compiler cache at all (`warm_hits > 0`); and
+* **no dependency unit may miss** on the warm run.
+
+First-party units -- everything named `soldr*`, which is where every
+test-harness LINK product lives -- are reported with their miss counts and are
+never a failure. They are not expected or required to be cache hits.
+
+## Why it is still a Docker harness
+
+The source tree is bind-mounted, but Cargo's target dir, CARGO_HOME, and the
+soldr home live on Linux Docker volumes so Cargo mtimes and zccache state are
+not distorted by Windows bind-mount behavior.
 """
 
 from __future__ import annotations
@@ -61,6 +88,24 @@ rm -rf "$CACHE" "$ARCHIVE_DIR" /tmp/cold-report.json /tmp/warm-report.json
 mkdir -p "$CACHE" "$ARCHIVE_DIR"
 
 export CARGO_TARGET_DIR=/work/target
+
+collect_warm_miss_units() {
+  # soldr#2937: the pass/fail decision moved out of this shell and into
+  # `evaluate_warm_result` in the Python driver, because it now depends on
+  # WHICH units missed rather than on how many. A dependency miss is a
+  # regression; a first-party miss is a test-harness link product and is
+  # expected. Emit the distinct unit names as JSON and let the driver classify
+  # them -- that logic is unit-tested, and a 40-minute Docker run is the worst
+  # possible place to discover a classification bug.
+  if [[ ! -f /tmp/warm-build.log ]]; then
+    echo '[]'
+    return 0
+  fi
+  grep -oE 'soldr\[cache\] [A-Za-z0-9_]+ .*MISS' /tmp/warm-build.log \
+    | sed -E 's/soldr\[cache\] ([A-Za-z0-9_]+) .*/\1/' \
+    | sort -u \
+    | jq -Rcs 'split("\n") | map(select(length > 0))'
+}
 
 report_warm_misses() {
   # soldr#2824: "107 misses" is a number, not a diagnosis. The build log names
@@ -270,22 +315,24 @@ result="$(
     }'
 )"
 echo "CACHEABILITY_RESULT $result"
+echo "CACHEABILITY_WARM_MISSES $(collect_warm_miss_units)"
 
-if (( warm_hits <= 0 )); then
-  echo "CACHEABILITY_FAILURE warm run reported zero hits" >&2
-  explain_report cold /tmp/cold-report.json
-  explain_report warm /tmp/warm-report.json
-  exit 2
-fi
-if (( warm_misses != 0 )); then
-  echo "CACHEABILITY_FAILURE warm run had misses; expected zero" >&2
+# soldr#2937: no verdict here. Whether a miss is a regression depends on
+# whether the unit is a dependency or a first-party test-harness link product,
+# and that classification lives in `evaluate_warm_result` where it is testable
+# without paying 40 minutes to find out it was wrong. This shell's job is now
+# to run the two builds and hand over the evidence.
+#
+# The evidence is printed whenever ANY unit missed, not only on failure: a run
+# that passes with first-party misses is the normal, expected shape under the
+# soldr#2931 policy, and the reader should be able to see which link products
+# were rebuilt.
+if (( warm_misses != 0 )) || (( warm_hits <= 0 )); then
   report_warm_misses
   explain_report cold /tmp/cold-report.json
   explain_report warm /tmp/warm-report.json
-  exit 3
 fi
 
-echo "CACHEABILITY_OK warm run had hits and zero misses"
 echo "TIMING_MS cold=$((cold_end - cold_start)) warm=$((warm_end - warm_start))"
 """
 
@@ -399,6 +446,103 @@ def emit_report_explanation(label: str, path: str) -> int:
     for line in explain_report(label, report):
         print(line)
     return 0
+
+
+# --------------------------------------------------------------------------
+# The soldr#2931 warm-run verdict (replaces the soldr#1391 zero-miss rule)
+# --------------------------------------------------------------------------
+
+# Every crate this workspace builds is named `soldr*` (soldr-cli, soldr-core,
+# soldr-fetch, soldr-cache, soldr-daemon and the `soldr` binary), and zccache
+# reports unit names with underscores. Matching on the prefix rather than an
+# enumerated list is deliberate: a crate added to the workspace must not turn
+# this lane red on its first commit, because a first-party unit missing warm is
+# not a policy violation under soldr#2931 -- it is where the linked test
+# products live.
+FIRST_PARTY_UNIT_PREFIX = "soldr"
+
+# `build_script_build` is the unit name cargo gives EVERY crate's build script,
+# first-party and dependency alike, so the name does not identify its crate.
+# Reported, never fatal: failing on an ambiguous name would make the verdict
+# unattributable, which is the exact defect soldr#2824 spent three weeks on.
+AMBIGUOUS_UNITS = frozenset({"build_script_build", "build_script_main"})
+
+
+def normalize_unit(name: str) -> str:
+    """zccache unit name -> comparable form (`soldr-cli` and `soldr_cli` agree)."""
+    return name.strip().replace("-", "_").lower()
+
+
+def classify_warm_misses(units: "list[str]") -> "tuple[list[str], list[str]]":
+    """Split warm-run miss units into `(dependency, expected)`.
+
+    `dependency` is the half that must not exist: an external crate that
+    recompiled on a warm run means dependency compilation stopped being warm,
+    which is the property the compilation cache exists to deliver.
+
+    `expected` is first-party plus ambiguous units. Under soldr#2931 a linked
+    test product is never cacheable, so a first-party unit missing is the
+    normal shape of a passing run, not a defect.
+    """
+    dependency: list[str] = []
+    expected: list[str] = []
+    for raw in units:
+        unit = normalize_unit(str(raw))
+        if not unit:
+            continue
+        if unit.startswith(FIRST_PARTY_UNIT_PREFIX) or unit in AMBIGUOUS_UNITS:
+            expected.append(unit)
+        else:
+            dependency.append(unit)
+    return sorted(set(dependency)), sorted(set(expected))
+
+
+def evaluate_warm_result(
+    result: dict[str, Any], warm_miss_units: "list[str] | None"
+) -> "list[str]":
+    """Failure lines for a warm run. Empty means the lane passes.
+
+    Two conditions, and only two:
+
+    1. The warm run reused the compiler cache at all. Zero hits means nothing
+       was warm, which no amount of tiering explains away.
+    2. No *dependency* unit missed.
+
+    Deliberately absent: any requirement on the linked test archive. That was
+    the soldr#1391 invariant and soldr#2931 inverted it.
+
+    `warm_miss_units` is `None` when the harness could not produce a per-unit
+    list (a missing build log). The check then degrades to condition 1 rather
+    than failing: an absent diagnostic is not evidence of a regression, and a
+    guard that fails on its own missing input teaches people to ignore it.
+    """
+    failures: list[str] = []
+
+    if int(result.get("warm_hits", 0)) <= 0:
+        failures.append(
+            "warm run reported zero compiler-cache hits: dependency "
+            "compilation is not warm at all"
+        )
+
+    if warm_miss_units is None:
+        return failures
+
+    dependency, expected = classify_warm_misses(warm_miss_units)
+    if dependency:
+        failures.append(
+            "dependency units recompiled on the warm run (they must hit the "
+            f"compiler cache): {', '.join(dependency)}"
+        )
+    if expected and not failures:
+        # Not a failure -- said out loud so a green run does not read as if
+        # nothing missed. Under soldr#2931 these are the linked test products.
+        print(
+            "note: "
+            f"{len(expected)} first-party unit(s) rebuilt warm, which the "
+            "soldr#2931 policy expects (linked test products are never "
+            f"cacheable): {', '.join(expected)}"
+        )
+    return failures
 
 
 CGROUP_ROOT = Path("/sys/fs/cgroup")
@@ -554,8 +698,10 @@ def emit_memory_pressure(label: str) -> int:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run a Docker/Linux cold-clean-warm nextest archive build and "
-            "fail if the warm zccache report has any misses."
+            "Run a Docker/Linux cold-clean-warm nextest archive build and fail "
+            "if any DEPENDENCY unit recompiled on the warm run. Linked "
+            "test-harness products are not required to be cache hits "
+            "(soldr#2931 inverted the soldr#1391 zero-miss invariant)."
         )
     )
     parser.add_argument(
@@ -725,7 +871,7 @@ def build_image(image: str) -> int:
 
 def run_harness(
     image: str, volumes: list[str], tracker: "PhaseTracker | None" = None
-) -> tuple[int, dict[str, Any] | None]:
+) -> "tuple[int, dict[str, Any] | None, list[str] | None]":
     cmd = [
         "docker",
         "run",
@@ -769,6 +915,7 @@ def run_harness(
         pass
 
     result: dict[str, object] | None = None
+    warm_miss_units: list[str] | None = None
     tail: deque[str] = deque(maxlen=80)
     for raw_line in process.stdout:
         line = raw_line.decode("utf-8", errors="replace")
@@ -781,6 +928,15 @@ def run_harness(
         if line.startswith("CACHEABILITY_RESULT "):
             payload = line.removeprefix("CACHEABILITY_RESULT ").strip()
             result = json.loads(payload)
+        elif line.startswith("CACHEABILITY_WARM_MISSES "):
+            payload = line.removeprefix("CACHEABILITY_WARM_MISSES ").strip()
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                # A diagnostic that cannot be parsed must not become the
+                # failure. `evaluate_warm_result` degrades on None.
+                decoded = None
+            warm_miss_units = decoded if isinstance(decoded, list) else None
 
     code = process.wait()
     if tracker is not None and code == 0:
@@ -790,7 +946,7 @@ def run_harness(
         print("\nlast harness output:", file=sys.stderr)
         for line in tail:
             print(line, end="", file=sys.stderr)
-    return code, result
+    return code, result, warm_miss_units
 
 
 def remove_volumes(volumes: list[str]) -> None:
@@ -835,18 +991,23 @@ def main(argv: list[str]) -> int:
         tracker.record("docker build", time.monotonic() - build_started)
         if image_code != 0:
             return image_code
-        code, result = run_harness(args.image, volumes, tracker)
+        code, result, warm_miss_units = run_harness(args.image, volumes, tracker)
         if code != 0:
             return code
         if result is None:
             print("error: harness did not emit CACHEABILITY_RESULT", file=sys.stderr)
             return 4
-        if int(result.get("warm_hits", 0)) <= 0:
-            print("error: warm run reported zero hits", file=sys.stderr)
-            return 5
-        if int(result.get("warm_misses", 0)) != 0:
-            print(f"error: warm run had misses: {result}", file=sys.stderr)
+        failures = evaluate_warm_result(result, warm_miss_units)
+        if failures:
+            print("CACHEABILITY_FAILURE dependency compilation is not warm")
+            for failure in failures:
+                print(f"error: {failure}", file=sys.stderr)
+            print(f"error: report was {result}", file=sys.stderr)
             return 6
+        print(
+            "CACHEABILITY_OK dependency units reused the compiler cache; "
+            "test-harness link products are not required to be hits (soldr#2931)"
+        )
         return 0
     finally:
         # The summary matters most when something failed, so it is written

@@ -1,3 +1,14 @@
+# Warm-dependency cacheability across a full nextest archive build.
+#
+# soldr#2937 (phase 5 of soldr#2931) replaced the invariant this lane used to
+# assert. soldr#1391 required the full LINKED test archive to be warm-cacheable
+# at positive hits and zero misses; soldr#2931 inverted that -- a linked test
+# product is never cacheable, because its identity key moves with every source
+# edit while its size is among the largest the build produces.
+#
+# What is asserted now is the half that was always valuable: on a warm rebuild,
+# dependency compilation units must hit the compiler cache. Test-harness LINK
+# products are reported and are explicitly NOT required to be hits.
 name: Nextest Cacheability
 
 on:
@@ -36,7 +47,7 @@ concurrency:
 
 jobs:
   nextest-cacheability:
-    name: full nextest archive warm cacheability
+    name: warm dependency cacheability across a nextest archive build
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -55,5 +66,5 @@ jobs:
       # This pins the interpreter that drives the harness. The harness then
       # runs its build INSIDE a container, and the `python3` in that container
       # is the image's own -- pinned by the Dockerfile, not by this step.
-      - name: Assert zero warm misses
+      - name: Assert dependency compilation stays warm
         run: uv run --no-project --python 3.13 python ci/assert_nextest_archive_cacheability.py

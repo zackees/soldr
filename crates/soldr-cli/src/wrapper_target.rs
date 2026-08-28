@@ -18,7 +18,7 @@
 //! rather than opening standalone telemetry connections (soldr#1537).
 //!
 //! Lives in its own module so the lib tree exposes it for the
-//! integration tests under `tests/cli_wrapper_perf.rs` without
+//! integration tests under `tests/cargo_front_door/cli_wrapper_perf.rs` without
 //! dragging the full `wrapper.rs` (which depends on bin-only modules)
 //! into the lib's compile.
 

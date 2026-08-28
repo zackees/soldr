@@ -52,6 +52,13 @@ pub(crate) async fn freeze(
         .join(&dylint_key);
     let dylint_analysis = target_root.join("dylint").join("target").join(&dylint_key);
     let dylint_tests = target_root.join("dylint").join("tests").join(&dylint_key);
+    // soldr#2936: the census is taken while the plan is frozen, i.e. before a
+    // single stage compiles, so a workspace that is about to link 98 test
+    // binaries says so up front rather than after the disk is gone. Reading
+    // the filesystem (not `cargo metadata`) keeps it in the same idiom as the
+    // manifest and `.cargo/config.toml` reads above, and costs no subprocess.
+    let test_target_count = super::test_targets::count_workspace_test_targets(&root);
+    let test_target_warn_threshold = super::test_targets::warn_threshold();
     let scope_args = invocation.scope.cargo_args();
     let mut stages = Vec::new();
     let mut fmt = vec!["fmt".into()];
@@ -303,6 +310,8 @@ pub(crate) async fn freeze(
             soldr_jobs: Some(soldr_jobs),
             nextest_test_threads: Some(nextest_test_threads),
         },
+        test_target_count,
+        test_target_warn_threshold,
         dylint_target_trees: DylintTargetTrees {
             libraries: dylint_libraries.display().to_string(),
             analysis: dylint_analysis.display().to_string(),
