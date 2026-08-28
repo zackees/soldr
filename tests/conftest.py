@@ -40,6 +40,23 @@ def load_script_module(path: str | Path, name: str | None = None) -> ModuleType:
     return module
 
 
+def write_fake_soldr_console(venv: Path, *, windows: bool) -> Path:
+    """Materialize the platform's virtualenv console-script location."""
+
+    console = (
+        venv / ("Scripts" if windows else "bin") / ("soldr.exe" if windows else "soldr")
+    )
+    console.parent.mkdir(parents=True, exist_ok=True)
+    console.write_bytes(b"")
+    return console
+
+
+def uv_pip_install_command(venv: Path, *packages: str) -> list[str]:
+    """Build the exact pip-install argv used by isolated wheel smoke doubles."""
+
+    return ["uv", "pip", "install", "--python", str(venv), *packages]
+
+
 # Release scripts are standalone modules, but several share this module. Load it
 # once during test collection so their direct sibling import resolves under the
 # importlib-based test loader too.

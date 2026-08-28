@@ -6,7 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from conftest import load_script_module
+from conftest import (
+    load_script_module,
+    uv_pip_install_command,
+    write_fake_soldr_console,
+)
 
 REPO_ROOT = Path(__file__).parents[1]
 SCRIPTS = REPO_ROOT / ".github" / "scripts"
@@ -20,7 +24,9 @@ def test_collect_wheels_rejects_an_empty_dist(tmp_path: Path) -> None:
         smoke.collect_wheels(tmp_path)
 
 
-def test_console_script_supports_unix_and_windows_virtualenv_layouts(tmp_path: Path) -> None:
+def test_console_script_supports_unix_and_windows_virtualenv_layouts(
+    tmp_path: Path,
+) -> None:
     unix = tmp_path / "unix"
     unix_bin = unix / "bin" / "soldr"
     unix_bin.parent.mkdir(parents=True)
@@ -42,13 +48,17 @@ def test_version_contract_rejects_stub_or_wrong_json_payload() -> None:
     assert smoke.version_json_problem('{"soldr_version":"0.0.1"}', "0.9.2") is not None
 
 
-def test_cli_probe_failure_keeps_the_wheel_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_probe_failure_keeps_the_wheel_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     command = ["soldr", "version", "--json"]
 
     def failed_run(observed: list[str], **kwargs: object) -> SimpleNamespace:
         assert observed == command
         assert kwargs["capture_output"] is True
-        raise smoke.subprocess.CalledProcessError(1, observed, output="", stderr="loader error")
+        raise smoke.subprocess.CalledProcessError(
+            1, observed, output="", stderr="loader error"
+        )
 
     monkeypatch.setattr(smoke.subprocess, "run", failed_run)
 
@@ -72,10 +82,8 @@ def test_smoke_installs_all_wheels_and_exercises_both_cli_paths(
         calls.append((command, kwargs))
         if command[:2] == ["uv", "venv"]:
             return SimpleNamespace(stdout="")
-        if command[:3] == ["uv", "pip", "install"]:
-            soldr = venv / "bin" / "soldr"
-            soldr.parent.mkdir(parents=True)
-            soldr.write_bytes(b"")
+        if command == uv_pip_install_command(venv, str(first), str(second)):
+            write_fake_soldr_console(venv, windows=False)
             return SimpleNamespace(stdout="")
         if command[-1] == "--version":
             return SimpleNamespace(stdout="soldr 0.9.2\n")
@@ -88,7 +96,7 @@ def test_smoke_installs_all_wheels_and_exercises_both_cli_paths(
     smoke.smoke_wheel(expected_version="v0.9.2", dist=dist, venv=venv)
 
     assert calls[0][0] == ["uv", "venv", str(venv)]
-    assert calls[1][0] == ["uv", "pip", "install", "--python", str(venv), str(first), str(second)]
+    assert calls[1][0] == uv_pip_install_command(venv, str(first), str(second))
     assert calls[2][0] == [str(venv / "bin" / "soldr"), "--version"]
     assert calls[3][0] == [str(venv / "bin" / "soldr"), "version", "--json"]
 

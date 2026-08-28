@@ -4,17 +4,33 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from conftest import load_script_module
+from conftest import (
+    load_script_module,
+    uv_pip_install_command,
+    write_fake_soldr_console,
+)
 
 ROOT = Path(__file__).parents[1]
 SCRIPTS = ROOT / ".github" / "scripts"
 PUBLISHED_WORKFLOW = ROOT / ".github" / "workflows" / "published-dylint-smoke.yml"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release-auto.yml"
+PUBLISHED_SMOKE_TRIGGER_PATHS = (
+    "ci/smoke_published_dylint.py",
+    "dylints/**",
+    "crates/soldr-cli/src/dylint_*.rs",
+    "crates/soldr-cli/src/soldr_main.rs",
+    "crates/soldr-cli/src/cargo_front_door/**",
+    ".github/scripts/check_dylint_driver_assets.py",
+    ".github/workflows/published-dylint-smoke.yml",
+    ".github/workflows/release-auto.yml",
+    "tests/test_smoke_published_dylint.py",
+)
 load_script_module(SCRIPTS / "catalogue_http.py", "catalogue_http")
 load_script_module(SCRIPTS / "toolchain_asset_query.py", "toolchain_asset_query")
 load_script_module(
@@ -98,37 +114,44 @@ def test_smoke_installs_exact_wheel_and_proves_version_channel_and_driver(
     venv = tmp_path / "venv"
     state = tmp_path / "state"
     calls: list[list[str]] = []
+    soldr = venv / "Scripts" / "soldr.exe"
+    probe = smoke.driver_probe_command(
+        soldr,
+        repo_root=repo,
+        manifest=state / "driver-probe" / "Cargo.toml",
+    )
 
-    def fake_run(command, **kwargs):
+    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
         calls.append(command)
-        if command[:2] == ["uv", "pip"]:
-            binary = venv / "Scripts" / "soldr.exe"
-            binary.parent.mkdir(parents=True)
-            binary.write_bytes(b"")
-        if command[-2:] == ["version", "--json"]:
+        if "--list" in command:
+            raise AssertionError("published cargo-dylint 6 rejects deprecated --list")
+        if command == ["uv", "venv", "--clear", str(venv)]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command == uv_pip_install_command(
+            venv, "--only-binary=:all:", "soldr==0.9.11"
+        ):
+            write_fake_soldr_console(venv, windows=True)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command == [str(soldr), "version", "--json"]:
             return SimpleNamespace(
                 returncode=0, stdout=json.dumps({"soldr_version": "0.9.11"}), stderr=""
             )
-        if command[-2:] == ["dylint", "prepare"]:
+        if command == [str(soldr), "dylint", "prepare"]:
             return SimpleNamespace(
                 returncode=0, stdout="", stderr="channel nightly-2026-05-28"
             )
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command == probe:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected published-Dylint command: {command}")
 
     monkeypatch.setattr(smoke.subprocess, "run", fake_run)
     smoke.smoke(version="0.9.11", repo_root=repo, venv=venv, state_root=state)
     assert calls[0] == ["uv", "venv", "--clear", str(venv)]
-    assert calls[1] == [
-        "uv",
-        "pip",
-        "install",
-        "--python",
-        str(venv),
-        "--only-binary=:all:",
-        "soldr==0.9.11",
-    ]
+    assert calls[1] == uv_pip_install_command(
+        venv, "--only-binary=:all:", "soldr==0.9.11"
+    )
     assert calls[-1] == [
-        str(venv / "Scripts" / "soldr.exe"),
+        str(soldr),
         "dylint",
         "--manifest-path",
         str(state / "driver-probe" / "Cargo.toml"),
@@ -192,8 +215,23 @@ def test_smoke_rejects_wrong_binary_version_or_channel(
 def test_windows_monitor_and_release_gate_orchestrate_the_tested_script() -> None:
     monitor = PUBLISHED_WORKFLOW.read_text(encoding="utf-8")
     release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    for trigger in ("branches: [main]", "schedule:", "workflow_dispatch:"):
+    for trigger in (
+        "branches: [main]",
+        "pull_request:",
+        "schedule:",
+        "workflow_dispatch:",
+    ):
         assert trigger in monitor
+    for trigger in ("push", "pull_request"):
+        match = re.search(
+            rf"^  {trigger}:\n(?:    branches: \[main\]\n)?    paths:\n(?P<paths>(?:      - '[^']+'\n)+)",
+            monitor,
+            flags=re.MULTILINE,
+        )
+        assert match is not None, f"{trigger} must path-filter the published smoke"
+        assert tuple(re.findall(r"'([^']+)'", match.group("paths"))) == (
+            PUBLISHED_SMOKE_TRIGGER_PATHS
+        )
     assert "runs-on: windows-2025" in monitor
     assert "ci/smoke_published_dylint.py" in monitor
     assert "python-version: '3.13'" in monitor

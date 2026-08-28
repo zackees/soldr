@@ -171,7 +171,7 @@ def run(
     """Run a probe with output retained in the failure explaining it."""
 
     completed = subprocess.run(
-        command, cwd=cwd, env=env, text=True, capture_output=True
+        command, cwd=cwd, env=env, text=True, capture_output=True, check=False
     )
     if completed.returncode:
         output = "\n".join(

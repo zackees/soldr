@@ -7,8 +7,23 @@ on:
       - 'ci/smoke_published_dylint.py'
       - 'dylints/**'
       - 'crates/soldr-cli/src/dylint_*.rs'
+      - 'crates/soldr-cli/src/soldr_main.rs'
+      - 'crates/soldr-cli/src/cargo_front_door/**'
       - '.github/scripts/check_dylint_driver_assets.py'
       - '.github/workflows/published-dylint-smoke.yml'
+      - '.github/workflows/release-auto.yml'
+      - 'tests/test_smoke_published_dylint.py'
+  pull_request:
+    paths:
+      - 'ci/smoke_published_dylint.py'
+      - 'dylints/**'
+      - 'crates/soldr-cli/src/dylint_*.rs'
+      - 'crates/soldr-cli/src/soldr_main.rs'
+      - 'crates/soldr-cli/src/cargo_front_door/**'
+      - '.github/scripts/check_dylint_driver_assets.py'
+      - '.github/workflows/published-dylint-smoke.yml'
+      - '.github/workflows/release-auto.yml'
+      - 'tests/test_smoke_published_dylint.py'
   schedule:
     - cron: '17 9 * * 1'
   workflow_dispatch:
