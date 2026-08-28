@@ -15,6 +15,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "target_run_add_target.py"
 TARGET_RUN = REPO_ROOT / ".github" / "workflows" / "_ci-target-run.yml"
 CI = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+MACOS_RECOVERY_REPLAY = (
+    REPO_ROOT / ".github" / "workflows" / "macos-recovery-replay.yml"
+)
 TARGET = "wasm32-wasip1-threads"
 REQUIRED_ENV = "SOLDR_REQUIRE_WASM32_WASIP1_THREADS_MATERIALIZATION"
 
@@ -86,13 +89,15 @@ def test_authoritative_target_run_provisions_and_enforces_the_wasm_target() -> N
         == "Provision Wasm target for materialization regression (soldr#2919)"
     )
     assert step["if"] == "${{ inputs.require_wasm32_wasip1_threads_materialization }}"
-    assert "target_run_add_target.py" in step["run"]
-    assert '"$SOLDR_BIN"' in step["run"]
-    assert '"$RUSTUP_TOOLCHAIN"' in step["run"]
-    assert TARGET in step["run"]
+    run = step["run"]
+    assert isinstance(run, str)
+    assert "target_run_add_target.py" in run
+    assert '"$SOLDR_BIN"' in run
+    assert '"$RUSTUP_TOOLCHAIN"' in run
+    assert TARGET in run
 
 
-def test_linux_and_windows_replays_opt_in_but_macos_does_not() -> None:
+def test_linux_and_windows_replays_opt_in_but_darwin_does_not() -> None:
     workflow = CI.read_text(encoding="utf-8")
     required_jobs = (
         "e2e-linux-arm64",
@@ -104,9 +109,29 @@ def test_linux_and_windows_replays_opt_in_but_macos_does_not() -> None:
     for job in required_jobs:
         block = job_block(workflow, job)
         assert "require_wasm32_wasip1_threads_materialization: true" in block
-    for job in ("e2e-macos-x64", "e2e-macos-arm64"):
-        block = job_block(workflow, job)
-        assert "require_wasm32_wasip1_threads_materialization" not in block
+
+    # soldr#3116 moved the only darwin *replay* out of ci.yml into
+    # macos-recovery-replay.yml, leaving ci.yml with build-only darwin lanes.
+    # Assert the property rather than a fixed job list: no lane that targets
+    # apple-darwin may provision the Wasm target, wherever that lane lives.
+    # A Recovery guest boots fresh per script and provisions its own
+    # toolchain, so mutating rustup state there buys nothing.
+    for path in (CI, MACOS_RECOVERY_REPLAY):
+        text = path.read_text(encoding="utf-8")
+        for job in darwin_jobs(text):
+            block = job_block(text, job)
+            assert (
+                "require_wasm32_wasip1_threads_materialization" not in block
+            ), f"{path.name}:{job} must not provision {TARGET}"
+
+
+def darwin_jobs(workflow: str) -> list[str]:
+    document = yaml.safe_load(workflow)
+    return [
+        name
+        for name, job in document["jobs"].items()
+        if "apple-darwin" in str(job.get("with", {}).get("target", ""))
+    ]
 
 
 def job_block(workflow: str, job: str) -> str:
