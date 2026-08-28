@@ -2,6 +2,52 @@
 //! production-source ceiling.
 
 use super::*;
+use std::io::{Read, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+/// A test-only peer that accepts a frame but closes before acknowledging it.
+///
+/// This lives in the daemon client's unit-test binary because the connector
+/// seam is a process-global `OnceLock`. Installing it in the consolidated
+/// daemon integration target made plain workspace tests route sibling tests
+/// to this silent peer instead of their real daemon (soldr#2955).
+struct SilentPeer {
+    written: Arc<AtomicUsize>,
+}
+
+struct SilentStream {
+    written: Arc<AtomicUsize>,
+}
+
+impl Read for SilentStream {
+    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        Ok(0)
+    }
+}
+
+impl Write for SilentStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.written.fetch_add(buf.len(), Ordering::SeqCst);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl ControlConnector for SilentPeer {
+    fn connect(
+        &self,
+        _endpoint_marker: &std::path::Path,
+        _timeout: Duration,
+    ) -> std::io::Result<BoxedControlStream> {
+        Ok(Box::new(SilentStream {
+            written: Arc::clone(&self.written),
+        }))
+    }
+}
 
 #[test]
 fn shutdown_compat_starts_with_the_immediately_previous_protocol() {
@@ -27,6 +73,35 @@ fn reply_timeout_env_override_fails_fast() {
     // #1364: an operator can opt into a short fail-fast budget.
     assert_eq!(parse_reply_timeout(Some("30")), Duration::from_secs(30));
     assert_eq!(parse_reply_timeout(Some("  5 ")), Duration::from_secs(5));
+}
+
+/// A missing receipt acknowledgement is diagnostic-only on the wrapper hot
+/// path: old daemons and a peer that disappears after accepting the frame must
+/// not turn a target touch into a hard compiler failure.
+#[test]
+fn a_peer_that_never_acks_is_still_a_successful_submit() {
+    let written = Arc::new(AtomicUsize::new(0));
+    install_control_connector(Arc::new(SilentPeer {
+        written: Arc::clone(&written),
+    }))
+    .expect("the daemon client unit-test process owns this connector seam");
+
+    let result = submit_fire_and_forget(
+        std::path::Path::new("endpoint-marker-unused-by-the-override"),
+        &Request::RecordTargetTouch {
+            path: "/some/workspace/target".to_string(),
+            unix_seconds: 1_700_000_000,
+        },
+    );
+
+    assert!(
+        result.is_ok(),
+        "a missing ack must stay best-effort, not become an error: {result:?}"
+    );
+    assert!(
+        written.load(Ordering::SeqCst) > 0,
+        "the request frame should still have been written to the peer"
+    );
 }
 
 // ---- soldr#2844 follow-up: the missing-ack line must be sayable -------------
