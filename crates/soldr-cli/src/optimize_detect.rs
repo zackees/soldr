@@ -6,11 +6,9 @@
 
 use std::{
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::Command,
     time::Duration,
 };
-
-use wait_timeout::ChildExt;
 
 pub(crate) use crate::defender::find_powershell;
 
@@ -180,7 +178,7 @@ pub(crate) struct DefenderStatus {
 }
 
 fn query_defender_status(powershell: &Path) -> DefenderStatus {
-    let output = probe_command_output(
+    let output = crate::core::command_output_with_timeout_duration(
         Command::new(powershell)
         .args([
             "-NoProfile",
@@ -188,6 +186,7 @@ fn query_defender_status(powershell: &Path) -> DefenderStatus {
             "Get-MpComputerStatus | Select-Object AntivirusEnabled, RealTimeProtectionEnabled | ConvertTo-Json -Compress",
         ]),
         "Get-MpComputerStatus",
+        TOOL_PROBE_TIMEOUT,
     );
     let Ok(output) = output else {
         return DefenderStatus::default();
@@ -222,9 +221,10 @@ pub(crate) fn parse_defender_status_json(stdout: &str) -> DefenderStatus {
 }
 
 fn fsutil_devdrv_is_supported() -> bool {
-    let output = probe_command_output(
+    let output = crate::core::command_output_with_timeout_duration(
         Command::new("fsutil").args(["devdrv", "query"]),
         "fsutil devdrv query",
+        TOOL_PROBE_TIMEOUT,
     );
     let Ok(output) = output else {
         return false;
@@ -240,48 +240,6 @@ fn fsutil_devdrv_is_supported() -> bool {
         String::from_utf8_lossy(&output.stderr)
     );
     !combined.to_ascii_lowercase().contains("invalid parameter")
-}
-
-/// Run a small host-status probe with bounded wait and no background pipe
-/// readers. On timeout we kill and reap before returning, so a hung Windows
-/// service cannot keep an optimize invocation (or its test process) alive.
-fn probe_command_output(command: &mut Command, context: &str) -> Result<Output, String> {
-    probe_command_output_with_timeout(command, context, TOOL_PROBE_TIMEOUT)
-}
-
-fn probe_command_output_with_timeout(
-    command: &mut Command,
-    context: &str,
-    timeout: Duration,
-) -> Result<Output, String> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|err| format!("failed to invoke {context}: {err}"))?;
-    match child
-        .wait_timeout(timeout)
-        .map_err(|err| format!("wait on {context} failed: {err}"))?
-    {
-        Some(_) => child
-            .wait_with_output()
-            .map_err(|err| format!("collect {context} output failed: {err}")),
-        None => {
-            let kill_result = child.kill();
-            let reap_result = child.wait();
-            Err(format!(
-                "{context} timed out after {} seconds; {}{}",
-                timeout.as_secs(),
-                match kill_result {
-                    Ok(()) => "killed child process",
-                    Err(err) => return Err(format!("{context} timed out; kill failed: {err}")),
-                },
-                match reap_result {
-                    Ok(_) => "; reaped child process".to_string(),
-                    Err(err) => format!("; reap failed: {err}"),
-                }
-            ))
-        }
-    }
 }
 
 /// Detect whether soldr is currently running inside a CI environment.
@@ -321,7 +279,7 @@ fn env_truthy(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{cell::Cell, time::Instant};
+    use std::cell::Cell;
 
     struct RecordingProbe {
         powershell_calls: Cell<u8>,
@@ -419,35 +377,6 @@ mod tests {
         assert_eq!(probe.powershell_calls.get(), 1);
         assert_eq!(probe.defender_calls.get(), 1);
         assert_eq!(probe.dev_drive_calls.get(), 1);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn timed_out_probe_is_killed_and_reaped_without_background_pipe_readers() {
-        let temp = tempfile::tempdir().expect("temporary probe directory");
-        let pid_file = temp.path().join("probe.pid");
-        let script = format!("echo $$ > '{}'; exec sleep 30", pid_file.display());
-        let started = Instant::now();
-        let error = probe_command_output_with_timeout(
-            Command::new("sh").args(["-c", &script]),
-            "blocking test probe",
-            Duration::from_millis(50),
-        )
-        .expect_err("blocking probe must time out");
-
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "probe timeout was not bounded"
-        );
-        assert!(error.contains("timed out after 0 seconds"));
-        let pid = std::fs::read_to_string(&pid_file)
-            .expect("blocking child must have started")
-            .trim()
-            .to_owned();
-        assert!(
-            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
-            "the timed-out child must be reaped before the probe returns"
-        );
     }
 
     #[test]

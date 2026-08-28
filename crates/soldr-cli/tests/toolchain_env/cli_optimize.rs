@@ -13,6 +13,7 @@ use std::process::Command;
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 fn isolated_soldr_home() -> PathBuf {
@@ -329,6 +330,85 @@ fn defender_exclusions_check_returns_dry_run_json() {
     assert_eq!(json["dry_run"], true);
     assert_eq!(json["undo"], false);
     assert_eq!(json["scope"], "all");
+}
+
+#[test]
+fn defender_exclusions_check_skips_a_blocking_status_probe_in_a_real_project() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+
+    let soldr_home = isolated_soldr_home();
+    let workspace = soldr_home.join("workspace");
+    let source = workspace.join("src");
+    fs::create_dir_all(&source).expect("create test project source directory");
+    fs::write(
+        workspace.join("Cargo.toml"),
+        "[package]\nname = \"defender-dry-run-probe\"\nversion = \"0.0.1\"\nedition = \"2021\"\n",
+    )
+    .expect("write test project manifest");
+    fs::write(source.join("lib.rs"), "pub fn fixture() {}\n").expect("write test project source");
+
+    let fake_tools = soldr_home.join("fake-tools");
+    fs::create_dir_all(&fake_tools).expect("create fake tool directory");
+    let sentinel = soldr_home.join("blocking-status-probe-spawned.txt");
+    fs::write(
+        fake_tools.join("pwsh.cmd"),
+        format!(
+            "@echo off\r\necho spawned>\"{}\"\r\n:loop\r\ngoto loop\r\n",
+            sentinel.display()
+        ),
+    )
+    .expect("write blocking status probe");
+    let inherited_path = std::env::var_os("PATH").expect("PATH must be set");
+    let path = std::env::join_paths(
+        std::iter::once(fake_tools).chain(std::env::split_paths(&inherited_path)),
+    )
+    .expect("prepend fake PowerShell to PATH");
+
+    let started = Instant::now();
+    let output = Command::new(common::soldr_bin())
+        .args(["defender-exclusions", "check", "--json"])
+        .current_dir(&workspace)
+        .env("SOLDR_CACHE_DIR", &soldr_home)
+        .env("PATH", path)
+        .env_remove("GITHUB_ACTIONS")
+        .env_remove("CI")
+        .env_remove("BUILDKITE")
+        .env_remove("CIRCLECI")
+        .env_remove("TRAVIS")
+        .env_remove("JENKINS_URL")
+        .output()
+        .expect("run defender-exclusions check against blocking status probe");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "dry-run check must return its plan\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "dry-run check must not wait for the blocking status probe"
+    );
+    let json: Value = serde_json::from_str(&stdout)
+        .expect("dry-run check against a real project must produce JSON");
+    assert_eq!(json["dry_run"], true);
+    assert_eq!(json["scope"], "all");
+    assert!(
+        json["actions"]
+            .as_array()
+            .is_some_and(|actions| !actions.is_empty()),
+        "the normal planner must produce a non-empty plan: {json}"
+    );
+    assert!(
+        !sentinel.exists(),
+        "dry-run check must not spawn the blocking PowerShell status probe"
+    );
 }
 
 #[test]

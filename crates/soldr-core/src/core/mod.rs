@@ -148,13 +148,32 @@ pub fn command_output_with_timeout(
     command: &mut Command,
     context: &str,
 ) -> Result<Output, SoldrError> {
+    command_output_with_timeout_inner(command, context, command_output_timeout(), true)
+}
+
+/// Run a command through soldr's sanctioned output-capture containment with a
+/// caller-selected timeout. This is for small host probes whose timeout is a
+/// protocol property rather than user-configurable build policy.
+pub fn command_output_with_timeout_duration(
+    command: &mut Command,
+    context: &str,
+    timeout: Duration,
+) -> Result<Output, SoldrError> {
+    command_output_with_timeout_inner(command, context, timeout, false)
+}
+
+fn command_output_with_timeout_inner(
+    command: &mut Command,
+    context: &str,
+    timeout: Duration,
+    suggest_timeout_override: bool,
+) -> Result<Output, SoldrError> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
         .spawn()
         .map_err(|err| SoldrError::Other(format!("failed to invoke {context}: {err}")))?;
     let stdout_reader = child.stdout.take().map(read_pipe_async);
     let stderr_reader = child.stderr.take().map(read_pipe_async);
-    let timeout = command_output_timeout();
     let status = match child
         .wait_timeout(timeout)
         .map_err(|err| SoldrError::Other(format!("wait on {context} failed: {err}")))?
@@ -165,10 +184,12 @@ pub fn command_output_with_timeout(
             let reap_result =
                 child.wait_timeout(Duration::from_secs(KILLED_COMMAND_OUTPUT_REAP_TIMEOUT_SECS));
             let timeout_secs = timeout.as_secs();
-            let mut message = format!(
-                "{context} timed out after {timeout_secs} seconds \
-                 (set {COMMAND_OUTPUT_TIMEOUT_ENV_VAR} to override)"
-            );
+            let mut message = format!("{context} timed out after {timeout_secs} seconds");
+            if suggest_timeout_override {
+                message.push_str(&format!(
+                    " (set {COMMAND_OUTPUT_TIMEOUT_ENV_VAR} to override)"
+                ));
+            }
             match kill_result {
                 Ok(()) => message.push_str("; killed child process"),
                 Err(err) => message.push_str(&format!("; kill failed: {err}")),
@@ -253,5 +274,37 @@ mod tests {
         );
         assert_eq!(command_output_timeout_from_str("0"), None);
         assert_eq!(command_output_timeout_from_str("not-a-number"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn explicit_timeout_drains_pipe_filling_child_then_kills_and_reaps_it() {
+        let temp = tempfile::tempdir().expect("temporary command directory");
+        let pid_file = temp.path().join("child.pid");
+        let script = format!(
+            "echo $$ > '{}'; dd if=/dev/zero bs=1024 count=256 2>/dev/null; while :; do :; done",
+            pid_file.display()
+        );
+        let started = std::time::Instant::now();
+        let error = command_output_with_timeout_duration(
+            Command::new("sh").args(["-c", &script]),
+            "pipe-filling test child",
+            Duration::from_secs(1),
+        )
+        .expect_err("pipe-filling child must time out");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "pipe filling must not prevent the bounded timeout"
+        );
+        assert!(error.to_string().contains("timed out after 1 seconds"));
+        let pid = std::fs::read_to_string(&pid_file)
+            .expect("child must record its pid")
+            .trim()
+            .to_owned();
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "the timed-out child must be reaped before returning"
+        );
     }
 }
