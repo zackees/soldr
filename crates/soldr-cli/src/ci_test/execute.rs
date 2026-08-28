@@ -374,11 +374,13 @@ impl StageCommandFactory {
             cache_enabled,
             cargo_build_jobs,
             soldr_jobs,
-            dylint: crate::dylint_toolchain::DylintToolchainPlan {
-                channel: dylint_domain.toolchain.clone(),
+            // Reconstructed from the frozen plan document rather than
+            // re-derived, so it carries no precedence tier (soldr#2945).
+            dylint: crate::dylint_toolchain::DylintToolchainPlan::identity(
+                dylint_domain.toolchain.clone(),
                 compiler_release,
                 compiler_commit,
-            },
+            ),
             dylint_bin_dirs: Vec::new(),
             dylint_env: Vec::new(),
             ci_test_report_path,
@@ -396,7 +398,7 @@ impl StageCommandFactory {
         // managed rustup home cannot fail while probing an otherwise valid
         // catalogued driver.
         self.dylint = crate::dylint_toolchain::prepare_resolved(self.dylint.clone())?;
-        crate::dylint_toolchain::ensure_prebuilt_driver(&self.dylint, &paths).await?;
+        crate::dylint_driver::ensure_prebuilt_driver(&self.dylint, &paths).await?;
         self.dylint_bin_dirs = bootstrap.bin_dirs;
         self.dylint_env = bootstrap.env;
         Ok(())

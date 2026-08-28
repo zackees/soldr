@@ -2,6 +2,9 @@
 
 use crate::cargo_front_door::{self, DYLINT_DEPENDENCY_COOK_FLAG};
 use crate::core::{read_rust_toolchain_manifest, SoldrError};
+// soldr#2945: one definition of "reduce a channel to the driver identity",
+// shared with the glob-aware library reader that needs the same rule.
+use crate::dylint_libraries::canonical_channel;
 use crate::dylint_toolchain::DylintToolchainPlan;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -318,13 +321,6 @@ fn reconcile_toolchain<'a>(
         }
     }
     Ok(explicit.or(configured))
-}
-
-fn canonical_channel(channel: &str) -> &str {
-    channel
-        .get(..18)
-        .filter(|prefix| prefix.starts_with("nightly-"))
-        .unwrap_or(channel)
 }
 
 async fn run_check_shaped_cook(
@@ -693,48 +689,17 @@ fn normalize_path(path: &Path) -> String {
         .join("/")
 }
 
+/// soldr#2945: this used to join each declared `libraries[].path` **literally**
+/// and read `<root>/<path>/rust-toolchain.toml`. This workspace declares
+/// `{ path = "dylints/*" }`, so it read a manifest that does not exist, took
+/// `read_rust_toolchain_manifest`'s missing-file default, found no
+/// requirements, and silently fell through to the root *stable* channel — the
+/// conflict branch below it could therefore never be reached. The glob-aware
+/// read now lives in one place and is shared with `dylint_toolchain` and
+/// `ci_test::plan`.
 fn configured_library_toolchain(root: &Path) -> Result<Option<String>, SoldrError> {
-    let manifest_path = root.join(concat!("Car", "go.toml"));
-    let manifest: toml::Value =
-        toml::from_str(&std::fs::read_to_string(&manifest_path)?).map_err(|error| {
-            SoldrError::Other(format!(
-                "failed to parse {}: {error}",
-                manifest_path.display()
-            ))
-        })?;
-    let libraries = manifest
-        .get("workspace")
-        .and_then(|value| value.get("metadata"))
-        .and_then(|value| value.get("dylint"))
-        .and_then(|value| value.get("libraries"))
-        .and_then(toml::Value::as_array);
-    let mut requirements = BTreeMap::<String, Vec<String>>::new();
-    if let Some(libraries) = libraries {
-        for library in libraries {
-            let Some(relative) = library.get("path").and_then(toml::Value::as_str) else {
-                continue;
-            };
-            if let Some(channel) = read_rust_toolchain_manifest(&root.join(relative))?.channel {
-                requirements
-                    .entry(canonical_channel(&channel).to_string())
-                    .or_default()
-                    .push(format!("{relative} ({channel})"));
-            }
-        }
-    }
-    if requirements.len() > 1 {
-        let details = requirements
-            .values()
-            .flatten()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(SoldrError::Other(format!(
-            "soldr dylint cook: conflicting custom-lint nightly requirements: {details}"
-        )));
-    }
-    if let Some(channel) = requirements.keys().next() {
-        return Ok(Some(channel.clone()));
+    if let Some(pinned) = crate::dylint_libraries::pinned_channel(root)? {
+        return Ok(Some(pinned.channel));
     }
     Ok(read_rust_toolchain_manifest(root)?.channel)
 }

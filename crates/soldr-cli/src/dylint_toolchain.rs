@@ -1,14 +1,19 @@
 //! Catalogue-driven nightly selection for Dylint and its nested commands.
+//!
+//! This file answers *which nightly, and who chose it*, and stops there. Once a
+//! [`DylintToolchainPlan`] is settled, locating and validating the matching
+//! `dylint-driver` binary — the binary-or-exit gate, the catalogue fetch, and
+//! the `PATH` / `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` the driver needs to load
+//! the nightly's `rustc_private` libraries — belongs to `dylint_driver.rs`,
+//! split out under soldr#2945 when the provenance work pushed this file past
+//! the hard 1,000-line ceiling in `.github/scripts/loc_ceiling.py`.
 
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
-    io::Read,
     path::{Path, PathBuf},
-    process::Stdio,
     time::{Duration, SystemTime},
 };
-use wait_timeout::ChildExt;
 
 use crate::core::{
     command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
@@ -53,14 +58,99 @@ const DEFAULT_PREPARE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// markers from an older soldr build are never misread.
 const PREPARE_MARKER_SCHEMA: &str = "v1";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Which tier of the precedence chain chose the Dylint channel (soldr#2945).
+///
+/// Threaded onto the resolved plan so a driver-gate failure can *state* where
+/// the channel came from rather than guessing at the error site. The tier is
+/// the single most useful fact in that diagnostic: a missing driver for a
+/// channel the lint libraries pinned is a pin problem, the same failure for a
+/// channel derived from the version map is a derivation problem, and the two
+/// have completely different fixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChannelProvenance {
+    /// Tier 1 — an explicit `+toolchain` / `--toolchain` argument.
+    Explicit,
+    /// Tier 2 — `SOLDR_DYLINT_TOOLCHAIN`, the `SOLDR_DYLINT_CONFIGURED_*`
+    /// identity triple, or `RUSTUP_TOOLCHAIN`.
+    Environment,
+    /// Tier 3 — the workspace's own Dylint lint libraries. This is the
+    /// authority whenever the workspace has lints: Dylint builds one driver
+    /// per library toolchain.
+    LintLibraries,
+    /// Tier 4 — the workspace root `rust-toolchain.toml` `[toolchain].channel`.
+    RootManifest,
+    /// Tier 5 — derived from a Rust `major.minor` through the catalogue's
+    /// `rust-nightly-versions.v1.json` map.
+    VersionMap,
+    /// Not chosen by the precedence chain at all: the channel was carried in
+    /// from a plan frozen earlier in the run (`soldr ci-test` rebuilds one
+    /// from its plan document) or constructed by a test.
+    Unresolved,
+}
+
+impl ChannelProvenance {
+    pub(crate) fn describe(self) -> &'static str {
+        match self {
+            Self::Explicit => "an explicit +toolchain argument",
+            Self::Environment => {
+                "the environment (SOLDR_DYLINT_TOOLCHAIN / \
+                 SOLDR_DYLINT_CONFIGURED_TOOLCHAIN / RUSTUP_TOOLCHAIN)"
+            }
+            Self::LintLibraries => {
+                "this workspace's Dylint lint libraries \
+                 (workspace.metadata.dylint.libraries -> rust-toolchain.toml)"
+            }
+            Self::RootManifest => "the workspace root rust-toolchain.toml [toolchain].channel",
+            Self::VersionMap => {
+                "rust-nightly-versions.v1.json, derived from the workspace's Rust version"
+            }
+            Self::Unresolved => "a plan frozen earlier in this run (not re-derived here)",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct DylintToolchainPlan {
     pub channel: String,
     pub compiler_release: String,
     pub compiler_commit: String,
+    /// Diagnostic-only: which precedence tier selected `channel`.
+    pub provenance: ChannelProvenance,
 }
 
+/// Two plans are equal when they name the same compiler. `provenance` records
+/// *how* the channel was chosen, not *what* was chosen, so it is deliberately
+/// outside the identity — a plan restored from the prepared marker describes
+/// the same compiler as the plan that wrote it (soldr#2945).
+impl PartialEq for DylintToolchainPlan {
+    fn eq(&self, other: &Self) -> bool {
+        self.channel == other.channel
+            && self.compiler_release == other.compiler_release
+            && self.compiler_commit == other.compiler_commit
+    }
+}
+
+impl Eq for DylintToolchainPlan {}
+
 impl DylintToolchainPlan {
+    /// A plan carrying only a compiler identity. Every resolver path inside
+    /// this module settles the identity first and stamps the tier last with
+    /// [`Self::with_provenance`], so none of them has to guess a tier at the
+    /// point it builds the plan.
+    pub(crate) fn identity(channel: String, release: String, commit: String) -> Self {
+        Self {
+            channel,
+            compiler_release: release,
+            compiler_commit: commit,
+            provenance: ChannelProvenance::Unresolved,
+        }
+    }
+
+    fn with_provenance(mut self, provenance: ChannelProvenance) -> Self {
+        self.provenance = provenance;
+        self
+    }
+
     pub(crate) fn cache_identity(&self) -> String {
         format!(
             "{}|{}|{}",
@@ -75,217 +165,8 @@ impl DylintToolchainPlan {
         command.env(COMPILER_COMMIT_ENV_VAR, &self.compiler_commit);
         command.env(CACHE_IDENTITY_ENV_VAR, self.cache_identity());
         command.env(PREPARED_IDENTITY_ENV_VAR, self.cache_identity());
-        apply_dylint_driver_path(command);
+        crate::dylint_driver::apply_dylint_driver_path(command);
     }
-}
-
-/// Refuse to launch cargo-dylint unless its exact toolchain driver already
-/// exists and answers the bounded version probe. Upstream cargo-dylint builds
-/// this driver automatically when it is absent or stale; preflighting the same
-/// version signal is what makes Soldr's binary-or-exit policy cover the driver,
-/// not just the two CLI executables.
-pub(crate) fn require_prebuilt_driver(
-    plan: &DylintToolchainPlan,
-    paths: &SoldrPaths,
-) -> Result<PathBuf, SoldrError> {
-    let driver_root = std::env::var_os("DYLINT_DRIVER_PATH")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| paths.root.join("dylint").join("drivers"));
-    let driver_channel = if is_fully_qualified_nightly(&plan.channel) {
-        plan.channel.clone()
-    } else {
-        let host = TargetTriple::host()?.triple();
-        format!("{}-{host}", plan.channel)
-    };
-    let driver_dir = driver_root.join(&driver_channel);
-    let driver = ["dylint-driver", "dylint-driver.exe", "dylint-driver.cmd"]
-        .into_iter()
-        .map(|name| driver_dir.join(name))
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| unavailable_driver_error(plan, "prebuilt driver is missing"))?;
-
-    let mut command = std::process::Command::new(&driver);
-    command
-        .arg("-V")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    apply_driver_runtime_environment(&mut command, plan)?;
-    suppress_windows_console_window(&mut command);
-    let mut child = command.spawn().map_err(|error| {
-        unavailable_driver_error(plan, &format!("version probe could not start: {error}"))
-    })?;
-    let status = match child.wait_timeout(Duration::from_secs(2)) {
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(unavailable_driver_error(
-                plan,
-                &format!("version probe failed: {error}"),
-            ));
-        }
-        Ok(Some(status)) => status,
-        Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(unavailable_driver_error(
-                plan,
-                "version probe exceeded the 2-second deadline",
-            ));
-        }
-    };
-    let mut stdout = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_string(&mut stdout).map_err(|error| {
-            unavailable_driver_error(plan, &format!("version probe output failed: {error}"))
-        })?;
-    }
-    if !status.success() {
-        return Err(unavailable_driver_error(
-            plan,
-            &format!("version probe exited with {status}"),
-        ));
-    }
-    let expected = crate::fetch::known_tools::lookup_by_crate("cargo-dylint")
-        .and_then(|spec| spec.pinned_version)
-        .ok_or_else(|| SoldrError::Other("cargo-dylint must have a registry pin".into()))?;
-    let actual = dylint_driver_version(&stdout);
-    if actual != Some(expected) {
-        return Err(unavailable_driver_error(
-            plan,
-            &format!("driver version is {actual:?}, expected {expected:?}"),
-        ));
-    }
-    Ok(driver)
-}
-
-fn apply_driver_runtime_environment(
-    command: &mut std::process::Command,
-    plan: &DylintToolchainPlan,
-) -> Result<(), SoldrError> {
-    apply_driver_runtime_environment_impl(command, plan)
-}
-
-fn dylint_toolchain_dirs(plan: &DylintToolchainPlan) -> Result<(PathBuf, PathBuf), SoldrError> {
-    let rustc = resolve_toolchain_binary_for_channel("rustc", Some(&plan.channel))?;
-    let bin_dir = rustc
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| SoldrError::Other("Dylint rustc has no parent directory".into()))?;
-    let toolchain_root = bin_dir
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| SoldrError::Other("Dylint rustc has no toolchain root".into()))?;
-    Ok((bin_dir, toolchain_root))
-}
-
-fn apply_driver_runtime_environment_impl(
-    command: &mut std::process::Command,
-    plan: &DylintToolchainPlan,
-) -> Result<(), SoldrError> {
-    match crate::platform::host::facts::os() {
-        crate::platform::host::facts::HostOs::Windows => {
-            let (bin_dir, _) = dylint_toolchain_dirs(plan)?;
-            prepend_command_path(command, "PATH", &bin_dir)
-        }
-        crate::platform::host::facts::HostOs::Linux => {
-            let (_, toolchain_root) = dylint_toolchain_dirs(plan)?;
-            prepend_command_path(command, "LD_LIBRARY_PATH", &toolchain_root.join("lib"))?;
-            Ok(())
-        }
-        crate::platform::host::facts::HostOs::MacOs => {
-            let (_, toolchain_root) = dylint_toolchain_dirs(plan)?;
-            prepend_command_path(command, "DYLD_LIBRARY_PATH", &toolchain_root.join("lib"))?;
-            Ok(())
-        }
-    }
-}
-
-fn prepend_command_path(
-    command: &mut std::process::Command,
-    key: &str,
-    directory: &Path,
-) -> Result<(), SoldrError> {
-    let existing = std::env::var_os(key);
-    let paths = std::iter::once(directory.to_path_buf()).chain(
-        existing
-            .as_deref()
-            .map(std::env::split_paths)
-            .into_iter()
-            .flatten(),
-    );
-    let joined = std::env::join_paths(paths)
-        .map_err(|error| SoldrError::Other(format!("failed to construct Dylint {key}: {error}")))?;
-    command.env(key, joined);
-    Ok(())
-}
-
-/// Resolve a missing driver from soldr-toolchain before cargo-dylint can
-/// trigger its implicit source-build fallback.
-pub(crate) async fn ensure_prebuilt_driver(
-    plan: &DylintToolchainPlan,
-    paths: &SoldrPaths,
-) -> Result<PathBuf, SoldrError> {
-    if let Ok(driver) = require_prebuilt_driver(plan, paths) {
-        return Ok(driver);
-    }
-    let version = crate::fetch::known_tools::lookup_by_crate("cargo-dylint")
-        .and_then(|spec| spec.pinned_version)
-        .ok_or_else(|| SoldrError::Other("cargo-dylint must have a registry pin".into()))?;
-    let driver_root = std::env::var_os("DYLINT_DRIVER_PATH")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| paths.root.join("dylint").join("drivers"));
-    crate::fetch::ensure_dylint_driver(paths, version, &plan.channel, &driver_root).await?;
-    require_prebuilt_driver(plan, paths)
-}
-
-fn dylint_driver_version(stdout: &str) -> Option<&str> {
-    stdout
-        .split_whitespace()
-        .last()
-        .filter(|value| !value.is_empty())
-}
-
-fn unavailable_driver_error(plan: &DylintToolchainPlan, reason: &str) -> SoldrError {
-    let host = TargetTriple::host()
-        .map(|target| target.triple())
-        .unwrap_or_else(|_| "unknown-host".to_string());
-    let version = crate::fetch::known_tools::lookup_by_crate("cargo-dylint")
-        .and_then(|spec| spec.pinned_version)
-        .unwrap_or("unknown");
-    SoldrError::Other(format!(
-        "Dylint v{version} is not built for this machine (host: {host}; missing or unusable \
-         component: dylint-driver for {}). Soldr will not build Dylint from source. \
-         Cause: {reason}. Corrective action: install the Dylint v{version} driver for {host} \
-         under DYLINT_DRIVER_PATH, publish a matching prebuilt release asset, or select a \
-         Dylint version that provides {host} prebuilts.",
-        plan.channel
-    ))
-}
-
-/// Give the dylint driver cargo-dylint builds a stable soldr-owned
-/// home instead of the tool's own unmanaged default (normally
-/// `~/.dylint_drivers` or wherever `$DYLINT_DRIVER_PATH` happens to
-/// point). A fixed path means warm runs reuse the already-built
-/// driver and CI caches have something deterministic to restore.
-/// Respects an explicit caller-set `DYLINT_DRIVER_PATH` — soldr never
-/// clobbers a user override.
-fn apply_dylint_driver_path(command: &mut std::process::Command) {
-    if std::env::var_os("DYLINT_DRIVER_PATH").is_some() {
-        return;
-    }
-    let Ok(paths) = crate::core::SoldrPaths::new() else {
-        return;
-    };
-    let driver_dir = paths.root.join("dylint").join("drivers");
-    if std::fs::create_dir_all(&driver_dir).is_err() {
-        // Best-effort: if the directory cannot be created, fall back
-        // to the tool's own default rather than pointing at a
-        // nonexistent path.
-        return;
-    }
-    command.env("DYLINT_DRIVER_PATH", driver_dir);
 }
 
 pub(crate) fn write_success_marker(plan: &DylintToolchainPlan) -> Result<(), SoldrError> {
@@ -346,12 +227,17 @@ pub(crate) async fn prepare(
     {
         let requested = requested_toolchain_channel(requested_channel, workspace_root)?;
         if requested
+            .channel
             .as_deref()
-            .is_none_or(|channel| !is_dated_nightly(channel))
+            .is_none_or(|c| !is_dated_nightly(c))
         {
-            let version = requested_rust_version(requested.as_deref())?;
+            let version = requested_rust_version(requested.channel.as_deref())?;
             if let Some(mut plan) = load_prepared_marker(&version) {
                 plan.channel = qualify_toolchain_name(&plan.channel)?;
+                // The marker stores a compiler identity, not how the channel
+                // was chosen; restore the tier this run actually resolved so a
+                // later driver diagnostic stays truthful (soldr#2945).
+                plan.provenance = requested.provenance;
                 eprintln!(
                     "soldr: dylint toolchain {} ready (cached identity)",
                     plan.channel
@@ -376,38 +262,74 @@ async fn resolve_plan_inner(
     workspace_root: &Path,
     install_explicit_if_unmapped: bool,
 ) -> Result<DylintToolchainPlan, SoldrError> {
-    let plan = if let Some(channel) = non_empty_env(TOOLCHAIN_ENV_VAR) {
-        plan_from_retained_environment(&channel)?
-    } else if let Some(plan) = plan_from_configured_environment()? {
-        plan
-    } else {
-        let requested = requested_toolchain_channel(requested_channel, workspace_root)?;
-        let bytes = crate::fetch::fetch_verified_catalogue_asset(
-            "zackees",
-            "soldr-toolchain",
-            "assets",
-            MAP_ASSET,
-        )
-        .await?;
-        if let Some(channel) = requested.as_deref().filter(|value| is_dated_nightly(value)) {
-            match select_explicit_from_map(&bytes, channel) {
-                Ok(plan) => plan,
-                Err(map_error) => {
-                    if let Some(plan) = plan_from_installed_explicit_nightly(channel)? {
-                        plan
-                    } else if install_explicit_if_unmapped {
-                        install_and_observe_explicit_nightly(channel)?
-                    } else {
-                        return Err(map_error);
-                    }
+    let requested = requested_toolchain_channel(requested_channel, workspace_root)?;
+    // The retained / configured environment carries a full compiler identity,
+    // so reusing it skips both the catalogue fetch and the rustc probe. It is
+    // consulted only when it names the channel the precedence chain already
+    // selected: that is what makes an explicit `+toolchain` beat an inherited
+    // `SOLDR_DYLINT_TOOLCHAIN` (soldr#2945) while leaving the nested-invocation
+    // fast path — where the two always agree — exactly as it was.
+    if let Some(plan) = plan_from_environment_identity(requested.channel.as_deref())? {
+        // Attribute to the tier that *chose* the channel, not to the
+        // environment that merely happened to already know its identity.
+        return Ok(plan.with_provenance(requested.provenance));
+    }
+    let bytes = crate::fetch::fetch_verified_catalogue_asset(
+        "zackees",
+        "soldr-toolchain",
+        "assets",
+        MAP_ASSET,
+    )
+    .await?;
+    let plan = if let Some(channel) = requested.channel.as_deref().filter(|c| is_dated_nightly(c)) {
+        let plan = match select_explicit_from_map(&bytes, channel) {
+            Ok(plan) => plan,
+            Err(map_error) => {
+                if let Some(plan) = plan_from_installed_explicit_nightly(channel)? {
+                    plan
+                } else if install_explicit_if_unmapped {
+                    install_and_observe_explicit_nightly(channel)?
+                } else {
+                    return Err(map_error);
                 }
             }
-        } else {
-            let version = requested_rust_version(requested.as_deref())?;
-            select_from_map(&bytes, &version)?
-        }
+        };
+        plan.with_provenance(requested.provenance)
+    } else {
+        // No tier named a nightly outright, so the channel that comes back is
+        // the map's own choice, whatever the Rust version was derived from.
+        let version = requested_rust_version(requested.channel.as_deref())?;
+        select_from_map(&bytes, &version)?.with_provenance(ChannelProvenance::VersionMap)
     };
     Ok(plan)
+}
+
+/// Reuse the compiler identity the environment already carries, but only when
+/// it describes `selected` — the channel the precedence chain chose. `None`
+/// means "the environment cannot answer for this channel", not "the
+/// environment is unset".
+fn plan_from_environment_identity(
+    selected: Option<&str>,
+) -> Result<Option<DylintToolchainPlan>, SoldrError> {
+    let names_selected = |channel: &str| {
+        selected.is_none_or(|value| {
+            crate::dylint_libraries::canonical_channel(value)
+                == crate::dylint_libraries::canonical_channel(channel)
+        })
+    };
+    if let Some(channel) = non_empty_env(TOOLCHAIN_ENV_VAR) {
+        if !names_selected(&channel) {
+            return Ok(None);
+        }
+        return plan_from_retained_environment(&channel).map(Some);
+    }
+    if let Some(plan) = plan_from_configured_environment()? {
+        if !names_selected(&plan.channel) {
+            return Ok(None);
+        }
+        return Ok(Some(plan));
+    }
+    Ok(None)
 }
 
 fn plan_from_installed_explicit_nightly(
@@ -423,11 +345,11 @@ fn plan_from_installed_explicit_nightly(
         rustc_commit_hash: compiler_commit.clone(),
     };
     validate_identity(channel, &identity)?;
-    Ok(Some(DylintToolchainPlan {
-        channel: channel.to_string(),
+    Ok(Some(DylintToolchainPlan::identity(
+        channel.to_string(),
         compiler_release,
         compiler_commit,
-    }))
+    )))
 }
 
 fn install_and_observe_explicit_nightly(channel: &str) -> Result<DylintToolchainPlan, SoldrError> {
@@ -485,7 +407,10 @@ fn qualify_toolchain_name(channel: &str) -> Result<String, SoldrError> {
     Ok(format!("{channel}-{host}"))
 }
 
-fn is_fully_qualified_nightly(channel: &str) -> bool {
+/// `pub(crate)` for `dylint_driver`, which derives cargo-dylint's
+/// `<nightly>-<host triple>` driver directory name from the same predicate
+/// (soldr#2945 split).
+pub(crate) fn is_fully_qualified_nightly(channel: &str) -> bool {
     channel
         .strip_prefix("nightly-")
         .and_then(|value| value.get(10..))
@@ -596,11 +521,11 @@ fn parse_marker_identity(line: &str) -> Option<DylintToolchainPlan> {
         rustc_commit_hash: compiler_commit.clone(),
     };
     validate_identity(&channel, &identity).ok()?;
-    Some(DylintToolchainPlan {
+    Some(DylintToolchainPlan::identity(
         channel,
         compiler_release,
         compiler_commit,
-    })
+    ))
 }
 
 /// Cheap on-disk sanity check standing in for a `rustup component list`
@@ -668,11 +593,11 @@ fn plan_from_configured_environment() -> Result<Option<DylintToolchainPlan>, Sol
                 rustc_commit_hash: compiler_commit.clone(),
             };
             validate_identity(&channel, &identity)?;
-            Ok(Some(DylintToolchainPlan {
+            Ok(Some(DylintToolchainPlan::identity(
                 channel,
                 compiler_release,
                 compiler_commit,
-            }))
+            )))
         }
         _ => Err(SoldrError::Other(
             "configured Dylint compiler identity is incomplete".into(),
@@ -685,18 +610,18 @@ fn plan_from_retained_environment(channel: &str) -> Result<DylintToolchainPlan, 
         non_empty_env(COMPILER_RELEASE_ENV_VAR),
         non_empty_env(COMPILER_COMMIT_ENV_VAR),
     ) {
-        (Some(compiler_release), Some(compiler_commit)) => Ok(DylintToolchainPlan {
-            channel: channel.to_string(),
+        (Some(compiler_release), Some(compiler_commit)) => Ok(DylintToolchainPlan::identity(
+            channel.to_string(),
             compiler_release,
             compiler_commit,
-        }),
+        )),
         _ => {
             let (compiler_release, compiler_commit) = observe_compiler(channel)?;
-            Ok(DylintToolchainPlan {
-                channel: channel.to_string(),
+            Ok(DylintToolchainPlan::identity(
+                channel.to_string(),
                 compiler_release,
                 compiler_commit,
-            })
+            ))
         }
     }
 }
@@ -722,17 +647,72 @@ fn requested_rust_version(requested_channel: Option<&str>) -> Result<String, Sol
     })
 }
 
+/// The channel the precedence chain selected, plus which tier selected it.
+struct RequestedChannel {
+    /// `None` only in the last tier, where there is no channel to name and the
+    /// version map derives one from the default toolchain's Rust version.
+    channel: Option<String>,
+    provenance: ChannelProvenance,
+}
+
+/// The Dylint channel precedence chain (soldr#2945):
+///
+/// 1. an explicit `+toolchain` / `--toolchain` argument,
+/// 2. the environment (`SOLDR_DYLINT_TOOLCHAIN`, the
+///    `SOLDR_DYLINT_CONFIGURED_*` identity triple, `RUSTUP_TOOLCHAIN`),
+/// 3. **the workspace's Dylint lint libraries**,
+/// 4. the workspace root `rust-toolchain.toml`,
+/// 5. the version -> nightly map.
+///
+/// Tier 3 is the fix. Dylint builds one driver per *library* toolchain, so
+/// when a workspace has lint libraries they are the authority — deriving a
+/// nightly from the root's stable channel (tiers 4 + 5) produced a channel for
+/// which no driver had ever been published, and the run died at the driver
+/// gate. Tiers 4 and 5 survive as the answer for a workspace with no lint
+/// libraries to read, which is the only situation where a derivation is the
+/// best available guess.
 fn requested_toolchain_channel(
     requested_channel: Option<&str>,
     workspace_root: &Path,
-) -> Result<Option<String>, SoldrError> {
-    let manifest = crate::core::read_rust_toolchain_manifest(workspace_root)?;
-    Ok(requested_channel
+) -> Result<RequestedChannel, SoldrError> {
+    if let Some(channel) = requested_channel
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| non_empty_env("RUSTUP_TOOLCHAIN"))
-        .or(manifest.channel))
+    {
+        return Ok(RequestedChannel {
+            channel: Some(channel.to_string()),
+            provenance: ChannelProvenance::Explicit,
+        });
+    }
+    for key in [
+        TOOLCHAIN_ENV_VAR,
+        CONFIGURED_TOOLCHAIN_ENV_VAR,
+        "RUSTUP_TOOLCHAIN",
+    ] {
+        if let Some(channel) = non_empty_env(key) {
+            return Ok(RequestedChannel {
+                channel: Some(channel),
+                provenance: ChannelProvenance::Environment,
+            });
+        }
+    }
+    if let Some(pinned) = crate::dylint_libraries::pinned_channel(workspace_root)? {
+        return Ok(RequestedChannel {
+            channel: Some(pinned.channel),
+            provenance: ChannelProvenance::LintLibraries,
+        });
+    }
+    let manifest = crate::core::read_rust_toolchain_manifest(workspace_root)?;
+    Ok(match manifest.channel {
+        Some(channel) => RequestedChannel {
+            channel: Some(channel),
+            provenance: ChannelProvenance::RootManifest,
+        },
+        None => RequestedChannel {
+            channel: None,
+            provenance: ChannelProvenance::VersionMap,
+        },
+    })
 }
 
 fn is_dated_nightly(channel: &str) -> bool {
@@ -771,11 +751,11 @@ fn select_explicit_from_map(
         ))
     })?;
     validate_identity(map_channel, identity)?;
-    Ok(DylintToolchainPlan {
-        channel: requested_channel.to_string(),
-        compiler_release: identity.rustc_release.clone(),
-        compiler_commit: identity.rustc_commit_hash.clone(),
-    })
+    Ok(DylintToolchainPlan::identity(
+        requested_channel.to_string(),
+        identity.rustc_release.clone(),
+        identity.rustc_commit_hash.clone(),
+    ))
 }
 
 fn select_from_map(bytes: &[u8], version: &str) -> Result<DylintToolchainPlan, SoldrError> {
@@ -815,11 +795,11 @@ fn select_from_map(bytes: &[u8], version: &str) -> Result<DylintToolchainPlan, S
         )));
     }
     validate_identity(&bucket.selected, identity)?;
-    Ok(DylintToolchainPlan {
-        channel: bucket.selected.clone(),
-        compiler_release: identity.rustc_release.clone(),
-        compiler_commit: identity.rustc_commit_hash.clone(),
-    })
+    Ok(DylintToolchainPlan::identity(
+        bucket.selected.clone(),
+        identity.rustc_release.clone(),
+        identity.rustc_commit_hash.clone(),
+    ))
 }
 
 fn validate_identity(channel: &str, identity: &NightlyIdentity) -> Result<(), SoldrError> {

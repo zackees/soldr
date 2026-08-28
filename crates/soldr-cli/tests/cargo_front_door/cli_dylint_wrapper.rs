@@ -319,8 +319,13 @@ fn missing_prebuilt_driver_fails_before_cargo_dylint_launch() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // soldr#2945: the message no longer blames the host or the Dylint
+    // version. It could not: 6.0.3 publishes a driver for all eight supported
+    // triples, and the real cause was soldr asking for a *nightly* nobody has
+    // ever built one for. The driver identity is what is missing, so that is
+    // what the assertion pins.
     assert!(
-        stderr.contains("Dylint v6.0.3 is not built for this machine"),
+        stderr.contains("no usable Dylint driver for"),
         "unexpected stderr: {stderr}"
     );
     assert!(

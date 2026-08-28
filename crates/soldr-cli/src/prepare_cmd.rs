@@ -29,7 +29,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::core::{run_installer_command, InstallerWatchdogConfig, SoldrError, SoldrPaths};
+use crate::core::{InstallerWatchdogConfig, SoldrError, SoldrPaths};
 use crate::fetch::xwin_cache::ensure_xwin_case_aliases;
 
 pub const RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR: &str = "SOLDR_RUSTUP_TARGET_ADD_TIMEOUT_SECS";
@@ -846,7 +846,7 @@ fn run_rustup_target_add(
     command: &mut std::process::Command,
     triple: &str,
 ) -> Result<std::process::ExitStatus, SoldrError> {
-    run_installer_command(
+    crate::exit_guard::run_child_command(
         command,
         &format!("rustup target add {triple}"),
         "target-install",

@@ -132,7 +132,7 @@ pub(crate) async fn run_cargo_front_door(
         let bootstrap = ensure_known_subcommand_tool(args, &paths).await?;
         let plan =
             crate::dylint_toolchain::resolve_plan(explicit_toolchain, &workspace_root).await?;
-        crate::dylint_toolchain::ensure_prebuilt_driver(&plan, &paths).await?;
+        crate::dylint_driver::ensure_prebuilt_driver(&plan, &paths).await?;
         Some((bootstrap, plan))
     } else {
         None

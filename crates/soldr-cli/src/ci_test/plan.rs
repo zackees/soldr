@@ -484,35 +484,51 @@ fn wrapper_identity(cache_enabled: bool) -> String {
         .unwrap_or_else(|| "soldr-managed-zccache".into())
 }
 
+/// soldr#2945: the per-lint `rust-toolchain.toml` loop this used to run —
+/// keyed on the hard-coded `DYLINTS` name list — is now the shared, glob-aware
+/// reader in `crate::dylint_libraries`, which reads
+/// `workspace.metadata.dylint.libraries` and reports disagreeing pins itself.
+/// `DYLINTS` survives only because the stage graph above still names one build
+/// and one UI-test stage per lint. Only the env-override refusal below is
+/// ci-test-specific.
 async fn resolve_pinned_dylint_plan(
     root: &Path,
     host: &str,
 ) -> Result<crate::dylint_toolchain::DylintToolchainPlan, SoldrError> {
-    let mut pinned: Option<String> = None;
-    for lint in DYLINTS {
-        let lint_root = root.join("dylints").join(lint);
-        let manifest = crate::core::read_rust_toolchain_manifest(&lint_root)?;
-        let channel = manifest.channel.ok_or_else(|| {
-            SoldrError::Other(format!(
-                "soldr ci-test: {} has no pinned Dylint toolchain channel",
-                lint_root.join("rust-toolchain.toml").display()
-            ))
-        })?;
-        if let Some(expected) = &pinned {
-            if expected != &channel {
-                return Err(SoldrError::Other(format!(
-                    "soldr ci-test: Dylint toolchain pins disagree: {expected} != {channel} ({lint})"
-                )));
-            }
-        } else {
-            pinned = Some(channel);
+    let Some(libraries) = crate::dylint_libraries::pinned_channel(root)? else {
+        return Err(SoldrError::Other(format!(
+            "soldr ci-test: {} declares no Dylint libraries under \
+             workspace.metadata.dylint.libraries",
+            root.join("Cargo.toml").display()
+        )));
+    };
+    let library_count = libraries.libraries.len();
+    let pinned = libraries.channel;
+    // ci-test is deliberately stricter than the `soldr dylint` front door.
+    // There, an explicit `+toolchain` or SOLDR_DYLINT_TOOLCHAIN is a developer
+    // poking at one lint and is honoured. Here the plan is a frozen,
+    // reproducible DAG whose three Dylint compile domains are keyed on the one
+    // nightly the lint libraries themselves declare, so an override naming a
+    // different nightly would silently key the target trees to a compiler the
+    // libraries were not built for. That is a plan-integrity failure, not a
+    // preference — so it is refused before the plan is frozen.
+    for key in [
+        crate::dylint_toolchain::TOOLCHAIN_ENV_VAR,
+        crate::dylint_toolchain::CONFIGURED_TOOLCHAIN_ENV_VAR,
+    ] {
+        let Some(override_channel) = non_empty_env(key) else {
+            continue;
+        };
+        if canonical_channel(&override_channel, host) != canonical_channel(&pinned, host) {
+            return Err(SoldrError::Other(format!(
+                "soldr ci-test: configured Dylint toolchain {override_channel} ({key}) conflicts with the {library_count} lint manifests pinned to {pinned}"
+            )));
         }
     }
-    let pinned = pinned.ok_or_else(|| SoldrError::Other("soldr ci-test: no Dylints".into()))?;
     let plan = crate::dylint_toolchain::resolve_plan(Some(&pinned), root).await?;
     if canonical_channel(&plan.channel, host) != canonical_channel(&pinned, host) {
         return Err(SoldrError::Other(format!(
-            "soldr ci-test: configured Dylint toolchain {} conflicts with the six lint manifests pinned to {pinned}",
+            "soldr ci-test: configured Dylint toolchain {} conflicts with the {library_count} lint manifests pinned to {pinned}",
             plan.channel
         )));
     }

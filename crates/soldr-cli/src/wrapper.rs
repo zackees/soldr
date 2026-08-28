@@ -138,13 +138,11 @@ fn normalize_nested_workspace_wrapper_args<'a>(
 /// through the wrapper (soldr#2484). Off by default: binary-or-exit.
 pub(crate) const ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR: &str = "SOLDR_ALLOW_DYLINT_DRIVER_BUILD";
 
-fn allow_dylint_driver_build() -> bool {
-    std::env::var(ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR)
-        .map(|value| {
-            let value = value.trim().to_ascii_lowercase();
-            crate::core::flag_value(&value)
-        })
-        .unwrap_or(false)
+/// soldr#2945 made this `pub(crate)`: the Dylint front door honours the very
+/// same switch, and two guards released by two spellings of "yes" would be the
+/// soldr#2740 defect all over again.
+pub(crate) fn allow_dylint_driver_build() -> bool {
+    crate::core::flag(ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR)
 }
 
 /// Detect a rustc invocation that compiles the `dylint_driver` crate

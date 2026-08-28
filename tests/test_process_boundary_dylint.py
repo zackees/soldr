@@ -76,8 +76,10 @@ def test_process_boundary_has_required_ui_fixtures() -> None:
 def test_dylint_runtime_environment_uses_one_platform_facade() -> None:
     # soldr#2493 replaced the four cfg-duplicated impls with a single
     # runtime match on the host facts facade; no host cfg remains in
-    # the cli source.
-    source = (ROOT / "crates" / "soldr-cli" / "src" / "dylint_toolchain.rs").read_text(
+    # the cli source. soldr#2945 moved that facade call, with the rest
+    # of the driver half of `dylint_toolchain.rs`, into
+    # `dylint_driver.rs` to stay under the hard 1,000-line ceiling.
+    source = (ROOT / "crates" / "soldr-cli" / "src" / "dylint_driver.rs").read_text(
         encoding="utf-8"
     )
     assert source.count("fn apply_driver_runtime_environment(") == 1
