@@ -9,7 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from conftest import (
     load_script_module,
     uv_pip_install_command,
@@ -21,12 +20,18 @@ SCRIPTS = ROOT / ".github" / "scripts"
 PUBLISHED_WORKFLOW = ROOT / ".github" / "workflows" / "published-dylint-smoke.yml"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release-auto.yml"
 PUBLISHED_SMOKE_TRIGGER_PATHS = (
+    "Cargo.toml",
     "ci/smoke_published_dylint.py",
+    "ci/canonical-targets.json",
     "dylints/**",
     "crates/soldr-cli/src/dylint_*.rs",
     "crates/soldr-cli/src/soldr_main.rs",
     "crates/soldr-cli/src/cargo_front_door/**",
+    "crates/soldr-fetch/src/fetch/known_tools.rs",
+    "crates/soldr-fetch/src/fetch/toolchain_packaged.rs",
+    ".github/scripts/catalogue_http.py",
     ".github/scripts/check_dylint_driver_assets.py",
+    ".github/scripts/toolchain_asset_query.py",
     ".github/workflows/published-dylint-smoke.yml",
     ".github/workflows/release-auto.yml",
     "tests/test_smoke_published_dylint.py",
