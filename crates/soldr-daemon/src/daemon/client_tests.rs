@@ -74,3 +74,57 @@ fn a_cook_touch_is_named_distinctly() {
     let line = missing_ack_message(&Request::CookTouch { sha256: [0u8; 32] }, "reset");
     assert!(line.contains("CookTouch"), "{line}");
 }
+
+// ---- soldr#2955: a missing ack stays best-effort ----------------------------
+
+/// A peer that takes the frame and answers nothing.
+///
+/// Reads report EOF, which is what a daemon that accepted the connection and
+/// then went away looks like from the client side: no drop logged, no upsert
+/// failure, no ack.
+struct SilentPeer {
+    written: usize,
+}
+
+impl Read for SilentPeer {
+    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        Ok(0)
+    }
+}
+
+impl Write for SilentPeer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.written += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// soldr#2558 bounded the ack wait rather than requiring it, and soldr#2785
+/// stopped discarding its outcome. Those two must not collide: observing a
+/// missing ack must not quietly promote it to a failure, or every pre-#2558
+/// daemon becomes a hard error on the wrapper hot path.
+#[test]
+fn a_peer_that_never_acks_is_still_a_successful_submit() {
+    let mut peer = SilentPeer { written: 0 };
+
+    let result = write_awaiting_receipt_ack(
+        &mut peer,
+        &Request::RecordTargetTouch {
+            path: "/some/workspace/target".to_string(),
+            unix_seconds: 1_700_000_000,
+        },
+    );
+
+    assert!(
+        result.is_ok(),
+        "a missing ack must stay best-effort, not become an error: {result:?}"
+    );
+    assert!(
+        peer.written > 0,
+        "the request frame should still have been written to the peer"
+    );
+}

@@ -214,11 +214,7 @@ impl From<std::io::Error> for ClientError {
 /// the platforms where it always was.
 pub fn submit_fire_and_forget(sock_path: &Path, req: &Request) -> Result<(), ClientError> {
     if let Some(mut stream) = connect_through_override(sock_path, HOT_PATH_TIMEOUT)? {
-        write_frame_sync(&mut stream, req)?;
-        if let Err(error) = read_frame_sync::<_, Response>(&mut stream) {
-            note_missing_ack(req, &format!("{error}"));
-        }
-        return Ok(());
+        return write_awaiting_receipt_ack(&mut stream, req);
     }
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         submit_fire_and_forget_windows(sock_path, req)
@@ -228,12 +224,32 @@ pub fn submit_fire_and_forget(sock_path: &Path, req: &Request) -> Result<(), Cli
         // store write), 200ms worst case against a wedged or pre-ack
         // daemon.
         let mut stream = connect(sock_path, HOT_PATH_TIMEOUT)?;
-        write_frame_sync(&mut stream, req)?;
-        if let Err(error) = read_frame_sync::<_, Response>(&mut stream) {
-            note_missing_ack(req, &format!("{error}"));
-        }
-        Ok(())
+        write_awaiting_receipt_ack(&mut stream, req)
     }
+}
+
+/// Write `req` on an already-connected stream and consume its receipt ack.
+///
+/// The ack is bounded, never required: a daemon that predates soldr#2558 does
+/// not send one, and failing here would turn every such daemon into a hard
+/// error on the wrapper's per-invocation hot path. soldr#2785 only made the
+/// missing ack visible; it must not promote it to a failure.
+///
+/// Takes the stream rather than a socket path (soldr#2955) so that contract is
+/// provable against a peer the test constructs itself. It was previously
+/// covered by installing a silent peer in `CONTROL_CONNECTOR`, a `OnceLock`
+/// whose first writer wins for the whole process — in the consolidated
+/// `daemon` test binary that stub outlived its own test and replaced the live
+/// daemon connection of every sibling that ran after it.
+fn write_awaiting_receipt_ack<S: Read + Write>(
+    stream: &mut S,
+    req: &Request,
+) -> Result<(), ClientError> {
+    write_frame_sync(stream, req)?;
+    if let Err(error) = read_frame_sync::<_, Response>(stream) {
+        note_missing_ack(req, &format!("{error}"));
+    }
+    Ok(())
 }
 
 /// Submit `req`, wait for one `Response`, return it.
@@ -626,15 +642,40 @@ fn is_deadline_error(err: &std::io::Error) -> bool {
 pub fn compile_streaming<O, E>(
     sock_path: &Path,
     req: CompileRequest,
+    stdout: O,
+    stderr: E,
+) -> Result<CompileDoneInfo, ClientError>
+where
+    O: Write,
+    E: Write,
+{
+    compile_streaming_with_timeout(sock_path, req, stdout, stderr, compile_reply_timeout())
+}
+
+/// [`compile_streaming`] with the reply budget passed in rather than resolved
+/// from the process environment.
+///
+/// soldr#2955: [`compile_reply_timeout`] memoizes in a `OnceLock`, so the
+/// first caller in a process fixes the deadline for every later one. A test
+/// that needed a short budget had to win that race by setting
+/// `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` before any sibling read the timeout,
+/// which the consolidated `daemon` test binary cannot guarantee under plain
+/// `cargo test` — and the loser silently inherited a budget it never asked
+/// for. Production callers keep going through [`compile_streaming`], so the
+/// env override and its memoization are unchanged.
+pub fn compile_streaming_with_timeout<O, E>(
+    sock_path: &Path,
+    req: CompileRequest,
     mut stdout: O,
     mut stderr: E,
+    reply_timeout: Duration,
 ) -> Result<CompileDoneInfo, ClientError>
 where
     O: Write,
     E: Write,
 {
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-        compile_streaming_windows(sock_path, req, &mut stdout, &mut stderr)
+        compile_streaming_windows(sock_path, req, &mut stdout, &mut stderr, reply_timeout)
     } else {
         // Honour `Response::Backpressure` (soldr#1853). Compile admission
         // used to be `#[cfg(windows)]`-only, so this transport accepted every
@@ -655,7 +696,7 @@ where
             // reported when that wait is what expires.
             let dial_started = std::time::Instant::now();
             for attempt in 0..BACKPRESSURE_RETRY_LIMIT {
-                let mut stream = connect(sock_path, compile_reply_timeout())?;
+                let mut stream = connect(sock_path, reply_timeout)?;
                 write_frame_sync(&mut stream, &Request::Compile(req.clone()))?;
                 // soldr#1838: `read_frame_sync` blocks for the whole compile
                 // budget (30 min by default). Report progress while it does,
@@ -663,7 +704,7 @@ where
                 // guard stops on drop, so a fast compile prints nothing.
                 let _heartbeat = super::wait_heartbeat::WaitHeartbeat::start(
                     "daemon compile reply",
-                    compile_reply_timeout(),
+                    reply_timeout,
                     Some(REPLY_TIMEOUT_ENV),
                 );
                 // soldr#1838: a daemon that accepts the connection and then
@@ -735,7 +776,7 @@ where
         let progress = super::wait_heartbeat::StreamProgress::new();
         let _stream_heartbeat = super::wait_heartbeat::WaitHeartbeat::start_streaming(
             "daemon compile stream",
-            compile_reply_timeout(),
+            reply_timeout,
             Some(REPLY_TIMEOUT_ENV),
             std::sync::Arc::clone(&progress),
         );

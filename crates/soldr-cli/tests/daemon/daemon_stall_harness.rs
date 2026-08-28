@@ -9,30 +9,15 @@
 //! and then never answers really does surface as `CompileStalled` with
 //! `saw_output: false`, rather than a connection error or a hang.
 //!
-//! # Why this test needs a process to itself
-//!
-//! `client::compile_reply_timeout()` caches its value in a `OnceLock`, so the
-//! first caller in a process fixes the deadline for every later caller in that
-//! process — first write wins, and nothing can reset it. This test sets
-//! `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` expecting to be that first caller, which
-//! is how it gets a deterministic short budget with no test-only seam in the
-//! production timeout function and no ordering hazard for other tests.
-//!
-//! That isolation used to come from this file being its own integration-test
-//! binary, one process per file. It no longer does: soldr#2934 consolidated
-//! `crates/soldr-cli/tests/` so each category directory is a single binary
-//! (98 separate static links produced a 3.3 GB CI archive that exhausted a
-//! runner's disk), and this file is now a module inside the `daemon` binary
-//! alongside `cli_daemon_target_touch.rs` and the rest. What provides the
-//! isolation today is cargo-nextest, which runs every test in its own
-//! process — a stronger guarantee than the old per-file binary ever gave,
-//! since that binary still shared one process across all of its own tests.
-//!
-//! The caveat: under plain `cargo test`, which shares a single process across
-//! every test in the `daemon` binary, this test and its siblings can race on
-//! that `OnceLock` — whoever reads the timeout first wins and the loser sees a
-//! budget it never asked for. That is one more reason the suite must be run
-//! with `soldr cargo nextest run`.
+//! The short deadline is passed straight to
+//! `client::compile_streaming_with_timeout`. It used to be requested by
+//! setting `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` and relying on being the first
+//! caller of `compile_reply_timeout()`, whose `OnceLock` gives the whole
+//! process whatever the winner of that race asked for — which this test cannot
+//! win from inside the shared `daemon` category binary, and which handed its
+//! own budget to every sibling when it did (soldr#2955). Nothing here is
+//! process-global now, so the test is order-independent under both plain
+//! `cargo test` and nextest.
 //!
 //! # Both transports
 //!
@@ -45,7 +30,7 @@ use std::time::Duration;
 
 /// Short enough that the test finishes quickly, long enough that a loaded
 /// runner does not mistake normal scheduling for the stall being tested.
-const STALL_BUDGET_SECS: &str = "3";
+const STALL_BUDGET: Duration = Duration::from_secs(3);
 
 /// How long the fake daemon stays silent. Must outlive the client's budget so
 /// the client times out rather than seeing a closed endpoint, which would be a
@@ -109,9 +94,6 @@ impl Drop for WedgeGuard {
 
 #[test]
 fn a_daemon_that_accepts_then_never_answers_reports_a_wedged_stall() {
-    // Must happen before anything touches `compile_reply_timeout()`.
-    std::env::set_var("SOLDR_COMPILE_REPLY_TIMEOUT_SECS", STALL_BUDGET_SECS);
-
     let (endpoint, _wedge) = spawn_wedged_daemon();
 
     let request = soldr_cli::daemon::protocol::CompileRequest {
@@ -126,8 +108,13 @@ fn a_daemon_that_accepts_then_never_answers_reports_a_wedged_stall() {
     let mut stdout: Vec<u8> = Vec::new();
     let mut stderr: Vec<u8> = Vec::new();
     let started = std::time::Instant::now();
-    let result =
-        soldr_cli::daemon::client::compile_streaming(&endpoint, request, &mut stdout, &mut stderr);
+    let result = soldr_cli::daemon::client::compile_streaming_with_timeout(
+        &endpoint,
+        request,
+        &mut stdout,
+        &mut stderr,
+        STALL_BUDGET,
+    );
     let elapsed = started.elapsed();
 
     let error = result.expect_err("a daemon that never answers must not report success");
@@ -157,7 +144,7 @@ fn a_daemon_that_accepts_then_never_answers_reports_a_wedged_stall() {
     // default, which is exactly what Phase 4 wants provable.
     assert!(
         elapsed < WEDGE_HOLD,
-        "the stall must be bounded by SOLDR_COMPILE_REPLY_TIMEOUT_SECS, took {elapsed:?}"
+        "the stall must be bounded by the reply budget the caller passed in, took {elapsed:?}"
     );
     assert!(
         stdout.is_empty() && stderr.is_empty(),
