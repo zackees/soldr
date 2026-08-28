@@ -122,6 +122,7 @@ fn windows_runtime() -> std::io::Result<tokio::runtime::Runtime> {
 async fn open_compile_pipe_with_backpressure(
     sock_path: &Path,
     req: &CompileRequest,
+    reply_timeout: Duration,
 ) -> std::io::Result<(crate::platform::ipc::connect::BoxedAsyncStream, Response)> {
     for attempt in 0..BACKPRESSURE_RETRY_LIMIT {
         let opened = crate::platform::ipc::connect::open_pipe_with_retry(sock_path).await?;
@@ -130,7 +131,7 @@ async fn open_compile_pipe_with_backpressure(
         compile_req.ipc_busy_retries = compile_req
             .ipc_busy_retries
             .saturating_add(opened.busy_retries);
-        let first = tokio::time::timeout(compile_reply_timeout(), async {
+        let first = tokio::time::timeout(reply_timeout, async {
             write_frame_async(&mut stream, &Request::Compile(compile_req)).await?;
             read_frame_async(&mut stream).await
         })
@@ -138,7 +139,7 @@ async fn open_compile_pipe_with_backpressure(
         .map_err(|_| {
             crate::platform::ipc::connect::pipe_timeout_error(
                 "daemon IPC compile admission",
-                compile_reply_timeout(),
+                reply_timeout,
             )
         })??;
         match first {
@@ -278,6 +279,7 @@ fn compile_streaming_windows<O, E>(
     req: CompileRequest,
     stdout: &mut O,
     stderr: &mut E,
+    reply_timeout: Duration,
 ) -> Result<CompileDoneInfo, ClientError>
 where
     O: Write,
@@ -310,7 +312,7 @@ where
             };
             runtime.block_on(async move {
                 let (mut stream, first_frame) = match open_compile_pipe_with_backpressure(
-                    &sock_path, &req,
+                    &sock_path, &req, reply_timeout,
                 )
                 .await
                 {
@@ -325,7 +327,7 @@ where
                     let frame = match first_frame.take() {
                         Some(frame) => frame,
                         None => match timeout(
-                            compile_reply_timeout(),
+                            reply_timeout,
                             read_frame_async::<_, Response>(&mut stream),
                         )
                         .await
@@ -339,7 +341,7 @@ where
                                 let _ = tx.send(StreamMsg::Err(ClientError::Io(
                                     crate::platform::ipc::connect::pipe_timeout_error(
                                         "daemon IPC compile read",
-                                        compile_reply_timeout(),
+                                        reply_timeout,
                                     ),
                                 )));
                                 return;
@@ -432,7 +434,7 @@ where
     let progress = super::wait_heartbeat::StreamProgress::new();
     let _stream_heartbeat = super::wait_heartbeat::WaitHeartbeat::start_streaming(
         "daemon compile stream",
-        compile_reply_timeout(),
+        reply_timeout,
         Some(REPLY_TIMEOUT_ENV),
         std::sync::Arc::clone(&progress),
     );

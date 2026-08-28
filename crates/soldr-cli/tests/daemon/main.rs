@@ -15,7 +15,6 @@ mod cli_daemon_lifecycle;
 mod cli_daemon_single_instance;
 mod cli_daemon_target_touch;
 mod cli_debug_trace_observer;
-mod daemon_ack_best_effort;
 mod daemon_cache_maintenance;
 mod daemon_restart_warmth;
 mod daemon_stall_harness;

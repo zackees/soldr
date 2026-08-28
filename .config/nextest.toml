@@ -80,8 +80,8 @@ max-threads = 1
 filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_stall_harness)::/))'
 test-group = 'soldr-runtime'
 
-# Note the `daemon` binary carries three more modules -- `cli_debug_trace_observer`,
-# `daemon_ack_best_effort`, `inherited_stdio_spawns_mark_spoke` -- and the
+# Note the `daemon` binary carries two more modules -- `cli_debug_trace_observer`,
+# `inherited_stdio_spawns_mark_spoke` -- and the
 # `broker` binary three more -- `broker_identity_pipe`, `broker_identity_unix`,
 # `isolated_daemon_shared_copy`. They were never in this group, so the module
 # lists stay explicit rather than collapsing to a bare `binary(daemon)`.
