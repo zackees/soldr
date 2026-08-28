@@ -384,13 +384,26 @@ mod tests {
         crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
     }
 
+    /// Sleep `seconds` in a `cmd` one-liner without `timeout.exe`.
+    ///
+    /// The Windows target-run lanes put an MSYS `timeout` ahead of the Windows
+    /// one on PATH, so `timeout /T 30 /NOBREAK` there fails instantly with
+    /// `timeout: invalid time interval '/T'` and the child exits rather than
+    /// sleeping. `ping -n` is the sleep the repo's own fake-cargo fixtures
+    /// already use for this reason. `-n` counts pings, not gaps, so a
+    /// `seconds`-long wait needs `seconds + 1`.
+    fn windows_sleep(seconds: u64) -> String {
+        format!("ping -n {} 127.0.0.1 >nul", seconds + 1)
+    }
+
     /// A shell that prints, sleeps, prints again -- outliving the budget while
     /// never being silent for it.
     fn chatty_command(chunks: usize, gap_secs: u64) -> Command {
         if host_is_windows() {
             let mut command = Command::new("cmd");
             command.arg("/C").arg(format!(
-                "for /L %i in (1,1,{chunks}) do @(echo tick & timeout /T {gap_secs} /NOBREAK >nul) & echo done"
+                "for /L %i in (1,1,{chunks}) do @(echo tick & {}) & echo done",
+                windows_sleep(gap_secs)
             ));
             command
         } else {
@@ -422,7 +435,7 @@ mod tests {
         let _guard = EnvGuard::set(COMMAND_OUTPUT_TIMEOUT_ENV_VAR, "1");
         let mut command = if host_is_windows() {
             let mut c = Command::new("cmd");
-            c.arg("/C").arg("timeout /T 30 /NOBREAK >nul");
+            c.arg("/C").arg(windows_sleep(30));
             c
         } else {
             let mut c = Command::new("sh");
