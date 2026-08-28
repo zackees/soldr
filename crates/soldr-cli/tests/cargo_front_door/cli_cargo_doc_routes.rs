@@ -722,67 +722,71 @@ fn rustdoc_driver_is_intentionally_direct_without_zccache() {
     );
 }
 
+fn assert_normal_cargo_doc_route(label: &str, args: &[&str]) {
+    let cache_root = unique_temp_dir(&format!("cargo-doc-rustdoc-policy-{label}"));
+    let log_path = cache_root.join("tool.log");
+    let source_path = write_rustdoc_source(&cache_root);
+    let (rustup, cargo, rustc, _rustdoc, _zccache) =
+        install_fake_cargo_doc_toolchain(&log_path, &source_path);
+
+    let result = run_cargo_doc_route(CargoDocRoute {
+        label,
+        args,
+        cache_root: &cache_root,
+        log_path: &log_path,
+        cargo: &cargo,
+        rustc: &rustc,
+        rustup: &rustup,
+        hold_phase: None,
+    })
+    .unwrap_or_else(|error| panic!("failed to run soldr doc route {label}: {error}"));
+    let CargoDocRouteResult::Completed(output) = result else {
+        panic!("normal cargo-doc route {label} unexpectedly timed out");
+    };
+
+    assert!(
+        output.status.success(),
+        "cargo doc route {label} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    // An absent private marker is enabled by contract; only an explicit `0`
+    // disables caching. The wrapped fake-rustc assertion below proves the
+    // behavioral path instead of overfitting Windows self-relocation.
+    let cargo_doc = log
+        .lines()
+        .find(|line| line.starts_with("cargo doc wrapper="))
+        .unwrap_or_else(|| panic!("cargo doc invocation missing from log: {log}"));
+    assert!(
+        !cargo_doc.contains("wrapper= ") && !cargo_doc.contains("cache=0"),
+        "cargo doc should run with cache enabled and a wrapper: {cargo_doc}"
+    );
+    assert!(
+        log.lines().any(|line| line.starts_with("rustc ")),
+        "cargo doc route {label} should reach the wrapped rustc path: {log}"
+    );
+    assert!(
+        log.lines().any(|line| line.starts_with("rustdoc ")),
+        "cargo doc route {label} should invoke rustdoc directly: {log}"
+    );
+    let diagnostics = format!(
+        "stdout:\n{}\nstderr:\n{}\nlog:\n{log}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_cargo_doc_phase_order(label, &output.phase_markers, &diagnostics);
+}
+
 #[test]
 fn cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct() {
-    for (label, args) in [
-        ("cargo-doc", vec!["cargo", "doc"]),
-        ("bare-doc", vec!["doc"]),
-    ] {
-        let cache_root = unique_temp_dir(&format!("cargo-doc-rustdoc-policy-{label}"));
-        let log_path = cache_root.join("tool.log");
-        let source_path = write_rustdoc_source(&cache_root);
-        let (rustup, cargo, rustc, _rustdoc, _zccache) =
-            install_fake_cargo_doc_toolchain(&log_path, &source_path);
+    assert_normal_cargo_doc_route("cargo-doc", &["cargo", "doc"]);
+}
 
-        let result = run_cargo_doc_route(CargoDocRoute {
-            label,
-            args: &args,
-            cache_root: &cache_root,
-            log_path: &log_path,
-            cargo: &cargo,
-            rustc: &rustc,
-            rustup: &rustup,
-            hold_phase: None,
-        })
-        .unwrap_or_else(|error| panic!("failed to run soldr doc route {label}: {error}"));
-        let CargoDocRouteResult::Completed(output) = result else {
-            panic!("normal cargo-doc route {label} unexpectedly timed out");
-        };
-
-        assert!(
-            output.status.success(),
-            "cargo doc route {label} failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
-        // An absent private marker is enabled by contract; only an explicit
-        // `0` disables caching. The wrapped fake-rustc assertion below proves
-        // the behavioral path instead of overfitting Windows self-relocation.
-        let cargo_doc = log
-            .lines()
-            .find(|line| line.starts_with("cargo doc wrapper="))
-            .unwrap_or_else(|| panic!("cargo doc invocation missing from log: {log}"));
-        assert!(
-            !cargo_doc.contains("wrapper= ") && !cargo_doc.contains("cache=0"),
-            "cargo doc should run with cache enabled and a wrapper: {cargo_doc}"
-        );
-        assert!(
-            log.lines().any(|line| line.starts_with("rustc ")),
-            "cargo doc route {label} should reach the wrapped rustc path: {log}"
-        );
-        assert!(
-            log.lines().any(|line| line.starts_with("rustdoc ")),
-            "cargo doc route {label} should invoke rustdoc directly: {log}"
-        );
-        let diagnostics = format!(
-            "stdout:\n{}\nstderr:\n{}\nlog:\n{log}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        assert_cargo_doc_phase_order(label, &output.phase_markers, &diagnostics);
-    }
+#[test]
+fn bare_doc_keeps_rustc_wrapped_but_rustdoc_direct() {
+    assert_normal_cargo_doc_route("bare-doc", &["doc"]);
 }
 
 /// soldr#2944: a held fake-Cargo phase must fail under the harness-owned
