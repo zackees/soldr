@@ -169,6 +169,39 @@ fn dylint_command(root: &Path) -> std::process::Command {
     command
 }
 
+fn install_conflicting_rustup(root: &Path) -> PathBuf {
+    let tools = root.join("tools");
+    fs::create_dir_all(&tools).expect("create fake tool dir");
+    let rustup = fake_script_path(&tools, "rustup");
+    let rustc = fake_script_path(&tools, "rustc");
+    let log = root.join("tool.log");
+    write_script(
+        &rustup,
+        format!(
+            r#"#!/bin/sh
+echo "rustup argv=$*" >> "{log}"
+case "${{1:-}}" in
+  which) printf '%s\n' "{rustc}"; exit 0 ;;
+  component)
+    case "${{2:-}}" in
+      list) printf '%s\n' 'rustc-dev-x86_64-unknown-linux-gnu'; exit 0 ;;
+      add)
+        echo "error: failed to install component: 'rust-src', detected conflict: 'library/.cargo/config.toml'" >&2
+        exit 101
+        ;;
+    esac
+    ;;
+esac
+echo "unexpected fake rustup invocation: $*" >&2
+exit 87
+"#,
+            log = log.display(),
+            rustc = rustc.display(),
+        ),
+    );
+    rustup
+}
+
 #[test]
 fn dylint_front_door_preserves_direct_and_nested_compiler_chains() {
     if matches!(
@@ -297,6 +330,66 @@ fn dylint_front_door_preserves_failing_nested_diagnostics_and_exit() {
             && log.contains("dylint-driver argv=")
             && log.contains("dylint_nested"),
         "top-level soldr dylint did not preserve the nested failure chain: {log}"
+    );
+}
+
+/// soldr#2947: rustup itself can fail a required Dylint component add with a
+/// conflict. Its live stderr is the evidence for the narrowly conditional
+/// reset instruction; Soldr must not auto-uninstall a user toolchain or append
+/// the generic "Soldr fault" annotation.
+#[test]
+fn dylint_component_conflict_preserves_rustup_stderr_and_names_reset() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+    let root = unique_temp_dir("dylint-component-conflict");
+    let channel = format!(
+        "nightly-2026-05-26-{}",
+        soldr_cli::pyo3_detect::host_triple()
+    );
+    let rustup = install_conflicting_rustup(&root);
+    let output = dylint_command(&root)
+        .env_remove("SOLDR_DYLINT_PREPARED_IDENTITY")
+        .env("SOLDR_TEST_RUSTUP_BIN", rustup)
+        .args(["dylint", "--all"])
+        .output()
+        .expect("run soldr dylint with a conflicting rustup component");
+
+    // The command surface retains its established error exit, while the
+    // rustup child status is preserved in the Dylint diagnostic below.
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("detected conflict"),
+        "live rustup stderr was not relayed: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "rustup failed to add rust-src to {channel} (exit 101)"
+        )),
+        "rustup's exit status was not preserved: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "If rustup output above says `detected conflict`, run `soldr rustup toolchain uninstall {channel}` then rerun `soldr dylint`."
+        )),
+        "missing exact conflict remedy: {stderr}"
+    );
+    assert!(
+        !stderr.contains("this is a fault in soldr itself"),
+        "a child-explained rustup failure must not be annotated as a Soldr fault: {stderr}"
+    );
+    let log = fs::read_to_string(root.join("tool.log")).expect("read fake tool log");
+    assert!(
+        log.contains("rustup argv=component add --toolchain") && log.contains(" rust-src"),
+        "the required rust-src add did not reach fake rustup: {log}"
+    );
+    assert!(
+        !log.contains("toolchain uninstall"),
+        "Soldr must only instruct the operator; it must not uninstall automatically: {log}"
     );
 }
 
