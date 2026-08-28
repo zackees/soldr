@@ -531,11 +531,19 @@ fn fake_always_slow_cargo_script(log_path: &Path, ready_path: Option<&Path>) -> 
     }
 }
 
+/// Cold target-run workers can spend several seconds setting up Soldr before
+/// they ever spawn Cargo.  This only bounds the test observer; it is not the
+/// Cargo wall-clock timeout under test.
+const FAKE_CARGO_STARTUP_OBSERVATION_BUDGET: Duration = Duration::from_secs(30);
+
 fn wait_for_fake_cargo_ready(ready_path: &Path, label: &str) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + FAKE_CARGO_STARTUP_OBSERVATION_BUDGET;
     while !ready_path.is_file() {
         if Instant::now() >= deadline {
-            panic!("{label}: fake cargo never reached its ready phase");
+            panic!(
+                "{label}: pre-child startup never reached fake Cargo's ready phase within {}s; the Cargo timeout under test has not started",
+                FAKE_CARGO_STARTUP_OBSERVATION_BUDGET.as_secs()
+            );
         }
         std::thread::sleep(Duration::from_millis(25));
     }
