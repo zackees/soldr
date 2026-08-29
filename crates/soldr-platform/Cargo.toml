@@ -12,9 +12,9 @@ publish = false
 # Dependency-leaf crate (issue #2493): soldr-platform must NOT depend on
 # soldr-core, soldr-fetch, soldr-cache, soldr-daemon, soldr-cli, or zccache.
 # Only external libraries needed for host primitives may appear here.
-# `running-process` is the external process-creation boundary (resolved to
-# the vendored submodule by the workspace [patch] tables, like every other
-# soldr crate).
+# `running-process` is the external process-creation boundary, consumed as an
+# exact crates.io pin. soldr#2837 retired the vendored `_vender/` submodule and
+# the workspace [patch] tables that used to redirect it.
 
 [dependencies]
 blake3 = "1"

@@ -356,17 +356,36 @@ jobs:
 
       # Every target-run lane builds with ci-nextest so the archive step
       # reuses the same target profile instead of compiling a second tree.
-      # soldr#1248: legacy musl lanes repeatedly spend several minutes in
-      # cook restore for later builds that are already ~4 min from rust-cache.
-      # soldr#1248: x64 MSVC and Darwin now build quickly from
-      # rust-cache + the blessed target env, while cook restore/save alone can
-      # take ~9-12 min on a fresh profile/cache key. Keep the lanes and
-      # archive coverage, but skip cook for these targets until
-      # setup-soldr/cook grows a cost gate. The GNU lane is included after
-      # run 32852360808 spent 526 s restoring + 478 s saving around a 278 s
-      # compile. Soldr now records the observations needed for that gate
-      # (#2866), but this pinned external action must implement and release
-      # the corresponding restore decision before GNU is re-enabled.
+      # Cook is currently skipped for 8 of the 9 targets this template is
+      # called with; only x86_64-pc-windows-gnu falls outside the list below,
+      # and it does so by accident of an exclusion list rather than by
+      # decision. soldr#2996 replaces this with an explicit allowlist.
+      #
+      # CORRECTION (soldr#2996): the evidence that disabled cook was misread,
+      # and the corrected reading is why cook is being restored rather than
+      # retired. This comment previously said run 32852360808 "spent 526 s
+      # restoring + 478 s saving around a 278 s compile". Neither number is
+      # what it was labelled -- from job 97816834126's own log:
+      #
+      #   * The 526 s "restore" restored ZERO bytes. Both cook keys missed
+      #     (`cook-cache-base: no entry for key ...`) so the action fell
+      #     through to a cold `soldr cook` that compiled ~700 dependencies.
+      #     That is a cache-MISS problem, not a transport problem.
+      #   * `soldr cook`'s own output that run was 83.0 MiB
+      #     (`soldr cook: indexed sha256=c50268a2c90e size=83.0 MiB`).
+      #   * The 478 s "save" was 472.8 s of `zstd -9`; the upload itself took
+      #     ~3 s at 413 MB/s. It compressed 1.62 GB because the post step runs
+      #     `soldr save --cache-dir <the whole target/>` AFTER the cross-build
+      #     and nextest-archive steps have written into target/ -- so a
+      #     cook-keyed entry carried linked test products, 20x cook's real
+      #     slice and a violation of this repo's own tier-3 rule.
+      #     Filed upstream as zackees/setup-soldr#499.
+      #
+      # So cook was never measured as slow transport; it was measured cold,
+      # with a broken save payload. The cost gate soldr already implements
+      # (`decide_cook_restore`, cargo_front_door/cook_hydrate.rs) still needs
+      # to ship in the pinned external action (#2866) before cook is
+      # re-enabled here.
       - name: Restore cooked dependency cache
         uses: zackees/setup-soldr/cook@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
@@ -463,8 +482,19 @@ jobs:
             test "$(dd if="$binary" bs=1 count=2 2>/dev/null)" = "MZ"
           fi
 
+      # soldr#2996: main CI already builds a ci-bootstrap soldr from this same
+      # SHA in `e2e-cross-bootstrap-soldr`, fans it out as an artifact, and
+      # exports SOLDR_BINARY pointing at it -- so rebuilding it here produced a
+      # byte-equivalent binary at ~87 s per GNU lane. ci.yml:606-610 added that
+      # fan-out precisely so a cache miss would not become several identical
+      # ~5 minute compiles; both GNU lanes were reintroducing the cost they
+      # were meant to avoid.
+      #
+      # Manual callers that omit `bootstrap_artifact_name` receive no artifact
+      # and never reach the "Expose bootstrap soldr on PATH" step, so they
+      # still build the proof driver locally.
       - name: Build current Soldr GNU proof driver
-        if: contains(inputs.target, 'unknown-linux-gnu')
+        if: contains(inputs.target, 'unknown-linux-gnu') && inputs.bootstrap_artifact_name == ''
         shell: bash
         env:
           RUSTC_WRAPPER: ""
@@ -483,8 +513,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The fanned-out bootstrap artifact is this SHA's ci-bootstrap soldr.
+          # Manual callers without that artifact fall back to the copy the
+          # step above builds in-tree.
+          proof_driver="${SOLDR_BINARY:-target/x86_64-unknown-linux-gnu/ci-bootstrap/soldr}"
+          test -x "$proof_driver"
           python3 .github/scripts/gnu_linux_toolchain_e2e.py \
-            --soldr target/x86_64-unknown-linux-gnu/ci-bootstrap/soldr \
+            --soldr "$proof_driver" \
             --target '${{ inputs.target }}' \
             --repo "$GITHUB_WORKSPACE"
 
