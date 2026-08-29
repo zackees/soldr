@@ -309,7 +309,11 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     # the validation DAG or leak an old daemon route into nested tests.
     flattened = " ".join(build_and_test.split())
     assert build_and_test.count("name: Run prescribed host validation") == 1
-    assert 'NEXTEST_TEST_THREADS: "1"' in build_and_test
+    # soldr#2996 Phase 8: 2 after measurement (3 runs vs 6 baseline runs,
+    # 4.0 min median saving, zero TIMEOUT lines). The compile-side limits
+    # asserted elsewhere stay at 1 -- the OOM rationale is about link
+    # concurrency, which test execution is not.
+    assert 'NEXTEST_TEST_THREADS: "2"' in build_and_test
     assert 'source_soldr="${GITHUB_WORKSPACE}/target/' in flattened
     assert 'SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr"' in flattened
     assert "bootstrap_wrapper" not in flattened
@@ -655,7 +659,13 @@ def test_external_zccache_bootstraps_get_exclusive_service_access() -> None:
     assert "SOLDR_JOBS" not in lint_job
     assert 'CARGO_BUILD_JOBS: "1"' in build_and_test
     assert 'SOLDR_JOBS: "1"' in build_and_test
-    assert 'NEXTEST_TEST_THREADS: "1"' in build_and_test
+    # soldr#2996 Phase 8: the two above stay at 1 -- they govern compile and
+    # link concurrency, which is what the swap headroom below is for. This
+    # one governs test execution, happens after linking, and moved to 2 on
+    # measurement (3 runs vs 6 baseline, 4.0 min median saving, zero TIMEOUT
+    # lines). It was pinned alongside them for a rationale that only ever
+    # applied to them.
+    assert 'NEXTEST_TEST_THREADS: "2"' in build_and_test
     assert "Enlarge swap (OOM headroom)" in build_and_test
 
 

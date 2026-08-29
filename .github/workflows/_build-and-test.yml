@@ -61,7 +61,25 @@ jobs:
       # Cargo's launch rate and the embedded compile service in this cold lane.
       CARGO_BUILD_JOBS: "1"
       SOLDR_JOBS: "1"
-      NEXTEST_TEST_THREADS: "1"
+      # soldr#2996 Phase 8, measured over 3 runs against 6 baseline runs.
+      #
+      # The OOM rationale above covers CARGO_BUILD_JOBS and SOLDR_JOBS, which
+      # govern compile/link concurrency. NEXTEST_TEST_THREADS governs test
+      # EXECUTION, which happens after linking and cannot cause a link OOM.
+      # All three were pinned together for a reason that applies to two.
+      #
+      # Expectations are bounded: the hot modules are already floored at
+      # serial execution by .config/nextest.toml's test-groups
+      # (soldr-runtime max-threads=1, soldr-cargo-cold-builds exclusive),
+      # which a global --test-threads does not lift. The gain can only come
+      # from overlapping the ungrouped body against that floor.
+      #
+      # Median nextest stage: 1,441,985 ms at 1 thread (6 samples) ->
+      # 1,200,200 ms at 2 (3 samples), a 4.0 min saving, with every
+      # threads=2 sample faster than every baseline sample and zero
+      # TIMEOUT lines. A single sample read 908,594 ms and would have
+      # overstated the effect ~2x, which is why the 3-run bar exists.
+      NEXTEST_TEST_THREADS: "2"
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
