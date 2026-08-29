@@ -451,8 +451,14 @@ pub(crate) async fn run_cargo_front_door(
     // soldr#2996: this used to also require a target-cache plan, which made
     // the packed-DWARF embedding below reachable only for callers who had
     // opted into a cache -- never on a default build. The capture is what
-    // produces the artifact closure, so it is gated on the build shape alone.
-    let capture_cargo_artifacts = build_like_cargo && !cargo_args_have_message_format(args);
+    // produces the artifact closure it consumes, so the gate is now the one
+    // condition under which that closure is worth anything: a Darwin host,
+    // where `split-debuginfo = "packed"` leaves the dSYM bundles the embed
+    // looks for. Off Darwin there are none, the embed is a no-op loop, and
+    // capturing cargo's JSON stream would be pure overhead.
+    let capture_cargo_artifacts = build_like_cargo
+        && !cargo_args_have_message_format(args)
+        && crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::MacOs;
     if capture_cargo_artifacts {
         // Cargo's JSON stream is line-oriented and preserves rendered
         // diagnostics in the message payload. It lets us build an exact
