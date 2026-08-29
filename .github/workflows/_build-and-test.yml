@@ -61,7 +61,7 @@ jobs:
       # Cargo's launch rate and the embedded compile service in this cold lane.
       CARGO_BUILD_JOBS: "1"
       SOLDR_JOBS: "1"
-      # soldr#2996 Phase 8 EXPERIMENT -- not for merge as-is.
+      # soldr#2996 Phase 8, measured over 3 runs against 6 baseline runs.
       #
       # The OOM rationale above covers CARGO_BUILD_JOBS and SOLDR_JOBS, which
       # govern compile/link concurrency. NEXTEST_TEST_THREADS governs test
@@ -74,7 +74,11 @@ jobs:
       # which a global --test-threads does not lift. The gain can only come
       # from overlapping the ungrouped body against that floor.
       #
-      # Baseline to beat, main run 33255923629: nextest stage 1,352,751 ms.
+      # Median nextest stage: 1,441,985 ms at 1 thread (6 samples) ->
+      # 1,200,200 ms at 2 (3 samples), a 4.0 min saving, with every
+      # threads=2 sample faster than every baseline sample and zero
+      # TIMEOUT lines. A single sample read 908,594 ms and would have
+      # overstated the effect ~2x, which is why the 3-run bar exists.
       NEXTEST_TEST_THREADS: "2"
 
     steps:

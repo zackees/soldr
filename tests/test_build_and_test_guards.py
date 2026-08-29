@@ -112,10 +112,10 @@ def test_ci_test_is_the_only_host_test_orchestration_entrypoint() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     body = _step_body(workflow, CI_TEST_RUN)
     assert workflow.count(f"- name: {CI_TEST_RUN}") == 1
-    # soldr#2996 Phase 8 EXPERIMENT: temporarily 2 while the effect is
-    # measured. Reverts to "1" unless the run shows a win, and the guard
-    # goes back to pinning the exact value either way -- the resource
-    # contract is meant to be a deliberate number, not a free variable.
+    # soldr#2996 Phase 8: 2 after measurement (3 runs vs 6 baseline runs,
+    # 4.0 min median saving, zero TIMEOUT lines). Pinned exactly rather
+    # than as a range -- the resource contract is a deliberate number, so
+    # the next change to it should be visible in review.
     assert 'NEXTEST_TEST_THREADS: "2"' in workflow
     assert 'SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr"' in body
     assert "bootstrap_wrapper" not in body
