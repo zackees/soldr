@@ -851,7 +851,24 @@ jobs:
           --token "$GH_TOKEN"
           --job-prefix "target-run x86_64-apple-darwin"
           --runner "macos-15"
-          --grace-seconds 900
+          # soldr#2968 moved the x86_64 replay onto `macos-15`, where the
+          # aarch64 target-run already lives. The two now contend for one
+          # runner pool instead of `macos-15` + the retired `macos-15-intel`,
+          # so the x86 lane routinely queues behind its ARM sibling -- which
+          # takes 19-25 minutes (19m16s on #3006, 24m35s on #2971).
+          #
+          # A 900s grace was calibrated when x86_64 had a pool to itself. It
+          # now fires *deterministically* whenever the sibling is running,
+          # reporting starvation for a lane that is merely waiting its turn.
+          # That inverts the point of #2968: the watchdog exists to tell a
+          # stuck lane from a slow one, and at 15 minutes it could no longer
+          # tell the difference.
+          #
+          # 2700s sits clear of a full sibling occupancy plus scheduling
+          # slack, and still far below the failure this guards -- #2968's
+          # Intel lane sat queued for 80+ minutes and was never going to
+          # start at all.
+          --grace-seconds 2700
           --poll-seconds 30
           --github-summary "$GITHUB_STEP_SUMMARY"
 

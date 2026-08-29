@@ -42,4 +42,10 @@ def test_queue_watchdog_observes_without_needing_target_run() -> None:
     assert "e2e-macos-x64" not in observer.replace("e2e-macos-x64-build", "")
     assert "runs-on: ubuntu-24.04" in observer
     assert "target_run_queue_watchdog.py" in observer
-    assert "--grace-seconds 900" in observer
+    # soldr#2968 put the x86_64 replay on `macos-15`, where the aarch64
+    # target-run already runs, so the two contend for one pool. The sibling
+    # takes 19-25 minutes, which a 900s grace cannot outlast -- the watchdog
+    # reported starvation for a lane that was only waiting its turn. The
+    # value it guards is "never going to start" (#2968's Intel lane sat
+    # queued 80+ minutes), not "queued behind its sibling".
+    assert "--grace-seconds 2700" in observer
