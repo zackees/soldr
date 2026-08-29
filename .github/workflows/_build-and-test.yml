@@ -254,6 +254,25 @@ jobs:
           source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
           SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr" \
             ci-test --target "${{ inputs.target }}"
+
+      # soldr#2996 Phase 6 proposes persisting `target/dylint/` -- the only
+      # mechanism that reaches the 638s Dylint block, since Swatinem/rust-cache
+      # deletes those trees at save time and a per-unit object cache alone
+      # still misses. The directive admits at most one cache family beyond
+      # `soldr cook` against a 5 GB budget, so the carve-out has to be costed
+      # before it is granted. Nobody has the number; this reports it.
+      #
+      # `always()` because the sizes are just as interesting when ci-test
+      # failed, and the script reports rather than fails, so it can never be
+      # the reason this lane goes red.
+      - name: Report Dylint tree sizes
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/report_dylint_tree_size.py
+
       - name: Stop canonical host CI cache
         if: always()
         continue-on-error: true
