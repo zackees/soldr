@@ -1,13 +1,11 @@
 use crate::cargo_front_door::profile_debug::CargoProfileDebugDefault;
 use crate::core::{SoldrError, SoldrPaths};
 use crate::native_cc;
-use crate::rust_plan::{self, RustArtifactPlanContext, RustPlanRestoreOutcome};
 use crate::zccache::{prepare_rustc_wrapper_plan, RustcWrapperPlan, ZccacheBuildSession};
 
 pub(crate) struct CargoCachePlan {
     cache_enabled_for_cargo: bool,
     rustc_wrapper: Option<RustcWrapperPlan>,
-    rust_artifact_plan: Option<RustArtifactPlanContext>,
 }
 
 /// Handle to an in-flight zccache wrapper-plan prefetch, kicked off at
@@ -112,7 +110,6 @@ impl CargoCachePlan {
         Ok(Self {
             cache_enabled_for_cargo,
             rustc_wrapper,
-            rust_artifact_plan: None,
         })
     }
 
@@ -133,16 +130,16 @@ impl CargoCachePlan {
         Ok(Self {
             cache_enabled_for_cargo,
             rustc_wrapper,
-            rust_artifact_plan: None,
         })
     }
 
+    /// Caching disabled, no wrapper. The aborted-run cleanup path resolves
+    /// its target directory from the cargo args, so this is all it needs.
     #[cfg(test)]
-    pub(crate) fn for_test_with_rust_artifact_plan(plan: RustArtifactPlanContext) -> Self {
+    pub(crate) fn for_test_without_wrapper() -> Self {
         Self {
-            cache_enabled_for_cargo: true,
+            cache_enabled_for_cargo: false,
             rustc_wrapper: None,
-            rust_artifact_plan: Some(plan),
         }
     }
 
@@ -170,101 +167,8 @@ impl CargoCachePlan {
         Ok(())
     }
 
-    pub(crate) fn prepare_rust_artifact_plan(
-        &mut self,
-        cargo: &std::path::Path,
-        rustc: &std::path::Path,
-        args: &[String],
-        cargo_profile_debug_default: Option<&CargoProfileDebugDefault>,
-        toolchain_channel_override: Option<&str>,
-    ) -> Result<(), SoldrError> {
-        let Some(session) = self.zccache_session() else {
-            return Ok(());
-        };
-        self.rust_artifact_plan = rust_plan::maybe_prepare_rust_artifact_plan(
-            cargo,
-            rustc,
-            args,
-            session,
-            cargo_profile_debug_default,
-            toolchain_channel_override,
-        )?;
-        Ok(())
-    }
-
     pub(crate) fn target_dir_for_hooks(&self, args: &[String]) -> Option<std::path::PathBuf> {
-        self.rust_artifact_plan
-            .as_ref()
-            .map(|plan| std::path::PathBuf::from(&plan.target_dir))
-            .or_else(|| super::resolve_target_dir_for_hooks(args))
-    }
-
-    pub(crate) fn restore_rust_artifacts(&self) -> Result<RustPlanRestoreOutcome, SoldrError> {
-        let Some(plan) = self.rust_artifact_plan.as_ref() else {
-            return Ok(RustPlanRestoreOutcome::NotAttempted);
-        };
-        if let Some(reason) = rust_plan::should_skip_warm_restore(plan) {
-            eprintln!("{reason}");
-            Ok(RustPlanRestoreOutcome::Skipped)
-        } else {
-            let summary = rust_plan::run_zccache_rust_plan(plan, "restore", false)?;
-            Ok(RustPlanRestoreOutcome::Restored {
-                restored_file_count: summary.restored_file_count,
-            })
-        }
-    }
-
-    /// `restore_outcome` is what [`Self::restore_rust_artifacts`] returned
-    /// earlier this invocation (issue #1538): when it was
-    /// [`RustPlanRestoreOutcome::Skipped`] and this build's zccache session
-    /// recorded zero rustc-wrapper invocations, `target/` provably holds
-    /// exactly what the last successful save already wrote, so the save
-    /// (and its target walk/copy/rehash) is skipped entirely. The
-    /// warm-restore sentinel is still refreshed unconditionally — that's a
-    /// cheap two-small-file write, not a target walk — so the skip window
-    /// keeps sliding forward instead of going stale.
-    pub(crate) fn save_rust_artifacts(
-        &self,
-        restore_outcome: RustPlanRestoreOutcome,
-    ) -> Result<(), SoldrError> {
-        if let Some(plan) = self.rust_artifact_plan.as_ref() {
-            let compilations_this_build = self.zccache_session().and_then(|session| {
-                crate::cache::compilations_since_baseline(&session.cache_dir, &session.session_id)
-            });
-            if let Some(reason) = rust_plan::should_skip_rust_plan_save(
-                plan,
-                restore_outcome,
-                compilations_this_build,
-            ) {
-                eprintln!("{reason}");
-            } else {
-                rust_plan::run_zccache_rust_plan(plan, "save", true)?;
-            }
-            rust_plan::write_warm_restore_sentinel(plan);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn record_cargo_artifact_closure(
-        &self,
-        paths: &[String],
-        complete: bool,
-    ) -> Result<(), SoldrError> {
-        if let Some(plan) = self.rust_artifact_plan.as_ref() {
-            rust_plan::record_cargo_artifact_closure(&plan.path, paths, complete)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn has_rust_artifact_plan(&self) -> bool {
-        self.rust_artifact_plan.is_some()
-    }
-
-    pub(crate) fn prune_orphan_rmetas_after_failed_build(&self) -> usize {
-        self.rust_artifact_plan
-            .as_ref()
-            .map(rust_plan::prune_orphan_rmetas_after_failed_build)
-            .unwrap_or(0)
+        super::resolve_target_dir_for_hooks(args)
     }
 
     pub(crate) fn finish_zccache_session(
@@ -401,7 +305,6 @@ mod tests {
         let plan = CargoCachePlan {
             cache_enabled_for_cargo: true,
             rustc_wrapper: Some(managed_wrapper_plan()),
-            rust_artifact_plan: None,
         };
 
         plan.apply_to_command(&mut command, Some("x86_64-unknown-linux-gnu"))
@@ -459,7 +362,6 @@ mod tests {
         let plan = CargoCachePlan {
             cache_enabled_for_cargo: true,
             rustc_wrapper: Some(managed_wrapper_plan()),
-            rust_artifact_plan: None,
         };
 
         plan.apply_to_command(&mut command, Some("x86_64-unknown-linux-gnu"))
@@ -482,7 +384,6 @@ mod tests {
         let plan = CargoCachePlan {
             cache_enabled_for_cargo: true,
             rustc_wrapper: Some(managed_wrapper_plan()),
-            rust_artifact_plan: None,
         };
 
         plan.apply_to_command(&mut command, Some("x86_64-pc-windows-gnu"))
@@ -524,7 +425,6 @@ mod tests {
                 wrapper: OsString::from("sccache"),
                 sccache_dir: Some(std::path::PathBuf::from("/tmp/sccache")),
             }),
-            rust_artifact_plan: None,
         };
         assert!(!plan.uses_managed_zccache());
 
@@ -558,7 +458,6 @@ mod tests {
         let plan = CargoCachePlan {
             cache_enabled_for_cargo: true,
             rustc_wrapper: Some(RustcWrapperPlan::Disabled),
-            rust_artifact_plan: None,
         };
         assert!(!plan.uses_managed_zccache());
 
@@ -589,7 +488,6 @@ mod tests {
         let plan = CargoCachePlan {
             cache_enabled_for_cargo: true,
             rustc_wrapper: Some(RustcWrapperPlan::Disabled),
-            rust_artifact_plan: None,
         };
 
         plan.apply_to_command(&mut command, Some("x86_64-pc-windows-gnu"))
@@ -615,7 +513,6 @@ mod tests {
         let plan = CargoCachePlan {
             cache_enabled_for_cargo: false,
             rustc_wrapper: None,
-            rust_artifact_plan: None,
         };
 
         plan.apply_to_command(&mut command, None)

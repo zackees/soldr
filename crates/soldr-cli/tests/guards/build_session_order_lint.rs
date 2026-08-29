@@ -69,10 +69,6 @@ const FALLIBLE_PRE_SPAWN_STEPS: &[(&str, &str)] = &[
         "cache-plan application",
     ),
     (
-        "cache_plan.restore_rust_artifacts()?",
-        "rust-artifact restoration",
-    ),
-    (
         "no_cache_detach::prepare_target_for_unmediated_build(",
         "no-cache ownership detachment",
     ),

@@ -21,7 +21,6 @@ mod cli_exec;
 mod cli_front_door_cold_start;
 mod cli_reentrancy_guard;
 mod cli_reentrancy_guard_canary;
-mod cli_rust_plan;
 mod cli_wrapper;
 mod cli_wrapper_identity;
 mod cli_wrapper_perf;

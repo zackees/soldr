@@ -106,7 +106,6 @@ EXPERIMENT_WORKFLOWS: frozenset[str] = frozenset(
         "parent-cache-bench.yml",
         "perf-cold-warm.yml",
         "perf-matrix.yml",
-        "thin-v2-verify.yml",
     }
 )
 

@@ -83,7 +83,6 @@ BASELINE: frozenset[tuple[str, str]] = frozenset(
         ("cross-compile-all-targets.yml", "cross-compile"),
         ("docker-linux-cross-smoke.yml", "smoke"),
         ("perf-matrix.yml", "gate"),
-        ("thin-v2-verify.yml", "verify"),
     }
 )
 

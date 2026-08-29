@@ -49,6 +49,7 @@ mod inputs;
 mod line_endings;
 mod log_summary;
 pub(crate) mod no_cache_detach;
+mod orphan_rmeta;
 mod profile_debug;
 mod strip_diagnostics;
 mod subcommand;

@@ -180,7 +180,7 @@ pub(crate) fn probe_shared_target_warning(workspace: &Path) -> ProbeResult {
         };
     }
 
-    let fingerprint_dirs_found = crate::rust_plan::count_populated_fingerprint_dirs(&target_dir, 3);
+    let fingerprint_dirs_found = count_populated_fingerprint_dirs(&target_dir, 3);
     let would_warn = fingerprint_dirs_found > 0;
     // ok=true even when would_warn=true: the probe successfully made a
     // diagnosis. The caller decides whether the warning is a blocker.
@@ -514,6 +514,44 @@ fn emit_human(output: &DoctorOutput) {
         println!("  [{status}] {} {}", probe.name, probe.details);
     }
     println!("soldr toolchain doctor: {} ms", output.elapsed_ms);
+}
+
+// soldr#2996: relocated from the deleted `rust_plan` module, whose target
+// cache was removed. This probe is the only remaining consumer.
+/// Count `.fingerprint/` directories under `root` (up to `max_depth` levels)
+/// that contain at least one entry. The walk stops descending once a
+/// `.fingerprint/` is encountered — cargo never nests another inside.
+fn count_populated_fingerprint_dirs(root: &std::path::Path, max_depth: usize) -> usize {
+    let mut count = 0usize;
+    walk_for_fingerprint_dirs(root, max_depth, &mut count);
+    count
+}
+
+fn walk_for_fingerprint_dirs(dir: &std::path::Path, remaining_depth: usize, count: &mut usize) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if path.file_name().is_some_and(|n| n == ".fingerprint") {
+            // Only count as "populated" if at least one entry exists.
+            let populated = std::fs::read_dir(&path)
+                .map(|mut iter| iter.next().is_some())
+                .unwrap_or(false);
+            if populated {
+                *count += 1;
+            }
+            continue;
+        }
+        if remaining_depth > 0 {
+            walk_for_fingerprint_dirs(&path, remaining_depth - 1, count);
+        }
+    }
 }
 
 #[cfg(test)]

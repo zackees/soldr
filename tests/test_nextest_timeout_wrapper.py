@@ -328,10 +328,6 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
         "cargo_doc_route_execution_budget_leaves_cleanup_headroom",
     ):
         assert excluded_doc_test not in doc_route_tests, cold_filter
-    assert (
-        "test(=cli_rust_plan::cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled)"
-        in cold_filter
-    ), cold_filter
     # soldr#2737: `cli_cargo_basic` is scoped as a whole unit because 19 of its
     # 21 tests drive `isolated_soldr_command`. Its per-test entry is subsumed
     # and must not come back alongside the module one -- two entries covering
