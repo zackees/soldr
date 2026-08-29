@@ -143,6 +143,11 @@ impl SessionAggregate {
 
 type SessionAggregates = Arc<Mutex<HashMap<u64, SessionAggregate>>>;
 
+/// The synchronous persistence operation owned by the drain task. Keeping it
+/// injectable lets the retention contract be tested without manufacturing a
+/// filesystem or SQLite failure whose lock lifetime belongs to the OS.
+type BatchWriter = Arc<dyn Fn(&Path, &[Event]) -> std::io::Result<()> + Send + Sync>;
+
 /// Commands accepted by the drain task.
 enum BatcherCmd {
     /// Stage a new event for the next batch.
@@ -187,8 +192,15 @@ impl EventBatcher {
     /// dropped (the receiver returns `None`, which the loop treats as a
     /// final flush + exit).
     pub fn start(db_path: PathBuf) -> Self {
+        Self::start_with_batch_writer(db_path, Arc::new(write_batch))
+    }
+
+    /// Start the drain task with its persistence operation. Production always
+    /// uses [`write_batch`]; tests use a deterministic one-shot failure to
+    /// prove that the same staged batch is retained for a later retry.
+    fn start_with_batch_writer(db_path: PathBuf, writer: BatchWriter) -> Self {
         let (tx, rx) = mpsc::channel::<BatcherCmd>(CHANNEL_CAPACITY);
-        tokio::spawn(drain_loop(db_path, rx));
+        tokio::spawn(drain_loop(db_path, rx, writer));
         Self {
             tx,
             aggregates: Arc::new(Mutex::new(HashMap::new())),
@@ -305,7 +317,7 @@ impl EventBatcher {
 
 /// Drain-loop entry point. Owns the in-memory staging buffer and the
 /// 100 ms heartbeat that flushes a partial batch.
-async fn drain_loop(db_path: PathBuf, mut rx: mpsc::Receiver<BatcherCmd>) {
+async fn drain_loop(db_path: PathBuf, mut rx: mpsc::Receiver<BatcherCmd>, writer: BatchWriter) {
     let mut buf: Vec<Event> = Vec::with_capacity(MAX_BATCH_ROWS);
     let mut interval = tokio::time::interval(MAX_BATCH_LATENCY);
     // Skip the first tick — `interval` fires immediately on the first
@@ -318,15 +330,15 @@ async fn drain_loop(db_path: PathBuf, mut rx: mpsc::Receiver<BatcherCmd>) {
                 Some(BatcherCmd::Insert(event)) => {
                     buf.push(event);
                     if buf.len() >= MAX_BATCH_ROWS {
-                        let _ = flush_batch(&db_path, &mut buf).await;
+                        let _ = flush_batch(&db_path, &mut buf, &writer).await;
                     }
                 }
                 Some(BatcherCmd::Flush(ack)) => {
-                    let result = flush_batch(&db_path, &mut buf).await;
+                    let result = flush_batch(&db_path, &mut buf, &writer).await;
                     let _ = ack.send(result);
                 }
                 Some(BatcherCmd::Shutdown(ack)) => {
-                    let result = flush_batch(&db_path, &mut buf).await;
+                    let result = flush_batch(&db_path, &mut buf, &writer).await;
                     let done = result.is_ok();
                     let _ = ack.send(result);
                     if done { return; }
@@ -334,13 +346,13 @@ async fn drain_loop(db_path: PathBuf, mut rx: mpsc::Receiver<BatcherCmd>) {
                 None => {
                     // Last sender dropped. Drain whatever is left and
                     // exit — no one is around to receive an ack.
-                    let _ = flush_batch(&db_path, &mut buf).await;
+                    let _ = flush_batch(&db_path, &mut buf, &writer).await;
                     return;
                 }
             },
             _ = interval.tick() => {
                 if !buf.is_empty() {
-                    let _ = flush_batch(&db_path, &mut buf).await;
+                    let _ = flush_batch(&db_path, &mut buf, &writer).await;
                 }
             }
         }
@@ -352,7 +364,11 @@ async fn drain_loop(db_path: PathBuf, mut rx: mpsc::Receiver<BatcherCmd>) {
 /// logged at `debug` and swallowed: the diagnostic events are
 /// best-effort and we never want a failed flush to take down the
 /// daemon.
-async fn flush_batch(db_path: &Path, buf: &mut Vec<Event>) -> Result<(), String> {
+async fn flush_batch(
+    db_path: &Path,
+    buf: &mut Vec<Event>,
+    writer: &BatchWriter,
+) -> Result<(), String> {
     if buf.is_empty() {
         return Ok(());
     }
@@ -373,8 +389,9 @@ async fn flush_batch(db_path: &Path, buf: &mut Vec<Event>) -> Result<(), String>
     // version applied.
     let batch = std::mem::take(buf);
     let path = db_path.to_path_buf();
+    let writer = Arc::clone(writer);
     let joined = tokio::task::spawn_blocking(move || {
-        let result = write_batch(&path, &batch);
+        let result = writer(&path, &batch);
         (result, batch)
     })
     .await;
@@ -484,7 +501,8 @@ mod tests {
                 sample_event(9, "one", None),
                 sample_event(9, "two", Some(1_000)),
             ];
-            flush_batch(&path, &mut buf).await.expect("flush");
+            let writer: BatchWriter = Arc::new(write_batch);
+            flush_batch(&path, &mut buf, &writer).await.expect("flush");
 
             // Persistence itself is covered by
             // `batcher_persists_rows_after_flush`; what matters here is that
@@ -645,37 +663,39 @@ mod tests {
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
             let path = dir.path().join("state.sqlite3");
+            crate::daemon::db::ensure_initialized(&path).expect("init");
 
-            // soldr#2714: the subject here is *batch retention*, not filesystem
-            // semantics, so reach the failed-then-recovered state without ever
-            // unlinking anything. This used to block the flush with a file
-            // where the parent directory belonged and then swap it for a real
-            // directory, which on Windows needs the deleted name to stop being
-            // delete-pending -- and any process holding a transient handle (a
-            // scanner, on CI) makes that unbounded. It timed out at 10s and
-            // failed a test that has nothing to do with unlink timing.
-            //
-            // Content, not path shape: a file that is not a database fails the
-            // open, and truncating it in place makes it a valid empty one
-            // (sqlite treats zero length as a fresh database). Both steps are
-            // in-place writes, so no name is ever deleted.
-            std::fs::write(&path, b"this file is not a sqlite database")
-                .expect("seed an unreadable database");
-            let batcher = EventBatcher::start(path.clone());
+            // soldr#2714: the subject is retention after a failed write, not
+            // SQLite's OS-owned file-lock lifetime. Fail the first writer call
+            // before it opens the database, then let the same batch retry
+            // through the production writer. This has no sleep, retry budget,
+            // delete/recreate, corruption, or reopen race on Windows.
+            let fail_once = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let writer: BatchWriter = {
+                let fail_once = Arc::clone(&fail_once);
+                Arc::new(move |path, batch| {
+                    if fail_once.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        return Err(std::io::Error::other("injected first-write failure"));
+                    }
+                    write_batch(path, batch)
+                })
+            };
+            let batcher = EventBatcher::start_with_batch_writer(path.clone(), writer);
             batcher
                 .record(sample_event(101, "retained", Some(7)))
                 .await
                 .expect("queue event");
             assert!(
                 batcher.flush().await.is_err(),
-                "an unreadable database must fail the flush"
+                "the injected first-write failure must fail the flush"
             );
-
-            std::fs::write(&path, b"").expect("truncate to an empty database");
-            crate::daemon::db::ensure_initialized(&path).expect("init");
             batcher.flush().await.expect("retry flush");
             let (count, _, _) = aggregate_session(&path, 101).expect("aggregate");
             assert_eq!(count, 1, "failed batch must be retried, not dropped");
+            assert!(
+                !fail_once.load(std::sync::atomic::Ordering::SeqCst),
+                "the deterministic first-write seam must have been consumed"
+            );
             batcher.shutdown().await.expect("shutdown");
         });
     }
