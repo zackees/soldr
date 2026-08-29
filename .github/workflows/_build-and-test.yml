@@ -80,10 +80,15 @@ jobs:
       # `rustup target add` is required. Components are installed further
       # down via the "Install requested Rust components" step.
       #
-      # soldr#1248/#2 follow-up: cache + soldr-cook stay disabled in
-      # this general build/test template while target/profile-shaped
-      # cook restore is reintroduced in the cross/release lanes first.
-      # Swatinem/rust-cache remains the authoritative target/ restore.
+      # soldr#2996: cook is not yet wired into this lane, and
+      # Swatinem/rust-cache is the current target/ restore -- but it is being
+      # deprecated, not kept. The `ws-dev-*` key it uses misses 100% of the
+      # time (its environment hash covers every toolchain in
+      # `rustup toolchain list`, so it flips with the Dylint nightly), and the
+      # replacement is a workflow-level `soldr cook` step ahead of ci-test.
+      # The older soldr#1248 wording here claimed cook restore was being
+      # "reintroduced in the cross/release lanes first"; that has pointed the
+      # wrong way since soldr#2867.
       # soldr#1340 — pre-cache the 1.95.0 toolchain in ~/.rustup so
       # setup-soldr finds it via its "Runner rustup home already
       # contains toolchain X" check and skips its own 9 s rustup
