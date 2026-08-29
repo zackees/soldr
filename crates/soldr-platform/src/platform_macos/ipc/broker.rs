@@ -56,7 +56,8 @@ impl UnixBindGuard {
 
 impl Drop for UnixBindGuard {
     fn drop(&mut self) {
-        use fs2::FileExt as _;
+        // `File::unlock` is inherent as of the pinned toolchain, so the
+        // `fs2::FileExt` import this used to need is now unused and denied.
         let _ = self.0.unlock();
     }
 }
