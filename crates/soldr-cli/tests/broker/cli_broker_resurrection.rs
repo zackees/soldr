@@ -2,11 +2,13 @@
 
 use crate::common;
 
+use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(50);
+const RESURRECTION_TEST_ENVELOPE: Duration = Duration::from_secs(45);
 
 fn stage_incumbent_broker(home: &Path) -> std::path::PathBuf {
     let broker_dir = home.join(".soldr").join("broker");
@@ -57,6 +59,45 @@ fn wait_for_child(child: &mut Child, deadline: Instant) -> Option<std::process::
     }
 }
 
+fn wait_for_path(path: &Path, deadline: Instant) -> bool {
+    while Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        std::thread::sleep(POLL);
+    }
+    path.exists()
+}
+
+fn kill_and_reap(child: &mut Child) {
+    if matches!(child.try_wait(), Ok(None)) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn read_child_stderr(child: &mut Child) -> String {
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    stderr
+}
+
+fn resurrection_failure_context(
+    home: &Path,
+    stale_stderr: &str,
+    replacement_stderr: &str,
+) -> String {
+    format!(
+        "broker status:\n{}\nbroker-spawn.log:\n{}\nstale owner stderr:\n{}\nreplacement owner stderr:\n{}",
+        broker_status(home),
+        spawn_log(home),
+        stale_stderr,
+        replacement_stderr,
+    )
+}
+
 fn spawn_log(home: &Path) -> String {
     std::fs::read_to_string(home.join(".soldr/broker/broker-spawn.log")).unwrap_or_default()
 }
@@ -87,6 +128,58 @@ fn stop_broker(home: &Path) {
         .env("USERPROFILE", home)
         .stdin(Stdio::null())
         .output();
+}
+
+fn stop_broker_and_confirm_absent(home: &Path) -> Result<(), String> {
+    let mut command = Command::new(common::soldr_bin());
+    common::scrub_outer_soldr_env(&mut command);
+    let output = command
+        .args(["broker", "stop"])
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("run broker stop: {error}"))?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() {
+        return Err(format!(
+            "broker stop exited {:?}: {combined}",
+            output.status.code()
+        ));
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut status = String::new();
+    while Instant::now() < deadline {
+        status = broker_status(home);
+        if status.contains("not running") {
+            return Ok(());
+        }
+        std::thread::sleep(POLL);
+    }
+    Err(format!(
+        "broker stop reported success but a route still owns the stable endpoint; \
+         stop output: {combined}; final status: {status}"
+    ))
+}
+
+fn cleanup_race_owners(
+    home: &Path,
+    stale_owner: &mut Child,
+    replacement_owner: &mut Child,
+    incumbent: &mut Child,
+) -> (String, String, Result<(), String>) {
+    kill_and_reap(stale_owner);
+    kill_and_reap(replacement_owner);
+    kill_and_reap(incumbent);
+    let stale_stderr = read_child_stderr(stale_owner);
+    let replacement_stderr = read_child_stderr(replacement_owner);
+    let stopped = stop_broker_and_confirm_absent(home);
+    (stale_stderr, replacement_stderr, stopped)
 }
 
 fn remove_broker(home: &Path) -> std::process::Output {
@@ -204,6 +297,275 @@ fn issue_2549_same_version_old_image_broker_is_never_replaced_automatically() {
     assert!(
         removal.status.success(),
         "`soldr broker remove` must succeed:\n{removal_output}"
+    );
+}
+
+#[test]
+fn issue_2920_known_bad_older_broker_is_retired_once_with_a_structured_outcome() {
+    let home = common::unique_temp_dir("broker-known-bad-retirement");
+    let old_instance = format!("soldr-0.9.0-{}", "0".repeat(64));
+    let mut incumbent = spawn_simulated_old_image_broker(&home, &old_instance);
+    let before = wait_for_broker_instance(&home, &old_instance);
+
+    let front_door = front_door_capturing_stderr(&home)
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run newer front door against known-bad broker");
+    let stderr = String::from_utf8_lossy(&front_door.stderr);
+    let incumbent_exit = wait_for_child(&mut incumbent, Instant::now() + Duration::from_secs(15));
+    let after = broker_status(&home);
+    let log = spawn_log(&home);
+    stop_broker(&home);
+
+    assert!(
+        before.contains(&old_instance),
+        "old broker never became ready: {before}"
+    );
+    assert!(
+        front_door.status.success(),
+        "front door failed: {stderr}\n{log}"
+    );
+    assert!(
+        incumbent_exit.is_some(),
+        "known-bad broker must be retired exactly once: {log}"
+    );
+    assert!(
+        !after.contains(&old_instance),
+        "replacement must not retain the old identity: {after}\n{log}"
+    );
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("stable endpoint bound at"))
+            .count(),
+        1,
+        "only the replacement may bind the stable endpoint: {log}"
+    );
+    let record = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("soldr: broker retirement "))
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()
+        .expect("retirement diagnostic is valid JSON")
+        .expect("retirement diagnostic is present");
+    assert_eq!(record["event"], "known_bad_broker_retirement");
+    assert_eq!(record["old_version"], "0.9.0");
+    assert_eq!(record["matched_range"], "=0.9.0");
+    assert_eq!(record["outcome"], "retired");
+    assert!(record["staged_image_removed"].as_bool().unwrap_or(false));
+}
+
+/// Every contender first observes the same known-bad broker, but only the
+/// lease holder may retire it and stage the replacement. This keeps the
+/// soldr#2920 exception single-flight rather than turning recovery into a
+/// second stampede.
+#[test]
+fn issue_2920_concurrent_newer_clients_retire_one_known_bad_broker() {
+    let home = common::unique_temp_dir("broker-known-bad-retirement-concurrent");
+    let old_instance = format!("soldr-0.9.0-{}", "0".repeat(64));
+    let mut incumbent = spawn_simulated_old_image_broker(&home, &old_instance);
+    let before = wait_for_broker_instance(&home, &old_instance);
+
+    let mut children: Vec<_> = (0..8)
+        .map(|_| {
+            front_door(&home)
+                .spawn()
+                .expect("spawn retirement contender")
+        })
+        .collect();
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let mut failures = Vec::new();
+    for child in &mut children {
+        match wait_for_child(child, deadline) {
+            Some(status) if status.success() => {}
+            Some(status) => failures.push(format!("pid {} exited {status}", child.id())),
+            None => {
+                failures.push(format!("pid {} did not exit", child.id()));
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    let incumbent_exit = wait_for_child(&mut incumbent, Instant::now() + Duration::from_secs(15));
+    let after = broker_status(&home);
+    let log = spawn_log(&home);
+    stop_broker(&home);
+
+    assert!(
+        before.contains(&old_instance),
+        "old broker never became ready: {before}"
+    );
+    assert!(
+        failures.is_empty(),
+        "newer clients must all complete: {failures:?}\n{log}"
+    );
+    assert!(
+        incumbent_exit.is_some(),
+        "the known-bad broker must be retired: {log}"
+    );
+    assert!(
+        !after.contains(&old_instance),
+        "the old broker must not still own the endpoint: {after}\n{log}"
+    );
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("stable endpoint bound at"))
+            .count(),
+        1,
+        "only one replacement may win the single-flight recovery: {log}"
+    );
+}
+
+/// soldr#2920: lease expiry after the old broker stops must not let the stale
+/// owner unlink a replacement endpoint or delete the image another lease
+/// holder just staged. The first contender intentionally pauses beyond the
+/// five-second lease after stop; the second owns recovery, while the first is
+/// fenced before cleanup.
+#[test]
+fn issue_2920_expired_retirement_lease_preserves_replacement_resources() {
+    let deadline = Instant::now() + RESURRECTION_TEST_ENVELOPE;
+    let home = common::unique_temp_dir("broker-known-bad-expired-lease");
+    let old_instance = format!("soldr-0.9.0-{}", "0".repeat(64));
+    let mut incumbent = spawn_simulated_old_image_broker(&home, &old_instance);
+    let before = wait_for_broker_instance(&home, &old_instance);
+    let stopped = home.join("known-bad-stopped");
+    let continue_stale_owner = home.join("allow-stale-owner-to-resume");
+    let replacement_ready = home.join("replacement-ready");
+
+    let mut stale_owner = front_door_capturing_stderr(&home);
+    stale_owner
+        .stderr(Stdio::piped())
+        .env("SOLDR_TEST_KNOWN_BAD_STOP_PAUSE_MS", "30000")
+        .env("SOLDR_TEST_KNOWN_BAD_STOP_READY_FILE", &stopped)
+        .env(
+            "SOLDR_TEST_KNOWN_BAD_STOP_CONTINUE_FILE",
+            &continue_stale_owner,
+        );
+    let mut stale_owner = stale_owner.spawn().expect("spawn stale retirement owner");
+    let stopped_observed = wait_for_path(&stopped, deadline);
+    let stale_owner_marked_replacement = replacement_ready.exists();
+
+    let mut replacement_owner = front_door_capturing_stderr(&home);
+    replacement_owner
+        .stderr(Stdio::piped())
+        // This is injected only into the contender that must prove its
+        // replacement is genuinely STATUS-ready. The stale owner cannot
+        // publish it while paused before cleanup.
+        .env(
+            "SOLDR_TEST_KNOWN_BAD_REPLACEMENT_READY_FILE",
+            &replacement_ready,
+        );
+    let mut replacement_owner = replacement_owner
+        .spawn()
+        .expect("spawn replacement owner after lease expiry");
+    let replacement_ready_observed = wait_for_path(&replacement_ready, deadline);
+    let replacement_status_text = broker_status(&home);
+    let image = home.join(".soldr").join("broker").join(
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            "soldr-broker.exe"
+        } else {
+            "soldr-broker"
+        },
+    );
+    let replacement_image = std::fs::read(&image).ok();
+
+    if !stopped_observed
+        || stale_owner_marked_replacement
+        || !replacement_ready_observed
+        || replacement_status_text.contains(&old_instance)
+        || replacement_image.is_none()
+    {
+        std::fs::write(&continue_stale_owner, b"continue\n").ok();
+        let (stale_stderr, replacement_stderr, cleanup) = cleanup_race_owners(
+            &home,
+            &mut stale_owner,
+            &mut replacement_owner,
+            &mut incumbent,
+        );
+        let diagnostics = resurrection_failure_context(&home, &stale_stderr, &replacement_stderr);
+        panic!(
+            "replacement never became ready before stale cleanup: stopped={stopped_observed} \
+             stale_owner_marked_replacement={stale_owner_marked_replacement} \
+             replacement_ready={replacement_ready_observed} old_instance_still_present={} \
+             staged_image_exists={} cleanup={cleanup:?}\n{diagnostics}",
+            replacement_status_text.contains(&old_instance),
+            replacement_image.is_some(),
+        );
+    }
+
+    // Only after a new owner answers STATUS and its image has been staged do
+    // we let the stale owner try cleanup. Its next lease renewal must fence
+    // and leave both replacement resources byte-for-byte intact.
+    std::fs::write(&continue_stale_owner, b"continue\n").expect("release stale owner");
+    let stale_status = wait_for_child(&mut stale_owner, deadline);
+    let replacement_status = wait_for_child(&mut replacement_owner, deadline);
+    let incumbent_exit = wait_for_child(&mut incumbent, deadline);
+    let after = broker_status(&home);
+    let image_after = std::fs::read(&image);
+    let (stale_stderr, replacement_stderr, cleanup) = cleanup_race_owners(
+        &home,
+        &mut stale_owner,
+        &mut replacement_owner,
+        &mut incumbent,
+    );
+    let diagnostics = format!(
+        "cleanup={cleanup:?}\n{}",
+        resurrection_failure_context(&home, &stale_stderr, &replacement_stderr)
+    );
+
+    assert!(
+        before.contains(&old_instance),
+        "old broker never became ready: {before}\n{diagnostics}"
+    );
+    assert!(
+        stopped.exists(),
+        "stale owner never reached the post-stop pause\n{diagnostics}"
+    );
+    assert!(
+        incumbent_exit.is_some(),
+        "the old broker must be stopped\n{diagnostics}"
+    );
+    assert!(
+        replacement_status.is_some_and(|status| status.success()),
+        "the replacement owner must fully recover the route: {replacement_status:?}\n{diagnostics}"
+    );
+    assert!(
+        !replacement_status_text.contains(&old_instance),
+        "the fully-started replacement must own the endpoint: {replacement_status_text}\n{diagnostics}"
+    );
+    assert!(
+        stale_status.is_some_and(|status| status.success()),
+        "the non-compiling version front door must preserve its exit contract: {stale_status:?}\n{diagnostics}"
+    );
+    let record = stale_stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("soldr: broker retirement "))
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()
+        .expect("fenced retirement diagnostic is valid JSON")
+        .expect("fenced retirement diagnostic is present");
+    assert_eq!(record["outcome"], "failed");
+    assert!(
+        record["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("broker resurrection lease was fenced")),
+        "the structured failure must identify the lost lease: {record}\n{diagnostics}"
+    );
+    assert!(
+        !after.contains(&old_instance),
+        "the replacement must remain bound after stale cleanup is fenced: {after}\n{diagnostics}"
+    );
+    assert_eq!(
+        image_after.expect("the stale owner must retain the replacement image"),
+        replacement_image.expect("replacement staged image exists"),
+        "the stale owner must not modify the replacement's staged image: {}",
+        image.display()
+    );
+    assert!(
+        cleanup.is_ok(),
+        "race cleanup must stop the detached broker and leave no stable endpoint owner: {cleanup:?}\n{diagnostics}"
     );
 }
 
