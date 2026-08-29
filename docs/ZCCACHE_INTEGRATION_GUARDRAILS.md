@@ -32,7 +32,6 @@ Run these hard gates for zccache integration refactor waves:
 soldr --no-cache cargo nextest run -p soldr-cli --test guards -E 'test(/^no_standalone_spawn_lint::/)'
 soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^zccache_trampoline_gate::/)'
 soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^cli_cargo_wrappers::/)'
-soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^cli_rust_plan::/)'
 soldr --no-cache cargo nextest run -p soldr-cli --test cache_gc -E 'test(/^cli_cache::/)'
 soldr --no-cache cargo nextest run -p soldr-cli --lib cache::session::tests
 soldr --no-cache cargo nextest run -p soldr-cli --lib native_cc::tests
@@ -69,7 +68,6 @@ gh workflow run perf-matrix.yml -f platforms=linux -f fixtures=medium -f scenari
   external zccache binary/session variables are cleared, and
   `ZCCACHE_PATH_REMAP` / `ZCCACHE_WORKTREE_ROOT` retain their documented
   propagation rules.
-- `rust-plan-cache`: locks in-process rust-plan restore before Cargo and save
   after Cargo, the artifact bundle location, partial-restore diagnostics, and
   compile-count-driven warm-save decisions.
 - `disabled-and-non-build`: locks cache-scoping on the two axes that must
@@ -82,8 +80,8 @@ gh workflow run perf-matrix.yml -f platforms=linux -f fixtures=medium -f scenari
   exact responder-generation tracking. A daemon that acknowledges shutdown is
   allowed to finish durability work and is never force-killed; timeout
   diagnostics remain bounded at the CLI boundary.
-- `setup-action-outputs`: locks setup-soldr cache outputs, target-cache mode,
-  target-cache keys, and native-cache policy output.
+- `setup-action-outputs`: locks setup-soldr cache outputs and native-cache
+  policy output.
 - `release-npm-staging`: locks release archive manifest validation, the
   embedded zccache runtime declaration, crgx staging, and npm-exported contract
   files.

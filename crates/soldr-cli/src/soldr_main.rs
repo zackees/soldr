@@ -12,10 +12,10 @@ use crate::{
     cli_dispatch, compile_dispatch, cook, core, daemon, defender, defender_probe, doctor,
     dylint_cook, env_cmd, exec_cmd, exit_guard, fetch, fuzzy_match, gc, install_shims, linker,
     lint_cmd, logs_cmd, msvc_host, multicall, native_cc, optimize, optimize_detect,
-    optimize_windows, prepare_cmd, pyo3_detect, release_sidecar, rust_plan, save_load,
-    self_relocate, shim_dir, shim_materialize, startup_profile, startup_trace, target_alias,
-    test_util, toolchain, toolchain_doctor, toolchain_ensure, toolchain_link, trampoline,
-    version_trampoline, wrapper, wrapper_target, zccache, zccache_embedded, zccache_lifecycle,
+    optimize_windows, prepare_cmd, pyo3_detect, release_sidecar, save_load, self_relocate,
+    shim_dir, shim_materialize, startup_profile, startup_trace, target_alias, test_util, toolchain,
+    toolchain_doctor, toolchain_ensure, toolchain_link, trampoline, version_trampoline, wrapper,
+    wrapper_target, zccache, zccache_embedded, zccache_lifecycle,
 };
 
 pub(crate) use crate::cli_args::{

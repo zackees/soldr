@@ -131,7 +131,10 @@ jobs:
           cache-dir: ${{ runner.temp }}/setup-soldr-action-state
           cache-key-suffix: dogfood-action-state
           build-cache: false
-          target-cache: true
+          # soldr#2996 removed soldr's target-cache implementation, so the
+          # action's layer has nothing left to drive. Kept explicit rather
+          # than defaulted until the input itself is retired upstream.
+          target-cache: false
           # This workflow builds and tests soldr explicitly below. Running
           # soldr-cook here compiles the same workspace first, and release-only
           # Cargo.lock version bumps invalidate its whole-lockfile cache key.

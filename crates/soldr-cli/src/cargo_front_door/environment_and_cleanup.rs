@@ -203,7 +203,12 @@ fn cleanup_after_aborted_cargo_run(
     args: &[String],
     timeout: bool,
 ) -> CargoAbortCleanupReport {
-    let orphan_rmetas_pruned = cache_plan.prune_orphan_rmetas_after_failed_build();
+    let orphan_rmetas_pruned = cache_plan
+        .target_dir_for_hooks(args)
+        .map(|target_dir| {
+            orphan_rmeta::prune_orphan_rmetas_after_failed_build(&target_dir)
+        })
+        .unwrap_or(0);
     let incremental_dirs_removed = if timeout {
         cache_plan
             .target_dir_for_hooks(args)

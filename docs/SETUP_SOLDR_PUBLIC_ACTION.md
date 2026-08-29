@@ -80,6 +80,8 @@ steps:
 
 `v0` should treat these inputs as the beta public contract:
 
+> **Deprecated (soldr#2996).** soldr no longer implements a target cache, so the `target-cache` / `target-cache-mode` / `target-dir` inputs and the `target-cache-hit` / `target-cache-mode` outputs are inert: nothing on the soldr side reads the environment they export. They remain listed because the pinned action still declares them; retiring the inputs themselves is an upstream change. Use `soldr cook`, which is the only durable compiler cache.
+
 | Input | Meaning |
 |---|---|
 | `version` | Soldr release tag or version to install. Empty means latest release. |

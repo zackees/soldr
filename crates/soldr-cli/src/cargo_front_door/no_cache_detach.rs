@@ -99,7 +99,7 @@ fn resolve_target_directory_with_env(
 
     let mut probe = std::process::Command::new(tool);
     probe.args(["metadata", "--format-version", "1", "--no-deps"]);
-    probe.args(crate::rust_plan::cargo_metadata_passthrough_args(args));
+    probe.args(cargo_metadata_passthrough_args(args));
     crate::binaries::apply_resolved_toolchain_homes(&mut probe, tool);
     suppress_windows_console_window(&mut probe);
     probe.env_remove("MAKEFLAGS");
@@ -664,3 +664,39 @@ fn remove_shared_alias(parent: &Dir, name: &OsStr, source: File) -> std::io::Res
 
 #[cfg(test)]
 mod tests;
+
+// soldr#2996: relocated from the deleted `rust_plan` module, whose target
+// cache was removed. This detach probe is the only remaining consumer.
+fn cargo_metadata_passthrough_args(args: &[String]) -> Vec<std::ffi::OsString> {
+    let mut values = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            break;
+        }
+        match arg.as_str() {
+            "--locked" | "--offline" | "--frozen" | "--all-features" | "--no-default-features" => {
+                values.push(arg.as_str().into())
+            }
+            "--manifest-path" | "--config" | "--features" | "--filter-platform" => {
+                if let Some(value) = iter.next() {
+                    values.push(arg.as_str().into());
+                    values.push(value.as_str().into());
+                }
+            }
+            _ => {
+                for flag in [
+                    "--manifest-path=",
+                    "--config=",
+                    "--features=",
+                    "--filter-platform=",
+                ] {
+                    if arg.starts_with(flag) {
+                        values.push(arg.as_str().into());
+                    }
+                }
+            }
+        }
+    }
+    values
+}

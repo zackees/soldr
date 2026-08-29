@@ -385,16 +385,17 @@ pub(crate) async fn run_cargo_front_door(
         command.env("CARGO_BUILD_TARGET", target);
     }
     let known_cargo_target = target::known_cargo_build_target(args, explicit_target.as_deref());
-    let cargo_profile_debug_default = if build_like_cargo {
+    // Applies the profile-debug default to `command`; soldr#2996 dropped the
+    // returned descriptor along with the target cache plan that consumed it,
+    // but the env mutation here is still required.
+    if build_like_cargo {
         profile_debug::maybe_apply_cargo_profile_debug_default(
             &mut command,
             args,
             &paths,
             known_cargo_target.as_deref(),
-        )?
-    } else {
-        None
-    };
+        )?;
+    }
     // soldr#1610/#1614: every cargo-backed build surface consumes the
     // same target-aware PyO3 plan. The resolver is conservative: it only
     // injects PYO3_NO_PYTHON for a proven cross ABI3 extension, never for
@@ -428,7 +429,7 @@ pub(crate) async fn run_cargo_front_door(
     // rationale). We thread it through `finalize` for symmetry with the
     // old synchronous API so that future divergence between the two
     // flags doesn't silently rewire the prefetch decision.
-    let mut cache_plan =
+    let cache_plan =
         CargoCachePlan::finalize(cache_enabled_for_cargo, cache_plan_prefetch).await?;
     profile.mark("cache_plan_finalize");
     cache_plan.apply_to_command(&mut command, native_cache_target.as_deref())?;
@@ -447,16 +448,11 @@ pub(crate) async fn run_cargo_front_door(
         );
     }
 
-    cache_plan.prepare_rust_artifact_plan(
-        &cargo,
-        &rustc,
-        args,
-        cargo_profile_debug_default.as_ref(),
-        dylint_plan.as_ref().map(|plan| plan.channel.as_str()),
-    )?;
-    let capture_cargo_artifacts = build_like_cargo
-        && cache_plan.has_rust_artifact_plan()
-        && !cargo_args_have_message_format(args);
+    // soldr#2996: this used to also require a target-cache plan, which made
+    // the packed-DWARF embedding below reachable only for callers who had
+    // opted into a cache -- never on a default build. The capture is what
+    // produces the artifact closure, so it is gated on the build shape alone.
+    let capture_cargo_artifacts = build_like_cargo && !cargo_args_have_message_format(args);
     if capture_cargo_artifacts {
         // Cargo's JSON stream is line-oriented and preserves rendered
         // diagnostics in the message payload. It lets us build an exact
@@ -492,7 +488,6 @@ pub(crate) async fn run_cargo_front_door(
             } => gc::disk::reclaim_then_block(&watchdog_path, free_bytes, threshold_gib)?,
         }
     }
-    let restore_outcome = cache_plan.restore_rust_artifacts()?;
 
     // A preceding cached build may have materialized immutable outputs as
     // protected hardlinks to cache blobs. Whenever the finalized wrapper plan
@@ -760,9 +755,7 @@ pub(crate) async fn run_cargo_front_door(
                     cache_plan.target_dir_for_hooks(args).as_deref(),
                     paths,
                 )?;
-                cache_plan.record_cargo_artifact_closure(paths, !paths.is_empty())?;
             }
-            cache_plan.save_rust_artifacts(restore_outcome)?;
             if let Some(plan) = trampoline_plan.as_ref() {
                 refresh_sidecar_after_cargo(plan);
             }
@@ -774,7 +767,9 @@ pub(crate) async fn run_cargo_front_door(
             // `--extern X=orphan.rmeta` to dependents and rustc cannot link
             // an rmeta-only crate. Sweep them so the next build rebuilds
             // cleanly. See soldr#410.
-            cache_plan.prune_orphan_rmetas_after_failed_build();
+            if let Some(target_dir) = cache_plan.target_dir_for_hooks(args) {
+                orphan_rmeta::prune_orphan_rmetas_after_failed_build(&target_dir);
+            }
         }
         Ok(())
     })();

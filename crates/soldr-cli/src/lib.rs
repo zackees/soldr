@@ -285,7 +285,6 @@ mod prepare_state_tests;
 pub mod pyo3_detect;
 pub mod reentrancy_guard;
 pub mod release_sidecar;
-pub mod rust_plan;
 pub mod save_load;
 pub mod session_transport;
 pub mod shim_dir;

@@ -50,7 +50,7 @@ runs in the `Lint` job on every PR; see `test_cache_ownership.py`.
   (cache key shapes, target-cache modes, native-cache policy).
 - `test_setup_soldr_*.py` — additional unit tests for each
   `.github/actions/setup-soldr/*.py` helper.
-- `test_cli.py`, `test_bootstrap_act_image.py`, `test_assert_thin_*.py` —
+- `test_cli.py`, `test_bootstrap_act_image.py` —
   Python-side glue for CLI smoke tests and the `nektos/act` smoke image.
 - `fixtures/` — golden files (e.g. exporter expected outputs).
 - `conftest.py` — shared fixtures and path bootstrap.

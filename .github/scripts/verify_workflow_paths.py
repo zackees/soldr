@@ -9,13 +9,10 @@ Not hypothetical. `crates/soldr-cli/src/cache_lib/**` moved to
 `crates/soldr-cache/` in the #1490 Phase 4 workspace split (commit 9aefa762),
 and two workflows kept watching the old location:
 
-* `thin-v2-verify.yml` -- the target-cache slice verifier, whose entire
-  subject is that cache library;
-* `cook-size-gate.yml` -- which also named `cache_lib/strip_target.rs`
-  directly.
-
-Both had been dark for changes to the code they exist to guard ever since, and
-neither ever went red, because a workflow that never triggers cannot.
+`cook-size-gate.yml` named `cache_lib/strip_target.rs` directly, and a
+since-removed target-cache slice verifier watched the same library. Both had
+been dark for changes to the code they exist to guard ever since, and neither
+ever went red, because a workflow that never triggers cannot.
 
 The check is about *existence*, not correctness: it cannot tell whether a
 filter watches the right thing, only that it watches something real. That is

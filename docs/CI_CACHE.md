@@ -23,6 +23,11 @@ You get, for free:
 
 The rest of this document explains how and why that works.
 
+> **Deprecated (soldr#2996).** soldr no longer implements a target cache. The
+> `target-cache*` inputs and outputs described below are inert on the soldr
+> side; `soldr cook` is the only durable compiler cache. Retiring the inputs
+> themselves is an upstream change to the action.
+
 ## Cache Ownership And Priority
 
 Cache admission is decided by **the stability of the artifact's identity key
@@ -179,28 +184,6 @@ After two pushes to the same branch, you should be able to confirm the cache lin
    not produce compiler-cache reuse; check whether the target-cache layer also
    restored and whether Cargo invalidated fingerprints before zccache could
    hit.
-
-## Debugging Target-Cache Restores That Still Rebuild
-
-A restored Rust artifact plan cache is only a fast path when Cargo still considers the restored fingerprints fresh. Some crates have build scripts that do not declare narrow inputs with `cargo:rerun-if-changed=` or `cargo:rerun-if-env-changed=` lines. For those crates, Cargo can fall back to broad package/source fingerprint inputs. A fresh GitHub checkout may then have different source mtimes than the checkout that produced the restored artifacts, so Cargo rebuilds that package even though `target-cache-hit` is `true`.
-
-Use Cargo's fingerprint diagnostics to confirm this failure mode:
-
-```yaml
-- name: Build with Cargo fingerprint diagnostics
-  env:
-    CARGO_LOG: cargo::core::compiler::fingerprint=info
-  run: soldr cargo build
-```
-
-Look for lines like:
-
-```text
-fingerprint dirty for <crate> ... target="build-script-build"
-dirty: PrecalculatedComponentsChanged { ... }
-```
-
-That means the cache restored correctly, but Cargo invalidated a build-script fingerprint before zccache had a chance to make the command a no-op. The right fix is usually in the crate that owns the build script: emit precise `cargo:rerun-if-changed=` and `cargo:rerun-if-env-changed=` lines for the real inputs. `setup-soldr` should not hide this by blindly normalizing source mtimes, because that can mask real source changes and make Cargo's invalidation model harder to reason about.
 
 ## Debugging Cold Misses
 

@@ -33,37 +33,19 @@ PAIRS = [
         "crates/soldr-core/src/core/wire_proto.rs",
     ),
     (
-        "crates/soldr-cli/src/rust_plan_manifest.proto",
-        "crates/soldr-cli/src/rust_plan_proto.rs",
-    ),
-    (
-        "crates/soldr-cli/src/rust_plan_memo.proto",
-        "crates/soldr-cli/src/rust_plan_memo.rs",
-    ),
-    (
         "crates/soldr-cache/src/cache_lib/manifest.proto",
         "crates/soldr-cache/src/cache_lib/save.rs",
     ),
 ]
 
 
-# Messages whose Rust type lives in another repository. soldr's copy of
-# `rust_plan_manifest.proto` mirrors zccache's; the bundle-manifest types are
-# implemented on the zccache side (`crates/zccache-artifact/src/rust_plan/`),
-# so soldr has no prost struct for them and that is correct, not drift.
+# Messages whose Rust type lives in another repository.
 #
 # An entry here is a reviewed exception naming where the type actually lives,
-# not a way to silence a finding.
-CROSS_REPO_MESSAGES = {
-    "crates/soldr-cli/src/rust_plan_manifest.proto": {
-        "RustArtifactBundleManifest": (
-            "zccache 1.13.7 amalgamated crate: artifact::rust_plan::proto"
-        ),
-        "RustBundledArtifact": (
-            "zccache 1.13.7 amalgamated crate: artifact::rust_plan::proto"
-        ),
-    },
-}
+# not a way to silence a finding. soldr#2996 emptied this map when the target
+# cache was removed: its only entries mirrored zccache's bundle-manifest types
+# for `rust_plan_manifest.proto`, which no longer exists.
+CROSS_REPO_MESSAGES: dict[str, dict[str, str]] = {}
 
 # soldr copies of schemas owned by a vendored repo. Keeping the copy identical
 # to its origin is the whole point -- soldr#2753's second drift was this

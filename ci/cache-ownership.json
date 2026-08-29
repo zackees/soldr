@@ -17,7 +17,10 @@
     "same-run-transport": "A bundle handed from one job to another INSIDE one workflow run via upload-artifact/download-artifact. Not a cache: it is keyed by run id, never restored into a later run, and discarded on retention expiry. This is the only sanctioned way a linked test archive may be moved to a target-run lane -- it must be compact and budgeted, and it must never be written to a cross-run store.",
     "bootstrap-driver-binary": "The host bootstrap `soldr` that DRIVES a lane (spawns the broker, prepares blessed SDKs). Keyed on the exact commit SHA, so the key is maximally stable; one binary, no test products. It is the compiler for the lane, not an output under test. Beyond the four exceptions named in soldr#2931; recorded here because the class exists in-tree and needed a name."
   },
-  "durable_tiers": ["cook", "zccache-unit"],
+  "durable_tiers": [
+    "cook",
+    "zccache-unit"
+  ],
   "experiment_workflows": [
     "baseline-zero-deps.yml",
     "cache-delta-experiment.yml",
@@ -27,11 +30,10 @@
     "nextest-cacheability.yml",
     "parent-cache-bench.yml",
     "perf-cold-warm.yml",
-    "perf-matrix.yml",
-    "thin-v2-verify.yml"
+    "perf-matrix.yml"
   ],
   "setup_soldr_layers": {
-    "comment": "setup-soldr provisions several independent reuse layers. Each is gated on its own input, NOT on the `cache` umbrella (soldr#2451) -- which is why this repo's self-build lanes spell out `false` for all of them: this repo IS soldr and no self-build lane may restore a prebuilt soldr binary. Only layers a workflow turns ON get an entry below.",
+    "comment": "setup-soldr provisions several independent reuse layers. Each is gated on its own input, NOT on the `cache` umbrella (soldr#2451) -- which is why this repo's self-build lanes spell out `false` for all of them: this repo IS soldr and no self-build lane may restore a prebuilt soldr binary. Only layers a workflow turns ON get an entry below. soldr#2996 removed the target-cache layers entirely: the thin slice was a freshness slice whose library bytes zccache had to reproduce anyway, and `full` was a banned bulk target/ snapshot. soldr cook is the only durable compiler cache.",
     "cache": {
       "tier": "zccache-unit",
       "rationale": "The action's own zccache compiler store under `cache-dir`. Content-addressed per unit."
@@ -39,18 +41,6 @@
     "build-cache": {
       "tier": "zccache-unit",
       "rationale": "zccache compiler store keyed on toolchain + commit. Content-addressed per unit; disabled in every self-build lane here."
-    },
-    "target-cache:thin": {
-      "tier": "cook",
-      "rationale": "thin-v2 slice bundle. Dependency-scoped by construction: `assert_thin_manifest.py` fails the gate if the manifest re-lists a dropped transient/debug category, so linked test products cannot enter it."
-    },
-    "target-cache:full": {
-      "tier": "none",
-      "rationale": "A bulk snapshot of the whole target/ directory, test binaries and incremental state included. Banned in normal lanes; no workflow in this repo selects it."
-    },
-    "target-cache:off": {
-      "tier": "none",
-      "rationale": "Nothing is persisted."
     },
     "cargo-registry-cache": {
       "tier": "pinned-immutable-download",
@@ -404,14 +394,6 @@
       "rationale": "The action's own runtime state under a `cache-dir` deliberately disjoint from the soldr build under test."
     },
     {
-      "id": "setup-soldr-action-target-cache",
-      "workflow": "setup-soldr-action.yml",
-      "step": "setup (target-cache: true)",
-      "mechanism": "setup-soldr:target-cache",
-      "tier": "cook",
-      "rationale": "Default thin-v2 slice: dependency-scoped, with assert_thin_manifest.py failing the gate if a dropped transient/debug category reappears."
-    },
-    {
       "id": "setup-soldr-action-dogfood-zccache",
       "workflow": "setup-soldr-action.yml",
       "step": "Restore dogfood build cache",
@@ -474,14 +456,6 @@
       "mechanism": "*",
       "tier": "cache-experiment",
       "rationale": "The perf sweep; cache state is an independent variable of the measurement."
-    },
-    {
-      "id": "thin-v2-verify-experiment",
-      "workflow": "thin-v2-verify.yml",
-      "step": "*",
-      "mechanism": "*",
-      "tier": "cache-experiment",
-      "rationale": "Verifier for the thin-v2 target-cache slice itself."
     }
   ]
 }

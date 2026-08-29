@@ -76,6 +76,8 @@ The current GitHub Actions entry point is the public `setup-soldr` action:
 
 That action:
 
+> **Deprecated (soldr#2996).** soldr no longer implements a target cache, so the `target-cache` / `target-cache-mode` / `target-dir` inputs and the `target-cache-hit` / `target-cache-mode` outputs are inert: nothing on the soldr side reads the environment they export. They remain listed because the pinned action still declares them; retiring the inputs themselves is an upstream change. Use `soldr cook`, which is the only durable compiler cache.
+
 - installs `soldr`
 - bootstraps `rustup` into the cached runner-local root when the runner does not already have it
 - preinstalls the exact Rust toolchain from `rust-toolchain.toml` by default via `rustup`

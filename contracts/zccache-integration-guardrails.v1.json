@@ -25,11 +25,6 @@
       "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^cli_cargo_wrappers::/)'"
     },
     {
-      "id": "rust-rust-plan",
-      "gate": "hard",
-      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^cli_rust_plan::/)'"
-    },
-    {
       "id": "rust-cache-cli",
       "gate": "hard",
       "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cache_gc -E 'test(/^cli_cache::/)'"
@@ -122,26 +117,6 @@
       "validation_command_ids": [
         "rust-wrapper-env",
         "rust-cache-session"
-      ]
-    },
-    {
-      "id": "rust-plan-cache",
-      "axis": "rust artifact plan",
-      "gate": "hard",
-      "covers": [
-        "in-process restore before cargo",
-        "in-process save after cargo",
-        "artifact bundle cache dir",
-        "partial restore warning",
-        "embedded compile counts drive warm-save decisions"
-      ],
-      "test_files": [
-        "crates/soldr-cli/tests/cargo_front_door/cli_rust_plan.rs",
-        "crates/soldr-cli/src/rust_plan_tests",
-        "crates/soldr-cli/src/cargo_front_door/cache_plan.rs"
-      ],
-      "validation_command_ids": [
-        "rust-rust-plan"
       ]
     },
     {

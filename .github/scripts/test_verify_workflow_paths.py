@@ -1,7 +1,7 @@
 """Tests for the workflow path-filter check.
 
 The regression: `crates/soldr-cli/src/cache_lib/**` moved to
-`crates/soldr-cache/` in #1490 Phase 4, and `thin-v2-verify.yml` and
+`crates/soldr-cache/` in #1490 Phase 4, and
 `cook-size-gate.yml` kept watching the old location. Both went dark for the
 code they exist to guard, and neither ever went red -- a workflow that never
 triggers cannot fail.
@@ -215,7 +215,7 @@ def test_workflows_with_no_filters_at_all_is_an_error(mod, tmp_path):
 
 def test_the_cache_crate_is_watched_where_it_now_lives(mod):
     # The specific regression, pinned by name so a future move is noticed.
-    for name in ("thin-v2-verify.yml", "cook-size-gate.yml"):
+    for name in ("cook-size-gate.yml",):
         text = (REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
         patterns = mod.path_filters(text)
         assert any(
