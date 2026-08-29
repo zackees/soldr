@@ -323,14 +323,32 @@ fn issue_2476_sixty_four_process_stampede_binds_one_broker() {
     // the bind deterministically with sequential retries (each a fresh
     // bounded front door on a progressively quieter machine) before the
     // exactly-one assertions.
+    // soldr#3002: this counts *successful binds*, not bind attempts.
+    //
+    // `binding stable endpoint` is printed by `run_broker_serve` before
+    // `broker_server::serve()` is called -- that is, before any exclusivity
+    // is enforced. In a 64-process storm, more than one contender reaching
+    // that println is a scheduling accident, not a singleton violation: the
+    // losers fail inside `serve()`. Asserting on it made the test measure
+    // how many processes got far enough to announce themselves.
+    //
+    // That is why #2971 surfaced this. Rosetta widens every window, so a
+    // second contender reaches the println before the winner finishes
+    // binding far more often -- and the captured failure shows exactly one
+    // `stable endpoint bound at` under two `binding stable endpoint` lines.
+    // The singleton held; the assertion was watching the wrong line.
+    //
+    // `stable endpoint bound at` is the line the endpoint actually emits on
+    // a successful bind, and the storm property -- "never more than one" --
+    // is a property of binds.
     let storm_log = spawn_log(&home);
     assert!(
         storm_log
             .lines()
-            .filter(|line| line.contains("binding stable endpoint"))
+            .filter(|line| line.contains("stable endpoint bound at"))
             .count()
             <= 1,
-        "the storm may produce at most one broker candidate\n{storm_log}"
+        "the storm may bind the endpoint at most once\n{storm_log}"
     );
     let bind_deadline = Instant::now() + Duration::from_secs(90);
     let mut log = spawn_log(&home);
