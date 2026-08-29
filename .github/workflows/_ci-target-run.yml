@@ -50,6 +50,12 @@ on:
           meaningful when the runner's architecture matches the target --
           the bug it guards is a bundle chosen by target shape and run on a
           host of a different shape.
+      target_execution:
+        type: string
+        required: false
+        default: native
+        description: >-
+          Execution contract for packaged target tools: native or x86_64-rosetta.
       replay_partitions:
         type: string
         required: false
@@ -136,6 +142,19 @@ jobs:
             fi
           done
 
+      - name: Require Rosetta x86_64 execution (soldr#2968)
+        if: ${{ inputs.target_execution == 'x86_64-rosetta' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! python .github/scripts/run_target_command.py --execution x86_64-rosetta --preflight; then
+            echo "x86_64 archive replay requires Rosetta on this macos-15 ARM runner." >&2
+            echo "host architecture: $(uname -m)" >&2
+            sysctl -n sysctl.proc_translated 2>/dev/null || true
+            exit 1
+          fi
+          echo "Rosetta preflight passed: packaged target commands will execute as x86_64"
+
       - name: Resolve packaged target tools
         shell: bash
         run: |
@@ -171,7 +190,7 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          "$SOLDR_BIN" toolchain ensure --json > "$TOOLCHAIN_ENSURE_JSON"
+          python .github/scripts/run_target_command.py --execution '${{ inputs.target_execution }}' -- "$SOLDR_BIN" toolchain ensure --json > "$TOOLCHAIN_ENSURE_JSON"
           ensure_status=$?
           set -e
           if [ "$ensure_status" -ne 0 ]; then
@@ -180,7 +199,7 @@ jobs:
             exit "$ensure_status"
           fi
           set +e
-          "$SOLDR_BIN" toolchain link \
+          python .github/scripts/run_target_command.py --execution '${{ inputs.target_execution }}' -- "$SOLDR_BIN" toolchain link \
             --shim-dir "$TOOLCHAIN_SHIM_DIR" \
             --json > "$TOOLCHAIN_LINK_JSON"
           link_status=$?
@@ -190,8 +209,8 @@ jobs:
             echo "soldr toolchain link failed with status $link_status" >&2
             exit "$link_status"
           fi
-          cargo_bin=$("$SOLDR_BIN" rustup which cargo)
-          rustc_bin=$("$SOLDR_BIN" rustup which rustc)
+          cargo_bin=$(python .github/scripts/run_target_command.py --execution '${{ inputs.target_execution }}' -- "$SOLDR_BIN" rustup which cargo)
+          rustc_bin=$(python .github/scripts/run_target_command.py --execution '${{ inputs.target_execution }}' -- "$SOLDR_BIN" rustup which rustc)
           test -f "$cargo_bin"
           test -f "$rustc_bin"
           # soldr#2879: also export the CHANNEL, not just the two absolute
@@ -222,8 +241,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          compiler_version=$("$SOLDR_BIN" rustc -vV)
-          package_manager_version=$("$SOLDR_BIN" cargo -V)
+          compiler_version=$(python .github/scripts/run_target_command.py --execution '${{ inputs.target_execution }}' -- "$SOLDR_BIN" rustc -vV)
+          package_manager_version=$(python .github/scripts/run_target_command.py --execution '${{ inputs.target_execution }}' -- "$SOLDR_BIN" cargo -V)
           test -n "$compiler_version"
           test -n "$package_manager_version"
           {
@@ -311,7 +330,7 @@ jobs:
           metadata="${NEXTEST_BIN%/*}/cargo-nextest.json"
           test -f "$metadata"
           expected_version=$(jq -r '.version' "$metadata" | sed 's/^v//')
-          actual_version=$("$NEXTEST_BIN" nextest --version \
+          actual_version=$(python .github/scripts/run_target_command.py --execution '${{ inputs.target_execution }}' -- "$NEXTEST_BIN" nextest --version \
             | sed -n 's/.* \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
             | head -n1)
           test -n "$actual_version"
@@ -349,7 +368,7 @@ jobs:
           # the volume chosen above and leaves it in place afterwards, so the
           # inventory pass doubles as the extraction and the execution pass
           # below consumes what it produced.
-          "$NEXTEST_BIN" nextest list \
+          python .github/scripts/run_target_command.py --execution '${{ inputs.target_execution }}' -- "$NEXTEST_BIN" nextest list \
             --archive-file "$archive" \
             --extract-to "$NEXTEST_EXTRACT_DIR" \
             --workspace-remap "$GITHUB_WORKSPACE" \
@@ -399,7 +418,7 @@ jobs:
           fi
 
           set +e
-          "$NEXTEST_BIN" nextest run \
+          python .github/scripts/run_target_command.py --execution '${{ inputs.target_execution }}' -- "$NEXTEST_BIN" nextest run \
             "${reuse_args[@]}" \
             --workspace-remap "$GITHUB_WORKSPACE" \
             --profile target-run \

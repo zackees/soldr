@@ -394,12 +394,19 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
             'grace-period = "30s"' in block
         ), f"a raised budget with no explicit grace period:\n{block}"
     # Kept beside it: the count still makes an addition deliberate rather than
-    # incidental. 9 = the default profile + eight measured per-test override
-    # blocks. Newest: soldr#2887's `cli_dylint_wrapper` block (now spelled
-    # `binary(cargo_front_door) & test(/^cli_dylint_wrapper::/)`), whose two
-    # fake-dylint front doors the prescribed `soldr ci-test` run measured at
-    # 121s each when they raced.
-    assert config.count('grace-period = "30s"') == 9
+    # incidental. 10 = the default profile + eight measured per-test override
+    # blocks + one on `[profile.target-run]`. Newest: soldr#2968's
+    # `gc_list_json_reports_built_project_target_dir` block, which lives on
+    # `target-run` rather than `default` because the measurement that forced
+    # it -- 120.273s against a 120s budget -- came from the x86_64 macOS
+    # replay running under Rosetta on `macos-15` ARM. Scoping it to that
+    # profile keeps the 120s deadline on every lane that runs the same test
+    # natively, so a real regression there still surfaces.
+    #
+    # The block above walks `[[profile.default.overrides]]` only, so the
+    # grace-period-with-every-raised-budget rule is not enforced for
+    # `target-run` blocks; this count is what makes one visible.
+    assert config.count('grace-period = "30s"') == 10
 
 
 def test_every_binary_named_in_nextest_filters_is_a_real_test_target() -> None:

@@ -274,6 +274,22 @@ fail-fast = false
 # rerunning a deterministic failure. The workflow bounds the lane to three
 # distinct failures so it still reports a small useful cluster before exiting.
 
+# soldr#2968: the x86_64 macOS replay now runs on `macos-15` ARM under
+# Rosetta, where every packaged tool and every child process is emulated.
+# `gc_list_json_reports_built_project_target_dir` is the suite's most
+# process-heavy test -- it cold-starts a broker and daemon route and builds a
+# project -- and it is already singled out above for exactly that reason
+# (test-group `soldr-runtime`, after it starved on the windows-gnu lane).
+#
+# Under emulation it landed at 120.273s against the inherited 60s x 2 budget:
+# over by a quarter of a second, on a lane where the same work is several
+# times more expensive than the budget was sized for. Widening it here rather
+# than in `[profile.default]` keeps the tighter deadline everywhere the test
+# runs natively, so a real regression on a native lane still surfaces at 120s.
+[[profile.target-run.overrides]]
+filter = 'test(=cli_gc::gc_list_json_reports_built_project_target_dir)'
+slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
+
 [profile.target-run.junit]
 path = "junit.xml"
 report-name = "soldr-target-run"

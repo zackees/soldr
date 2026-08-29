@@ -173,6 +173,13 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
         assert (
             row["triple"] in run and ci["runner"] in run
         ), f"{ci['run_job']} target/runner drifted"
+        if ci.get("execution") == "x86_64-rosetta":
+            assert ci["runner"] == "macos-15", (
+                f"{row['triple']} Rosetta replay must use the macos-15 ARM runner"
+            )
+            assert "target_execution: x86_64-rosetta" in run, (
+                f"{ci['run_job']} can silently substitute ARM execution"
+            )
 
     blessed = (ROOT / ".github" / "workflows" / "build-all-from-linux.yml").read_text(
         encoding="utf-8"
