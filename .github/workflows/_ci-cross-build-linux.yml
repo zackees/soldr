@@ -387,6 +387,26 @@ jobs:
       # to ship in the pinned external action (#2866) before cook is
       # re-enabled here.
       - name: Restore cooked dependency cache
+        # soldr#2996: the cook layer's post step archives `target/` at job end,
+        # by which point the cross-build and nextest-archive steps have written
+        # into the same tree -- on run 32852360808 that turned an 83.0 MiB cook
+        # slice into a 1.62 GB entry carrying linked test products, which
+        # ci/cache-ownership.json classifies tier 3 (zackees/setup-soldr#499).
+        #
+        # `cook` is the save profile added for exactly this shape: it keeps the
+        # dependency graph (deps/ libraries, .fingerprint/, and all of build/
+        # including the extensionless build-script executables Cargo needs) and
+        # drops what the build layered on top. It fixes the payload without
+        # moving when the archive is written, so the action's caching contract
+        # is untouched.
+        #
+        # Gated on the bootstrap artifact because that is what guarantees
+        # SOLDR_BINARY points at the source-built soldr from this SHA -- the
+        # one that has the profile. Without the artifact the cook step falls
+        # back to the released soldr on PATH, which would reject the value; an
+        # empty string is a valid spelling of `full`, so that path is unchanged.
+        env:
+          SOLDR_SAVE_PROFILE: ${{ inputs.bootstrap_artifact_name != '' && 'cook' || '' }}
         uses: zackees/setup-soldr/cook@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           cache: ${{ (contains(inputs.target, 'pc-windows-msvc') || inputs.target == 'x86_64-unknown-linux-gnu' || inputs.target == 'x86_64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-gnu' || contains(inputs.target, 'apple-darwin')) && 'false' || 'true' }}
