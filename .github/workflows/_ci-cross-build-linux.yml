@@ -369,12 +369,8 @@ jobs:
       - name: Prepare blessed target env for cook
         if: >-
           (contains(inputs.target, 'pc-windows-msvc') && inputs.target != 'x86_64-pc-windows-msvc')
-          || !(contains(inputs.target, 'pc-windows-msvc')
-               || inputs.target == 'x86_64-unknown-linux-gnu'
-               || inputs.target == 'x86_64-unknown-linux-musl'
-               || inputs.target == 'aarch64-unknown-linux-musl'
-               || inputs.target == 'aarch64-unknown-linux-gnu'
-               || contains(inputs.target, 'apple-darwin'))
+          || inputs.target == 'x86_64-pc-windows-gnu'
+          || inputs.target == 'x86_64-unknown-linux-gnu'
         shell: bash
         run: |
           set -euo pipefail
@@ -382,36 +378,40 @@ jobs:
 
       # Every target-run lane builds with ci-nextest so the archive step
       # reuses the same target profile instead of compiling a second tree.
-      # Cook is currently skipped for 8 of the 9 targets this template is
-      # called with; only x86_64-pc-windows-gnu falls outside the list below,
-      # and it does so by accident of an exclusion list rather than by
-      # decision. soldr#2996 replaces this with an explicit allowlist.
+      # Cook runs for the targets named in the allowlist below. It was an
+      # exclusion list until soldr#2996, which meant a target got cook by
+      # falling through rather than by decision.
       #
-      # CORRECTION (soldr#2996): the evidence that disabled cook was misread,
-      # and the corrected reading is why cook is being restored rather than
-      # retired. This comment previously said run 32852360808 "spent 526 s
-      # restoring + 478 s saving around a 278 s compile". Neither number is
-      # what it was labelled -- from job 97816834126's own log:
+      # The evidence that disabled cook has been measured and does not hold.
+      # The comment here used to cite run 32852360808 as "526 s restoring +
+      # 478 s saving around a 278 s compile", and soldr#1248 as "~9-12 min"
+      # for restore/save. All three numbers were artifacts of three separate
+      # defects, now fixed:
       #
-      #   * The 526 s "restore" restored ZERO bytes. Both cook keys missed
-      #     (`cook-cache-base: no entry for key ...`) so the action fell
-      #     through to a cold `soldr cook` that compiled ~700 dependencies.
-      #     That is a cache-MISS problem, not a transport problem.
-      #   * `soldr cook`'s own output that run was 83.0 MiB
-      #     (`soldr cook: indexed sha256=c50268a2c90e size=83.0 MiB`).
-      #   * The 478 s "save" was 472.8 s of `zstd -9`; the upload itself took
-      #     ~3 s at 413 MB/s. It compressed 1.62 GB because the post step runs
-      #     `soldr save --cache-dir <the whole target/>` AFTER the cross-build
-      #     and nextest-archive steps have written into target/ -- so a
-      #     cook-keyed entry carried linked test products, 20x cook's real
-      #     slice and a violation of this repo's own tier-3 rule.
-      #     Filed upstream as zackees/setup-soldr#499.
+      #   * The 526 s "restore" restored ZERO bytes -- both keys missed and
+      #     the action fell through to a cold `soldr cook`.
+      #   * The 478 s "save" was 472.8 s of `zstd -9` over a 1.62 GB payload,
+      #     because the post step archived the whole `target/` after the
+      #     cross-build had written into it (zackees/setup-soldr#499). The
+      #     `cook` save profile (soldr#3003) now scopes it.
+      #   * `soldr cook` was crashing outright on the one enabled lane,
+      #     silently, because it ran before the target's std was installed
+      #     (soldr#3008).
       #
-      # So cook was never measured as slow transport; it was measured cold,
-      # with a broken save payload. The cost gate soldr already implements
-      # (`decide_cook_restore`, cargo_front_door/cook_hydrate.rs) still needs
-      # to ship in the pinned external action (#2866) before cook is
-      # re-enabled here.
+      # Measured on x86_64-pc-windows-gnu after all three fixes:
+      #
+      #   cold: cook 387.7 s, base archive 497.4 MiB
+      #   warm: restore 10.4 s (6,614 files), cook 9.3 s, delta 22.2 MiB
+      #
+      # 378.4 s saved per run, for a 10.4 s restore, against a 635.0 MiB
+      # Swatinem/rust-cache entry for the same lane. Cook is both smaller and
+      # faster than the layer it replaces.
+      #
+      # x86_64-unknown-linux-gnu joins the allowlist here: it is the lane run
+      # 32852360808 measured, so it is the one whose disabling rested most
+      # directly on the disproven numbers. The remaining targets stay out
+      # until they are measured the same way -- an allowlist is a decision per
+      # lane, which is the point.
       - name: Restore cooked dependency cache
         # soldr#2996: the cook layer's post step archives `target/` at job end,
         # by which point the cross-build and nextest-archive steps have written
@@ -435,7 +435,7 @@ jobs:
           SOLDR_SAVE_PROFILE: ${{ inputs.bootstrap_artifact_name != '' && 'cook' || '' }}
         uses: zackees/setup-soldr/cook@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
-          cache: ${{ (contains(inputs.target, 'pc-windows-msvc') || inputs.target == 'x86_64-unknown-linux-gnu' || inputs.target == 'x86_64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-gnu' || contains(inputs.target, 'apple-darwin')) && 'false' || 'true' }}
+          cache: ${{ (inputs.target == 'x86_64-pc-windows-gnu' || inputs.target == 'x86_64-unknown-linux-gnu') && 'true' || 'false' }}
           target-dir: target
           flags: --profile ci-nextest --target ${{ inputs.target }} --workspace
 

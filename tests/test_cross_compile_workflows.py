@@ -214,7 +214,12 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
         "--no-cache"
         not in cross[cross.index("- name: Cross-build soldr (ci-nextest profile)") :]
     )
-    assert "cache: ${{ (contains(inputs.target, 'pc-windows-msvc')" in cross
+    # soldr#2996: the cook gate is an allowlist now. The old exclusion list
+    # meant x86_64-pc-windows-gnu had cook only by not matching any clause.
+    assert (
+        "cache: ${{ (inputs.target == 'x86_64-pc-windows-gnu' || inputs.target == 'x86_64-unknown-linux-gnu') && 'true' || 'false' }}"
+        in cross
+    )
     assert "inputs.target == 'x86_64-unknown-linux-gnu'" in cross
     assert "expected binary missing: $binary; searching target tree" in cross
     assert 'find target -type f \\( -name "soldr" -o -name "soldr.exe" \\)' in cross
