@@ -448,17 +448,23 @@ pub(crate) async fn run_cargo_front_door(
         );
     }
 
-    // soldr#2996: this used to also require a target-cache plan, which made
-    // the packed-DWARF embedding below reachable only for callers who had
-    // opted into a cache -- never on a default build. The capture is what
-    // produces the artifact closure it consumes, so the gate is now the one
-    // condition under which that closure is worth anything: a Darwin host,
-    // where `split-debuginfo = "packed"` leaves the dSYM bundles the embed
-    // looks for. Off Darwin there are none, the embed is a no-op loop, and
-    // capturing cargo's JSON stream would be pure overhead.
+    // soldr#2996/#2997: packed-DWARF embedding (soldr#1775) used to be reachable
+    // only when a target-cache plan existed, because this capture -- which
+    // produces the artifact closure the embed consumes -- required one. That
+    // coupling was accidental, so removing the target cache would have silently
+    // deleted the feature.
+    //
+    // It gets its own explicit gate instead. Enabling the capture unconditionally
+    // is not an option: it appends `--message-format=json` to every build-like
+    // invocation, clippy and dylint included, which changes the command line the
+    // whole toolchain sees. Default-off preserves exactly the behaviour every
+    // caller has today; opting in is now a decision rather than a side effect of
+    // a cache setting.
     let capture_cargo_artifacts = build_like_cargo
         && !cargo_args_have_message_format(args)
-        && crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::MacOs;
+        && std::env::var_os(crate::EMBED_PACKED_DWARF_ENV_VAR)
+            .map(|value| crate::core::flag_value(&value.to_string_lossy()))
+            .unwrap_or(false);
     if capture_cargo_artifacts {
         // Cargo's JSON stream is line-oriented and preserves rendered
         // diagnostics in the message payload. It lets us build an exact

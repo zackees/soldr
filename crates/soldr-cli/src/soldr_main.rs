@@ -61,6 +61,17 @@ pub(crate) const CARGO_PROFILE_TEST_DEBUG_ENV_VAR: &str = "CARGO_PROFILE_TEST_DE
 /// | fast`).
 pub(crate) const LINKER_ENV_VAR: &str = "SOLDR_LINKER";
 pub(crate) const REAL_TOOLCHAIN_BINARY_ENV_PREFIX: &str = "SOLDR_REAL_";
+/// Opt in to embedding packed Darwin DWARF into linked artifacts (soldr#1775).
+///
+/// Turning this on makes `soldr cargo` request cargo's JSON message stream so
+/// it can build an exact artifact closure, then copy each artifact's dSYM
+/// sections into a `__DWARF` segment. That capture changes the command line
+/// for every build-like invocation, so it stays off unless asked for.
+///
+/// soldr#2997: the embed used to ride on whether a target cache plan existed,
+/// which meant it never ran on a default build and vanished entirely when the
+/// target cache was removed. This is its own gate.
+pub(crate) const EMBED_PACKED_DWARF_ENV_VAR: &str = "SOLDR_EMBED_PACKED_DWARF";
 pub(crate) const TARGET_CACHE_MODE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_MODE";
 pub(crate) const TARGET_CACHE_BUNDLE_DIR_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BUNDLE_DIR";
 pub(crate) const TARGET_CACHE_BACKEND_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BACKEND";
