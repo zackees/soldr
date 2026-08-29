@@ -854,6 +854,20 @@ Recognised `soldr save` flags:
   sockets, lock files, runtime scratch, zccache runtime binaries, and
   soldr-managed binary/toolchain trees from the cache payload while
   preserving cache artifacts and manifest state needed for warm rustc hits.
+- `SOLDR_SAVE_PROFILE=cook` — cook payload profile (soldr#2996). For a
+  cargo target directory rather than a soldr cache dir. Keeps the
+  dependency graph — `deps/*.rlib` / `*.rmeta` / shared libraries,
+  `.fingerprint/`, and everything under `build/` including the
+  extensionless `build-script-build` executables Cargo needs to
+  rematerialize a closure — and drops what a build layers on top:
+  linked binaries and test executables, `incremental/`, `examples/`,
+  `doc/`, test trees, and debug sidecars.
+
+  The motivating case is zackees/setup-soldr#499: the cook cache layer
+  archives the target dir from a *post* step, by which point the real
+  build has written its binaries into the same tree, turning an 83 MiB
+  cook slice into a 1.62 GB entry. Selecting this profile fixes the
+  payload without moving when the archive is written.
 - `--json` — emit a JSON summary. Save JSON includes
   `profile`, `source_files`, `cache_files`, `excluded_files`,
   `excluded_bytes`, `archive_bytes`, and `elapsed_ms`.
@@ -2073,7 +2087,7 @@ Commands:
 | `SOLDR_ORIGINAL_EXE` | Internal path to the original executable when Windows self-relocation is active | unset |
 | `SOLDR_ZCCACHE_SESSION_DIR` | Internal session/report directory passed from `soldr cargo ...` into wrapper mode | unset |
 | `SOLDR_ZCCACHE_PRIVATE` | Opt-in private auxiliary session root. When truthy (`1`/`true`/`yes`/`on`), `soldr cargo ...` routes that state to `<cwd>/.zccache` and `soldr save`/`soldr hydrate` (`load` alias) default `--cache-dir` to the same path when omitted. It does **not** relocate the compiler-artifact service embedded in `soldr-daemon`; use `SOLDR_CACHE_DIR` for a fully isolated embedded compiler store. Explicit `ZCCACHE_CACHE_DIR` (front door) or `--cache-dir` (save/load) always wins. | unset |
-| `SOLDR_SAVE_PROFILE` | Default payload profile for `soldr save` when `--ci` / `--minimal` is not passed. Values: `full`/`default`/`complete` for historical all-files archives, or `ci`/`minimal` for the CI/minimal profile that excludes runtime-only files, zccache runtime binaries, and reports `excluded_files` / `excluded_bytes`. CLI flags win over the env var. | `full` |
+| `SOLDR_SAVE_PROFILE` | Default payload profile for `soldr save` when `--ci` / `--minimal` is not passed. Values: `full`/`default`/`complete` for historical all-files archives; `ci`/`minimal` for the CI/minimal profile that excludes runtime-only files, zccache runtime binaries, and reports `excluded_files` / `excluded_bytes`; or `cook` for archiving a cargo **target directory's dependency graph** while dropping the linked products soldr#2931 classifies tier 3. CLI flags win over the env var. | `full` |
 | `ZCCACHE_CACHE_DIR` | Auxiliary zccache front-door/session and direct-rustfmt cache-root override. It does not relocate the compiler service embedded in `soldr-daemon`; use `SOLDR_CACHE_DIR` for that. `soldr cargo ...` ignores inherited values by default so stale workspace state from setup/action wrappers cannot bleed across projects; pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only when intentionally injecting this state. | unset |
 | `ZCCACHE_SESSION_ID` | Per-build zccache session identifier set by soldr | unset |
 | `SOLDR_NATIVE_CACHE` | Native C/C++ compiler cache toggle. Falsy values (`0`/`false`/`no`/`off`) disable only cc-rs `CC`/`CXX` wrapper injection, leaving rustc-side zccache enabled. Useful when a target cross compiler, such as the managed MinGW `gcc.exe` / `g++.exe` path, must run directly while Rust compilation still uses the cache. | unset (on) |

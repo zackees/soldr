@@ -377,6 +377,7 @@ fn walk_cache_files_for_profile(
             .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
         if archive_always_excludes_cache_path(rel)
             || (profile == SaveProfile::Ci && ci_profile_excludes_cache_path(rel))
+            || (profile == SaveProfile::Cook && cook_profile_excludes_cache_path(rel))
         {
             let meta = std::fs::metadata(&abs).map_err(|e| io(&abs, e))?;
             walk.excluded_files += 1;
@@ -391,6 +392,7 @@ fn walk_cache_files_for_profile(
             .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
         if archive_always_excludes_cache_path(rel)
             || (profile == SaveProfile::Ci && ci_profile_excludes_cache_path(rel))
+            || (profile == SaveProfile::Cook && cook_profile_excludes_cache_path(rel))
         {
             walk.excluded_files += 1;
             continue;
@@ -498,6 +500,68 @@ fn manifest_path_is_daemon_runtime(path: &str) -> bool {
 /// it only drops runtime diagnostics, scratch files, locks/sockets, and
 /// top-level soldr-managed tool/binary trees that are re-materialized by
 /// the installer rather than consumed by rustc cache lookups.
+/// Cook payload exclusions for a cargo target directory (soldr#2996).
+///
+/// Keeps the dependency graph: `deps/*.rlib` / `*.rmeta` / `*.so` / `*.dylib`
+/// / `*.dll`, `.fingerprint/`, and everything under `build/` — including the
+/// extensionless `build-script-build` executables, which Cargo requires to
+/// rematerialize a dependency closure.
+///
+/// Drops what a build adds on top and what soldr#2931 classifies tier 3:
+/// linked binaries and test executables, `incremental/`, and the
+/// `examples/` / `doc/` / test trees. Those are the most volatile artifacts a
+/// workspace produces (every source edit relinks them) and the largest, which
+/// is how a cook-keyed entry reached 1.62 GB against an 83 MiB cook slice.
+///
+/// The executable test is deliberately lexical — "no extension, or `.exe`" —
+/// because the walk classifies paths, not file modes, and a mode check would
+/// disagree between the saving host and a cross-built tree.
+pub fn cook_profile_excludes_cache_path(rel: &Path) -> bool {
+    let parts: Vec<String> = rel
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    let Some((file_name, dirs)) = parts.split_last() else {
+        return false;
+    };
+
+    // Dependency payload that the extensionless-executable rule below would
+    // otherwise swallow, so both are checked first:
+    //   * `build/` -- build-script executables and their `out/` products;
+    //     Cargo requires them to rematerialize a dependency closure.
+    //   * `.fingerprint/` -- cargo's own freshness metadata, whose entries
+    //     (`lib-serde`, `bin-foo`) carry no extension. Dropping these makes
+    //     Cargo rebuild every restored unit, which defeats the archive.
+    if dirs
+        .iter()
+        .any(|part| part == "build" || part == ".fingerprint")
+    {
+        return false;
+    }
+
+    if dirs
+        .iter()
+        .any(|part| matches!(part.as_str(), "incremental" | "examples" | "doc" | "tests"))
+    {
+        return true;
+    }
+
+    // Debug sidecars: large, and never needed to serve a compile.
+    if file_name.ends_with(".pdb") || file_name.ends_with(".dwp") || file_name.ends_with(".dwo") {
+        return true;
+    }
+    if dirs.iter().any(|part| part.ends_with(".dsym")) || file_name.ends_with(".dsym") {
+        return true;
+    }
+
+    // Linked products: an extensionless file (Unix) or a `.exe` (Windows).
+    // Dependency libraries all carry a library extension and are kept.
+    file_name.ends_with(".exe") || !file_name.contains('.')
+}
+
 pub fn ci_profile_excludes_cache_path(rel: &Path) -> bool {
     let parts: Vec<String> = rel
         .components()
