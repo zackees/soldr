@@ -336,7 +336,13 @@ def test_cross_build_uses_deferred_cook_after_target_setup() -> None:
         'soldr prepare --target "${{ inputs.target }}" --github-env "$GITHUB_ENV"'
         in workflow
     )
-    assert "cache: ${{ (contains(inputs.target, 'pc-windows-msvc')" in cook_step
+    # soldr#2996: cook is gated by an explicit allowlist, not by falling
+    # through an exclusion list. Pinning the literal keeps a lane from
+    # gaining cook silently -- adding one has to be a visible edit here too.
+    assert (
+        "cache: ${{ (inputs.target == 'x86_64-pc-windows-gnu' || inputs.target == 'x86_64-unknown-linux-gnu') && 'true' || 'false' }}"
+        in cook_step
+    )
     assert 'profile="ci-nextest"' in clean_step
     for package in WORKSPACE_CRATES:
         assert f"-p {package}" in clean_step
