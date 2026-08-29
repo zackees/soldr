@@ -413,6 +413,7 @@ jobs:
       # until they are measured the same way -- an allowlist is a decision per
       # lane, which is the point.
       - name: Restore cooked dependency cache
+        id: cook
         # soldr#2996: the cook layer's post step archives `target/` at job end,
         # by which point the cross-build and nextest-archive steps have written
         # into the same tree -- on run 32852360808 that turned an 83.0 MiB cook
@@ -438,6 +439,31 @@ jobs:
           cache: ${{ (inputs.target == 'x86_64-pc-windows-gnu' || inputs.target == 'x86_64-unknown-linux-gnu') && 'true' || 'false' }}
           target-dir: target
           flags: --profile ci-nextest --target ${{ inputs.target }} --workspace
+
+      # soldr#3008: cook failing is not a lane failure -- the action degrades
+      # to "continuing without cooked deps" by design, so the build still
+      # succeeds without the cache. That fallback is right, but it made cook
+      # broken-and-silent: it crashed on every run of the only enabled lane
+      # for an unknown period, and nothing said so. `gh cache list` showing
+      # zero cook entries was the only symptom, and only when someone looked.
+      #
+      # Under soldr#2996's directive cook is the ONLY durable cache, so
+      # "never saved" and "working" must stop looking identical. This reports;
+      # it deliberately does not fail. Turning a silent degrade into a red
+      # lane is a separate decision, and ci.yml:70-88 records what happens
+      # when a gate is made red before it is made trustworthy.
+      - name: Report cook outcome
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          COOK_RAN: ${{ steps.cook.outputs.ran }}
+          COOK_HIT: ${{ steps.cook.outputs.cache-hit }}
+          COOK_LAYER: ${{ steps.cook.outputs.save-layer }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/report_cook_outcome.py \
+            --target '${{ inputs.target }}'
 
       - name: Clean cooked first-party stubs
         shell: bash
