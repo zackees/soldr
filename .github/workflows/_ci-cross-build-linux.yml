@@ -347,8 +347,34 @@ jobs:
       # rustc's self-contained crt files. Zig already supplies its own
       # crt1.o via `-target X`; without this, the linker sees BOTH and
       # fails with "duplicate symbol: _start". soldr#1068.
+      # soldr#3008: cook compiles the dependency graph *for the target*
+      # (`soldr cook --target <triple>`), so the target's std has to exist
+      # before it runs. The cross-build below prepares the target itself, but
+      # that is ~70 lines later -- cook is the one step that sees a toolchain
+      # with only the host installed.
+      #
+      # The result was a hard failure that never went red: `soldr cook` died
+      # with `error[E0463]: can't find crate for 'core'` inside
+      # `chef::recipe::Recipe::cook`, the action logged "continuing without
+      # cooked deps", and the post step logged "cook did not run successfully
+      # - skipping save". So the repo's only cook-enabled lane wrote no cache
+      # at all, which is why `gh cache list` shows zero cook entries against
+      # 9.76 GiB of Swatinem/rust-cache (soldr#2996).
+      #
+      # The condition now covers every target that reaches cook, not just the
+      # aarch64 MSVC case it was written for. The second clause is the
+      # negation of the cook exclusion list below and must stay in sync with
+      # it; soldr#2996 flips that list to an explicit allowlist, at which
+      # point both can read from one place.
       - name: Prepare blessed target env for cook
-        if: contains(inputs.target, 'pc-windows-msvc') && inputs.target != 'x86_64-pc-windows-msvc'
+        if: >-
+          (contains(inputs.target, 'pc-windows-msvc') && inputs.target != 'x86_64-pc-windows-msvc')
+          || !(contains(inputs.target, 'pc-windows-msvc')
+               || inputs.target == 'x86_64-unknown-linux-gnu'
+               || inputs.target == 'x86_64-unknown-linux-musl'
+               || inputs.target == 'aarch64-unknown-linux-musl'
+               || inputs.target == 'aarch64-unknown-linux-gnu'
+               || contains(inputs.target, 'apple-darwin'))
         shell: bash
         run: |
           set -euo pipefail
