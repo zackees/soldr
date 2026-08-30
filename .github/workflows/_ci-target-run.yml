@@ -476,6 +476,11 @@ jobs:
       # the self-build policy (no prebuilt soldr builds this repo) still holds.
       # soldr#1438/#1479 rationale for the cache key shape is unchanged from
       # the standalone job; the key is target-triple-scoped now.
+      # soldr#3016: the second and last cook-unreachable lane. This workflow
+      # has no setup-soldr step by design (see the note below on running the
+      # packaged target-native soldr under test), so `soldr cook` cannot be
+      # reached without defeating the lane's purpose. Named in
+      # ci/cache-ownership.json under `cook-unreachable-lane`.
       - name: Restore cargo + target caches for wheel build
         if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup }}
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2

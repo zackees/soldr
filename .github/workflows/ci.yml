@@ -652,6 +652,18 @@ jobs:
           # --profile ci-bootstrap below, so it no longer needs to be in the key.
           key: bootstrap-soldr-blessed-linux-gnu-ci-bootstrap-${{ github.sha }}
 
+      # soldr#3016: one of exactly two lanes that keeps a Swatinem/rust-cache
+      # after soldr#2996 made `soldr cook` the only durable cache. Cook cannot
+      # reach this step and no cook change can fix that: the build below runs
+      # bare `cargo build` with RUSTC_WRAPPER emptied, and this job has no
+      # setup-soldr step at all -- it is the job that BUILDS soldr, so handing
+      # it a soldr to run cook with would reintroduce the prebuilt-binary
+      # coupling soldr#2451 forbids.
+      #
+      # Deleting it costs ~5 min per commit on the critical path of every
+      # darwin/MSVC cross lane, for no cache in return. Recorded by name in
+      # ci/cache-ownership.json under `cook-unreachable-lane` rather than left
+      # to look like an oversight.
       - name: Restore cargo + target caches for bootstrap build
         if: steps.bootstrap_cache.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
