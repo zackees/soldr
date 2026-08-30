@@ -15,7 +15,8 @@
     "dylint-foundation": "The ci-test Dylint foundation: cargo-dylint / dylint-link plus the one exact nightly every lint manifest declares. Keyed on that nightly, and required by contract to never reuse or invalidate the stable target tree (CLAUDE.md, ci-test verb).",
     "cache-experiment": "The cache is the subject under test. These workflows measure cold/warm behaviour, cook sizing, target-cache slices or parent-cache sharing, so the guard cannot constrain what they persist without destroying the measurement. Listed explicitly in experiment_workflows.",
     "same-run-transport": "A bundle handed from one job to another INSIDE one workflow run via upload-artifact/download-artifact. Not a cache: it is keyed by run id, never restored into a later run, and discarded on retention expiry. This is the only sanctioned way a linked test archive may be moved to a target-run lane -- it must be compact and budgeted, and it must never be written to a cross-run store.",
-    "bootstrap-driver-binary": "The host bootstrap `soldr` that DRIVES a lane (spawns the broker, prepares blessed SDKs). Keyed on the exact commit SHA, so the key is maximally stable; one binary, no test products. It is the compiler for the lane, not an output under test. Beyond the four exceptions named in soldr#2931; recorded here because the class exists in-tree and needed a name."
+    "bootstrap-driver-binary": "The host bootstrap `soldr` that DRIVES a lane (spawns the broker, prepares blessed SDKs). Keyed on the exact commit SHA, so the key is maximally stable; one binary, no test products. It is the compiler for the lane, not an output under test. Beyond the four exceptions named in soldr#2931; recorded here because the class exists in-tree and needed a name.",
+    "cook-unreachable-lane": "A lane that CANNOT use `soldr cook`, keeping a dependency-graph cache by name rather than by omission (soldr#3016). Only two qualify, and each for a structural reason that no cook change can fix: `ci.yml`'s bootstrap driver runs bare `cargo build` with RUSTC_WRAPPER emptied and has no setup-soldr step at all -- it is the job that BUILDS soldr, so giving it a soldr to run cook with would reintroduce exactly the prebuilt-binary coupling soldr#2451 forbids; and `_ci-target-run.yml` deliberately has no setup-soldr step because it runs the packaged target-native soldr under test. Deleting these instead would cost ~5 min per commit on the bootstrap driver, which every darwin and MSVC cross lane waits on, for no cache in return. An entry here is a reviewed exception with a stated cost, not a way to keep a cache nobody owns: soldr#2996 removed the other five."
   },
   "durable_tiers": [
     "cook",
@@ -222,8 +223,8 @@
       "workflow": "_ci-target-run.yml",
       "step": "Restore cargo + target caches for wheel build",
       "mechanism": "Swatinem/rust-cache",
-      "tier": "cook",
-      "rationale": "`pep517-<target>-ci-release-v2` dependency namespace for the PEP 517 follow-up wheel build."
+      "tier": "cook-unreachable-lane",
+      "rationale": "Dependency graph for the PEP 517 wheel build inside the target-run lane. `_ci-target-run.yml` has no setup-soldr step by design -- it runs the packaged target-native soldr under test -- so cook cannot be reached without defeating the lane's purpose."
     },
     {
       "id": "target-run-pep517-logs",
@@ -278,8 +279,8 @@
       "workflow": "ci.yml",
       "step": "Restore cargo + target caches for bootstrap build",
       "mechanism": "Swatinem/rust-cache",
-      "tier": "cook",
-      "rationale": "`bootstrap-soldr-linux-gnu-ci-bootstrap-v2` dependency namespace, used only on a bootstrap cache miss."
+      "tier": "cook-unreachable-lane",
+      "rationale": "Dependency graph for the bootstrap driver build. That step runs bare `cargo build` with RUSTC_WRAPPER=\"\" and the job has no setup-soldr step, so no soldr-side layer can see it. Keeping this saves ~5 min per commit on the critical path of every darwin/MSVC cross lane. The sibling binary cache is the separate `bootstrap-driver-binary` exception."
     },
     {
       "id": "ci-bootstrap-artifact-upload",
