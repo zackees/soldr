@@ -113,6 +113,14 @@
       "rationale": "Provisions the ci-test Dylint foundation once, on its own nightly, separate from the stable target tree."
     },
     {
+      "id": "build-and-test-dylint-trees",
+      "workflow": "_build-and-test.yml",
+      "step": "Restore Dylint libraries and analysis trees",
+      "mechanism": "actions/cache",
+      "tier": "dylint-foundation",
+      "rationale": "The Dylint libraries and analysis target trees, keyed on the exact nightly every lint manifest declares plus the lint sources. 638s/run of byte-identical cold work that no other layer can serve: Swatinem/rust-cache deletes target/dylint/** at save, and dylint_cook_acceptance.py shows a per-unit object cache alone still misses. target/dylint/tests is DELIBERATELY excluded -- soldr#3012 measured it at 1.9 GiB of UI-test products, which is tier 3 and may not enter any cross-run store; the UI-test stages stay cold by design (soldr#3017)."
+    },
+    {
       "id": "build-and-test-rust-cache",
       "workflow": "_build-and-test.yml",
       "step": "Restore cargo + target caches",
