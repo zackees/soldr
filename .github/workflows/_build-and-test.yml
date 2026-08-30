@@ -148,39 +148,6 @@ jobs:
           solo-toolchain-cache: false
           zccache-seed-strict: true
 
-      # soldr#3017: persist the Dylint libraries and analysis trees.
-      #
-      # These are 638s/run of byte-identical cold work -- MISS counts are the
-      # same on every run -- and Swatinem/rust-cache could never have served
-      # them: it deletes `target/dylint/**` at save time, keeping only
-      # {build,.fingerprint,deps} inside a profile dir. `dylint_cook_acceptance.py`
-      # settles the mechanism: `object_cache_only` MISSES (a per-unit object
-      # cache alone does not avoid the work) while `warm_restored_target` SKIPS
-      # (a restored tree does).
-      #
-      # `tests` is deliberately excluded, and this is the load-bearing part.
-      # soldr#3012 measured the three trees: libraries 362.6 MiB, target
-      # 598.6 MiB, tests 1.9 GiB. `target/dylint/tests/` is the UI-test tree --
-      # compiled fixture crates and their harness binaries -- which
-      # ci/cache-ownership.json puts permanently in tier 3: linked test products
-      # "may not enter cook, an rlib cache, a broad target/ cache, a
-      # compiler-cache archive, or any other cross-run reusable store".
-      # Persisting it would be the same defect the cook payload had
-      # (soldr#3003): an archive scoped to a DIRECTORY rather than an artifact
-      # tier. So the UI-test stages stay cold by design, not by omission.
-      #
-      # 961.2 MiB to recover 302.6s of the 638s. The key covers the exact
-      # nightly every lint manifest declares plus the lint sources themselves,
-      # so a driver bump or a lint edit invalidates it.
-      - name: Restore Dylint libraries and analysis trees
-        id: dylint_trees
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: |
-            target/dylint/libraries
-            target/dylint/target
-          key: dylint-foundation-v1-${{ inputs.target }}-${{ hashFiles('dylints/**/rust-toolchain.toml', 'dylints/**/Cargo.toml', 'dylints/**/src/**') }}
-
       - name: Install ci-test Rust components
         run: soldr rustup component add rustfmt clippy
 
@@ -231,6 +198,39 @@ jobs:
       # The pinned released Soldr is only the compiler needed to bootstrap the
       # source revision's CLI. The validation step switches once to that source
       # binary, then keeps its wrapper identity stable for the complete DAG.
+      # soldr#3017: persist the Dylint libraries and analysis trees.
+      #
+      # These are 638s/run of byte-identical cold work -- MISS counts are the
+      # same on every run -- and Swatinem/rust-cache could never have served
+      # them: it deletes `target/dylint/**` at save time, keeping only
+      # {build,.fingerprint,deps} inside a profile dir. `dylint_cook_acceptance.py`
+      # settles the mechanism: `object_cache_only` MISSES (a per-unit object
+      # cache alone does not avoid the work) while `warm_restored_target` SKIPS
+      # (a restored tree does).
+      #
+      # `tests` is deliberately excluded, and this is the load-bearing part.
+      # soldr#3012 measured the three trees: libraries 362.6 MiB, target
+      # 598.6 MiB, tests 1.9 GiB. `target/dylint/tests/` is the UI-test tree --
+      # compiled fixture crates and their harness binaries -- which
+      # ci/cache-ownership.json puts permanently in tier 3: linked test products
+      # "may not enter cook, an rlib cache, a broad target/ cache, a
+      # compiler-cache archive, or any other cross-run reusable store".
+      # Persisting it would be the same defect the cook payload had
+      # (soldr#3003): an archive scoped to a DIRECTORY rather than an artifact
+      # tier. So the UI-test stages stay cold by design, not by omission.
+      #
+      # 961.2 MiB to recover 302.6s of the 638s. The key covers the exact
+      # nightly every lint manifest declares plus the lint sources themselves,
+      # so a driver bump or a lint edit invalidates it.
+      - name: Restore Dylint libraries and analysis trees
+        id: dylint_trees
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            target/dylint/libraries
+            target/dylint/target
+          key: dylint-foundation-v1-${{ inputs.target }}-${{ hashFiles('dylints/**/rust-toolchain.toml', 'dylints/**/Cargo.toml', 'dylints/**/src/**') }}
+
       - name: Build ci-test driver
         shell: bash
         run: >-
