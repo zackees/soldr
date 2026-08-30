@@ -437,6 +437,21 @@ jobs:
         uses: zackees/setup-soldr/cook@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           cache: ${{ (inputs.target == 'x86_64-pc-windows-gnu' || inputs.target == 'x86_64-unknown-linux-gnu') && 'true' || 'false' }}
+          # soldr#3019: fatal on `main`, a warning on pull requests.
+          #
+          # soldr#3013 made a cook that produced nothing visible; this is the
+          # step that makes it actionable. The reason it is not simply on
+          # everywhere is ci.yml:70-88, which records a 10-minute lint bound
+          # cancelling 6 of 7 healthy runs and concludes "an always-red gate
+          # teaches people to ignore it". Red-gating every contributor on a
+          # transient cache failure would repeat that.
+          #
+          # `main` is where a persistent regression actually lives, and where
+          # the cook entry every feature branch restores from is written -- a
+          # silent failure there starves the whole repo, which is precisely
+          # what soldr#3008 did for an unknown period. PRs keep the warning,
+          # so a contributor sees the signal without being blocked by it.
+          fail-on-error: ${{ github.ref_name == 'main' }}
           target-dir: target
           flags: --profile ci-nextest --target ${{ inputs.target }} --workspace
 
