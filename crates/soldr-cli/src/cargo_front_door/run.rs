@@ -225,6 +225,11 @@ pub(crate) async fn run_cargo_front_door(
     command.env_remove("MAKEFLAGS");
     command.env_remove("CARGO_MAKEFLAGS");
     command.env("RUSTC", &rustc);
+    // soldr#2878: Cargo performs fingerprinting and directory scans before a
+    // rustc request can reach the daemon's compiler admission gate. Bound its
+    // automatic jobserver fan-out from finite cgroup headroom (falling back to
+    // MemAvailable) while preserving explicit CARGO_BUILD_JOBS / Cargo -j.
+    let cargo_job_budget = build_like_cargo.then(|| job_budget::apply(args, &mut command));
 
     // Issue #836 (sub of #835): pin the rust toolchain explicitly via
     // RUSTUP_TOOLCHAIN so rustup does NOT consult `rust-toolchain.toml`
@@ -794,6 +799,12 @@ pub(crate) async fn run_cargo_front_door(
     // path.
     if !status.success() {
         if let Some(stderr_text) = captured_stderr_for_diagnosis.as_deref() {
+            if let Some(diagnostic) = cargo_job_budget
+                .as_ref()
+                .and_then(|budget| budget.diagnose_failure(stderr_text))
+            {
+                eprintln!("{diagnostic}");
+            }
             if let Some(diag) = crate::cargo_diagnostics::detect_build_script_failure(stderr_text) {
                 let rendered = crate::cargo_diagnostics::render_diagnosis(&diag);
                 let stderr = std::io::stderr();

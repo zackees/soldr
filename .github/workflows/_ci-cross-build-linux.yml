@@ -747,9 +747,10 @@ jobs:
           # ci-nextest preserves soldr#1168's line-table-only debug info
           # so archived-test failures still have file:line backtraces.
           # soldr#1703 established that coverage is never deleted; soldr#2931
-          # bounds how it ships. The archive must preserve complete coverage —
-          # the union of replay partitions executes every test — inside an
-          # explicit byte budget. Size regressions are handled by cutting
+          # bounds how it ships. The archive must preserve the complete test
+          # inventory; target-native runners positively select the reviewed
+          # host-sensitive subset and their replay partitions must cover every
+          # selected test. Size regressions are handled by cutting
           # duplicate static links (test-target consolidation, soldr#2934) and
           # pruning image contents, NOT by compression/sharding alone: sharding
           # multiplies transport (every shard downloads the full archive), and

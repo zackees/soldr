@@ -101,10 +101,35 @@ lanes carry them through this path:
 
 1. `.github/workflows/_ci-cross-build-linux.yml` creates a target-specific,
    complete `--workspace` nextest archive.
-2. `.github/workflows/_ci-target-run.yml` replays that archive without test or
-   package filters on a native runner.
+2. `.github/workflows/_ci-target-run.yml` inventories the complete archive,
+   verifies every positive selector in `ci/target-run-ownership.json`, then
+   replays only the owned host-sensitive tests on a native runner.
 3. `.github/workflows/ci.yml` connects the producer and consumer. Windows uses
    the existing `windows-2025` x64 and `windows-11-arm` ARM64 runners.
+
+The ownership file is an allowlist, not an exclusion filter. Whole integration
+categories can opt in with a package and binary; a narrower contract can also
+name its test-ID prefix, and a platform-only contract lists the exact target
+triples where it applies. The target-run helper fails if any applicable
+declaration matches zero tests in the complete archive or if the union is
+empty. Its inverse source
+guard fails when a new integration module uses real process, filesystem, IPC,
+host, or platform facilities without a covering owner. This makes selector
+decay and missing ownership red CI failures instead of silently lost native
+coverage (soldr#2999).
+
+When adding a host-sensitive test, add or update its ownership entry in the
+same change and state the concrete native facility in `reason`. Portable
+parsing, planning, source-policy, and data-shape tests stay out of the native
+allowlist: the canonical Linux host suite already executes them once.
+
+The initial declaration was checked against the complete x86_64 Darwin
+inventory from Actions run 33334748971: **470 of 2,850 discovered tests** are
+owned for native replay (an 83.5% reduction in executed inventory before
+ignored tests). Every target-run now writes both the complete and selected
+inventories to its diagnostics artifact and reports the live counts in the job
+summary; those runtime inventories, not these baseline numbers, are the
+coverage authority.
 
 A target only gets step 2 when the replay lands on a runner that is **native
 to that target**. `x86_64-unknown-linux-gnu` and `x86_64-unknown-linux-musl`
@@ -130,8 +155,9 @@ When a change relies on host behavior:
 - gate the complete integration-test binary for the host it requires;
 - run the suite with `soldr cargo nextest run` and avoid unbounded
   environmental waits;
-- preserve complete target-run coverage — the union of replay partitions must
-  still execute every test — within the archive's explicit byte/disk budget
+- preserve complete **owned** target-run coverage — every positive selector
+  must match the full archive and the union of replay partitions must execute
+  every selected test — within the archive's explicit byte/disk budget
   (soldr#2931: linked test products are ephemeral transport, never cached, and
   the bundle must stay compact and single-extraction); and
 - validate host failures by test name — now `<category_binary>::<module>::<test_name>`

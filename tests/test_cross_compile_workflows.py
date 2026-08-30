@@ -91,7 +91,7 @@ def test_windows_behavior_contract_reaches_native_target_runners() -> None:
     assert "if-no-files-found: ignore" not in upload
 
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
-    replay = _step_block(target_run, "Run complete pre-built test archive")
+    replay = _step_block(target_run, "Run owned pre-built native tests")
     archive_assignment = 'archive="artifact/${{ inputs.artifact_name }}-tests.tar.zst"'
     archive_check = 'test -f "$archive"'
     list_command = '"$NEXTEST_BIN" nextest list'
@@ -118,10 +118,17 @@ def test_windows_behavior_contract_reaches_native_target_runners() -> None:
     assert replay.count('--archive-file "$archive"') == 1
     assert '--extract-to "$NEXTEST_EXTRACT_DIR"' in replay
     assert "--no-fail-fast" not in replay
-    list_invocation = replay[replay.index(list_command) : replay.index(run_command)]
+    assert replay.count(list_command) == 2
+    first_list = replay.index(list_command)
+    ownership_check = replay.index("target_run_ownership.py", first_list)
+    second_list = replay.index(list_command, ownership_check)
+    run_start = replay.index(run_command)
+    complete_inventory_invocation = replay[first_list:ownership_check]
+    owned_list_invocation = replay[second_list:run_start]
     run_invocation = replay[replay.index(run_command) :]
-    _assert_no_narrowing(list_invocation)
-    _assert_no_narrowing(run_invocation)
+    _assert_no_narrowing(complete_inventory_invocation)
+    assert '-E "$TARGET_RUN_FILTER"' in owned_list_invocation
+    assert '-E "$TARGET_RUN_FILTER"' in run_invocation
 
 
 def test_windows_target_runner_pairs_share_their_producer_artifacts() -> None:
@@ -246,8 +253,8 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "artifact/package/soldr-daemon$suffix" in target_run
     assert 'echo "SOLDR_INTERNAL_DAEMON_EXE=$daemon_bin"' in target_run
     assert 'cp "dist/package/soldr$suffix" "dist/package/soldr-daemon$suffix"' in cross
-    assert 'cargo_bin=$(python .github/scripts/run_target_command.py' in target_run
-    assert 'rustc_bin=$(python .github/scripts/run_target_command.py' in target_run
+    assert "cargo_bin=$(python .github/scripts/run_target_command.py" in target_run
+    assert "rustc_bin=$(python .github/scripts/run_target_command.py" in target_run
     assert 'echo "CARGO=$cargo_bin"' in target_run
     assert 'echo "RUSTC=$rustc_bin"' in target_run
     assert "SOLDR_SESSION_ATTEMPT_BUDGET_MS" not in target_run
@@ -272,16 +279,25 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "inputs.skip_filter" not in target_run
     assert "SOLDR_TEST_SKIP_SOURCE_TREE" not in target_run
     assert "submodules: recursive" in target_run
-    for workflow in [cross, target_run]:
-        assert "--filter-expr" not in workflow
-        assert "\n            -E " not in workflow
-        assert "\n            --filter " not in workflow
+    # The archive producer remains complete. Native execution is narrowed by
+    # a positive ownership declaration whose selectors are checked against the
+    # complete inventory before either list or run can consume them (#2999).
+    assert "--filter-expr" not in cross
+    assert "\n            -E " not in cross
+    assert "\n            --filter " not in cross
+    assert "target_run_ownership.py" in target_run
+    assert "ci/target-run-ownership.json" in target_run
+    assert target_run.count('-E "$TARGET_RUN_FILTER"') == 2
+    assert 'test -n "$TARGET_RUN_FILTER"' in target_run
+    assert "NEXTEST_ALL_LIST_JSON" in target_run
     assert "ARCHIVE_FILTER" not in cache_roundtrip
     assert '"-E"' not in cache_roundtrip
-    # soldr#2931: the comment now pins coverage-with-a-budget, not
-    # archive-everything-and-compress. The union of replay partitions must
-    # still execute every test; the archive itself is budgeted.
-    assert "the union of replay partitions executes every test" in cross
+    # soldr#2931/#2999: the producer keeps a complete inventory inside the
+    # archive budget. Native replay partitions cover every positively selected
+    # host-sensitive test rather than re-executing the portable inventory.
+    assert "archive must preserve the complete test" in cross
+    assert "replay partitions must cover every" in cross
+    assert "selected test" in cross
     assert "--profile target-run" in target_run
     assert "target/nextest/target-run/junit.xml" in target_run
     assert "target_run_summary.py" in target_run
@@ -514,7 +530,7 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
         )
     # The smoke must run after (and never gate) the archive replay.
     assert target_run.index(
-        "      - name: Run complete pre-built test archive\n"
+        "      - name: Run owned pre-built native tests\n"
     ) < target_run.index("      - name: Build soldr wheel under test\n")
 
 

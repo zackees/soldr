@@ -141,6 +141,16 @@ standalone `zccache-daemon` or `zccache-download-daemon` process is ever
 spawned, and nothing in soldr may reach the upstream lazy-spawn entry
 points (enforced by `crates/soldr-cli/tests/guards/no_standalone_spawn_lint.rs`).
 
+Compiler resource admission has one owner (soldr#2932): embedded zccache owns
+both the capacity semaphore and the fair shared/exclusive gate, in that order.
+Admission happens only after cache lookup, so a cache hit never drains active
+compiler work or waits for an oversized-unit barrier. zccache owns the generic
+C/C++ size/name predicate and its published Rust amalgamation names; Soldr adds
+only product-specific Rust classification (currently `kernal_api`) through the
+embedded host-admission classifier. Soldr must not put another general compiler
+gate around `ZccacheService::compile`, because that would move admission ahead
+of hit/miss knowledge and recreate two schedulers with different predicates.
+
 Compiler shims are named `rustc`, `clippy-driver`, or `zccache-soldr`, but a
 long-lived daemon process must never inherit one of those executable
 identities. The Cargo front door passes a canonical `soldr-daemon` multicall
