@@ -567,10 +567,26 @@ jobs:
   # downloaded onto the windows runner. ONE windows runner per
   # arch — goal of the consolidation pass.
 
-  # Linux glibc/musl e2e jobs always run — they are the proof of life
-  # and are cheap. macOS E2E pairs always run.
-  # fast-build may skip only the Windows MSVC E2E pairs, and only for low-risk
-  # docs/repository metadata.
+  # soldr#3018 changed this. It previously read: "Linux glibc/musl e2e jobs
+  # always run -- they are the proof of life and are cheap. macOS E2E pairs
+  # always run. fast-build may skip only the Windows MSVC E2E pairs."
+  #
+  # The proof-of-life half stands and is unchanged: `e2e-linux-x64` is never
+  # gated. A proof of life a heuristic can skip is not one, and it is the
+  # cheapest lane, so gating it would save least and risk most.
+  #
+  # What changed is the rest. A docs-only PR paid for eight platform fan-outs,
+  # and on macOS each also re-pays a 12-23 minute queue -- soldr#2996 measured
+  # that queue as the largest single source of wall-clock variance, moving a
+  # run from 52 to 80 minutes. The same fast-build classification that already
+  # gated Windows now gates the macOS pairs and the non-x64 Linux lanes, via
+  # `run_platform_e2e`.
+  #
+  # The gate is fail-open by construction: pushes, an absent label, an empty
+  # diff, and any path it cannot classify all run everything. Only a
+  # fast-build PR whose every changed path is documentation or repository
+  # metadata skips.
+  #
   # The separate PEP 517 platform smoke remains label-gated as a pair.
   e2e-linux-x64:
     name: build
@@ -591,6 +607,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       run_windows_e2e: ${{ steps.policy.outputs.run_windows_e2e }}
+      run_platform_e2e: ${{ steps.policy.outputs.run_platform_e2e }}
       reason: ${{ steps.policy.outputs.reason }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -723,7 +740,8 @@ jobs:
   # ---------- Linux ARM64 (gnu) ----------
   e2e-linux-arm64-build:
     name: cross-build aarch64-unknown-linux-gnu (linux host)
-    needs: e2e-cross-bootstrap-soldr
+    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-unknown-linux-gnu
@@ -733,7 +751,8 @@ jobs:
 
   e2e-linux-arm64:
     name: target-run aarch64-unknown-linux-gnu
-    needs: e2e-linux-arm64-build
+    needs: [e2e-linux-arm64-build, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
       runs_on: ubuntu-24.04-arm
@@ -758,7 +777,8 @@ jobs:
   # genuinely cross-arch (`ubuntu-24.04` -> `ubuntu-24.04-arm`).
   e2e-linux-x64-musl-build:
     name: cross-build x86_64-unknown-linux-musl (linux host)
-    needs: e2e-cross-bootstrap-soldr
+    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: x86_64-unknown-linux-musl
@@ -773,7 +793,8 @@ jobs:
   # ---------- Linux ARM64 (musl) ----------
   e2e-linux-arm64-musl-build:
     name: cross-build aarch64-unknown-linux-musl (linux host)
-    needs: e2e-cross-bootstrap-soldr
+    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-unknown-linux-musl
@@ -783,7 +804,8 @@ jobs:
 
   e2e-linux-arm64-musl:
     name: target-run aarch64-unknown-linux-musl
-    needs: e2e-linux-arm64-musl-build
+    needs: [e2e-linux-arm64-musl-build, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
       runs_on: ubuntu-24.04-arm
@@ -797,7 +819,8 @@ jobs:
   # autoconf sys/syscall.h probe (#1071).
   e2e-macos-x64-build:
     name: cross-build x86_64-apple-darwin (linux host)
-    needs: e2e-cross-bootstrap-soldr
+    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: x86_64-apple-darwin
@@ -807,7 +830,8 @@ jobs:
 
   e2e-macos-x64:
     name: target-run x86_64-apple-darwin
-    needs: e2e-macos-x64-build
+    needs: [e2e-macos-x64-build, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
       # macos-15 is ARM64; target-run verifies this archive through Rosetta,
@@ -875,7 +899,8 @@ jobs:
   # ---------- macOS ARM64 ----------
   e2e-macos-arm64-build:
     name: cross-build aarch64-apple-darwin (linux host)
-    needs: e2e-cross-bootstrap-soldr
+    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-apple-darwin
@@ -885,7 +910,8 @@ jobs:
 
   e2e-macos-arm64:
     name: target-run aarch64-apple-darwin
-    needs: e2e-macos-arm64-build
+    needs: [e2e-macos-arm64-build, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
       runs_on: macos-15

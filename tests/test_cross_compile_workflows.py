@@ -374,8 +374,28 @@ def test_fast_build_only_skips_windows_e2e_for_low_risk_changes() -> None:
 
     windows_section = ci[ci.index("# ---------- Windows x64") :]
     assert "github.event.pull_request.labels" not in windows_section
-    assert "fast-build may skip only the Windows MSVC E2E pairs" in ci
-    assert "macOS E2E pairs always run" in ci
+
+    # soldr#3018 widened the same classification past Windows. The two
+    # properties that must survive that are pinned here rather than the old
+    # prose, which no longer describes the policy.
+    #
+    # 1. The proof-of-life lane is never gated. A proof of life a heuristic
+    #    can skip is not one, and it is the cheapest lane besides.
+    linux_x64 = _job_block(ci, "e2e-linux-x64", "windows-e2e-policy")
+    assert "run_platform_e2e" not in linux_x64
+    assert "if:" not in linux_x64
+
+    # 2. The broader gate exists, is driven by the same policy job, and the
+    #    macOS pairs -- where a skipped lane also avoids a 12-23 minute queue
+    #    -- are behind it.
+    assert "run_platform_e2e" in policy
+    for job, nxt in [
+        ("e2e-macos-x64-build", "e2e-macos-x64"),
+        ("e2e-macos-arm64-build", "e2e-macos-arm64"),
+    ]:
+        block = _job_block(ci, job, nxt)
+        assert "needs.windows-e2e-policy.outputs.run_platform_e2e == 'true'" in block
+        assert "fast-build" not in block
 
 
 def test_cross_workflow_bootstraps_toolchain_dependencies_through_soldr() -> None:
@@ -438,7 +458,10 @@ def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
     ]
     for job, next_job in lane_names:
         block = _job_block(ci, job, next_job)
-        assert "needs: e2e-cross-bootstrap-soldr" in block
+        # soldr#3018: gated lanes carry
+        # `needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]`, so assert
+        # the dependency rather than the scalar spelling of it.
+        assert "e2e-cross-bootstrap-soldr" in block.split("uses:")[0]
         assert "bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu" in block
 
     download = cross[
