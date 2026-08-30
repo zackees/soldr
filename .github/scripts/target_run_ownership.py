@@ -264,20 +264,20 @@ def validate_source_ownership(manifest: dict[str, object], repo_root: Path) -> N
             if not tests_root.is_dir():
                 continue
 
-            for main in sorted(tests_root.glob("*/main.rs")):
-                binary = main.parent.name
+            for main_path in sorted(tests_root.glob("*/main.rs")):
+                binary = main_path.parent.name
                 observed_binaries.add((package, binary))
-                main_source = main.read_text(encoding="utf-8")
+                main_source = main_path.read_text(encoding="utf-8")
                 for module in MODULE_DECLARATION.findall(main_source):
                     # All category binaries share fixture helpers through a
                     # #[path] declaration. It is not a test module and has no
                     # independently selectable nextest prefix.
                     if module == "common":
                         continue
-                    module_path = main.parent / f"{module}.rs"
+                    module_path = main_path.parent / f"{module}.rs"
                     if not module_path.is_file():
                         failures.append(
-                            f"{main.relative_to(repo_root)} declares missing {module}.rs"
+                            f"{main_path.relative_to(repo_root)} declares missing {module}.rs"
                         )
                         continue
                     source = module_path.read_text(encoding="utf-8")
