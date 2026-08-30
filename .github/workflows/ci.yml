@@ -282,6 +282,14 @@ jobs:
       # dark: it never runs, so it can never go red. `crates/soldr-cli/src/
       # cache_lib/**` moved to crates/soldr-cache in #1490 Phase 4, and
       # cook-size-gate kept watching the old location.
+      # soldr#3018: a `#` inside a folded `run: >` block is not a comment --
+      # YAML folds it onto one line and the shell then drops every argument
+      # after it. That silently disabled `--grace-seconds 2700` on the macOS
+      # queue watchdog, which ran at its 900s default for as long as nobody
+      # noticed, and every failure looked like the flaky lane it was watching.
+      - name: Verify no folded run block hides arguments behind a comment
+        run: uv run --no-project --python 3.13 python .github/scripts/check_run_block_comments.py
+
       - name: Verify workflow path filters still match
         run: uv run --no-project --python 3.13 python .github/scripts/verify_workflow_paths.py
 
@@ -567,10 +575,26 @@ jobs:
   # downloaded onto the windows runner. ONE windows runner per
   # arch — goal of the consolidation pass.
 
-  # Linux glibc/musl e2e jobs always run — they are the proof of life
-  # and are cheap. macOS E2E pairs always run.
-  # fast-build may skip only the Windows MSVC E2E pairs, and only for low-risk
-  # docs/repository metadata.
+  # soldr#3018 changed this. It previously read: "Linux glibc/musl e2e jobs
+  # always run -- they are the proof of life and are cheap. macOS E2E pairs
+  # always run. fast-build may skip only the Windows MSVC E2E pairs."
+  #
+  # The proof-of-life half stands and is unchanged: `e2e-linux-x64` is never
+  # gated. A proof of life a heuristic can skip is not one, and it is the
+  # cheapest lane, so gating it would save least and risk most.
+  #
+  # What changed is the rest. A docs-only PR paid for eight platform fan-outs,
+  # and on macOS each also re-pays a 12-23 minute queue -- soldr#2996 measured
+  # that queue as the largest single source of wall-clock variance, moving a
+  # run from 52 to 80 minutes. The same fast-build classification that already
+  # gated Windows now gates the macOS pairs and the non-x64 Linux lanes, via
+  # `run_platform_e2e`.
+  #
+  # The gate is fail-open by construction: pushes, an absent label, an empty
+  # diff, and any path it cannot classify all run everything. Only a
+  # fast-build PR whose every changed path is documentation or repository
+  # metadata skips.
+  #
   # The separate PEP 517 platform smoke remains label-gated as a pair.
   e2e-linux-x64:
     name: build
@@ -591,6 +615,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       run_windows_e2e: ${{ steps.policy.outputs.run_windows_e2e }}
+      run_platform_e2e: ${{ steps.policy.outputs.run_platform_e2e }}
       reason: ${{ steps.policy.outputs.reason }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -735,7 +760,8 @@ jobs:
   # ---------- Linux ARM64 (gnu) ----------
   e2e-linux-arm64-build:
     name: cross-build aarch64-unknown-linux-gnu (linux host)
-    needs: e2e-cross-bootstrap-soldr
+    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-unknown-linux-gnu
@@ -745,7 +771,8 @@ jobs:
 
   e2e-linux-arm64:
     name: target-run aarch64-unknown-linux-gnu
-    needs: e2e-linux-arm64-build
+    needs: [e2e-linux-arm64-build, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
       runs_on: ubuntu-24.04-arm
@@ -770,7 +797,8 @@ jobs:
   # genuinely cross-arch (`ubuntu-24.04` -> `ubuntu-24.04-arm`).
   e2e-linux-x64-musl-build:
     name: cross-build x86_64-unknown-linux-musl (linux host)
-    needs: e2e-cross-bootstrap-soldr
+    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: x86_64-unknown-linux-musl
@@ -785,7 +813,8 @@ jobs:
   # ---------- Linux ARM64 (musl) ----------
   e2e-linux-arm64-musl-build:
     name: cross-build aarch64-unknown-linux-musl (linux host)
-    needs: e2e-cross-bootstrap-soldr
+    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-unknown-linux-musl
@@ -795,7 +824,8 @@ jobs:
 
   e2e-linux-arm64-musl:
     name: target-run aarch64-unknown-linux-musl
-    needs: e2e-linux-arm64-musl-build
+    needs: [e2e-linux-arm64-musl-build, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
       runs_on: ubuntu-24.04-arm
@@ -809,7 +839,8 @@ jobs:
   # autoconf sys/syscall.h probe (#1071).
   e2e-macos-x64-build:
     name: cross-build x86_64-apple-darwin (linux host)
-    needs: e2e-cross-bootstrap-soldr
+    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: x86_64-apple-darwin
@@ -819,7 +850,8 @@ jobs:
 
   e2e-macos-x64:
     name: target-run x86_64-apple-darwin
-    needs: e2e-macos-x64-build
+    needs: [e2e-macos-x64-build, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
       # macos-15 is ARM64; target-run verifies this archive through Rosetta,
@@ -853,6 +885,29 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.13"
+      # soldr#2968 moved the x86_64 replay onto `macos-15`, where the aarch64
+      # target-run already lives. The two now contend for one runner pool
+      # instead of `macos-15` + the retired `macos-15-intel`, so the x86 lane
+      # routinely queues behind its ARM sibling -- which takes 19-25 minutes
+      # (19m16s on #3006, 24m35s on #2971).
+      #
+      # A 900s grace was calibrated when x86_64 had a pool to itself. It now
+      # fires whenever the sibling is running, reporting starvation for a lane
+      # that is merely waiting its turn. That inverts the point of #2968: the
+      # watchdog exists to tell a stuck lane from a slow one, and at 15 minutes
+      # it could no longer tell the difference.
+      #
+      # 2700s sits clear of a full sibling occupancy plus scheduling slack, and
+      # still far below the failure this guards -- #2968's Intel lane sat
+      # queued for 80+ minutes and was never going to start at all.
+      #
+      # These are YAML comments, deliberately ABOVE the step. They used to sit
+      # inside the `run: >-` folded scalar, where `#` is not a comment: YAML
+      # folded them onto one line and the shell then treated the first `#` as
+      # the start of a shell comment, discarding everything after it --
+      # including `--grace-seconds 2700`. The watchdog silently ran at its
+      # 900s argparse default, so the recalibration this text describes had
+      # never once taken effect (soldr#3018 validation).
       - name: Observe bounded macOS x86 queue admission (soldr#2968)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -863,23 +918,6 @@ jobs:
           --token "$GH_TOKEN"
           --job-prefix "target-run x86_64-apple-darwin"
           --runner "macos-15"
-          # soldr#2968 moved the x86_64 replay onto `macos-15`, where the
-          # aarch64 target-run already lives. The two now contend for one
-          # runner pool instead of `macos-15` + the retired `macos-15-intel`,
-          # so the x86 lane routinely queues behind its ARM sibling -- which
-          # takes 19-25 minutes (19m16s on #3006, 24m35s on #2971).
-          #
-          # A 900s grace was calibrated when x86_64 had a pool to itself. It
-          # now fires *deterministically* whenever the sibling is running,
-          # reporting starvation for a lane that is merely waiting its turn.
-          # That inverts the point of #2968: the watchdog exists to tell a
-          # stuck lane from a slow one, and at 15 minutes it could no longer
-          # tell the difference.
-          #
-          # 2700s sits clear of a full sibling occupancy plus scheduling
-          # slack, and still far below the failure this guards -- #2968's
-          # Intel lane sat queued for 80+ minutes and was never going to
-          # start at all.
           --grace-seconds 2700
           --poll-seconds 30
           --github-summary "$GITHUB_STEP_SUMMARY"
@@ -887,7 +925,8 @@ jobs:
   # ---------- macOS ARM64 ----------
   e2e-macos-arm64-build:
     name: cross-build aarch64-apple-darwin (linux host)
-    needs: e2e-cross-bootstrap-soldr
+    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-apple-darwin
@@ -897,7 +936,8 @@ jobs:
 
   e2e-macos-arm64:
     name: target-run aarch64-apple-darwin
-    needs: e2e-macos-arm64-build
+    needs: [e2e-macos-arm64-build, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
       runs_on: macos-15
