@@ -290,6 +290,17 @@ fail-fast = false
 filter = 'test(=cli_gc::gc_list_json_reports_built_project_target_dir)'
 slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
 
+# The native-cache-off proof shells out through an isolated Cargo front door
+# and then validates that C/C++ injection stayed disabled.  On the x86_64
+# macOS replay under Rosetta it completed successfully in 119.66s, but the
+# outer timeout wrapper received nextest's SIGTERM at the inherited 120s
+# boundary first and marked the already-successful test as a timeout
+# (runs 33380028079 and 33376007990).  Keep the native deadline tight and
+# grant only the emulated target-run this measured 300s budget.
+[[profile.target-run.overrides]]
+filter = 'test(=cli_cargo_native_cc::no_cache_global_disables_native_too)'
+slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
+
 [profile.target-run.junit]
 path = "junit.xml"
 report-name = "soldr-target-run"

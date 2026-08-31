@@ -162,7 +162,7 @@ fn parallel_failure_cancels_the_sibling_process_tree() {
 }
 
 #[test]
-fn nextest_and_dylint_really_start_before_either_branch_can_finish() {
+fn nextest_execution_and_dylint_really_start_before_either_branch_can_finish() {
     if !posix_fixture_available() {
         return;
     }
@@ -188,7 +188,7 @@ fn nextest_and_dylint_really_start_before_either_branch_can_finish() {
         scripts,
     };
 
-    let code = supervise_compiler_branches(
+    let code = supervise_nextest_and_dylint(
         &spawner,
         &nextest,
         fixture_branch(&libraries, &workspace, &ui_tests),
@@ -229,7 +229,7 @@ fn nextest_failure_cancels_dylint_and_starts_no_later_stage() {
     };
     let started = Instant::now();
 
-    let code = supervise_compiler_branches(
+    let code = supervise_nextest_and_dylint(
         &spawner,
         &nextest,
         fixture_branch(&libraries, &workspace, &ui_tests),
@@ -270,7 +270,7 @@ fn dylint_failure_cancels_nextest_and_starts_no_later_stage() {
     };
     let started = Instant::now();
 
-    let code = supervise_compiler_branches(
+    let code = supervise_nextest_and_dylint(
         &spawner,
         &nextest,
         fixture_branch(&libraries, &workspace, &ui_tests),
@@ -311,7 +311,7 @@ fn branch_join_waits_for_both_terminal_stages() {
     };
     let started = Instant::now();
 
-    let code = supervise_compiler_branches(
+    let code = supervise_nextest_and_dylint(
         &spawner,
         &nextest,
         fixture_branch(&libraries, &workspace, &ui_tests),
@@ -347,7 +347,7 @@ fn second_branch_spawn_failure_cancels_the_first_branch() {
     };
     let started = Instant::now();
 
-    let error = supervise_compiler_branches(
+    let error = supervise_nextest_and_dylint(
         &spawner,
         &nextest,
         fixture_branch(&libraries, &workspace, &ui_tests),

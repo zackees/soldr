@@ -696,14 +696,13 @@ def test_external_zccache_bootstraps_get_exclusive_service_access() -> None:
     lint_job = _job_block(ci, "lint")
     assert "CARGO_BUILD_JOBS" not in lint_job
     assert "SOLDR_JOBS" not in lint_job
-    assert 'CARGO_BUILD_JOBS: "1"' in build_and_test
-    assert 'SOLDR_JOBS: "1"' in build_and_test
-    # soldr#2996 Phase 8: the two above stay at 1 -- they govern compile and
-    # link concurrency, which is what the swap headroom below is for. This
-    # one governs test execution, happens after linking, and moved to 2 on
-    # measurement (3 runs vs 6 baseline, 4.0 min median saving, zero TIMEOUT
-    # lines). It was pinned alongside them for a rationale that only ever
-    # applied to them.
+    assert 'CARGO_BUILD_JOBS: "2"' in build_and_test
+    assert 'SOLDR_JOBS: "2"' in build_and_test
+    # zccache admits registered amalgamations and large native units
+    # exclusively, so these two ordinary compile slots do not reintroduce the
+    # historical heavyweight-link overlap.  Test execution remains separately
+    # pinned at two threads.
+    assert "exclusive compiler admission" in build_and_test
     assert 'NEXTEST_TEST_THREADS: "2"' in build_and_test
     assert "Enlarge swap (OOM headroom)" in build_and_test
 

@@ -6,7 +6,9 @@
 
 use serde::Serialize;
 
-pub(crate) const PLAN_SCHEMA_VERSION: u32 = 1;
+// Version 2 separates the stable Nextest test-profile compilation from test
+// execution. Consumers must not assume the `nextest` stage can compile.
+pub(crate) const PLAN_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OutputFormat {

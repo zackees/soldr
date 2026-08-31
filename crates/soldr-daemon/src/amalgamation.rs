@@ -39,13 +39,29 @@ const AMALGAMATION_BYTES: u64 = 1_000_000;
 /// next.
 const KNOWN_AMALGAMATIONS: &[&str] = &["sqlite3.c", "zstd.c", "rocksdb.cc"];
 
-/// Soldr dependencies that collapse a much more granular source workspace
-/// into one rustc compilation unit, beyond zccache's built-in classification.
+/// Rust units that need exclusive access while they compile without linking.
+///
+/// These are either published-workspace amalgamations or first-party analysis
+/// units with the same memory shape.  `soldr_cli` is intentionally included:
+/// CI run 33389568913 killed its nightly Dylint workspace-analysis compiler
+/// child while Nextest owned the other shared slot.  The observed invocation
+/// is `--crate-type lib` with metadata output, so the predicate preserves
+/// ordinary linking forms while protecting the measured heavy analysis form.
 ///
 /// zccache itself owns the built-in names `zccache`, `zccache_cli_core`, and
 /// `zccache_daemon_core`. Repeating them here would put the two predicates back
 /// on a drift path even though there is now only one lock.
-const SOLDR_RUST_AMALGAMATIONS: &[&str] = &["kernal_api"];
+const SOLDR_RUST_EXCLUSIVE_NON_LINKING_UNITS: &[&str] = &["kernal_api", "soldr_cli"];
+
+/// First-party test links measured to exceed the safe parallel-memory envelope.
+///
+/// Unlike the registry amalgamations above, these are not source amalgamations:
+/// their test link pulls the complete daemon/cache service graph into one rustc
+/// child.  CI run 33384831827 killed `soldr_daemon`'s `--test` compiler child
+/// while a Dylint library build held the other slot, despite `oom_kill=0` in
+/// the job cgroup.  Giving only this exact test-link form exclusive admission
+/// preserves two-way parallelism for ordinary first-party crate compilation.
+const SOLDR_HEAVY_TEST_LINKS: &[&str] = &["soldr_daemon"];
 
 /// Extensions that name a C/C++ translation unit on a compiler command line.
 const SOURCE_EXTENSIONS: &[&str] = &["c", "cc", "cpp", "cxx", "c++", "m", "mm"];
@@ -83,14 +99,32 @@ impl HostAdmissionClassifier for SoldrHostAdmissionClassifier {
         &self,
         request: &HostCompilerRequest<'_>,
     ) -> Result<bool, HostAdmissionError> {
-        Ok(request.family() == CompilerFamily::Rustc
-            && soldr_rust_crate_requires_exclusive_access(request.args()))
+        let exclusive = request.family() == CompilerFamily::Rustc
+            && soldr_rust_crate_requires_exclusive_access(request.args());
+        if exclusive {
+            // zccache owns the actual permit and emits its acquisition at
+            // `tracing::info!`, while Soldr's detached daemon deliberately
+            // records WARN-and-above. Keep this one-line request diagnostic:
+            // it is rare, identifies the policy decision, and lets an
+            // operator distinguish a classifier miss from an admission-gate
+            // failure without turning on per-compile trace logging.
+            eprintln!(
+                "soldr-daemon: compiler admission requests exclusive access for Rustc crate {}",
+                rust_crate_name(request.args()).unwrap_or("<unnamed>")
+            );
+        }
+        Ok(exclusive)
     }
 }
 
 fn soldr_rust_crate_requires_exclusive_access(args: &[String]) -> bool {
-    rust_crate_name(args).is_some_and(|name| SOLDR_RUST_AMALGAMATIONS.contains(&name))
-        && rust_crate_types_are_non_linking(args)
+    let Some(name) = rust_crate_name(args) else {
+        return false;
+    };
+
+    (SOLDR_RUST_EXCLUSIVE_NON_LINKING_UNITS.contains(&name)
+        && rust_crate_types_are_non_linking(args))
+        || (SOLDR_HEAVY_TEST_LINKS.contains(&name) && args.iter().any(|arg| arg == "--test"))
 }
 
 fn rust_crate_name(args: &[String]) -> Option<&str> {
@@ -213,7 +247,7 @@ fn has_source_extension(arg: &str) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     fn write(dir: &Path, name: &str, bytes: usize) -> PathBuf {
         let path = dir.join(name);
@@ -464,6 +498,40 @@ mod tests {
     }
 
     #[test]
+    fn soldr_daemon_test_link_has_exclusive_access() {
+        let args = vec![
+            "--crate-name=soldr_daemon".to_string(),
+            "--test".to_string(),
+            "crates/soldr-daemon/src/lib.rs".to_string(),
+        ];
+
+        assert!(soldr_rust_crate_requires_exclusive_access(&args));
+    }
+
+    #[test]
+    fn non_test_soldr_daemon_build_keeps_shared_access() {
+        let args = vec![
+            "--crate-name=soldr_daemon".to_string(),
+            "--crate-type=lib".to_string(),
+            "crates/soldr-daemon/src/lib.rs".to_string(),
+        ];
+
+        assert!(!soldr_rust_crate_requires_exclusive_access(&args));
+    }
+
+    #[test]
+    fn soldr_cli_dylint_workspace_analysis_has_exclusive_access() {
+        let args = vec![
+            "--crate-name=soldr_cli".to_string(),
+            "--crate-type=lib".to_string(),
+            "--emit=dep-info,metadata".to_string(),
+            "crates/soldr-cli/src/lib.rs".to_string(),
+        ];
+
+        assert!(soldr_rust_crate_requires_exclusive_access(&args));
+    }
+
+    #[test]
     fn an_ordinary_rust_crate_keeps_shared_access() {
         let args = vec![
             "--crate-name=small_crate".to_string(),
@@ -500,6 +568,28 @@ mod tests {
         ) -> Result<bool, HostAdmissionError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             SoldrHostAdmissionClassifier.requires_exclusive(request)
+        }
+    }
+
+    type RecordedAdmission = (CompilerFamily, Vec<String>, bool);
+    type RecordedAdmissions = Arc<Mutex<Vec<RecordedAdmission>>>;
+
+    struct RecordingSoldrPolicy {
+        requests: RecordedAdmissions,
+    }
+
+    impl HostAdmissionClassifier for RecordingSoldrPolicy {
+        fn requires_exclusive(
+            &self,
+            request: &HostCompilerRequest<'_>,
+        ) -> Result<bool, HostAdmissionError> {
+            let exclusive = SoldrHostAdmissionClassifier.requires_exclusive(request)?;
+            self.requests.lock().expect("recording policy lock").push((
+                request.family(),
+                request.args().to_vec(),
+                exclusive,
+            ));
+            Ok(exclusive)
         }
     }
 
@@ -575,6 +665,115 @@ mod tests {
             calls.load(Ordering::Relaxed),
             1,
             "cache hit must bypass host policy and compiler admission"
+        );
+        service
+            .shutdown(ShutdownMode::Graceful)
+            .await
+            .expect("shutdown");
+    }
+
+    // This reaches the exact production route: zccache identifies a real
+    // rustc request, normalizes its compiler arguments, and only then calls
+    // Soldr's embedded admission policy.  A pure argv test above cannot catch
+    // a future zccache change that drops `--test` or calls the host policy
+    // with a non-Rust family on this pipeline.
+    #[tokio::test]
+    async fn pinned_embedded_hook_marks_real_soldr_daemon_test_rustc_exclusive() {
+        use zccache::audit::{AuditId, AuditMode};
+        use zccache::embedded::{
+            AuditConfig, AuditContext, CompileRequest, HostIdentity, RuntimeHooks, ServiceLimits,
+            ShutdownMode, ZccacheConfig, ZccacheService, ZccacheStartOptions,
+        };
+
+        let Some(compiler) = zccache::test_support::find_rustc() else {
+            return;
+        };
+        let current_dir = std::env::current_dir().expect("resolve current directory");
+        let repo = current_dir
+            .ancestors()
+            .find(|candidate| candidate.join("rust-toolchain.toml").is_file())
+            .expect("find repository rust-toolchain.toml");
+        let pinned_toolchain = crate::core::read_rust_toolchain_manifest(repo)
+            .expect("read repository rust-toolchain.toml")
+            .channel
+            .expect("repository rust-toolchain.toml declares a channel");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("workspace");
+        std::fs::create_dir_all(project.join("src")).expect("create source directory");
+        std::fs::write(
+            project.join("src/lib.rs"),
+            "#[test]\nfn admission_fixture() { assert_eq!(2 + 2, 4); }\n",
+        )
+        .expect("write source");
+        let requests: RecordedAdmissions = Arc::new(Mutex::new(Vec::new()));
+        let service = ZccacheService::start_with_options_and_host_admission_classifier(
+            ZccacheConfig {
+                host: HostIdentity {
+                    product: "soldr-rustc-host-policy-test".into(),
+                    instance_id: temp.path().display().to_string(),
+                    workspace_id: "soldr-rustc-host-policy-workspace".into(),
+                },
+                cache_root: temp.path().join("cache").into(),
+                audit: AuditConfig {
+                    mode: AuditMode::Off,
+                    ..AuditConfig::default()
+                },
+                limits: ServiceLimits::default(),
+                runtime: RuntimeHooks::default(),
+                cancellation: None,
+            },
+            ZccacheStartOptions::default(),
+            Arc::new(RecordingSoldrPolicy {
+                requests: Arc::clone(&requests),
+            }),
+        )
+        .await
+        .expect("embedded service starts");
+        let request = CompileRequest {
+            audit: AuditContext::new(
+                AuditId::new("soldr-rustc-host-policy-run").expect("run id"),
+                AuditId::new("soldr-rustc-host-policy-trace").expect("trace id"),
+            ),
+            compiler,
+            args: vec![
+                "--edition=2021".into(),
+                "--crate-name=soldr_daemon".into(),
+                "--test".into(),
+                "--emit=metadata".into(),
+                "--out-dir".into(),
+                "target/debug/deps".into(),
+                "src/lib.rs".into(),
+            ],
+            cwd: project.clone().into(),
+            env: std::env::vars()
+                .filter(|(key, _)| key != "RUSTUP_TOOLCHAIN")
+                .chain(std::iter::once((
+                    "RUSTUP_TOOLCHAIN".into(),
+                    pinned_toolchain,
+                )))
+                .collect(),
+            stdin: Vec::new(),
+        };
+
+        let response = service.compile(request).await.expect("rustc compile");
+        assert_eq!(
+            response.exit_code,
+            0,
+            "real rustc failed: {}",
+            String::from_utf8_lossy(&response.stderr)
+        );
+        let recorded = {
+            let mut guard = requests.lock().expect("recorded rustc request");
+            std::mem::take(&mut *guard)
+        };
+        assert_eq!(recorded.len(), 1, "one cold rustc miss reaches the policy");
+        let (family, args, exclusive) = &recorded[0];
+        assert_eq!(*family, CompilerFamily::Rustc);
+        assert!(args.iter().any(|arg| arg == "--crate-name=soldr_daemon"));
+        assert!(args.iter().any(|arg| arg == "--test"));
+        assert!(
+            *exclusive,
+            "real soldr_daemon test rustc needs exclusive admission"
         );
         service
             .shutdown(ShutdownMode::Graceful)

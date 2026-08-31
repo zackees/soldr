@@ -55,12 +55,12 @@ jobs:
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
       RUST_BACKTRACE: "1"
       CARGO_TERM_COLOR: always
-      # The hosted Linux runner has four logical CPUs but not enough memory
-      # for even two simultaneous soldr-cli/zccache test links. A rustc killed
-      # by the kernel reaches the wrapper as an opaque exit 255, so serialize
-      # Cargo's launch rate and the embedded compile service in this cold lane.
-      CARGO_BUILD_JOBS: "1"
-      SOLDR_JOBS: "1"
+      # zccache 1.13.11+ gives registered Rust amalgamations and large native
+      # C/C++ units exclusive compiler admission.  The known OOM offenders
+      # therefore still run alone, while ordinary compilation can use the
+      # hosted runner's parallelism without overlapping a heavyweight unit.
+      CARGO_BUILD_JOBS: "2"
+      SOLDR_JOBS: "2"
       # soldr#2996 Phase 8, measured over 3 runs against 6 baseline runs.
       #
       # The OOM rationale above covers CARGO_BUILD_JOBS and SOLDR_JOBS, which
@@ -134,8 +134,8 @@ jobs:
           # the stable source-driver target tree used by the prescribed DAG.
           ci-tests: true
           dylint-toolchain: nightly-2026-05-28
-          cargo-dylint-version: 6.0.1
-          dylint-link-version: 6.0.1
+          cargo-dylint-version: 6.0.3
+          dylint-link-version: 6.0.3
           # soldr#2451: disable every setup-soldr reuse layer, not just the
           # `cache` umbrella (soldr-mini / solo-toolchain / build-cache each
           # ignore it). This lane builds + tests the soldr under test, so it
@@ -294,8 +294,9 @@ jobs:
           "$source_soldr" daemon start
 
       # soldr#2868: one source-owned verb now covers rustfmt, lint-ci, Clippy,
-      # all Dylint domains, exactly one Nextest invocation, doctests, and the
-      # dependency-policy fanout. Use the source binary as its own explicit
+      # all Dylint domains, one Nextest test-profile compilation plus its
+      # Fresh execution, doctests, and the dependency-policy fanout. Use the
+      # source binary as its own explicit
       # rustc wrapper: nested tests override SOLDR_CACHE_DIR and must not inherit
       # an older bootstrap wrapper whose daemon route is unavailable there.
       - name: Run prescribed host validation

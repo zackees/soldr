@@ -173,9 +173,8 @@ pub(crate) async fn freeze(
             &root.join("dylints").join(lint),
         ));
     }
-    let mut nextest = vec!["nextest".into(), "run".into()];
-    nextest.extend(workspace_selection(&invocation.scope));
-    nextest.extend([
+    let mut nextest_args = workspace_selection(&invocation.scope);
+    nextest_args.extend([
         "--lib".into(),
         "--tests".into(),
         "--target".into(),
@@ -183,13 +182,30 @@ pub(crate) async fn freeze(
         "--test-threads".into(),
         nextest_test_threads.clone(),
     ]);
-    nextest.extend(scope_args.clone());
+    nextest_args.extend(scope_args.clone());
+
+    // Compile every test binary before the Dylint branch begins. The
+    // following `nextest` stage has the identical target selection, so Cargo
+    // observes those binaries as Fresh and only executes them while Dylint
+    // performs its independent nightly compilation.
+    let mut nextest_compile = vec!["nextest".into(), "run".into(), "--no-run".into()];
+    nextest_compile.extend(nextest_args.clone());
+    stages.push(stage(
+        "nextest-compile",
+        "stable",
+        COMPILER,
+        cargo_command(&nextest_compile, &[]),
+        &["clippy"],
+        &root,
+    ));
+    let mut nextest = vec!["nextest".into(), "run".into()];
+    nextest.extend(nextest_args);
     stages.push(stage(
         "nextest",
         "stable",
-        COMPILER_AND_TEST,
+        TEST,
         cargo_command(&nextest, &[]),
-        &["clippy"],
+        &["nextest-compile"],
         &root,
     ));
     let mut doctest = vec!["test".into()];
@@ -338,7 +354,7 @@ pub(crate) async fn freeze(
                 vec!["dylint-workspace".into()],
             ),
             group("dylint-ui-tests", "dylint-ui-tests", dylint_test_names),
-            group("nextest", "stable", vec!["nextest".into()]),
+            group("nextest-compile", "stable", vec!["nextest-compile".into()]),
             group("doctests", "rustdoc", vec!["doctests".into()]),
         ],
         observability: super::model::Observability {
@@ -371,6 +387,11 @@ const COMPILER_AND_TEST: StageExecution = StageExecution {
     kind: "compiler-and-test",
     concurrency_group: None,
     executes_compiler: true,
+};
+const TEST: StageExecution = StageExecution {
+    kind: "test",
+    concurrency_group: None,
+    executes_compiler: false,
 };
 const POLICY: StageExecution = StageExecution {
     kind: "policy",

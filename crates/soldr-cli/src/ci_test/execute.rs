@@ -6,10 +6,11 @@ use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-/// Execute the frozen plan in its dependency order. After Clippy, stable
-/// Nextest overlaps the one serial Dylint chain when the parent-level Cargo
-/// budget can carry both independent jobservers. Dylint manifests remain
-/// sequential because all six intentionally share one target tree per domain.
+/// Execute the frozen plan in its dependency order. Stable Nextest compilation
+/// completes after Clippy, before the serial Dylint chain begins. Its Fresh
+/// test execution then overlaps that chain when the parent-level Cargo budget
+/// can carry both branches. Dylint manifests remain sequential because all
+/// six intentionally share one target tree per domain.
 pub(crate) async fn run(
     plan: &CiTestPlan,
     cache_enabled: bool,
@@ -28,20 +29,21 @@ pub(crate) async fn run(
 
     stop_on_failure!(run_group(&factory, plan, &["rustfmt", "lint-ci"]));
     stop_on_failure!(run_group(&factory, plan, &["clippy"]));
+    stop_on_failure!(run_group(&factory, plan, &["nextest-compile"]));
     factory.prepare_dylint().await?;
     let shared_budget =
         crate::cargo_front_door::shared_cargo_process_budget(&factory.cargo_build_jobs, 2);
     if shared_budget.may_overlap {
         eprintln!(
-            "soldr ci-test: overlapping Nextest and Dylint: aggregate Cargo slots={} <= available {} ({})",
+            "soldr ci-test: overlapping Nextest execution and Dylint: aggregate Cargo slots={} <= available {} ({})",
             shared_budget.requested_slots.unwrap_or_default(),
             shared_budget.available_slots,
             shared_budget.source_description,
         );
-        stop_on_failure!(run_parallel_compiler_branches(&factory, plan));
+        stop_on_failure!(run_parallel_nextest_and_dylint(&factory, plan));
     } else {
         eprintln!(
-            "soldr ci-test: serializing Nextest and Dylint: aggregate Cargo slots={} exceed available {} ({})",
+            "soldr ci-test: serializing Nextest execution and Dylint: aggregate Cargo slots={} exceed available {} ({})",
             shared_budget
                 .requested_slots
                 .map_or_else(|| "invalid".to_string(), |slots| slots.to_string()),
@@ -203,16 +205,16 @@ struct RunningStage<'a> {
     started: Instant,
 }
 
-fn run_parallel_compiler_branches(
+fn run_parallel_nextest_and_dylint(
     factory: &StageCommandFactory,
     plan: &CiTestPlan,
 ) -> Result<i32, SoldrError> {
     let nextest = stage_named(plan, "nextest")?;
     let dylint = DylintBranch::from_plan(plan)?;
-    supervise_compiler_branches(factory, nextest, dylint, &PlanDylintVerifier(plan))
+    supervise_nextest_and_dylint(factory, nextest, dylint, &PlanDylintVerifier(plan))
 }
 
-fn supervise_compiler_branches<'a>(
+fn supervise_nextest_and_dylint<'a>(
     spawner: &impl StageSpawner,
     nextest_stage: &'a Stage,
     mut dylint_branch: DylintBranch<'a>,
@@ -284,7 +286,7 @@ fn supervise_compiler_branches<'a>(
 
         if nextest.is_none() && dylint.is_none() {
             eprintln!(
-                "soldr ci-test: Nextest + Dylint branches joined in {} ms",
+                "soldr ci-test: Nextest execution + Dylint branches joined in {} ms",
                 fork_started.elapsed().as_millis()
             );
             return Ok(0);
@@ -359,6 +361,7 @@ fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrError> {
             .map(|stage| stage.name.as_str()),
     );
     expected.extend([
+        "nextest-compile",
         "nextest",
         "doctests",
         "cargo-deny-bans",
@@ -422,7 +425,8 @@ fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrError> {
         };
         require_dependencies(stage, &[dependency])?;
     }
-    require_dependencies(stage_named(plan, "nextest")?, &["clippy"])?;
+    require_dependencies(stage_named(plan, "nextest-compile")?, &["clippy"])?;
+    require_dependencies(stage_named(plan, "nextest")?, &["nextest-compile"])?;
     require_dependencies(
         stage_named(plan, "doctests")?,
         &[
