@@ -446,15 +446,46 @@ def test_catalogue_download_consumers_require_sha256_metadata() -> None:
         REPO_ROOT / ".github" / "scripts" / "download_catalogued_asset.py"
     ).read_text(encoding="utf-8")
 
-    assert cross.count("--json") >= 2
-    assert cross.count("download_catalogued_asset.py") >= 2
     assert "--json cargo-zigbuild" in baseline
+    assert cross.count("fetch_or_build_tool.sh") == 4
     assert "download_catalogued_asset.py" in baseline
     assert "download_catalogued_asset.py" in fetch
     assert 'asset_url="verified"' in fetch
     assert "-> $asset_url" not in fetch
     assert "sha256 mismatch" in downloader
     assert 'metadata.get("parts")' in downloader
+
+
+def test_cross_release_archives_never_bundle_standalone_zccache() -> None:
+    """zccache is embedded through its crate API, never shipped as a sidecar."""
+    cross = (WORKFLOWS / "cross-compile-all-targets.yml").read_text(encoding="utf-8")
+
+    for forbidden in [
+        "dist/zccache-stage",
+        "Fetch matched zccache release",
+        "download_catalogued_asset.py",
+        '"binaries": [',
+        "zccache-daemon",
+        "zccache-fp",
+    ]:
+        assert forbidden not in cross
+
+    assert cross.count("stage_release_binaries.py") == 2
+    assert cross.count("python3 .github/scripts/release_manifest.py") == 2
+    assert '"embedded": True' in (
+        REPO_ROOT / ".github" / "scripts" / "release_manifest.py"
+    ).read_text(encoding="utf-8")
+
+
+def test_embedded_zccache_pin_has_no_platform_asset_gate() -> None:
+    assert not (REPO_ROOT / ".github" / "scripts" / "check_zccache_asset.py").exists()
+    assert not (REPO_ROOT / ".github" / "scripts" / "zccache_version.py").exists()
+
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    instructions = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "check_zccache_asset.py" not in ci
+    assert "check_zccache_asset.py" not in instructions
+    assert "six platform support archives" not in instructions
 
 
 def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:

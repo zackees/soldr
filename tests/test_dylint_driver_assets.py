@@ -419,7 +419,7 @@ def test_pinned_dylint_version_reports_a_missing_entry():
 
 
 def test_main_skips_when_the_catalogue_cannot_be_resolved(monkeypatch, capsys):
-    """A Pages blip must not fail every PR — the check_zccache_asset policy."""
+    """A Pages blip must not fail every PR."""
 
     def unreachable(_origin: str):
         raise GUARD.CatalogueUnavailable("network error")

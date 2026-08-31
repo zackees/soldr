@@ -269,11 +269,9 @@ soldr#1368 removed the externally-downloaded managed zccache binary: the
 zccache CLI ships compiled into Soldr from the exact released crate version in
 the lockfile. soldr#2765 retired the zccache and running-process submodules.
 
-> [!IMPORTANT]
-> That is true of the compiled-in library and of what `soldr status` reports.
-> It is **not** true of release staging, which still downloads a prebuilt
-> zccache keyed on the locked crate version. The asset guard must pass before
-> that version can move.
+Release staging follows the same rule: archives contain Soldr's embedded
+zccache implementation and never download or bundle standalone `zccache`,
+`zccache-daemon`, or `zccache-fp` binaries.
 
 ## Published zccache amalgamation
 
@@ -285,18 +283,15 @@ exclusive compiler admission, so a setup-soldr 0.9.6+ bootstrap can build a
 fresh Soldr checkout without parallel amalgamation compiles exhausting a GHA
 worker.
 
-Do not move the pin ahead of a published zccache release. Besides the crate,
-Soldr release staging needs all six platform support archives. Run
-`.github/scripts/check_zccache_asset.py` before updating the exact dependency;
+Do not move the pin ahead of a published zccache crate.
 `crates/soldr-cli/tests/guards/version_lockstep.rs` enforces manifest/lock agreement
 and the single-codegen profile for the amalgamated crate.
 
 ## Updating the external zccache and running-process pins
 
-Update every exact dependency requirement together, refresh the lockfile, and
-run `.github/scripts/check_zccache_asset.py`. The locked zccache version must
-have all six prebuilt platform assets in the soldr-toolchain catalogue because
-release staging uses that same version.
+Update every exact dependency requirement together and refresh the lockfile.
+Release archives use the embedded API and must not introduce a standalone
+zccache asset dependency.
 
 ## Reference Docs
 

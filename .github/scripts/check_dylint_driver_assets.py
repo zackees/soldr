@@ -41,9 +41,9 @@ the shape of gap soldr#2945 was about.
 
 ## Network policy
 
-Mirrors `.github/scripts/check_zccache_asset.py`: a catalogue that cannot be
-fetched is **not** a failure. This guard runs on every PR, and failing them all
-on a GitHub Pages blip would train people to ignore it. A fetched catalogue
+An unreachable catalogue is **not** a failure. This guard runs on every PR,
+and failing them all on a GitHub Pages blip would train people to ignore it.
+A fetched catalogue
 that is missing a driver *is* a failure — that is the defect, and it is not
 transient.
 """
