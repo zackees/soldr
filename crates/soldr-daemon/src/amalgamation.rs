@@ -47,6 +47,16 @@ const KNOWN_AMALGAMATIONS: &[&str] = &["sqlite3.c", "zstd.c", "rocksdb.cc"];
 /// on a drift path even though there is now only one lock.
 const SOLDR_RUST_AMALGAMATIONS: &[&str] = &["kernal_api"];
 
+/// First-party test links measured to exceed the safe parallel-memory envelope.
+///
+/// Unlike the registry amalgamations above, these are not source amalgamations:
+/// their test link pulls the complete daemon/cache service graph into one rustc
+/// child.  CI run 33384831827 killed `soldr_daemon`'s `--test` compiler child
+/// while a Dylint library build held the other slot, despite `oom_kill=0` in
+/// the job cgroup.  Giving only this exact test-link form exclusive admission
+/// preserves two-way parallelism for ordinary first-party crate compilation.
+const SOLDR_HEAVY_TEST_LINKS: &[&str] = &["soldr_daemon"];
+
 /// Extensions that name a C/C++ translation unit on a compiler command line.
 const SOURCE_EXTENSIONS: &[&str] = &["c", "cc", "cpp", "cxx", "c++", "m", "mm"];
 
@@ -89,8 +99,12 @@ impl HostAdmissionClassifier for SoldrHostAdmissionClassifier {
 }
 
 fn soldr_rust_crate_requires_exclusive_access(args: &[String]) -> bool {
-    rust_crate_name(args).is_some_and(|name| SOLDR_RUST_AMALGAMATIONS.contains(&name))
-        && rust_crate_types_are_non_linking(args)
+    let Some(name) = rust_crate_name(args) else {
+        return false;
+    };
+
+    (SOLDR_RUST_AMALGAMATIONS.contains(&name) && rust_crate_types_are_non_linking(args))
+        || (SOLDR_HEAVY_TEST_LINKS.contains(&name) && args.iter().any(|arg| arg == "--test"))
 }
 
 fn rust_crate_name(args: &[String]) -> Option<&str> {
@@ -461,6 +475,28 @@ mod tests {
             args.extend(suffix);
             assert!(!soldr_rust_crate_requires_exclusive_access(&args));
         }
+    }
+
+    #[test]
+    fn soldr_daemon_test_link_has_exclusive_access() {
+        let args = vec![
+            "--crate-name=soldr_daemon".to_string(),
+            "--test".to_string(),
+            "crates/soldr-daemon/src/lib.rs".to_string(),
+        ];
+
+        assert!(soldr_rust_crate_requires_exclusive_access(&args));
+    }
+
+    #[test]
+    fn non_test_soldr_daemon_build_keeps_shared_access() {
+        let args = vec![
+            "--crate-name=soldr_daemon".to_string(),
+            "--crate-type=lib".to_string(),
+            "crates/soldr-daemon/src/lib.rs".to_string(),
+        ];
+
+        assert!(!soldr_rust_crate_requires_exclusive_access(&args));
     }
 
     #[test]
