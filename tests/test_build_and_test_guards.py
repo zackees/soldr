@@ -91,10 +91,11 @@ def test_the_guards_run_the_scripts_they_claim_to() -> None:
     assert "check_compile_fallbacks.py" in _step_body(workflow, GUARD_1838)
 
 
-def test_hosted_runner_compile_concurrency_is_memory_bounded() -> None:
+def test_hosted_runner_compile_concurrency_uses_heavy_unit_exclusivity() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert 'CARGO_BUILD_JOBS: "1"' in workflow
-    assert 'SOLDR_JOBS: "1"' in workflow
+    assert 'CARGO_BUILD_JOBS: "2"' in workflow
+    assert 'SOLDR_JOBS: "2"' in workflow
+    assert "exclusive compiler admission" in workflow
     assert "Enlarge swap (OOM headroom)" in workflow
 
 
