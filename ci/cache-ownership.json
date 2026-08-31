@@ -411,6 +411,14 @@
       "rationale": "The zccache store for the dogfood build. Content-addressed per unit -- exactly the store soldr#2931 keeps live; the ban is on linked products and bulk target/ snapshots."
     },
     {
+      "id": "cargo-orchestration-telemetry-evidence",
+      "workflow": "cargo-orchestration-telemetry.yml",
+      "step": "Upload Cargo orchestration telemetry evidence",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Run-scoped JSON snapshots and command logs retained for soldr#2878 analysis; no later build restores them."
+    },
+    {
       "id": "baseline-zero-deps-experiment",
       "workflow": "baseline-zero-deps.yml",
       "step": "*",
