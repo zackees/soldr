@@ -117,7 +117,7 @@ def test_ci_test_is_the_only_host_test_orchestration_entrypoint() -> None:
     # 4.0 min median saving, zero TIMEOUT lines). Pinned exactly rather
     # than as a range -- the resource contract is a deliberate number, so
     # the next change to it should be visible in review.
-    assert 'NEXTEST_TEST_THREADS: "2"' in workflow
+    assert 'NEXTEST_TEST_THREADS: "3"' in workflow
     assert 'SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr"' in body
     assert "bootstrap_wrapper" not in body
     assert workflow.count("- name: Hand off bootstrap broker to source revision") == 1
