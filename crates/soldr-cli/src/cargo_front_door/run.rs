@@ -226,9 +226,9 @@ pub(crate) async fn run_cargo_front_door(
     command.env_remove("CARGO_MAKEFLAGS");
     command.env("RUSTC", &rustc);
     // soldr#2878: Cargo performs fingerprinting and directory scans before a
-    // rustc request can reach the daemon's compiler admission gate. Bound its
-    // automatic jobserver fan-out from finite cgroup headroom (falling back to
-    // MemAvailable) while preserving explicit CARGO_BUILD_JOBS / Cargo -j.
+    // rustc request can reach the daemon's compiler admission gate. Capture
+    // cgroup/memory observations for a precise failure diagnostic, but leave
+    // Cargo's default jobserver policy and every explicit override untouched.
     let cargo_job_budget = build_like_cargo.then(|| job_budget::apply(args, &mut command));
 
     // Issue #836 (sub of #835): pin the rust toolchain explicitly via

@@ -69,6 +69,11 @@ pub const CARGO_HOME_ENV_VAR: &str = "CARGO_HOME";
 pub const RUSTUP_HOME_ENV_VAR: &str = "RUSTUP_HOME";
 pub(crate) const RUSTUP_TOOLCHAIN_ENV_VAR: &str = "RUSTUP_TOOLCHAIN";
 pub const COMMAND_OUTPUT_TIMEOUT_ENV_VAR: &str = "SOLDR_COMMAND_OUTPUT_TIMEOUT_SECS";
+/// Compiler-unit report path propagated from `soldr ci-test` stages to the
+/// daemon through each wrapper request.
+pub const CI_TEST_REPORT_PATH_ENV_VAR: &str = "SOLDR_CI_TEST_REPORT_PATH";
+/// Name of the `soldr ci-test` stage that originated a compiler request.
+pub const CI_TEST_STAGE_ENV_VAR: &str = "SOLDR_CI_TEST_STAGE";
 pub const DEFAULT_COMMAND_OUTPUT_TIMEOUT_SECS: u64 = 60;
 const KILLED_COMMAND_OUTPUT_REAP_TIMEOUT_SECS: u64 = 5;
 /// How often [`command_output_with_timeout`] re-checks a still-running child.

@@ -139,6 +139,37 @@ fn stage_children_cannot_checkpoint_the_shared_ci_test_daemon() {
 }
 
 #[test]
+fn unset_job_limits_are_not_stamped_on_stage_children() {
+    let mut command = Command::new("unused");
+
+    apply_stage_resource_limits(&mut command, None, None);
+
+    assert!(!command.get_envs().any(|(key, _)| {
+        key == std::ffi::OsStr::new("CARGO_BUILD_JOBS") || key == std::ffi::OsStr::new("SOLDR_JOBS")
+    }));
+}
+
+#[test]
+fn explicit_job_limits_are_stamped_without_normalization() {
+    let mut command = Command::new("unused");
+
+    apply_stage_resource_limits(&mut command, Some("02"), Some("7"));
+
+    let env: BTreeMap<_, _> = command
+        .get_envs()
+        .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value.to_owned())))
+        .collect();
+    assert_eq!(
+        env.get(std::ffi::OsStr::new("CARGO_BUILD_JOBS")),
+        Some(&std::ffi::OsString::from("02"))
+    );
+    assert_eq!(
+        env.get(std::ffi::OsStr::new("SOLDR_JOBS")),
+        Some(&std::ffi::OsString::from("7"))
+    );
+}
+
+#[test]
 fn parallel_failure_cancels_the_sibling_process_tree() {
     if !posix_fixture_available() {
         // The fixture uses the POSIX shell. Windows process-tree

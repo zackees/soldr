@@ -55,18 +55,12 @@ jobs:
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
       RUST_BACKTRACE: "1"
       CARGO_TERM_COLOR: always
-      # zccache 1.13.11+ gives registered Rust amalgamations and large native
-      # C/C++ units exclusive compiler admission.  The known OOM offenders
-      # therefore still run alone, while ordinary compilation can use the
-      # hosted runner's parallelism without overlapping a heavyweight unit.
-      CARGO_BUILD_JOBS: "2"
-      SOLDR_JOBS: "2"
+      # zccache 1.13.17+ gives registered Rust amalgamations and large native
+      # C/C++ units exclusive compiler admission. Keep Cargo/Soldr job counts
+      # unset: ordinary compilation uses the hosted runner's full parallelism,
+      # while known heavyweight units run alone. An OOM is an admission bug,
+      # not a reason to cap the entire host-validation DAG.
       # soldr#2996 Phase 8, measured over 3 runs against 6 baseline runs.
-      #
-      # The OOM rationale above covers CARGO_BUILD_JOBS and SOLDR_JOBS, which
-      # govern compile/link concurrency. NEXTEST_TEST_THREADS governs test
-      # EXECUTION, which happens after linking and cannot cause a link OOM.
-      # All three were pinned together for a reason that applies to two.
       #
       # Expectations are bounded: the hot modules are already floored at
       # serial execution by .config/nextest.toml's test-groups

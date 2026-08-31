@@ -36,17 +36,31 @@ fn configure_dylint_identity(command: &mut Command) {
 /// identity.  The exact host stable toolchain remains observable: hard-coding
 /// it here would hide a real domain-selection regression whenever the
 /// repository pin moves.
-fn explain_plan(extra: &[&str]) -> Output {
+fn explain_plan_with_limits(
+    extra: &[&str],
+    cargo_build_jobs: Option<&str>,
+    soldr_jobs: Option<&str>,
+) -> Output {
     let mut command = isolated_soldr_command();
     command
         .current_dir(workspace_root())
         .args(["ci-test", "--explain-plan", "--format", "json"])
         .args(extra)
-        .env_remove("CARGO_BUILD_JOBS")
-        .env_remove("SOLDR_JOBS")
         .env_remove("NEXTEST_TEST_THREADS");
+    match cargo_build_jobs {
+        Some(value) => command.env("CARGO_BUILD_JOBS", value),
+        None => command.env_remove("CARGO_BUILD_JOBS"),
+    };
+    match soldr_jobs {
+        Some(value) => command.env("SOLDR_JOBS", value),
+        None => command.env_remove("SOLDR_JOBS"),
+    };
     configure_dylint_identity(&mut command);
     command.output().expect("run soldr ci-test --explain-plan")
+}
+
+fn explain_plan(extra: &[&str]) -> Output {
+    explain_plan_with_limits(extra, None, None)
 }
 
 fn plan_json(extra: &[&str]) -> Value {
@@ -104,7 +118,7 @@ fn ci_test_is_a_native_builtin_with_a_versioned_complete_plan_schema() {
     let plan = plan_json(&[]);
 
     assert_eq!(
-        plan["schema_version"], 2,
+        plan["schema_version"], 3,
         "the explain-plan schema is a public contract"
     );
     assert_eq!(plan["command"], "ci-test");
@@ -131,8 +145,8 @@ fn ci_test_is_a_native_builtin_with_a_versioned_complete_plan_schema() {
     assert!(plan.get("scope").and_then(Value::as_object).is_some());
     assert!(plan.get("cook").is_some());
     let resource_limits = object(&plan, "resource_limits");
-    assert_eq!(resource_limits["cargo_build_jobs"], "1");
-    assert_eq!(resource_limits["soldr_jobs"], "1");
+    assert_eq!(resource_limits["cargo_build_jobs"], Value::Null);
+    assert_eq!(resource_limits["soldr_jobs"], Value::Null);
     assert_eq!(resource_limits["nextest_test_threads"], "1");
     let dylint_target_trees = object(&plan, "dylint_target_trees");
     for field in ["libraries", "analysis", "tests"] {
@@ -216,6 +230,21 @@ fn ci_test_is_a_native_builtin_with_a_versioned_complete_plan_schema() {
         names.contains(&"rustdoc"),
         "doctests must be represented as their own rustdoc family: {domains:?}"
     );
+}
+
+#[test]
+fn ci_test_preserves_explicit_job_limits_exactly() {
+    let output = explain_plan_with_limits(&[], Some("02"), Some("7"));
+    assert!(
+        output.status.success(),
+        "ci-test explain-plan failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let plan: Value = serde_json::from_slice(&output.stdout).expect("JSON plan");
+    let resource_limits = object(&plan, "resource_limits");
+    assert_eq!(resource_limits["cargo_build_jobs"], "02");
+    assert_eq!(resource_limits["soldr_jobs"], "7");
 }
 
 #[test]
@@ -539,7 +568,7 @@ fn ci_test_human_explain_plan_renders_the_same_named_domains_and_stages() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     for required in [
-        "soldr ci-test plan v2",
+        "soldr ci-test plan v3",
         "stable",
         "dylint-libraries",
         "dylint-analysis",

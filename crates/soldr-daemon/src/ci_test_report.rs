@@ -11,8 +11,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-const REPORT_PATH_ENV: &str = "SOLDR_CI_TEST_REPORT_PATH";
-const STAGE_ENV: &str = "SOLDR_CI_TEST_STAGE";
+use crate::core::{CI_TEST_REPORT_PATH_ENV_VAR, CI_TEST_STAGE_ENV_VAR};
 static REPORT_APPEND: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Serialize)]
@@ -54,10 +53,12 @@ pub(crate) fn prepare(request: &CompileRequest) -> Option<PreparedReport> {
             .find(|(key, _)| key == name)
             .map(|(_, value)| value)
     };
-    let path = env(REPORT_PATH_ENV)?;
+    let path = env(CI_TEST_REPORT_PATH_ENV_VAR)?;
     Some(PreparedReport {
         path: PathBuf::from(path),
-        stage: env(STAGE_ENV).cloned().unwrap_or_else(|| "unknown".into()),
+        stage: env(CI_TEST_STAGE_ENV_VAR)
+            .cloned()
+            .unwrap_or_else(|| "unknown".into()),
         identity: normalized_identity(request),
     })
 }
@@ -219,8 +220,11 @@ mod tests {
                     ],
                     cwd: "/repo".into(),
                     env: vec![
-                        (REPORT_PATH_ENV.into(), path.display().to_string()),
-                        (STAGE_ENV.into(), format!("stage-{index}")),
+                        (
+                            CI_TEST_REPORT_PATH_ENV_VAR.into(),
+                            path.display().to_string(),
+                        ),
+                        (CI_TEST_STAGE_ENV_VAR.into(), format!("stage-{index}")),
                     ],
                     stdin: vec![],
                     lifecycle: None,
