@@ -547,16 +547,23 @@ soldr ci-test --explain-plan --format json
 ```
 
 The stable host chain runs formatting and `soldr lint ci`, Clippy, exactly one
-Nextest test-profile build/run, and doctests. `soldr cargo check` is not run
-because Clippy subsumes the same workspace/all-targets host scope. Dependency
-policy fans out across `soldr cargo deny check bans`, `soldr cargo audit`, and
+Nextest test-profile build/run, and doctests. After Clippy, Nextest overlaps the
+serial Dylint libraries -> workspace analysis -> UI-test branch. Doctests start
+only after both branches complete. `soldr cargo check` is not run because
+Clippy subsumes the same workspace/all-targets host scope. Dependency policy
+then fans out across `soldr cargo deny check bans`, `soldr cargo audit`, and
 `soldr cargo machete`. Nextest runs from the workspace root, so
 `.config/nextest.toml` keeps its test groups, slow-test budgets, timeout grace
 period, and platform wrappers. By default the command fixes compiler work at
 one Cargo/Soldr job and one Nextest test thread. Explicit
 `CARGO_BUILD_JOBS`, `SOLDR_JOBS`, and `NEXTEST_TEST_THREADS` values are frozen
 into the plan instead; this keeps memory bounded without conflating compiler
-serialization with test-process concurrency.
+serialization with test-process concurrency. Both compiler branches share one
+Soldr daemon and canonical post-hit shared/exclusive compiler gate. Two Cargo
+children still have independent jobservers, so the parent compares their
+aggregate Cargo slot demand with the cgroup-aware orchestration budget before
+forking. If it cannot fit, Soldr keeps the explicit per-child job value and
+serializes the branches instead of silently lowering it.
 
 All six repository Dylints are retained. They intentionally use their exact
 pinned nightly rather than the stable project toolchain. The command reads all

@@ -62,6 +62,7 @@ mod zthreads_fallback;
 
 pub(crate) use cache_plan::CargoCachePlan;
 use config_args::insert_cargo_global_args;
+pub(crate) use job_budget::{shared_cargo_process_budget, SharedCargoProcessBudget};
 
 const CARGO_WAIT_TIMEOUT_ENV_VAR: &str = "SOLDR_CARGO_WAIT_TIMEOUT_SECS";
 /// Internal one-hop marker for commands that must share their Soldr parent's

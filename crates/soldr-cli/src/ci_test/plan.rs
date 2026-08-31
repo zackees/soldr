@@ -96,10 +96,18 @@ pub(crate) async fn freeze(
         &["rustfmt", "lint-ci"],
         &root,
     ));
-    for lint in DYLINTS {
-        let name = format!("dylint-library-{lint}");
+    let library_names: Vec<String> = DYLINTS
+        .iter()
+        .map(|lint| format!("dylint-library-{lint}"))
+        .collect();
+    for (index, lint) in DYLINTS.iter().enumerate() {
+        let dependency = if index == 0 {
+            "clippy"
+        } else {
+            library_names[index - 1].as_str()
+        };
         stages.push(stage(
-            &name,
+            &library_names[index],
             "dylint-libraries",
             COMPILER,
             cargo_command(
@@ -114,14 +122,10 @@ pub(crate) async fn freeze(
                 ],
                 &[],
             ),
-            &["clippy"],
+            &[dependency],
             &root.join("dylints").join(lint),
         ));
     }
-    let library_names: Vec<String> = DYLINTS
-        .iter()
-        .map(|lint| format!("dylint-library-{lint}"))
-        .collect();
     let mut dylint = vec![
         "dylint".into(),
         "--no-build".into(),
@@ -136,13 +140,23 @@ pub(crate) async fn freeze(
         "dylint-analysis",
         COMPILER,
         cargo_command(&dylint, &[]),
-        &library_names.iter().map(String::as_str).collect::<Vec<_>>(),
+        &[library_names
+            .last()
+            .expect("the frozen Dylint inventory is non-empty")],
         &root,
     ));
-    for lint in DYLINTS {
-        let name = format!("dylint-test-{lint}");
+    let dylint_test_names: Vec<String> = DYLINTS
+        .iter()
+        .map(|lint| format!("dylint-test-{lint}"))
+        .collect();
+    for (index, lint) in DYLINTS.iter().enumerate() {
+        let dependency = if index == 0 {
+            "dylint-workspace"
+        } else {
+            dylint_test_names[index - 1].as_str()
+        };
         stages.push(stage(
-            &name,
+            &dylint_test_names[index],
             "dylint-ui-tests",
             COMPILER,
             cargo_command(
@@ -155,14 +169,10 @@ pub(crate) async fn freeze(
                 ],
                 &[],
             ),
-            &["dylint-workspace"],
+            &[dependency],
             &root.join("dylints").join(lint),
         ));
     }
-    let dylint_test_names: Vec<String> = DYLINTS
-        .iter()
-        .map(|lint| format!("dylint-test-{lint}"))
-        .collect();
     let mut nextest = vec!["nextest".into(), "run".into()];
     nextest.extend(workspace_selection(&invocation.scope));
     nextest.extend([
@@ -179,10 +189,7 @@ pub(crate) async fn freeze(
         "stable",
         COMPILER_AND_TEST,
         cargo_command(&nextest, &[]),
-        &dylint_test_names
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
+        &["clippy"],
         &root,
     ));
     let mut doctest = vec!["test".into()];
@@ -194,7 +201,12 @@ pub(crate) async fn freeze(
         "rustdoc",
         COMPILER_AND_TEST,
         cargo_command(&doctest, &[]),
-        &["nextest"],
+        &[
+            "nextest",
+            dylint_test_names
+                .last()
+                .expect("the frozen Dylint test inventory is non-empty"),
+        ],
         &root,
     ));
     for (name, args) in [
