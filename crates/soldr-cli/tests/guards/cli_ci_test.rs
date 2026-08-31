@@ -104,7 +104,7 @@ fn ci_test_is_a_native_builtin_with_a_versioned_complete_plan_schema() {
     let plan = plan_json(&[]);
 
     assert_eq!(
-        plan["schema_version"], 1,
+        plan["schema_version"], 2,
         "the explain-plan schema is a public contract"
     );
     assert_eq!(plan["command"], "ci-test");
@@ -267,6 +267,7 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
             "dylint-test-ban_raw_ipc_transport",
             "dylint-test-ban_platform_cfg_outside_boundary",
             "dylint-test-ban_raw_env_flag",
+            "nextest-compile",
             "nextest",
             "doctests",
             "cargo-deny-bans",
@@ -276,15 +277,16 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
         "the prescribed host-validation order is a frozen native-ci contract"
     );
 
-    let nextest = find_stage(&plan, "nextest");
-    assert_eq!(nextest["domain"], "stable");
+    let nextest_compile = find_stage(&plan, "nextest-compile");
+    assert_eq!(nextest_compile["domain"], "stable");
     assert_eq!(
-        nextest["command"],
+        nextest_compile["command"],
         serde_json::json!([
             "soldr",
             "cargo",
             "nextest",
             "run",
+            "--no-run",
             "--workspace",
             "--lib",
             "--tests",
@@ -293,13 +295,34 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
             "--test-threads",
             "1"
         ]),
-        "the sole test-profile compile feeds nextest; do not insert a dev-profile warm-up"
+        "the sole test-profile compile feeds Nextest execution; do not insert a dev-profile warm-up"
     );
-    assert_eq!(nextest["executes_compiler"], true);
+    assert_eq!(nextest_compile["executes_compiler"], true);
+    assert_eq!(
+        nextest_compile["depends_on"],
+        serde_json::json!(["clippy"]),
+        "Nextest compilation must become ready immediately after Clippy"
+    );
+    let nextest = find_stage(&plan, "nextest");
+    assert_eq!(nextest["domain"], "stable");
+    assert_eq!(nextest["executes_compiler"], false);
     assert_eq!(
         nextest["depends_on"],
-        serde_json::json!(["clippy"]),
-        "Nextest must become ready immediately after Clippy"
+        serde_json::json!(["nextest-compile"])
+    );
+    let run_args = nextest["command"].as_array().expect("Nextest run argv");
+    let compile_args = nextest_compile["command"]
+        .as_array()
+        .expect("Nextest compile argv");
+    let compile_without_no_run: Vec<_> = compile_args
+        .iter()
+        .filter(|arg| arg.as_str() != Some("--no-run"))
+        .cloned()
+        .collect();
+    let run_args = run_args.to_vec();
+    assert_eq!(
+        compile_without_no_run, run_args,
+        "Nextest execution must select exactly the binaries compiled by nextest-compile"
     );
     assert!(
         !array(&plan, "stages").iter().any(|stage| {
@@ -428,7 +451,13 @@ fn ci_test_preserves_scope_and_exposes_incompatible_overrides_as_domains_or_erro
     );
     assert_eq!(scope.get("all_features"), Some(&Value::Bool(true)));
     assert_eq!(scope.get("no_default_features"), Some(&Value::Bool(false)));
-    for stage_name in ["clippy", "nextest", "doctests", "dylint-workspace"] {
+    for stage_name in [
+        "clippy",
+        "nextest-compile",
+        "nextest",
+        "doctests",
+        "dylint-workspace",
+    ] {
         let command = find_stage(&scoped, stage_name)["command"]
             .as_array()
             .expect("scoped stage command");
@@ -510,7 +539,7 @@ fn ci_test_human_explain_plan_renders_the_same_named_domains_and_stages() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     for required in [
-        "soldr ci-test plan v1",
+        "soldr ci-test plan v2",
         "stable",
         "dylint-libraries",
         "dylint-analysis",
