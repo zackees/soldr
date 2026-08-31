@@ -18,7 +18,7 @@ members = [
 # declarations, and each needed excluding so cargo would not fold its crates
 # into soldr's workspace and mis-version them. They are exact crates.io
 # dependencies now (`zccache = { version = "=1.13.16" }`,
-# `running-process = { version = "=4.10.6" }`), so there is no nested
+# `running-process = { version = "=4.10.9" }`), so there is no nested
 # workspace left to exclude and no `[patch]` pointing at either.
 #
 # `tests/test_externalized_dependency_sources.py` fails if a path dep, a
