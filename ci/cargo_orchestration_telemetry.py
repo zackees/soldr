@@ -376,17 +376,11 @@ def format_markdown(results: list[dict[str, object]]) -> str:
         assert isinstance(events, dict)
         outcome = "timeout" if result["timed_out"] else str(result["returncode"])
         lines.append(
-            "| {jobs} | {outcome} | {wall} ms | {memory} | {pids} | {cargo}/{compiler}/{tools} | {oom} |".format(
-                jobs=result["requested_jobs"],
-                outcome=outcome,
-                wall=result["wall_time_ms"],
-                memory=maxima["max_memory_current_bytes"],
-                pids=maxima["max_pids_current"],
-                cargo=maxima["max_cargo_processes"],
-                compiler=maxima["max_compiler_processes"],
-                tools=maxima["max_toolchain_processes"],
-                oom=events.get("oom_kill", 0) + events.get("oom_group_kill", 0),
-            )
+            f"| {result['requested_jobs']} | {outcome} | {result['wall_time_ms']} ms | "
+            f"{maxima['max_memory_current_bytes']} | {maxima['max_pids_current']} | "
+            f"{maxima['max_cargo_processes']}/{maxima['max_compiler_processes']}/"
+            f"{maxima['max_toolchain_processes']} | "
+            f"{events.get('oom_kill', 0) + events.get('oom_group_kill', 0)} |"
         )
     return "\n".join(lines)
 
