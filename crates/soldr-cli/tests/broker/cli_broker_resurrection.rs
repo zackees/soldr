@@ -102,6 +102,25 @@ fn spawn_log(home: &Path) -> String {
     std::fs::read_to_string(home.join(".soldr/broker/broker-spawn.log")).unwrap_or_default()
 }
 
+/// A front-door command is allowed to complete after it has handed broker
+/// startup to the detached process.  In particular, Rosetta can make the
+/// interval between that handoff and the eventual listener bind large enough
+/// that an immediate log snapshot races the replacement itself.  Wait for the
+/// observable event this family of tests is asserting rather than treating the
+/// handoff as readiness.
+fn wait_for_successful_bind(home: &Path, deadline: Instant) -> String {
+    let mut log = spawn_log(home);
+    while Instant::now() < deadline
+        && !log
+            .lines()
+            .any(|line| line.contains("stable endpoint bound at"))
+    {
+        std::thread::sleep(POLL);
+        log = spawn_log(home);
+    }
+    log
+}
+
 fn broker_status(home: &Path) -> String {
     let mut command = Command::new(common::soldr_bin());
     common::scrub_outer_soldr_env(&mut command);
@@ -314,7 +333,7 @@ fn issue_2920_known_bad_older_broker_is_retired_once_with_a_structured_outcome()
     let stderr = String::from_utf8_lossy(&front_door.stderr);
     let incumbent_exit = wait_for_child(&mut incumbent, Instant::now() + Duration::from_secs(15));
     let after = broker_status(&home);
-    let log = spawn_log(&home);
+    let log = wait_for_successful_bind(&home, Instant::now() + Duration::from_secs(30));
     stop_broker(&home);
 
     assert!(
@@ -784,7 +803,7 @@ fn issue_2476_sigstop_owner_is_fenced_after_lease_expiry() {
         let _ = stopped_owner.kill();
         let _ = stopped_owner.wait();
     }
-    let log = spawn_log(&home);
+    let log = wait_for_successful_bind(&home, Instant::now() + Duration::from_secs(30));
     let stopped_owner_diagnostic =
         std::fs::read_to_string(&stopped_owner_stderr).unwrap_or_default();
     stop_broker(&home);

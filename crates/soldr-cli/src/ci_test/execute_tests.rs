@@ -115,6 +115,30 @@ fn dylint_tool_path_keeps_the_exact_toolchain_path() {
 }
 
 #[test]
+fn stage_children_cannot_checkpoint_the_shared_ci_test_daemon() {
+    let mut command = Command::new("unused");
+    command.env(crate::zccache::SOLDR_CACHE_LIFECYCLE_ENV_VAR, "command");
+    command.env(
+        crate::zccache::SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR,
+        "30",
+    );
+
+    configure_stage_cache_lifecycle(&mut command);
+
+    let lifecycle = command
+        .get_envs()
+        .find(|(key, _)| {
+            *key == std::ffi::OsStr::new(crate::zccache::SOLDR_CACHE_LIFECYCLE_ENV_VAR)
+        })
+        .and_then(|(_, value)| value);
+    assert_eq!(lifecycle, Some(std::ffi::OsStr::new("job")));
+    assert!(command.get_envs().any(|(key, value)| {
+        key == std::ffi::OsStr::new(crate::zccache::SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR)
+            && value.is_none()
+    }));
+}
+
+#[test]
 fn parallel_failure_cancels_the_sibling_process_tree() {
     if !posix_fixture_available() {
         // The fixture uses the POSIX shell. Windows process-tree

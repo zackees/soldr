@@ -1,10 +1,5 @@
-//! Two brokers for the same installed Soldr endpoint must never coexist.
-//!
-//! Mirrors `cli_daemon_single_instance.rs`'s shape for the analogous
-//! `soldr-daemon` property, applied to the new broker subcommand. `soldr
-//! broker serve` binds via `running_process::broker::server::singleton_bind`
-//! (running-process#899/#901): the first process to bind wins, and a second
-//! process against the same bind name must be refused rather than racing it.
+//! Soldr's CLI must explain an already-bound broker endpoint and exit with
+//! the supervisor-retryable status without adding the silent-failure marker.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -12,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use crate::common;
 
-const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const LOSER_EXIT_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
 
@@ -28,52 +22,41 @@ fn spawn_broker(home: &Path) -> std::process::Child {
         .expect("spawn soldr broker serve")
 }
 
-/// Wait until `child`'s stdout has printed the "binding at" line, or the
-/// deadline passes. Consumes stdout on a background thread so a live
-/// process's inherited pipe never fills up and blocks it.
-fn wait_until_bound(
-    child: &mut std::process::Child,
-    deadline: Instant,
-) -> Option<std::thread::JoinHandle<bool>> {
-    use std::io::{BufRead, BufReader};
-    let stdout = child.stdout.take()?;
-    let handle = std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if line.contains("stable endpoint bound at") {
-                return true;
-            }
-        }
-        false
-    });
-    // Poll-join with a deadline rather than a blocking join, since a wedged
-    // process would otherwise hang the test past its own nextest budget.
-    let start = Instant::now();
-    loop {
-        if handle.is_finished() {
-            return Some(handle);
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        if start.elapsed() > READY_TIMEOUT {
-            return None;
-        }
-        std::thread::sleep(POLL);
+fn broker_bind_endpoint(home: &Path) -> String {
+    if soldr_platform::host::facts::os() == soldr_platform::host::facts::HostOs::Windows {
+        let executable =
+            soldr_cli::broker_identity::authoritative_broker_executable(home, "soldr-broker.exe");
+        let pipe = soldr_cli::broker_identity::windows_broker_pipe_from_executable(
+            &executable.display().to_string(),
+        )
+        .expect("derive broker pipe");
+        format!(r"\\.\pipe\{}", pipe.pipe_leaf)
+    } else {
+        let executable =
+            soldr_cli::broker_identity::authoritative_broker_executable(home, "soldr-broker");
+        soldr_cli::broker_identity::resolve_unix_for_executable(
+            &executable,
+            &soldr_platform::ipc::endpoint::machine_runtime_dir(),
+            None,
+            soldr_platform::ipc::endpoint::sun_path_capacity(),
+        )
+        .expect("resolve broker endpoint")
+        .bind_endpoint
     }
 }
 
 #[test]
-fn two_brokers_against_one_endpoint_never_coexist() {
+fn already_bound_endpoint_reports_cli_diagnostic_and_exit_75() {
     let home = common::unique_temp_dir("broker-single-home");
+    let endpoint = broker_bind_endpoint(&home);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("broker endpoint runtime");
+    let _runtime_guard = runtime.enter();
+    let _occupied = soldr_platform::ipc::broker::bind_listener(&endpoint, 1024)
+        .expect("occupy broker endpoint");
 
-    let mut first = spawn_broker(&home);
-    let ready = wait_until_bound(&mut first, Instant::now() + READY_TIMEOUT);
-    assert!(
-        ready.is_some(),
-        "first broker never printed its bound-at line within {READY_TIMEOUT:?}"
-    );
-
-    // A second broker for the same installed endpoint must refuse.
     let second = spawn_broker(&home);
     let output = {
         let deadline = Instant::now() + LOSER_EXIT_TIMEOUT;
@@ -85,11 +68,8 @@ fn two_brokers_against_one_endpoint_never_coexist() {
             if Instant::now() >= deadline {
                 let _ = second.kill();
                 let _ = second.wait();
-                let _ = first.kill();
-                let _ = first.wait();
                 panic!(
-                    "a second broker stayed alive for {LOSER_EXIT_TIMEOUT:?} -- the \
-                         singleton guard did not hold"
+                    "broker stayed alive for {LOSER_EXIT_TIMEOUT:?} after its endpoint was occupied"
                 );
             }
             std::thread::sleep(POLL);
@@ -120,7 +100,4 @@ fn two_brokers_against_one_endpoint_never_coexist() {
         "the already-bound refusal is a real explanation and must not trip \
              the silent-failure annotation; output was:\n{combined}"
     );
-
-    let _ = first.kill();
-    let _ = first.wait();
 }

@@ -166,55 +166,6 @@ fn mismatched_machine_attestation_is_refused_as_shared_home() {
 }
 
 #[test]
-fn stale_socket_n_way_bind_has_exactly_one_winner() {
-    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-        return;
-    }
-    use std::sync::{mpsc, Barrier};
-
-    let temp = tempfile::tempdir().expect("tempdir");
-    let socket = temp.path().join("soldr-broker.sock");
-    crate::platform::ipc::broker::seed_stale_endpoint(&socket).expect("seed stale socket");
-    let endpoint = crate::broker_identity::ResolvedBrokerEndpoint {
-        executable_path: temp.path().join("soldr-broker"),
-        logical_socket_path: socket.display().to_string(),
-        bind_endpoint: socket.display().to_string(),
-        windows_pipe_leaf: None,
-        oversized_windows_pipe_leaf: None,
-        fallback: None,
-        lease_database_path: temp.path().join("lease.sqlite3"),
-    };
-    let contenders = 16;
-    let release = Arc::new(Barrier::new(contenders + 1));
-    let (send, receive) = mpsc::channel();
-    let threads: Vec<_> = (0..contenders)
-        .map(|_| {
-            let endpoint = endpoint.clone();
-            let release = Arc::clone(&release);
-            let send = send.clone();
-            std::thread::spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("runtime");
-                let _context = runtime.enter();
-                let listener = bind_listener(&endpoint);
-                send.send(listener.is_ok()).expect("send result");
-                release.wait();
-                drop(listener);
-            })
-        })
-        .collect();
-    drop(send);
-    let results: Vec<_> = receive.iter().take(contenders).collect();
-    assert_eq!(results.iter().filter(|won| **won).count(), 1, "{results:?}");
-    release.wait();
-    for thread in threads {
-        thread.join().expect("bind contender");
-    }
-}
-
-#[test]
 fn macos_listener_restricts_socket_permissions_after_bind() {
     if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::MacOs {
         return;

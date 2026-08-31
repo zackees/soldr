@@ -42,7 +42,24 @@ const WEDGE_HOLD: Duration = Duration::from_secs(30);
 /// Returns the endpoint the client should dial, plus a guard that keeps the
 /// server alive and retires its host endpoint.
 fn spawn_wedged_daemon() -> (std::path::PathBuf, WedgeGuard) {
-    let endpoint = soldr_platform::ipc::endpoint::ephemeral("soldr-stall-harness");
+    // The production listener requires an owner-private parent. An endpoint
+    // directly under /tmp therefore fails correctly: the test must not try to
+    // chmod the shared sticky directory. Keep this directory short enough for
+    // macOS's `sun_path` limit while retaining it for the listener's lifetime.
+    let host_os = soldr_platform::host::facts::os();
+    let directory = if host_os == soldr_platform::host::facts::HostOs::Windows {
+        tempfile::tempdir().expect("create wedged-daemon directory")
+    } else {
+        tempfile::Builder::new()
+            .prefix("soldr-stall-")
+            .tempdir_in("/tmp")
+            .expect("create private wedged-daemon directory")
+    };
+    let endpoint = if host_os == soldr_platform::host::facts::HostOs::Windows {
+        soldr_platform::ipc::endpoint::ephemeral("soldr-stall-harness")
+    } else {
+        directory.path().join("daemon.sock").display().to_string()
+    };
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
     let server_endpoint = endpoint.clone();
     let handle = std::thread::spawn(move || {
@@ -70,6 +87,7 @@ fn spawn_wedged_daemon() -> (std::path::PathBuf, WedgeGuard) {
         WedgeGuard {
             handle: Some(handle),
             endpoint: Some(endpoint),
+            _directory: directory,
         },
     )
 }
@@ -81,6 +99,7 @@ fn spawn_wedged_daemon() -> (std::path::PathBuf, WedgeGuard) {
 struct WedgeGuard {
     handle: Option<std::thread::JoinHandle<()>>,
     endpoint: Option<String>,
+    _directory: tempfile::TempDir,
 }
 
 impl Drop for WedgeGuard {

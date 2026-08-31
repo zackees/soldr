@@ -9,7 +9,7 @@ description = "CLI for soldr — instant tools, instant builds"
 publish = false
 
 [dependencies]
-running-process = { version = "=4.10.6", default-features = false, features = ["client", "client-async"] }
+running-process = { version = "=4.10.9", default-features = false, features = ["client", "client-async"] }
 soldr-cache = { path = "../soldr-cache" }
 soldr-daemon = { path = "../soldr-daemon" }
 soldr-core = { path = "../soldr-core" }

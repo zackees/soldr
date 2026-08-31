@@ -114,32 +114,26 @@ pub fn bind_owner_only_listener(
     use interprocess::local_socket::ListenerOptions;
     use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
     use running_process::broker::server::singleton_bind::{
-        is_already_bound_error, unix_socket_path_is_stale, wrap_socket_name,
+        bind_singleton_with, BindSingletonError, wrap_socket_name,
     };
 
     if let Some(parent) = std::path::Path::new(socket_path).parent() {
         running_process::broker::secure_dir::ensure_private_dir(parent)?;
     }
 
-    let name = wrap_socket_name(socket_path).map_err(io::Error::other)?;
-    let options = ListenerOptions::new()
-        .name(name)
-        .reclaim_name(false)
-        .mode(0o600);
-    let first = options.create_tokio();
-    match first {
-        Ok(listener) => Ok(listener),
-        Err(err) if is_already_bound_error(&err) && unix_socket_path_is_stale(socket_path) => {
-            let _ = std::fs::remove_file(socket_path);
-            let retry_name = wrap_socket_name(socket_path).map_err(io::Error::other)?;
-            ListenerOptions::new()
-                .name(retry_name)
-                .reclaim_name(false)
-                .mode(0o600)
-                .create_tokio()
+    bind_singleton_with(socket_path, || {
+        ListenerOptions::new()
+            .name(wrap_socket_name(socket_path).map_err(io::Error::other)?)
+            .reclaim_name(false)
+            .mode(0o600)
+            .create_tokio()
+    })
+    .map_err(|error| match error {
+        BindSingletonError::InvalidName(message) => {
+            io::Error::new(io::ErrorKind::InvalidInput, message)
         }
-        Err(err) => Err(err),
-    }
+        BindSingletonError::AlreadyBound(error) | BindSingletonError::Other(error) => error,
+    })
 }
 
 #[cfg(test)]
