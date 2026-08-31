@@ -141,6 +141,8 @@ pub(crate) struct Stage {
     pub(crate) working_directory: String,
     pub(crate) depends_on: Vec<String>,
     pub(crate) concurrency_group: Option<&'static str>,
+    /// Whether the planned stage command builds its own Cargo graph. This does
+    /// not classify compiler fixtures intentionally launched by test bodies.
     pub(crate) executes_compiler: bool,
     pub(crate) metrics: StageMetrics,
 }

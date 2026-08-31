@@ -74,8 +74,6 @@ pub const COMMAND_OUTPUT_TIMEOUT_ENV_VAR: &str = "SOLDR_COMMAND_OUTPUT_TIMEOUT_S
 pub const CI_TEST_REPORT_PATH_ENV_VAR: &str = "SOLDR_CI_TEST_REPORT_PATH";
 /// Name of the `soldr ci-test` stage that originated a compiler request.
 pub const CI_TEST_STAGE_ENV_VAR: &str = "SOLDR_CI_TEST_STAGE";
-/// Marks a stage whose frozen plan declares that it cannot compile.
-pub const CI_TEST_FORBID_COMPILER_ENV_VAR: &str = "SOLDR_CI_TEST_FORBID_COMPILER";
 pub const DEFAULT_COMMAND_OUTPUT_TIMEOUT_SECS: u64 = 60;
 const KILLED_COMMAND_OUTPUT_REAP_TIMEOUT_SECS: u64 = 5;
 /// How often [`command_output_with_timeout`] re-checks a still-running child.

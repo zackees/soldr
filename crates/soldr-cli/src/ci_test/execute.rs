@@ -8,10 +8,11 @@ use std::time::{Duration, Instant};
 
 /// Execute the frozen plan in its dependency order. Stable Nextest compilation
 /// completes after Clippy, before the serial Dylint chain begins. Its Fresh
-/// test execution then overlaps that chain. Only the Dylint branch may compile;
-/// Nextest execution carries a daemon-enforced no-compiler invariant. Dylint
-/// manifests remain sequential because all six intentionally share one target
-/// tree per domain.
+/// test execution then overlaps that chain. The Nextest Cargo command does not
+/// rebuild its test profile, but individual tests may launch nested compiler
+/// fixtures; those and Dylint share the daemon's canonical admission gate.
+/// Dylint manifests remain sequential because all six intentionally share one
+/// target tree per domain.
 pub(crate) async fn run(
     plan: &CiTestPlan,
     cache_enabled: bool,
@@ -32,13 +33,12 @@ pub(crate) async fn run(
     stop_on_failure!(run_group(&factory, plan, &["clippy"]));
     stop_on_failure!(run_group(&factory, plan, &["nextest-compile"]));
     factory.prepare_dylint().await?;
-    // nextest-compile already materialized the complete stable test profile.
-    // The fork therefore has one compiler-bearing Cargo process (Dylint), not
-    // two independent compiler jobservers. The compiler-free Nextest execution
-    // is guarded at daemon dispatch, so freshness drift fails before admission
-    // instead of silently creating unplanned compiler concurrency.
+    // nextest-compile already materialized the stable test profile. Tests may
+    // still launch nested Cargo fixtures; those compiles are expected and use
+    // the same shared/exclusive daemon admission as Dylint. Do not infer a
+    // global Cargo cap from their dynamic child-jobserver count.
     eprintln!(
-        "soldr ci-test: overlapping compiler-free Nextest execution with the single compiler-bearing Dylint branch"
+        "soldr ci-test: overlapping Fresh Nextest execution with Dylint under canonical compiler admission"
     );
     stop_on_failure!(run_parallel_nextest_and_dylint(&factory, plan));
     stop_on_failure!(run_group(&factory, plan, &["doctests"]));
@@ -418,8 +418,7 @@ fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrError> {
     require_dependencies(nextest, &["nextest-compile"])?;
     if nextest.executes_compiler {
         return Err(SoldrError::Other(
-            "soldr ci-test: Nextest execution must remain compiler-free after nextest-compile"
-                .into(),
+            "soldr ci-test: Nextest execution must not rebuild its planned test profile after nextest-compile; nested compiler fixtures launched by tests remain allowed".into(),
         ));
     }
     require_dependencies(
@@ -779,7 +778,6 @@ impl StageCommandFactory {
             &self.ci_test_report_path,
         );
         command.env(crate::core::CI_TEST_STAGE_ENV_VAR, &stage.name);
-        configure_stage_scheduler_invariants(&mut command, stage);
         configure_stage_cache_lifecycle(&mut command);
         if stage.domain.starts_with("dylint-") {
             for (key, value) in &self.dylint_env {
@@ -835,12 +833,6 @@ fn apply_stage_resource_limits(
     }
     if let Some(value) = soldr_jobs {
         command.env("SOLDR_JOBS", value);
-    }
-}
-
-fn configure_stage_scheduler_invariants(command: &mut Command, stage: &Stage) {
-    if !stage.executes_compiler {
-        command.env(crate::core::CI_TEST_FORBID_COMPILER_ENV_VAR, "1");
     }
 }
 

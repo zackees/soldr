@@ -170,19 +170,6 @@ fn explicit_job_limits_are_stamped_without_normalization() {
 }
 
 #[test]
-fn compiler_free_stage_sets_the_pre_admission_invariant() {
-    let mut command = Command::new("unused");
-    let stage = test_stage("nextest");
-
-    configure_stage_scheduler_invariants(&mut command, &stage);
-
-    assert!(command.get_envs().any(|(key, value)| {
-        key == std::ffi::OsStr::new(crate::core::CI_TEST_FORBID_COMPILER_ENV_VAR)
-            && value == Some(std::ffi::OsStr::new("1"))
-    }));
-}
-
-#[test]
 fn parallel_failure_cancels_the_sibling_process_tree() {
     if !posix_fixture_available() {
         // The fixture uses the POSIX shell. Windows process-tree
