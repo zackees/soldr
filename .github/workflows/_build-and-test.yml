@@ -77,10 +77,10 @@ jobs:
       # Median nextest stage: 1,441,985 ms at 1 thread (6 samples) ->
       # 1,200,200 ms at 2 (3 samples), a 4.0 min saving, with every
       # threads=2 sample faster than every baseline sample and zero
-      # TIMEOUT lines. The bounded 3-thread trial keeps the same 3-run
-      # acceptance bar: the serial lifecycle/cold-build groups above remain
-      # intact, so only ungrouped execution receives the added slot.
-      NEXTEST_TEST_THREADS: "3"
+      # TIMEOUT lines. The serial lifecycle/cold-build groups above remain
+      # intact, so the ordinary test pool stays bounded independently from
+      # compiler/link work.
+      NEXTEST_TEST_THREADS: "2"
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

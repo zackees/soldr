@@ -325,10 +325,11 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     # the validation DAG or leak an old daemon route into nested tests.
     flattened = " ".join(build_and_test.split())
     assert build_and_test.count("name: Run prescribed host validation") == 1
-    # soldr#3024: trial 3 execution threads while keeping the compile-side
-    # limits at 2. The OOM rationale is about link concurrency, which test
-    # execution is not; the serial Nextest groups remain in force.
-    assert 'NEXTEST_TEST_THREADS: "3"' in build_and_test
+    # soldr#2996 Phase 8: 2 after measurement (3 runs vs 6 baseline runs,
+    # 4.0 min median saving, zero TIMEOUT lines). The compile-side limits
+    # asserted elsewhere stay at 1 -- the OOM rationale is about link
+    # concurrency, which test execution is not.
+    assert 'NEXTEST_TEST_THREADS: "2"' in build_and_test
     assert 'source_soldr="${GITHUB_WORKSPACE}/target/' in flattened
     assert 'SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr"' in flattened
     assert "bootstrap_wrapper" not in flattened
@@ -699,10 +700,10 @@ def test_external_zccache_bootstraps_get_exclusive_service_access() -> None:
     assert 'SOLDR_JOBS: "2"' in build_and_test
     # zccache admits registered amalgamations and large native units
     # exclusively, so these two ordinary compile slots do not reintroduce the
-    # historical heavyweight-link overlap. Test execution is separately
-    # bounded at three threads, with the risky Nextest groups still serial.
+    # historical heavyweight-link overlap. Test execution remains separately
+    # pinned at two threads.
     assert "exclusive compiler admission" in build_and_test
-    assert 'NEXTEST_TEST_THREADS: "3"' in build_and_test
+    assert 'NEXTEST_TEST_THREADS: "2"' in build_and_test
     assert "Enlarge swap (OOM headroom)" in build_and_test
 
 
