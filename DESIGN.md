@@ -38,10 +38,17 @@ and compatibility boundaries between them.
 
 Compatible stable host work shares one target tree. Clippy subsumes a separate
 `soldr cargo check`, and Nextest performs the sole test-profile build before
-running tests. The frozen resource policy defaults Cargo and Soldr compiler
-work to one job and one Nextest test process; callers
+running tests. After Clippy, stable Nextest overlaps the serial Dylint
+libraries -> workspace analysis -> UI-test branch; doctests are the explicit
+join and dependency policy follows them. The frozen resource policy defaults
+Cargo and Soldr compiler work to one job and one Nextest test process; callers
 may override those three explicit limits with `CARGO_BUILD_JOBS`, `SOLDR_JOBS`,
-and `NEXTEST_TEST_THREADS`. Doctests remain a rustdoc execution family. Dylint is the
+and `NEXTEST_TEST_THREADS`. Both branches use the same Soldr daemon and its one
+canonical post-hit compiler admission gate. Because separate Cargo processes
+own separate jobservers, the parent also checks their aggregate
+`CARGO_BUILD_JOBS` demand against the same cgroup-aware Cargo budget. When that
+aggregate cannot fit, it preserves the explicit per-process value and runs the
+branches serially. Doctests remain a rustdoc execution family. Dylint is the
 explicit exception: its exact pinned nightly uses separate nightly-keyed
 library, workspace-analysis, and UI-test trees and never contaminates the
 stable project target. The Dylint domain self-provisions the catalogue-pinned

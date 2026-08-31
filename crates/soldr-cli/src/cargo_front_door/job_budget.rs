@@ -105,7 +105,7 @@ pub(super) enum CargoJobBudgetSource {
 }
 
 impl CargoJobBudgetSource {
-    fn describe(self) -> &'static str {
+    pub(crate) fn describe(self) -> &'static str {
         match self {
             Self::ExplicitEnvironment => "explicit CARGO_BUILD_JOBS",
             Self::ExplicitArgument => "explicit Cargo jobs argument",
@@ -113,6 +113,52 @@ impl CargoJobBudgetSource {
             Self::SystemAvailable => "MemAvailable fallback",
             Self::CpuOnly => "CPU-only fallback (memory telemetry unavailable)",
         }
+    }
+}
+
+/// One parent-level decision for several Cargo processes that would run at
+/// the same time.
+///
+/// Each Cargo invocation owns an independent jobserver.  Therefore stamping
+/// `CARGO_BUILD_JOBS=2` on two children exposes four orchestration slots before
+/// either child reaches the daemon's compiler semaphore.  `soldr ci-test`
+/// uses this value to decide whether its two compiler-bearing branches may
+/// overlap; it never rewrites an explicit per-process value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SharedCargoProcessBudget {
+    pub(crate) requested_slots: Option<usize>,
+    pub(crate) available_slots: usize,
+    pub(crate) source_description: &'static str,
+    pub(crate) may_overlap: bool,
+}
+
+/// Resolve the live aggregate budget for `processes` independent Cargo
+/// jobservers, each configured with `per_process_jobs`.
+pub(crate) fn shared_cargo_process_budget(
+    per_process_jobs: &str,
+    processes: usize,
+) -> SharedCargoProcessBudget {
+    let telemetry = CargoMemoryTelemetry::capture();
+    let logical_jobs = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1);
+    shared_cargo_process_budget_from(per_process_jobs, processes, logical_jobs, &telemetry)
+}
+
+fn shared_cargo_process_budget_from(
+    per_process_jobs: &str,
+    processes: usize,
+    logical_jobs: usize,
+    telemetry: &CargoMemoryTelemetry,
+) -> SharedCargoProcessBudget {
+    let capacity = resolve_cargo_job_budget_from(None, None, logical_jobs, telemetry);
+    let requested_slots =
+        parse_positive(per_process_jobs).and_then(|jobs| jobs.checked_mul(processes.max(1)));
+    SharedCargoProcessBudget {
+        requested_slots,
+        available_slots: capacity.effective_jobs,
+        source_description: capacity.source.describe(),
+        may_overlap: requested_slots.is_some_and(|slots| slots <= capacity.effective_jobs),
     }
 }
 
@@ -431,6 +477,46 @@ mod tests {
         assert_eq!(budget.effective_jobs, 2);
         assert_eq!(budget.requested_jobs, 8);
         assert_eq!(budget.source, CargoJobBudgetSource::CgroupHeadroom);
+    }
+
+    #[test]
+    fn shared_budget_counts_every_independent_cargo_jobserver() {
+        let two_slot_host = CargoMemoryTelemetry {
+            cgroup_current_bytes: Some(GIB),
+            cgroup_limit_bytes: Some(8 * GIB),
+            ..CargoMemoryTelemetry::default()
+        };
+        let four_slot_host = CargoMemoryTelemetry {
+            cgroup_current_bytes: Some(GIB),
+            cgroup_limit_bytes: Some(16 * GIB),
+            ..CargoMemoryTelemetry::default()
+        };
+
+        let one_each = shared_cargo_process_budget_from("1", 2, 8, &two_slot_host);
+        assert_eq!(one_each.requested_slots, Some(2));
+        assert_eq!(one_each.available_slots, 2);
+        assert!(one_each.may_overlap);
+
+        let two_each = shared_cargo_process_budget_from("2", 2, 8, &two_slot_host);
+        assert_eq!(two_each.requested_slots, Some(4));
+        assert!(!two_each.may_overlap);
+
+        let roomy = shared_cargo_process_budget_from("2", 2, 8, &four_slot_host);
+        assert_eq!(roomy.available_slots, 4);
+        assert!(roomy.may_overlap);
+    }
+
+    #[test]
+    fn malformed_explicit_jobs_serializes_without_rewriting_the_value() {
+        let telemetry = CargoMemoryTelemetry {
+            system_available_bytes: Some(16 * GIB),
+            ..CargoMemoryTelemetry::default()
+        };
+
+        let budget = shared_cargo_process_budget_from("not-a-number", 2, 8, &telemetry);
+
+        assert_eq!(budget.requested_slots, None);
+        assert!(!budget.may_overlap);
     }
 
     #[test]

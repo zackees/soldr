@@ -4,11 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// Execute the frozen plan in its dependency order. Only independent
-/// non-compiler stages fan out. Dylint manifests are kept sequential because
-/// all six intentionally share one Cargo target tree per profile/toolchain.
+/// Execute the frozen plan in its dependency order. After Clippy, stable
+/// Nextest overlaps the one serial Dylint chain when the parent-level Cargo
+/// budget can carry both independent jobservers. Dylint manifests remain
+/// sequential because all six intentionally share one target tree per domain.
 pub(crate) async fn run(
     plan: &CiTestPlan,
     cache_enabled: bool,
@@ -28,19 +29,314 @@ pub(crate) async fn run(
     stop_on_failure!(run_group(&factory, plan, &["rustfmt", "lint-ci"]));
     stop_on_failure!(run_group(&factory, plan, &["clippy"]));
     factory.prepare_dylint().await?;
-    stop_on_failure!(run_named_prefix(&factory, plan, "dylint-library-"));
-    verify_target_tree("Dylint library", &plan.dylint_target_trees.libraries)?;
-    stop_on_failure!(run_group(&factory, plan, &["dylint-workspace"]));
-    verify_target_tree("Dylint analysis", &plan.dylint_target_trees.analysis)?;
-    stop_on_failure!(run_named_prefix(&factory, plan, "dylint-test-"));
-    verify_dylint_test_targets(plan)?;
-    stop_on_failure!(run_group(&factory, plan, &["nextest"]));
+    let shared_budget =
+        crate::cargo_front_door::shared_cargo_process_budget(&factory.cargo_build_jobs, 2);
+    if shared_budget.may_overlap {
+        eprintln!(
+            "soldr ci-test: overlapping Nextest and Dylint: aggregate Cargo slots={} <= available {} ({})",
+            shared_budget.requested_slots.unwrap_or_default(),
+            shared_budget.available_slots,
+            shared_budget.source_description,
+        );
+        stop_on_failure!(run_parallel_compiler_branches(&factory, plan));
+    } else {
+        eprintln!(
+            "soldr ci-test: serializing Nextest and Dylint: aggregate Cargo slots={} exceed available {} ({})",
+            shared_budget
+                .requested_slots
+                .map_or_else(|| "invalid".to_string(), |slots| slots.to_string()),
+            shared_budget.available_slots,
+            shared_budget.source_description,
+        );
+        stop_on_failure!(run_dylint_branch(&factory, plan));
+        stop_on_failure!(run_group(&factory, plan, &["nextest"]));
+    }
     stop_on_failure!(run_group(&factory, plan, &["doctests"]));
     run_group(
         &factory,
         plan,
         &["cargo-deny-bans", "cargo-audit", "cargo-machete"],
     )
+}
+
+fn run_dylint_branch(factory: &StageCommandFactory, plan: &CiTestPlan) -> Result<i32, SoldrError> {
+    let code = run_named_prefix(factory, plan, "dylint-library-")?;
+    if code != 0 {
+        return Ok(code);
+    }
+    verify_target_tree("Dylint library", &plan.dylint_target_trees.libraries)?;
+    let code = run_group(factory, plan, &["dylint-workspace"])?;
+    if code != 0 {
+        return Ok(code);
+    }
+    verify_target_tree("Dylint analysis", &plan.dylint_target_trees.analysis)?;
+    let code = run_named_prefix(factory, plan, "dylint-test-")?;
+    if code != 0 {
+        return Ok(code);
+    }
+    verify_dylint_test_targets(plan)?;
+    Ok(0)
+}
+
+trait StageSpawner {
+    fn spawn_stage(&self, stage: &Stage) -> Result<Child, SoldrError>;
+}
+
+impl StageSpawner for StageCommandFactory {
+    fn spawn_stage(&self, stage: &Stage) -> Result<Child, SoldrError> {
+        self.spawn(stage)
+    }
+}
+
+trait DylintBranchVerifier {
+    fn libraries_complete(&self) -> Result<(), SoldrError>;
+    fn analysis_complete(&self) -> Result<(), SoldrError>;
+    fn ui_tests_complete(&self) -> Result<(), SoldrError>;
+}
+
+struct PlanDylintVerifier<'a>(&'a CiTestPlan);
+
+impl DylintBranchVerifier for PlanDylintVerifier<'_> {
+    fn libraries_complete(&self) -> Result<(), SoldrError> {
+        verify_target_tree("Dylint library", &self.0.dylint_target_trees.libraries)
+    }
+
+    fn analysis_complete(&self) -> Result<(), SoldrError> {
+        verify_target_tree("Dylint analysis", &self.0.dylint_target_trees.analysis)
+    }
+
+    fn ui_tests_complete(&self) -> Result<(), SoldrError> {
+        verify_dylint_test_targets(self.0)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DylintPhase {
+    Library(usize),
+    Workspace,
+    UiTest(usize),
+    Complete,
+}
+
+struct DylintBranch<'a> {
+    libraries: Vec<&'a Stage>,
+    workspace: &'a Stage,
+    ui_tests: Vec<&'a Stage>,
+    phase: DylintPhase,
+}
+
+impl<'a> DylintBranch<'a> {
+    fn from_plan(plan: &'a CiTestPlan) -> Result<Self, SoldrError> {
+        let libraries: Vec<_> = plan
+            .stages
+            .iter()
+            .filter(|stage| stage.name.starts_with("dylint-library-"))
+            .collect();
+        let workspace = stage_named(plan, "dylint-workspace")?;
+        let ui_tests: Vec<_> = plan
+            .stages
+            .iter()
+            .filter(|stage| stage.name.starts_with("dylint-test-"))
+            .collect();
+        Self::new(libraries, workspace, ui_tests)
+    }
+
+    fn new(
+        libraries: Vec<&'a Stage>,
+        workspace: &'a Stage,
+        ui_tests: Vec<&'a Stage>,
+    ) -> Result<Self, SoldrError> {
+        if libraries.is_empty() || ui_tests.is_empty() {
+            return Err(SoldrError::Other(
+                "soldr ci-test: parallel Dylint branch has an empty stage family".into(),
+            ));
+        }
+        Ok(Self {
+            libraries,
+            workspace,
+            ui_tests,
+            phase: DylintPhase::Library(0),
+        })
+    }
+
+    fn current(&self) -> Option<&'a Stage> {
+        match self.phase {
+            DylintPhase::Library(index) => self.libraries.get(index).copied(),
+            DylintPhase::Workspace => Some(self.workspace),
+            DylintPhase::UiTest(index) => self.ui_tests.get(index).copied(),
+            DylintPhase::Complete => None,
+        }
+    }
+
+    fn advance(
+        &mut self,
+        verifier: &impl DylintBranchVerifier,
+    ) -> Result<Option<&'a Stage>, SoldrError> {
+        match self.phase {
+            DylintPhase::Library(index) if index + 1 < self.libraries.len() => {
+                self.phase = DylintPhase::Library(index + 1);
+            }
+            DylintPhase::Library(_) => {
+                verifier.libraries_complete()?;
+                self.phase = DylintPhase::Workspace;
+            }
+            DylintPhase::Workspace => {
+                verifier.analysis_complete()?;
+                self.phase = DylintPhase::UiTest(0);
+            }
+            DylintPhase::UiTest(index) if index + 1 < self.ui_tests.len() => {
+                self.phase = DylintPhase::UiTest(index + 1);
+            }
+            DylintPhase::UiTest(_) => {
+                verifier.ui_tests_complete()?;
+                self.phase = DylintPhase::Complete;
+            }
+            DylintPhase::Complete => {}
+        }
+        Ok(self.current())
+    }
+}
+
+struct RunningStage<'a> {
+    stage: &'a Stage,
+    child: Child,
+    started: Instant,
+}
+
+fn run_parallel_compiler_branches(
+    factory: &StageCommandFactory,
+    plan: &CiTestPlan,
+) -> Result<i32, SoldrError> {
+    let nextest = stage_named(plan, "nextest")?;
+    let dylint = DylintBranch::from_plan(plan)?;
+    supervise_compiler_branches(factory, nextest, dylint, &PlanDylintVerifier(plan))
+}
+
+fn supervise_compiler_branches<'a>(
+    spawner: &impl StageSpawner,
+    nextest_stage: &'a Stage,
+    mut dylint_branch: DylintBranch<'a>,
+    verifier: &impl DylintBranchVerifier,
+) -> Result<i32, SoldrError> {
+    let fork_started = Instant::now();
+    let mut nextest = Some(spawn_running(spawner, nextest_stage)?);
+    let first_dylint = dylint_branch
+        .current()
+        .expect("a validated Dylint branch has a first stage");
+    let mut dylint = match spawn_running(spawner, first_dylint) {
+        Ok(running) => Some(running),
+        Err(error) => {
+            cancel_running(&mut nextest);
+            return Err(error);
+        }
+    };
+
+    loop {
+        let nextest_status = match poll_running(&mut nextest) {
+            Ok(status) => status,
+            Err(error) => {
+                cancel_running(&mut nextest);
+                cancel_running(&mut dylint);
+                return Err(error);
+            }
+        };
+        if let Some(status) = nextest_status {
+            let completed = nextest.take().expect("polled Nextest child exists");
+            report_completed(&completed, status);
+            if !status.success() {
+                cancel_running(&mut dylint);
+                return Ok(exit_code(status));
+            }
+        }
+
+        let dylint_status = match poll_running(&mut dylint) {
+            Ok(status) => status,
+            Err(error) => {
+                cancel_running(&mut nextest);
+                cancel_running(&mut dylint);
+                return Err(error);
+            }
+        };
+        if let Some(status) = dylint_status {
+            let completed = dylint.take().expect("polled Dylint child exists");
+            report_completed(&completed, status);
+            if !status.success() {
+                cancel_running(&mut nextest);
+                return Ok(exit_code(status));
+            }
+            let next_stage = match dylint_branch.advance(verifier) {
+                Ok(stage) => stage,
+                Err(error) => {
+                    cancel_running(&mut nextest);
+                    return Err(error);
+                }
+            };
+            if let Some(stage) = next_stage {
+                dylint = match spawn_running(spawner, stage) {
+                    Ok(running) => Some(running),
+                    Err(error) => {
+                        cancel_running(&mut nextest);
+                        return Err(error);
+                    }
+                };
+            }
+        }
+
+        if nextest.is_none() && dylint.is_none() {
+            eprintln!(
+                "soldr ci-test: Nextest + Dylint branches joined in {} ms",
+                fork_started.elapsed().as_millis()
+            );
+            return Ok(0);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn stage_named<'a>(plan: &'a CiTestPlan, name: &str) -> Result<&'a Stage, SoldrError> {
+    plan.stages
+        .iter()
+        .find(|stage| stage.name == name)
+        .ok_or_else(|| {
+            SoldrError::Other(format!(
+                "soldr ci-test: frozen plan is missing stage {name:?}"
+            ))
+        })
+}
+
+fn spawn_running<'a>(
+    spawner: &impl StageSpawner,
+    stage: &'a Stage,
+) -> Result<RunningStage<'a>, SoldrError> {
+    Ok(RunningStage {
+        stage,
+        child: spawner.spawn_stage(stage)?,
+        started: Instant::now(),
+    })
+}
+
+fn poll_running(
+    running: &mut Option<RunningStage<'_>>,
+) -> Result<Option<std::process::ExitStatus>, SoldrError> {
+    running.as_mut().map_or(Ok(None), |running| {
+        running.child.try_wait().map_err(Into::into)
+    })
+}
+
+fn report_completed(running: &RunningStage<'_>, status: std::process::ExitStatus) {
+    report_status(running.stage, &running.child, status);
+    eprintln!(
+        "soldr ci-test: stage `{}` completed in {} ms",
+        running.stage.name,
+        running.started.elapsed().as_millis()
+    );
+}
+
+fn cancel_running(running: &mut Option<RunningStage<'_>>) {
+    if let Some(running) = running.as_mut() {
+        cancel_child(running.stage, &mut running.child);
+    }
+    *running = None;
 }
 
 fn failure_code(code: i32) -> Option<i32> {
@@ -92,7 +388,68 @@ fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrError> {
             }
         }
     }
+    let libraries: Vec<_> = plan
+        .stages
+        .iter()
+        .filter(|stage| stage.name.starts_with("dylint-library-"))
+        .collect();
+    for (index, stage) in libraries.iter().enumerate() {
+        let dependency = if index == 0 {
+            "clippy"
+        } else {
+            libraries[index - 1].name.as_str()
+        };
+        require_dependencies(stage, &[dependency])?;
+    }
+    require_dependencies(
+        stage_named(plan, "dylint-workspace")?,
+        &[libraries
+            .last()
+            .ok_or_else(|| SoldrError::Other("soldr ci-test: no Dylint libraries".into()))?
+            .name
+            .as_str()],
+    )?;
+    let ui_tests: Vec<_> = plan
+        .stages
+        .iter()
+        .filter(|stage| stage.name.starts_with("dylint-test-"))
+        .collect();
+    for (index, stage) in ui_tests.iter().enumerate() {
+        let dependency = if index == 0 {
+            "dylint-workspace"
+        } else {
+            ui_tests[index - 1].name.as_str()
+        };
+        require_dependencies(stage, &[dependency])?;
+    }
+    require_dependencies(stage_named(plan, "nextest")?, &["clippy"])?;
+    require_dependencies(
+        stage_named(plan, "doctests")?,
+        &[
+            "nextest",
+            ui_tests
+                .last()
+                .ok_or_else(|| SoldrError::Other("soldr ci-test: no Dylint UI tests".into()))?
+                .name
+                .as_str(),
+        ],
+    )?;
     Ok(())
+}
+
+fn require_dependencies(stage: &Stage, expected: &[&str]) -> Result<(), SoldrError> {
+    if stage
+        .depends_on
+        .iter()
+        .map(String::as_str)
+        .eq(expected.iter().copied())
+    {
+        return Ok(());
+    }
+    Err(SoldrError::Other(format!(
+        "soldr ci-test: stage `{}` dependency contract drift: expected {expected:?}, got {:?}",
+        stage.name, stage.depends_on
+    )))
 }
 
 fn run_named_prefix(
@@ -212,25 +569,32 @@ fn cancel_remaining(children: &mut [(&Stage, Child)], failed_pid: Option<u32>) {
         if child.try_wait().ok().flatten().is_some() {
             continue;
         }
-        match crate::cargo_front_door::kill_cargo_process_tree(child) {
-            Ok(kind) => eprintln!(
-                "soldr ci-test: stage `{}` (pid {}) {kind}",
-                stage.name,
-                child.id()
-            ),
-            Err(error) => eprintln!(
-                "soldr ci-test: stage `{}` (pid {}) could not be terminated: {error}",
-                stage.name,
-                child.id()
-            ),
-        }
-        if let Ok(status) = child.wait() {
-            eprintln!(
-                "soldr ci-test: stage `{}` (pid {}) canceled with {status}",
-                stage.name,
-                child.id()
-            );
-        }
+        cancel_child(stage, child);
+    }
+}
+
+fn cancel_child(stage: &Stage, child: &mut Child) {
+    if child.try_wait().ok().flatten().is_some() {
+        return;
+    }
+    match crate::cargo_front_door::kill_cargo_process_tree(child) {
+        Ok(kind) => eprintln!(
+            "soldr ci-test: stage `{}` (pid {}) {kind}",
+            stage.name,
+            child.id()
+        ),
+        Err(error) => eprintln!(
+            "soldr ci-test: stage `{}` (pid {}) could not be terminated: {error}",
+            stage.name,
+            child.id()
+        ),
+    }
+    if let Ok(status) = child.wait() {
+        eprintln!(
+            "soldr ci-test: stage `{}` (pid {}) canceled with {status}",
+            stage.name,
+            child.id()
+        );
     }
 }
 

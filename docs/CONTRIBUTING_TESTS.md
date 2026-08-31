@@ -107,27 +107,31 @@ lanes carry them through this path:
 3. `.github/workflows/ci.yml` connects the producer and consumer. Windows uses
    the existing `windows-2025` x64 and `windows-11-arm` ARM64 runners.
 
-The ownership file is an allowlist, not an exclusion filter. Whole integration
-categories can opt in with a package and binary; a narrower contract can also
-name its test-ID prefix, and a platform-only contract lists the exact target
-triples where it applies. The target-run helper fails if any applicable
-declaration matches zero tests in the complete archive or if the union is
-empty. Its inverse source
-guard fails when a new integration module uses real process, filesystem, IPC,
-host, or platform facilities without a covering owner. This makes selector
-decay and missing ownership red CI failures instead of silently lost native
-coverage (soldr#2999).
+The ownership file is an allowlist, not an exclusion filter. Its
+`source_classifications` say whether each host-sensitive integration source is
+validated once on canonical Linux or needs native target replay. Classification
+never selects tests by itself. Separate `replay_selectors` positively name an
+exact test or module-qualified test-ID prefix, and a platform-only contract
+lists the exact target triples where it applies. The target-run helper fails if
+an applicable selector matches zero tests in the complete archive, selectors
+overlap, a replay classification lacks a selector, or the target union is
+empty. Its inverse source guard fails when a new integration module uses real
+process, filesystem, IPC, host, or platform facilities without an explicit
+classification. This makes classification and selector decay red CI failures
+instead of silently losing native coverage (soldr#2999).
 
-When adding a host-sensitive test, add or update its ownership entry in the
-same change and state the concrete native facility in `reason`. Portable
-parsing, planning, source-policy, and data-shape tests stay out of the native
-allowlist: the canonical Linux host suite already executes them once.
+When adding a host-sensitive test, add or update its source classification in
+the same change and state the concrete native facility in `reason`. Add a
+positive replay selector only when the behavior must execute on each applicable
+native target. Portable parsing, planning, source-policy, and data-shape tests
+are classified `native-linux-once`: the canonical Linux host suite already
+executes them once.
 
-The initial declaration was checked against the complete x86_64 Darwin
-inventory from Actions run 33334748971: **470 of 2,850 discovered tests** are
-owned for native replay (an 83.5% reduction in executed inventory before
-ignored tests). Every target-run now writes both the complete and selected
-inventories to its diagnostics artifact and reports the live counts in the job
+Schema v2 was checked against the complete x86_64 Darwin inventory from Actions
+run 33343932713: **113 of 2,863 discovered tests** are selected for native replay
+(a 96.1% reduction in executed inventory before ignored tests). Every
+target-run writes both the complete and selected inventories to its diagnostics
+artifact and reports the live counts in the job
 summary; those runtime inventories, not these baseline numbers, are the
 coverage authority.
 

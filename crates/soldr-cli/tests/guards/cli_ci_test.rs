@@ -296,6 +296,11 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
         "the sole test-profile compile feeds nextest; do not insert a dev-profile warm-up"
     );
     assert_eq!(nextest["executes_compiler"], true);
+    assert_eq!(
+        nextest["depends_on"],
+        serde_json::json!(["clippy"]),
+        "Nextest must become ready immediately after Clippy"
+    );
     assert!(
         !array(&plan, "stages").iter().any(|stage| {
             stage.get("kind").and_then(Value::as_str) == Some("compiler-and-test")
@@ -328,8 +333,57 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
     );
     let dylint = find_stage(&plan, "dylint-workspace");
     assert_eq!(dylint["domain"], "dylint-analysis");
+    let libraries = [
+        "dylint-library-ban_raw_process_creation",
+        "dylint-library-ban_raw_network_access",
+        "dylint-library-ban_raw_local_socket_name",
+        "dylint-library-ban_raw_ipc_transport",
+        "dylint-library-ban_platform_cfg_outside_boundary",
+        "dylint-library-ban_raw_env_flag",
+    ];
+    for (index, stage_name) in libraries.iter().enumerate() {
+        let expected = if index == 0 {
+            "clippy"
+        } else {
+            libraries[index - 1]
+        };
+        assert_eq!(
+            find_stage(&plan, stage_name)["depends_on"],
+            serde_json::json!([expected]),
+            "Dylint libraries share one target tree and must remain serial"
+        );
+    }
+    assert_eq!(
+        dylint["depends_on"],
+        serde_json::json!([libraries[libraries.len() - 1]])
+    );
+    let ui_tests = [
+        "dylint-test-ban_raw_process_creation",
+        "dylint-test-ban_raw_network_access",
+        "dylint-test-ban_raw_local_socket_name",
+        "dylint-test-ban_raw_ipc_transport",
+        "dylint-test-ban_platform_cfg_outside_boundary",
+        "dylint-test-ban_raw_env_flag",
+    ];
+    for (index, stage_name) in ui_tests.iter().enumerate() {
+        let expected = if index == 0 {
+            "dylint-workspace"
+        } else {
+            ui_tests[index - 1]
+        };
+        assert_eq!(
+            find_stage(&plan, stage_name)["depends_on"],
+            serde_json::json!([expected]),
+            "Dylint UI tests share one target tree and must remain serial"
+        );
+    }
     let doctests = find_stage(&plan, "doctests");
     assert_eq!(doctests["domain"], "rustdoc");
+    assert_eq!(
+        doctests["depends_on"],
+        serde_json::json!(["nextest", ui_tests[ui_tests.len() - 1]]),
+        "doctests are the join after both compiler-bearing branches"
+    );
     assert_eq!(
         doctests["command"],
         serde_json::json!([
