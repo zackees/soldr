@@ -24,15 +24,18 @@ fn spawn_broker(home: &Path) -> std::process::Child {
 
 fn broker_bind_endpoint(home: &Path) -> String {
     if soldr_platform::host::facts::os() == soldr_platform::host::facts::HostOs::Windows {
-        let executable = home.join(".soldr").join("broker").join("soldr-broker.exe");
+        let executable =
+            soldr_cli::broker_identity::authoritative_broker_executable(home, "soldr-broker.exe");
         let pipe = soldr_cli::broker_identity::windows_broker_pipe_from_executable(
             &executable.display().to_string(),
         )
         .expect("derive broker pipe");
         format!(r"\\.\pipe\{}", pipe.pipe_leaf)
     } else {
-        soldr_cli::broker_identity::resolve_unix_for_home(
-            home,
+        let executable =
+            soldr_cli::broker_identity::authoritative_broker_executable(home, "soldr-broker");
+        soldr_cli::broker_identity::resolve_unix_for_executable(
+            &executable,
             &soldr_platform::ipc::endpoint::machine_runtime_dir(),
             None,
             soldr_platform::ipc::endpoint::sun_path_capacity(),

@@ -782,6 +782,7 @@ impl StageCommandFactory {
         command.env("SOLDR_JOBS", &self.soldr_jobs);
         command.env("SOLDR_CI_TEST_REPORT_PATH", &self.ci_test_report_path);
         command.env("SOLDR_CI_TEST_STAGE", &stage.name);
+        configure_stage_cache_lifecycle(&mut command);
         if stage.domain.starts_with("dylint-") {
             for (key, value) in &self.dylint_env {
                 command.env(key, value);
@@ -860,6 +861,17 @@ impl Drop for StageCommandFactory {
             }
         }
     }
+}
+
+/// `ci-test` owns one shared daemon across its overlapping Cargo branches.
+/// setup-soldr deliberately exports command-lifetime flushing for ordinary
+/// one-command jobs, but inheriting that value here lets the first completed
+/// stage checkpoint the cache while sibling stages still have writes in
+/// flight. Keep stage children in job-lifetime mode; the workflow-level
+/// shutdown remains the single durability boundary after the DAG joins.
+fn configure_stage_cache_lifecycle(command: &mut Command) {
+    command.env(crate::zccache::SOLDR_CACHE_LIFECYCLE_ENV_VAR, "job");
+    command.env_remove(crate::zccache::SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR);
 }
 
 fn summarize_compiler_report(path: &std::path::Path) -> std::io::Result<CompilerRunReport> {
