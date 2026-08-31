@@ -554,16 +554,15 @@ Clippy subsumes the same workspace/all-targets host scope. Dependency policy
 then fans out across `soldr cargo deny check bans`, `soldr cargo audit`, and
 `soldr cargo machete`. Nextest runs from the workspace root, so
 `.config/nextest.toml` keeps its test groups, slow-test budgets, timeout grace
-period, and platform wrappers. By default the command fixes compiler work at
-one Cargo/Soldr job and one Nextest test thread. Explicit
-`CARGO_BUILD_JOBS`, `SOLDR_JOBS`, and `NEXTEST_TEST_THREADS` values are frozen
-into the plan instead; this keeps memory bounded without conflating compiler
-serialization with test-process concurrency. Both compiler branches share one
-Soldr daemon and canonical post-hit shared/exclusive compiler gate. Two Cargo
-children still have independent jobservers, so the parent compares their
-aggregate Cargo slot demand with the cgroup-aware orchestration budget before
-forking. If it cannot fit, Soldr keeps the explicit per-child job value and
-serializes the branches instead of silently lowering it.
+period, and platform wrappers. Unset `CARGO_BUILD_JOBS` and `SOLDR_JOBS`
+remain absent from the plan and stage environments, leaving Cargo's default
+jobserver policy and Soldr's canonical compiler admission in control. Explicit
+values are frozen into the plan byte-for-byte. `NEXTEST_TEST_THREADS` alone
+defaults to one test process. Nextest compilation completes before the fork,
+so only the Dylint branch may compile during the overlap. A daemon-side
+pre-admission invariant rejects any compiler request from the compiler-free
+Nextest execution. Cgroup memory capacity remains diagnostic telemetry and is
+never applied as a global `CARGO_BUILD_JOBS` cap.
 
 All six repository Dylints are retained. They intentionally use their exact
 pinned nightly rather than the stable project toolchain. The command reads all

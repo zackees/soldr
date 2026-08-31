@@ -204,6 +204,7 @@ pub(crate) fn run_rustc_wrapper(
     raw_args: &[String],
     mut profile: WrapperProfile,
 ) -> Result<i32, SoldrError> {
+    ensure_ci_test_compiler_allowed()?;
     let tool_arg = raw_args
         .get(1)
         .ok_or_else(|| SoldrError::Other("missing tool path in wrapper mode".into()))?;
@@ -329,6 +330,21 @@ pub(crate) fn run_rustc_wrapper(
     }
 
     direct_exec_tool(tool_arg, tool_stem, &compile_args, Some(profile))
+}
+
+/// Reject a compiler callback from a stage whose frozen ci-test plan declares
+/// that execution compiler-free. This runs before probe classification,
+/// daemon admission, or direct tool spawn; the daemon repeats the check as a
+/// defense-in-depth boundary for requests from older wrapper clients.
+fn ensure_ci_test_compiler_allowed() -> Result<(), SoldrError> {
+    if std::env::var(crate::core::CI_TEST_FORBID_COMPILER_ENV_VAR).as_deref() == Ok("1") {
+        let stage =
+            std::env::var(crate::core::CI_TEST_STAGE_ENV_VAR).unwrap_or_else(|_| "unknown".into());
+        return Err(SoldrError::Other(format!(
+            "soldr ci-test scheduler invariant failed: compiler-free stage `{stage}` attempted compiler work after its compile prerequisite completed"
+        )));
+    }
+    Ok(())
 }
 
 /// Direct (uncached) exec of the wrapped tool — the non-daemon path.
@@ -579,6 +595,19 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn compiler_free_ci_test_stage_fails_before_wrapper_routing() {
+        let _lock = crate::TEST_PROCESS_ENV_LOCK.lock().expect("env lock");
+        let _forbid = crate::EnvVarGuard::set(crate::core::CI_TEST_FORBID_COMPILER_ENV_VAR, "1");
+        let _stage = crate::EnvVarGuard::set(crate::core::CI_TEST_STAGE_ENV_VAR, "nextest");
+
+        let error = ensure_ci_test_compiler_allowed().expect_err("compiler must be rejected");
+
+        let message = error.to_string();
+        assert!(message.contains("nextest"), "{message}");
+        assert!(message.contains("scheduler invariant"), "{message}");
     }
 
     #[test]

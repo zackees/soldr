@@ -226,9 +226,9 @@ pub(crate) async fn run_cargo_front_door(
     command.env_remove("CARGO_MAKEFLAGS");
     command.env("RUSTC", &rustc);
     // soldr#2878: Cargo performs fingerprinting and directory scans before a
-    // rustc request can reach the daemon's compiler admission gate. Bound its
-    // automatic jobserver fan-out from finite cgroup headroom (falling back to
-    // MemAvailable) while preserving explicit CARGO_BUILD_JOBS / Cargo -j.
+    // rustc request can reach the daemon's compiler admission gate. Capture
+    // cgroup/memory observations for a precise failure diagnostic, but leave
+    // Cargo's default jobserver policy and every explicit override untouched.
     let cargo_job_budget = build_like_cargo.then(|| job_budget::apply(args, &mut command));
 
     // Issue #836 (sub of #835): pin the rust toolchain explicitly via
@@ -438,6 +438,19 @@ pub(crate) async fn run_cargo_front_door(
         CargoCachePlan::finalize(cache_enabled_for_cargo, cache_plan_prefetch).await?;
     profile.mark("cache_plan_finalize");
     cache_plan.apply_to_command(&mut command, native_cache_target.as_deref())?;
+    // A compiler-free ci-test stage needs a callback boundary even under
+    // `--no-cache`: without RUSTC_WRAPPER Cargo could spawn rustc directly and
+    // bypass the scheduler invariant. This wrapper rejects before touching the
+    // daemon or spawning the real compiler; SOLDR_CACHE_ENABLED remains false.
+    if !cache_enabled_for_cargo
+        && std::env::var(crate::core::CI_TEST_FORBID_COMPILER_ENV_VAR).as_deref() == Ok("1")
+    {
+        crate::wrapper_identity::set_owned_rustc_wrapper(
+            &mut command,
+            crate::binaries::rustc_wrapper_shim_binary(&paths)?.as_os_str(),
+            crate::wrapper_identity::WrapperOrigin::SoldrManaged,
+        );
+    }
     if dylint_plan.is_some() && cache_plan.uses_managed_zccache() {
         // Re-point the pair, not just RUSTC_WRAPPER: `apply_to_command`
         // above already stamped the rustc-shim identity into the

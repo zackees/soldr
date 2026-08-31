@@ -63,8 +63,9 @@ fn signal_diagnostic(args: &[String]) -> String {
     format!(
         "soldr: compiler process was terminated by a Unix signal{subject}; under \
          concurrent build load this can indicate an OOM/resource-limit kill. \
-         Reduce CARGO_BUILD_JOBS and SOLDR_JOBS, or inspect the host's \
-         memory-pressure counters (soldr#2781).\n"
+         Soldr must schedule compiler work within the host limit; preserve the \
+         compiler timeline and memory-pressure counters as evidence of an \
+         admission defect (soldr#2781).\n"
     )
 }
 
@@ -93,20 +94,18 @@ fn compilation_subject(args: &[String]) -> Option<String> {
 
 /// The same kill, but we know which file was in the compiler's hands.
 ///
-/// soldr#2781: the generic advice is whole-build (`reduce CARGO_BUILD_JOBS`)
-/// for what is usually one file, and the error names a C compiler rather than
-/// anything the user wrote — so the reader has to already know that one
-/// translation unit caused it. Naming the unit and its size makes the
-/// remedy's scope obvious, and makes clear that the penalty is bounded to
-/// this compile rather than the whole graph.
+/// soldr#2781: the error names a C compiler rather than anything the user
+/// wrote, so the reader has to already know that one translation unit caused
+/// it. Naming the unit and its size identifies which exclusive-admission
+/// classification failed without prescribing a whole-build throttle.
 fn amalgamation_diagnostic(unit: &crate::amalgamation::Amalgamation) -> String {
     format!(
         "soldr: compiler process was terminated by a Unix signal while compiling \
          {}, an amalgamated translation unit -- an entire library in one file, \
          orders of magnitude larger than an ordinary compile. Under concurrent \
-         build load this usually means it was killed for memory. Lowering \
-         CARGO_BUILD_JOBS and SOLDR_JOBS gives it room, at the cost of \
-         concurrency for the whole build (soldr#2781).\n",
+         build load this usually means it was killed for memory. This unit \
+         requires exclusive compiler admission; an OOM is a Soldr scheduling \
+         defect, not a reason to lower whole-build concurrency (soldr#2781).\n",
         unit.describe(),
     )
 }

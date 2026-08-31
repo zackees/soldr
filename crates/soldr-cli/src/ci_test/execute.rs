@@ -8,9 +8,10 @@ use std::time::{Duration, Instant};
 
 /// Execute the frozen plan in its dependency order. Stable Nextest compilation
 /// completes after Clippy, before the serial Dylint chain begins. Its Fresh
-/// test execution then overlaps that chain when the parent-level Cargo budget
-/// can carry both branches. Dylint manifests remain sequential because all
-/// six intentionally share one target tree per domain.
+/// test execution then overlaps that chain. Only the Dylint branch may compile;
+/// Nextest execution carries a daemon-enforced no-compiler invariant. Dylint
+/// manifests remain sequential because all six intentionally share one target
+/// tree per domain.
 pub(crate) async fn run(
     plan: &CiTestPlan,
     cache_enabled: bool,
@@ -31,28 +32,15 @@ pub(crate) async fn run(
     stop_on_failure!(run_group(&factory, plan, &["clippy"]));
     stop_on_failure!(run_group(&factory, plan, &["nextest-compile"]));
     factory.prepare_dylint().await?;
-    let shared_budget =
-        crate::cargo_front_door::shared_cargo_process_budget(&factory.cargo_build_jobs, 2);
-    if shared_budget.may_overlap {
-        eprintln!(
-            "soldr ci-test: overlapping Nextest execution and Dylint: aggregate Cargo slots={} <= available {} ({})",
-            shared_budget.requested_slots.unwrap_or_default(),
-            shared_budget.available_slots,
-            shared_budget.source_description,
-        );
-        stop_on_failure!(run_parallel_nextest_and_dylint(&factory, plan));
-    } else {
-        eprintln!(
-            "soldr ci-test: serializing Nextest execution and Dylint: aggregate Cargo slots={} exceed available {} ({})",
-            shared_budget
-                .requested_slots
-                .map_or_else(|| "invalid".to_string(), |slots| slots.to_string()),
-            shared_budget.available_slots,
-            shared_budget.source_description,
-        );
-        stop_on_failure!(run_dylint_branch(&factory, plan));
-        stop_on_failure!(run_group(&factory, plan, &["nextest"]));
-    }
+    // nextest-compile already materialized the complete stable test profile.
+    // The fork therefore has one compiler-bearing Cargo process (Dylint), not
+    // two independent compiler jobservers. The compiler-free Nextest execution
+    // is guarded at daemon dispatch, so freshness drift fails before admission
+    // instead of silently creating unplanned compiler concurrency.
+    eprintln!(
+        "soldr ci-test: overlapping compiler-free Nextest execution with the single compiler-bearing Dylint branch"
+    );
+    stop_on_failure!(run_parallel_nextest_and_dylint(&factory, plan));
     stop_on_failure!(run_group(&factory, plan, &["doctests"]));
     run_group(
         &factory,
@@ -426,7 +414,14 @@ fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrError> {
         require_dependencies(stage, &[dependency])?;
     }
     require_dependencies(stage_named(plan, "nextest-compile")?, &["clippy"])?;
-    require_dependencies(stage_named(plan, "nextest")?, &["nextest-compile"])?;
+    let nextest = stage_named(plan, "nextest")?;
+    require_dependencies(nextest, &["nextest-compile"])?;
+    if nextest.executes_compiler {
+        return Err(SoldrError::Other(
+            "soldr ci-test: Nextest execution must remain compiler-free after nextest-compile"
+                .into(),
+        ));
+    }
     require_dependencies(
         stage_named(plan, "doctests")?,
         &[
@@ -683,8 +678,8 @@ struct StageCommandFactory {
     soldr: PathBuf,
     trust_inherited_soldr_env: bool,
     cache_enabled: bool,
-    cargo_build_jobs: String,
-    soldr_jobs: String,
+    cargo_build_jobs: Option<String>,
+    soldr_jobs: Option<String>,
     dylint: crate::dylint_toolchain::DylintToolchainPlan,
     dylint_bin_dirs: Vec<PathBuf>,
     dylint_env: Vec<(String, String)>,
@@ -708,16 +703,8 @@ impl StageCommandFactory {
         let compiler_commit = dylint_domain.compiler_commit.clone().ok_or_else(|| {
             SoldrError::Other("soldr ci-test: Dylint domain has no compiler commit".into())
         })?;
-        let cargo_build_jobs = plan
-            .resource_limits
-            .cargo_build_jobs
-            .clone()
-            .ok_or_else(|| {
-                SoldrError::Other("soldr ci-test: plan has no Cargo job limit".into())
-            })?;
-        let soldr_jobs = plan.resource_limits.soldr_jobs.clone().ok_or_else(|| {
-            SoldrError::Other("soldr ci-test: plan has no Soldr job limit".into())
-        })?;
+        let cargo_build_jobs = plan.resource_limits.cargo_build_jobs.clone();
+        let soldr_jobs = plan.resource_limits.soldr_jobs.clone();
         let paths = crate::core::SoldrPaths::new()?;
         let report_dir = paths.cache.join("logs").join("ci-test");
         std::fs::create_dir_all(&report_dir)?;
@@ -782,10 +769,17 @@ impl StageCommandFactory {
         }
         command.args(stage.command.iter().skip(1));
         command.current_dir(&stage.working_directory);
-        command.env("CARGO_BUILD_JOBS", &self.cargo_build_jobs);
-        command.env("SOLDR_JOBS", &self.soldr_jobs);
-        command.env("SOLDR_CI_TEST_REPORT_PATH", &self.ci_test_report_path);
-        command.env("SOLDR_CI_TEST_STAGE", &stage.name);
+        apply_stage_resource_limits(
+            &mut command,
+            self.cargo_build_jobs.as_deref(),
+            self.soldr_jobs.as_deref(),
+        );
+        command.env(
+            crate::core::CI_TEST_REPORT_PATH_ENV_VAR,
+            &self.ci_test_report_path,
+        );
+        command.env(crate::core::CI_TEST_STAGE_ENV_VAR, &stage.name);
+        configure_stage_scheduler_invariants(&mut command, stage);
         configure_stage_cache_lifecycle(&mut command);
         if stage.domain.starts_with("dylint-") {
             for (key, value) in &self.dylint_env {
@@ -828,6 +822,25 @@ impl StageCommandFactory {
                     stage.name
                 ))
             })
+    }
+}
+
+fn apply_stage_resource_limits(
+    command: &mut Command,
+    cargo_build_jobs: Option<&str>,
+    soldr_jobs: Option<&str>,
+) {
+    if let Some(value) = cargo_build_jobs {
+        command.env("CARGO_BUILD_JOBS", value);
+    }
+    if let Some(value) = soldr_jobs {
+        command.env("SOLDR_JOBS", value);
+    }
+}
+
+fn configure_stage_scheduler_invariants(command: &mut Command, stage: &Stage) {
+    if !stage.executes_compiler {
+        command.env(crate::core::CI_TEST_FORBID_COMPILER_ENV_VAR, "1");
     }
 }
 

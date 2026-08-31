@@ -1,12 +1,11 @@
-//! Memory-aware Cargo orchestration budget (soldr#2878).
+//! Cargo orchestration resource telemetry (soldr#2878).
 //!
 //! The embedded compiler gate cannot protect work Cargo performs before a
 //! rustc wrapper is invoked: fingerprinting, directory walks, build-script
 //! planning, and the jobserver itself all consume host resources first.  The
-//! original failure happened at `CARGO_BUILD_JOBS=8` in an 8 GiB container;
-//! the same cold graph completed at two jobs.  This module turns that measured
-//! boundary into a *memory* budget rather than baking the number two into the
-//! front door, so a larger host can retain more parallelism.
+//! Resource observations explain failures; they are not permission to lower a
+//! caller's or Cargo's job count. OOM/resource failures are scheduling and
+//! admission defects, not a reason to silently serialize every build.
 
 use std::path::Path;
 
@@ -116,52 +115,6 @@ impl CargoJobBudgetSource {
     }
 }
 
-/// One parent-level decision for several Cargo processes that would run at
-/// the same time.
-///
-/// Each Cargo invocation owns an independent jobserver.  Therefore stamping
-/// `CARGO_BUILD_JOBS=2` on two children exposes four orchestration slots before
-/// either child reaches the daemon's compiler semaphore.  `soldr ci-test`
-/// uses this value to decide whether its two compiler-bearing branches may
-/// overlap; it never rewrites an explicit per-process value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SharedCargoProcessBudget {
-    pub(crate) requested_slots: Option<usize>,
-    pub(crate) available_slots: usize,
-    pub(crate) source_description: &'static str,
-    pub(crate) may_overlap: bool,
-}
-
-/// Resolve the live aggregate budget for `processes` independent Cargo
-/// jobservers, each configured with `per_process_jobs`.
-pub(crate) fn shared_cargo_process_budget(
-    per_process_jobs: &str,
-    processes: usize,
-) -> SharedCargoProcessBudget {
-    let telemetry = CargoMemoryTelemetry::capture();
-    let logical_jobs = std::thread::available_parallelism()
-        .map(|value| value.get())
-        .unwrap_or(1);
-    shared_cargo_process_budget_from(per_process_jobs, processes, logical_jobs, &telemetry)
-}
-
-fn shared_cargo_process_budget_from(
-    per_process_jobs: &str,
-    processes: usize,
-    logical_jobs: usize,
-    telemetry: &CargoMemoryTelemetry,
-) -> SharedCargoProcessBudget {
-    let capacity = resolve_cargo_job_budget_from(None, None, logical_jobs, telemetry);
-    let requested_slots =
-        parse_positive(per_process_jobs).and_then(|jobs| jobs.checked_mul(processes.max(1)));
-    SharedCargoProcessBudget {
-        requested_slots,
-        available_slots: capacity.effective_jobs,
-        source_description: capacity.source.describe(),
-        may_overlap: requested_slots.is_some_and(|slots| slots <= capacity.effective_jobs),
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct CargoJobBudget {
     pub(super) requested_jobs: usize,
@@ -179,7 +132,7 @@ impl CargoJobBudget {
 
     fn decision(&self, telemetry: &CargoMemoryTelemetry) -> String {
         format!(
-            "soldr: Cargo orchestration budget: requested jobs={}, effective jobs={} ({}, fixed reserve={}, per-job reserve={}, memory.current={}, memory.peak={}, memory.max={}, MemAvailable={})",
+            "soldr: Cargo orchestration observation: requested jobs={}, estimated memory capacity={} ({}, not applied; fixed reserve={}, per-job estimate={}, memory.current={}, memory.peak={}, memory.max={}, MemAvailable={})",
             self.requested_jobs,
             self.effective_jobs,
             self.source.describe(),
@@ -212,39 +165,45 @@ impl AppliedCargoJobBudget {
     }
 }
 
-/// Resolve and apply the automatic budget.  Explicit user configuration is
-/// observed but never rewritten: Cargo remains responsible for validating it.
+/// Observe the requested/default job shape and surrounding resources. Neither
+/// an explicit value nor Cargo's unset default is rewritten.
 pub(super) fn apply(args: &[String], command: &mut std::process::Command) -> AppliedCargoJobBudget {
     let before = CargoMemoryTelemetry::capture();
     let logical_jobs = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1);
     let explicit_env = std::env::var("CARGO_BUILD_JOBS").ok();
-    let explicit_arg = explicit_jobs_argument(args);
-    let budget = resolve_cargo_job_budget_from(
+    let observation = apply_from(
+        args,
+        command,
         explicit_env.as_deref(),
-        explicit_arg.flatten(),
         logical_jobs,
         &before,
     );
-
-    // Presence matters independently of parsing.  An invalid explicit value
-    // must still reach Cargo and produce Cargo's own stable error rather than
-    // being silently replaced by an automatic value.
-    let has_explicit_env = explicit_env.is_some();
-    let has_explicit_arg = explicit_arg.is_some();
-    if !has_explicit_env && !has_explicit_arg {
-        command.env("CARGO_BUILD_JOBS", budget.effective_jobs.to_string());
+    if super::debug_trace::enabled() {
+        eprintln!("{}", observation.budget.decision(&before));
     }
+    observation
+}
 
-    // Normal unconstrained builds stay quiet.  A cap is user-visible because
-    // it changes Cargo's default, while --debug provides the full decision on
-    // any host for performance investigations.
-    if budget.effective_jobs < budget.requested_jobs || super::debug_trace::enabled() {
-        eprintln!("{}", budget.decision(&before));
+fn apply_from(
+    args: &[String],
+    _command: &mut std::process::Command,
+    explicit_env: Option<&str>,
+    logical_jobs: usize,
+    telemetry: &CargoMemoryTelemetry,
+) -> AppliedCargoJobBudget {
+    let explicit_arg = explicit_jobs_argument(args);
+    let budget = resolve_cargo_job_budget_from(
+        explicit_env,
+        explicit_arg.flatten(),
+        logical_jobs,
+        telemetry,
+    );
+    AppliedCargoJobBudget {
+        budget,
+        before: telemetry.clone(),
     }
-
-    AppliedCargoJobBudget { budget, before }
 }
 
 pub(super) fn resolve_cargo_job_budget_from(
@@ -291,7 +250,7 @@ pub(super) fn resolve_cargo_job_budget_from(
 
 /// Return `Some(Some(n))` for a valid explicit Cargo jobs argument,
 /// `Some(None)` when a jobs flag was present but malformed (Cargo will report
-/// it), and `None` when Cargo should use the automatic budget.
+/// it), and `None` when Cargo will use its own default jobserver policy.
 fn explicit_jobs_argument(args: &[String]) -> Option<Option<usize>> {
     let mut index = 0;
     while index < args.len() {
@@ -344,9 +303,9 @@ fn precompiler_exhaustion_diagnostic_from(
     }
 
     let override_note = if budget.is_explicit() {
-        "The explicit override was retained; lower CARGO_BUILD_JOBS or Cargo -j for this host."
+        "The explicit override was retained. This is a Cargo-work scheduling/admission defect; preserve the resource evidence and compiler timeline."
     } else {
-        "The automatic budget was applied; set CARGO_BUILD_JOBS to a lower value if other workloads share this cgroup."
+        "Cargo's default jobserver policy was retained; Soldr did not lower the global job count. This is a Cargo-work scheduling/admission defect."
     };
     let oom_kills = after
         .cgroup_oom_kills
@@ -465,7 +424,7 @@ mod tests {
     const GIB: u64 = 1024 * 1024 * 1024;
 
     #[test]
-    fn constrained_cgroup_caps_automatic_fanout_but_keeps_two_jobs() {
+    fn constrained_cgroup_observation_estimates_two_jobs() {
         let telemetry = CargoMemoryTelemetry {
             cgroup_current_bytes: Some(GIB),
             cgroup_limit_bytes: Some(8 * GIB),
@@ -480,43 +439,20 @@ mod tests {
     }
 
     #[test]
-    fn shared_budget_counts_every_independent_cargo_jobserver() {
-        let two_slot_host = CargoMemoryTelemetry {
-            cgroup_current_bytes: Some(GIB),
-            cgroup_limit_bytes: Some(8 * GIB),
-            ..CargoMemoryTelemetry::default()
-        };
-        let four_slot_host = CargoMemoryTelemetry {
-            cgroup_current_bytes: Some(GIB),
-            cgroup_limit_bytes: Some(16 * GIB),
-            ..CargoMemoryTelemetry::default()
-        };
-
-        let one_each = shared_cargo_process_budget_from("1", 2, 8, &two_slot_host);
-        assert_eq!(one_each.requested_slots, Some(2));
-        assert_eq!(one_each.available_slots, 2);
-        assert!(one_each.may_overlap);
-
-        let two_each = shared_cargo_process_budget_from("2", 2, 8, &two_slot_host);
-        assert_eq!(two_each.requested_slots, Some(4));
-        assert!(!two_each.may_overlap);
-
-        let roomy = shared_cargo_process_budget_from("2", 2, 8, &four_slot_host);
-        assert_eq!(roomy.available_slots, 4);
-        assert!(roomy.may_overlap);
-    }
-
-    #[test]
-    fn malformed_explicit_jobs_serializes_without_rewriting_the_value() {
+    fn observational_budget_never_stamps_an_unset_cargo_job_limit() {
         let telemetry = CargoMemoryTelemetry {
-            system_available_bytes: Some(16 * GIB),
+            cgroup_current_bytes: Some(3 * GIB),
+            cgroup_limit_bytes: Some(4 * GIB),
             ..CargoMemoryTelemetry::default()
         };
+        let mut command = std::process::Command::new("cargo");
 
-        let budget = shared_cargo_process_budget_from("not-a-number", 2, 8, &telemetry);
+        let observation = apply_from(&[], &mut command, None, 8, &telemetry);
 
-        assert_eq!(budget.requested_slots, None);
-        assert!(!budget.may_overlap);
+        assert_eq!(observation.budget.effective_jobs, 1);
+        assert!(!command
+            .get_envs()
+            .any(|(key, _)| key == std::ffi::OsStr::new("CARGO_BUILD_JOBS")));
     }
 
     #[test]
@@ -569,16 +505,19 @@ mod tests {
             diagnostic.contains("before compiler admission"),
             "{diagnostic}"
         );
-        assert!(diagnostic.contains("effective jobs=1"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("estimated memory capacity=1"),
+            "{diagnostic}"
+        );
         assert!(diagnostic.contains("memory.peak=4.00 GiB"), "{diagnostic}");
         assert!(diagnostic.contains("oom_kill=1"), "{diagnostic}");
         assert!(diagnostic.contains("pids.current=42"), "{diagnostic}");
         assert!(diagnostic.contains("pids.max=512"), "{diagnostic}");
         assert!(
-            diagnostic.contains("per-job reserve=3.00 GiB"),
+            diagnostic.contains("per-job estimate=3.00 GiB"),
             "{diagnostic}"
         );
-        assert!(diagnostic.contains("CARGO_BUILD_JOBS"), "{diagnostic}");
+        assert!(diagnostic.contains("did not lower"), "{diagnostic}");
     }
 
     #[test]

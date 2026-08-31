@@ -11,8 +11,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-const REPORT_PATH_ENV: &str = "SOLDR_CI_TEST_REPORT_PATH";
-const STAGE_ENV: &str = "SOLDR_CI_TEST_STAGE";
+use crate::core::{
+    CI_TEST_FORBID_COMPILER_ENV_VAR, CI_TEST_REPORT_PATH_ENV_VAR, CI_TEST_STAGE_ENV_VAR,
+};
 static REPORT_APPEND: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Serialize)]
@@ -44,6 +45,29 @@ pub(crate) struct PreparedReport {
     identity: Identity,
 }
 
+/// Enforce the executor's compile-domain declaration before zccache can look
+/// up a cache entry or acquire compiler admission. A compiler here means the
+/// supposedly Fresh stage changed shape; continuing would create an unplanned
+/// second compiler-bearing branch.
+pub(crate) fn ensure_compiler_allowed(request: &CompileRequest) -> Result<(), String> {
+    let forbidden = request
+        .env
+        .iter()
+        .any(|(key, value)| key == CI_TEST_FORBID_COMPILER_ENV_VAR && value == "1");
+    if !forbidden {
+        return Ok(());
+    }
+    let stage = request
+        .env
+        .iter()
+        .find(|(key, _)| key == CI_TEST_STAGE_ENV_VAR)
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("unknown");
+    Err(format!(
+        "soldr ci-test scheduler invariant failed: compiler-free stage `{stage}` attempted compiler work after its compile prerequisite completed"
+    ))
+}
+
 /// Capture a report's semantic identity before the compiler service consumes
 /// the request's owned stdin/environment payload.
 pub(crate) fn prepare(request: &CompileRequest) -> Option<PreparedReport> {
@@ -54,10 +78,12 @@ pub(crate) fn prepare(request: &CompileRequest) -> Option<PreparedReport> {
             .find(|(key, _)| key == name)
             .map(|(_, value)| value)
     };
-    let path = env(REPORT_PATH_ENV)?;
+    let path = env(CI_TEST_REPORT_PATH_ENV_VAR)?;
     Some(PreparedReport {
         path: PathBuf::from(path),
-        stage: env(STAGE_ENV).cloned().unwrap_or_else(|| "unknown".into()),
+        stage: env(CI_TEST_STAGE_ENV_VAR)
+            .cloned()
+            .unwrap_or_else(|| "unknown".into()),
         identity: normalized_identity(request),
     })
 }
@@ -203,6 +229,25 @@ mod tests {
     }
 
     #[test]
+    fn compiler_free_stage_is_rejected_before_service_admission() {
+        let request = CompileRequest {
+            args: vec!["rustc".into(), "src/lib.rs".into()],
+            cwd: "/repo".into(),
+            env: vec![
+                (CI_TEST_STAGE_ENV_VAR.into(), "nextest".into()),
+                (CI_TEST_FORBID_COMPILER_ENV_VAR.into(), "1".into()),
+            ],
+            stdin: vec![],
+            lifecycle: None,
+            ipc_busy_retries: 0,
+        };
+
+        let error = ensure_compiler_allowed(&request).expect_err("compiler must be rejected");
+        assert!(error.contains("nextest"), "{error}");
+        assert!(error.contains("scheduler invariant"), "{error}");
+    }
+
+    #[test]
     fn concurrent_compiler_replies_leave_parseable_jsonl_records() {
         let directory = tempfile::tempdir().expect("report directory");
         let path = directory.path().join("events.jsonl");
@@ -219,8 +264,11 @@ mod tests {
                     ],
                     cwd: "/repo".into(),
                     env: vec![
-                        (REPORT_PATH_ENV.into(), path.display().to_string()),
-                        (STAGE_ENV.into(), format!("stage-{index}")),
+                        (
+                            CI_TEST_REPORT_PATH_ENV_VAR.into(),
+                            path.display().to_string(),
+                        ),
+                        (CI_TEST_STAGE_ENV_VAR.into(), format!("stage-{index}")),
                     ],
                     stdin: vec![],
                     lifecycle: None,

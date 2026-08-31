@@ -269,6 +269,8 @@ impl SoldrZccacheService {
         &self,
         req: CompileRequest,
     ) -> Result<CompileResponseBody, EmbeddedServiceError> {
+        crate::ci_test_report::ensure_compiler_allowed(&req)
+            .map_err(EmbeddedServiceError::Compile)?;
         let ci_test_report = crate::ci_test_report::prepare(&req);
         let (compiler, rustc_args) = split_compiler_and_args(&req.args)?;
         let cwd: NormalizedPath = std::path::PathBuf::from(req.cwd).into();

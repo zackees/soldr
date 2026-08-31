@@ -42,8 +42,10 @@ pub(crate) async fn freeze(
     let config = cargo_config_paths(&root);
     let rustflags = effective_rustflags();
     let wrapper = wrapper_identity(cache_enabled);
-    let cargo_build_jobs = effective_limit("CARGO_BUILD_JOBS", "1");
-    let soldr_jobs = effective_limit("SOLDR_JOBS", "1");
+    // Absence is load-bearing: ci-test schedules work, but it does not invent a
+    // one-thread Cargo/compiler policy. Explicit values are frozen verbatim.
+    let cargo_build_jobs = inherited_limit("CARGO_BUILD_JOBS");
+    let soldr_jobs = inherited_limit("SOLDR_JOBS");
     let nextest_test_threads = effective_limit("NEXTEST_TEST_THREADS", "1");
     let dylint_key = canonical_channel(&nightly.channel, &host);
     let dylint_libraries = target_root
@@ -334,8 +336,8 @@ pub(crate) async fn freeze(
             reason: "ci-test observes Cargo freshness and does not insert a dev-profile warm-up",
         },
         resource_limits: ResourceLimits {
-            cargo_build_jobs: Some(cargo_build_jobs),
-            soldr_jobs: Some(soldr_jobs),
+            cargo_build_jobs,
+            soldr_jobs,
             nextest_test_threads: Some(nextest_test_threads),
         },
         test_target_count,
@@ -579,6 +581,12 @@ async fn resolve_dylint_plan(
 
 fn non_empty_env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+fn inherited_limit(name: &str) -> Option<String> {
+    // Keep even an empty/invalid explicit value. Cargo/the daemon owns
+    // validation; treating it as absent would silently change caller intent.
+    std::env::var(name).ok()
 }
 
 fn effective_limit(name: &str, default: &str) -> String {
