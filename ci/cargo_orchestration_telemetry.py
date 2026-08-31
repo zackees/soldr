@@ -284,11 +284,11 @@ def summarize_samples(samples: list[Snapshot]) -> dict[str, int | None]:
 
 def prepared_cargo_or_rustup_available(environment: dict[str, str] | None = None) -> bool:
     """Whether Soldr can resolve a pre-existing Cargo/rustup toolchain."""
-    environment = environment or os.environ
-    cargo_home = Path(environment.get("CARGO_HOME", Path.home() / ".cargo"))
+    resolved_environment = dict(os.environ) if environment is None else environment
+    cargo_home = Path(resolved_environment.get("CARGO_HOME", Path.home() / ".cargo"))
     if (cargo_home / "bin" / "cargo").is_file():
         return True
-    return shutil.which("rustup", path=environment.get("PATH")) is not None
+    return shutil.which("rustup", path=resolved_environment.get("PATH")) is not None
 
 
 def run_case(
