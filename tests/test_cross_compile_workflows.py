@@ -700,7 +700,7 @@ def test_external_zccache_bootstraps_get_exclusive_service_access() -> None:
     assert 'SOLDR_JOBS: "2"' in build_and_test
     # zccache admits registered amalgamations and large native units
     # exclusively, so these two ordinary compile slots do not reintroduce the
-    # historical heavyweight-link overlap. Test execution remains separately
+    # historical heavyweight-link overlap.  Test execution remains separately
     # pinned at two threads.
     assert "exclusive compiler admission" in build_and_test
     assert 'NEXTEST_TEST_THREADS: "2"' in build_and_test

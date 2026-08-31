@@ -77,9 +77,8 @@ jobs:
       # Median nextest stage: 1,441,985 ms at 1 thread (6 samples) ->
       # 1,200,200 ms at 2 (3 samples), a 4.0 min saving, with every
       # threads=2 sample faster than every baseline sample and zero
-      # TIMEOUT lines. The serial lifecycle/cold-build groups above remain
-      # intact, so the ordinary test pool stays bounded independently from
-      # compiler/link work.
+      # TIMEOUT lines. A single sample read 908,594 ms and would have
+      # overstated the effect ~2x, which is why the 3-run bar exists.
       NEXTEST_TEST_THREADS: "2"
 
     steps:
