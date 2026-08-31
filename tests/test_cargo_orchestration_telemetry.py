@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -94,7 +95,7 @@ def test_missing_v2_membership_does_not_fall_back_to_a_parent_cgroup() -> None:
     )
 
 
-def test_matrix_requires_an_explicit_opt_in_before_running_raised_count() -> None:
+def test_matrix_requires_an_explicit_opt_in_before_running_raised_count(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         telemetry.parse_args(["--raised-jobs", "8", "--", "soldr", "cargo", "check"])
 
@@ -103,6 +104,8 @@ def test_matrix_requires_an_explicit_opt_in_before_running_raised_count() -> Non
             "--raised-jobs",
             "8",
             "--allow-raised-count",
+            "--case-root",
+            str(tmp_path / "fresh-cases"),
             "--",
             "soldr",
             "cargo",
@@ -111,7 +114,33 @@ def test_matrix_requires_an_explicit_opt_in_before_running_raised_count() -> Non
     )
 
     assert parsed.jobs == [1, 2, 8]
+    assert parsed.case_root == tmp_path / "fresh-cases"
     assert parsed.command == ["soldr", "cargo", "check"]
+
+
+def test_case_uses_a_fresh_target_and_soldr_cache_tree(tmp_path: Path) -> None:
+    cgroup = write_cgroup(
+        tmp_path / "cgroup",
+        memory_current="1\n",
+        memory_peak="1\n",
+        memory_swap_current="0\n",
+        pids_current="1\n",
+        memory_events="oom_kill 0\n",
+    )
+    case_root = tmp_path / "jobs-2"
+
+    result = telemetry.run_case(
+        2,
+        [sys.executable, "-c", "pass"],
+        case_root=case_root,
+        cgroup_root=cgroup,
+        interval_seconds=0.001,
+    )
+
+    assert result["returncode"] == 0
+    assert result["case_root"] == str(case_root)
+    assert (case_root / "target").is_dir()
+    assert (case_root / "soldr-cache").is_dir()
 
 
 def test_summary_uses_sampled_peak_not_only_post_failure_state() -> None:

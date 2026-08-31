@@ -35,6 +35,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -279,6 +280,7 @@ def run_case(
     jobs: int,
     command: list[str],
     *,
+    case_root: Path,
     cgroup_root: Path | None = None,
     proc_root: Path = Path("/proc"),
     interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
@@ -293,10 +295,23 @@ def run_case(
     cgroup_root = cgroup_root or controlling_cgroup_v2_dir()
     if cgroup_root is None:
         raise RuntimeError("could not resolve this process's controlling cgroup v2 directory")
+    if case_root.exists():
+        raise RuntimeError(
+            f"telemetry case directory already exists; choose a fresh --case-root: {case_root}"
+        )
+    target_dir = case_root / "target"
+    cache_dir = case_root / "soldr-cache"
+    target_dir.mkdir(parents=True)
+    cache_dir.mkdir()
     environment = os.environ.copy()
     environment["CARGO_BUILD_JOBS"] = str(jobs)
     environment["SOLDR_JOBS"] = str(jobs)
     environment["SOLDR_CI_ORCHESTRATION_TELEMETRY_JOBS"] = str(jobs)
+    # The Cargo registry remains shared, but every measured graph must start
+    # from no target artifacts and no Soldr compiler-cache entries. Otherwise
+    # N=1 would make the later rows look cheaper simply by warming them.
+    environment["CARGO_TARGET_DIR"] = str(target_dir)
+    environment["SOLDR_CACHE_DIR"] = str(cache_dir)
     started = snapshot(cgroup_root, proc_root, clock)
     samples = [started]
     began = clock()
@@ -320,6 +335,7 @@ def run_case(
     samples.append(finished)
     return {
         "requested_jobs": jobs,
+        "case_root": str(case_root),
         "returncode": process.returncode,
         "timed_out": timed_out,
         "wall_time_ms": round((finished.monotonic_seconds - started.monotonic_seconds) * 1000),
@@ -395,6 +411,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--interval-seconds", type=float, default=DEFAULT_INTERVAL_SECONDS)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--case-root",
+        type=Path,
+        help=(
+            "fresh parent directory for per-job cold target/cache trees "
+            "(default: a new directory below the system temporary directory)"
+        ),
+    )
     parser.add_argument("--output", type=Path, help="write JSON evidence to this path")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="command prefixed by --")
     parsed = parser.parse_args(argv)
@@ -413,6 +437,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parsed.command = parsed.command[1:]
     if not parsed.command:
         parser.error("provide a command after --")
+    if parsed.case_root is None:
+        parsed.case_root = Path(tempfile.mkdtemp(prefix="soldr-2878-telemetry-"))
+    elif parsed.case_root.exists():
+        parser.error("--case-root must not already exist; each matrix needs fresh trees")
     return parsed
 
 
@@ -430,6 +458,7 @@ def main(argv: list[str] | None = None) -> int:
         run_case(
             jobs,
             args.command,
+            case_root=args.case_root / f"jobs-{jobs}",
             cgroup_root=cgroup_root,
             interval_seconds=args.interval_seconds,
             timeout_seconds=args.timeout_seconds,
@@ -441,6 +470,7 @@ def main(argv: list[str] | None = None) -> int:
         "purpose": "soldr#2878 Cargo pre-compiler orchestration telemetry",
         "cgroup_root": str(cgroup_root),
         "command": args.command,
+        "case_root": str(args.case_root),
         "results": results,
         "notes": [
             "max_memory_current_bytes is sampled for this invocation.",
