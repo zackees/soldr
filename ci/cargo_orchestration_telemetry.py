@@ -26,6 +26,11 @@ scope: nested Actions/container cgroups have their own limits and OOM events.
 ``max_memory_current_bytes`` is the per-invocation transient peak;
 ``memory.peak`` is retained as before/after context because a read-only cgroup
 may not allow it to be reset.
+
+The measured command must start with prepared Cargo/rustup. The runner refuses
+to bootstrap a toolchain under a per-case cache root, because bootstrap fan-out
+would make the job-count rows incomparable. Each case retains a ``command.log``
+beside its target and cache trees for postmortem diagnosis.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -276,6 +282,15 @@ def summarize_samples(samples: list[Snapshot]) -> dict[str, int | None]:
     }
 
 
+def prepared_cargo_or_rustup_available(environment: dict[str, str] | None = None) -> bool:
+    """Whether Soldr can resolve a pre-existing Cargo/rustup toolchain."""
+    environment = environment or os.environ
+    cargo_home = Path(environment.get("CARGO_HOME", Path.home() / ".cargo"))
+    if (cargo_home / "bin" / "cargo").is_file():
+        return True
+    return shutil.which("rustup", path=environment.get("PATH")) is not None
+
+
 def run_case(
     jobs: int,
     command: list[str],
@@ -301,6 +316,7 @@ def run_case(
         )
     target_dir = case_root / "target"
     cache_dir = case_root / "soldr-cache"
+    command_log = case_root / "command.log"
     target_dir.mkdir(parents=True)
     cache_dir.mkdir()
     environment = os.environ.copy()
@@ -315,27 +331,29 @@ def run_case(
     started = snapshot(cgroup_root, proc_root, clock)
     samples = [started]
     began = clock()
-    process = run(command, env=environment)
-    timed_out = False
-    while process.poll() is None:
-        if clock() - began >= timeout_seconds:
-            timed_out = True
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-            break
-        sleep(interval_seconds)
-        samples.append(snapshot(cgroup_root, proc_root, clock))
-    if not timed_out:
-        process.wait()
+    with command_log.open("wb") as log_file:
+        process = run(command, env=environment, stdout=log_file, stderr=subprocess.STDOUT)
+        timed_out = False
+        while process.poll() is None:
+            if clock() - began >= timeout_seconds:
+                timed_out = True
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                break
+            sleep(interval_seconds)
+            samples.append(snapshot(cgroup_root, proc_root, clock))
+        if not timed_out:
+            process.wait()
     finished = snapshot(cgroup_root, proc_root, clock)
     samples.append(finished)
     return {
         "requested_jobs": jobs,
         "case_root": str(case_root),
+        "command_log": str(command_log),
         "returncode": process.returncode,
         "timed_out": timed_out,
         "wall_time_ms": round((finished.monotonic_seconds - started.monotonic_seconds) * 1000),
@@ -445,6 +463,13 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "soldr#2878 telemetry requires the controlling cgroup-v2 directory; "
             "could not resolve it from /proc/self/cgroup and /proc/self/mountinfo",
+            file=sys.stderr,
+        )
+        return 2
+    if not prepared_cargo_or_rustup_available():
+        print(
+            "soldr#2878 telemetry requires prepared Cargo/rustup before isolating "
+            "per-case SOLDR_CACHE_DIR; add CARGO_HOME/bin/cargo or rustup to PATH",
             file=sys.stderr,
         )
         return 2

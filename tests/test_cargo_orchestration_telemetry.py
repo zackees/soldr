@@ -131,7 +131,7 @@ def test_case_uses_a_fresh_target_and_soldr_cache_tree(tmp_path: Path) -> None:
 
     result = telemetry.run_case(
         2,
-        [sys.executable, "-c", "pass"],
+        [sys.executable, "-c", "print('case output')"],
         case_root=case_root,
         cgroup_root=cgroup,
         interval_seconds=0.001,
@@ -139,8 +139,22 @@ def test_case_uses_a_fresh_target_and_soldr_cache_tree(tmp_path: Path) -> None:
 
     assert result["returncode"] == 0
     assert result["case_root"] == str(case_root)
+    assert result["command_log"] == str(case_root / "command.log")
     assert (case_root / "target").is_dir()
     assert (case_root / "soldr-cache").is_dir()
+    assert (case_root / "command.log").read_text(encoding="utf-8") == "case output\n"
+
+
+def test_prepared_toolchain_preflight_requires_cargo_proxy_or_rustup(tmp_path: Path) -> None:
+    environment = {"CARGO_HOME": str(tmp_path / "cargo-home"), "PATH": ""}
+
+    assert not telemetry.prepared_cargo_or_rustup_available(environment)
+
+    cargo = tmp_path / "cargo-home" / "bin" / "cargo"
+    cargo.parent.mkdir(parents=True)
+    cargo.write_text("cargo proxy", encoding="utf-8")
+
+    assert telemetry.prepared_cargo_or_rustup_available(environment)
 
 
 def test_summary_uses_sampled_peak_not_only_post_failure_state() -> None:
