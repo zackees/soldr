@@ -359,6 +359,15 @@ def append_summary(path: Path, selection: Selection) -> None:
             stream.write(f"| `{owner_id}` | {count} |\n")
 
 
+def write_filter(path: Path, expression: str) -> None:
+    """Write one filter line without host-native newline translation."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(expression)
+        stream.write("\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, required=True)
@@ -380,8 +389,7 @@ def main() -> int:
     if not isinstance(inventory, dict):
         raise ValueError("nextest list JSON must be an object")
     selection = build_selection(manifest, inventory, args.target)
-    args.filter_output.parent.mkdir(parents=True, exist_ok=True)
-    args.filter_output.write_text(selection.filter_expression + "\n", encoding="utf-8")
+    write_filter(args.filter_output, selection.filter_expression)
     if args.github_summary is not None:
         append_summary(args.github_summary, selection)
     print(

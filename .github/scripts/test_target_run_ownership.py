@@ -128,6 +128,15 @@ class TargetRunOwnershipTests(unittest.TestCase):
         self.assertEqual(darwin.selected_count, 1)
         self.assertNotIn("daemon_windows_pipe_peer", darwin.filter_expression)
 
+    def test_filter_file_is_one_lf_terminated_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "filter.txt"
+            ownership.write_filter(path, "package(soldr-cli) & binary(broker)")
+
+            self.assertEqual(
+                path.read_bytes(), b"package(soldr-cli) & binary(broker)\n"
+            )
+
     def test_empty_ownership_is_fatal(self) -> None:
         with self.assertRaisesRegex(ValueError, "selects zero tests"):
             ownership.build_selection(
