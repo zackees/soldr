@@ -79,6 +79,58 @@ class TargetRunSummaryTests(unittest.TestCase):
             },
         )
 
+    def test_filtered_list_counts_only_matching_tests(self) -> None:
+        """A positive ownership filter leaves mismatch rows in list JSON.
+
+        Nextest's top-level test-count still describes every testcase in each
+        selected suite. Coverage reconciliation must use only rows whose
+        filter-match status is matches, or a narrow exact-test allowlist looks
+        like silent under-execution after every selected test passes.
+        """
+        with tempfile.TemporaryDirectory() as raw_temp:
+            temp = Path(raw_temp)
+            test_list = temp / "list.json"
+            junit = temp / "junit.xml"
+            test_list.write_text(
+                json.dumps(
+                    {
+                        "test-count": 4,
+                        "rust-suites": {
+                            "suite": {
+                                "testcases": {
+                                    "selected": {
+                                        "ignored": False,
+                                        "filter-match": {"status": "matches"},
+                                    },
+                                    "selected-ignored": {
+                                        "ignored": True,
+                                        "filter-match": {"status": "matches"},
+                                    },
+                                    "portable-one": {
+                                        "ignored": False,
+                                        "filter-match": {"status": "mismatch"},
+                                    },
+                                    "portable-two": {
+                                        "ignored": False,
+                                        "filter-match": {"status": "mismatch"},
+                                    },
+                                }
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            junit.write_text('<testsuite tests="1" />', encoding="utf-8")
+
+            summary = target_run_summary.build_summary(
+                "aarch64-apple-darwin", test_list, junit
+            )
+
+        self.assertEqual(summary["discovered"], 2)
+        self.assertEqual(summary["ignored"], 1)
+        self.assertEqual(summary["executed"], 1)
+
     def test_junit_suite_children_are_aggregated(self) -> None:
         with tempfile.TemporaryDirectory() as raw_temp:
             junit = Path(raw_temp) / "junit.xml"
