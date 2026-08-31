@@ -447,7 +447,12 @@ def test_catalogue_download_consumers_require_sha256_metadata() -> None:
     ).read_text(encoding="utf-8")
 
     assert "--json cargo-zigbuild" in baseline
-    assert cross.count("fetch_or_build_tool.sh") == 4
+    helper_invocations = [
+        line
+        for line in cross.splitlines()
+        if line.strip().startswith(".github/scripts/fetch_or_build_tool.sh")
+    ]
+    assert len(helper_invocations) == 4
     assert "download_catalogued_asset.py" in baseline
     assert "download_catalogued_asset.py" in fetch
     assert 'asset_url="verified"' in fetch
