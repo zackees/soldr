@@ -20,9 +20,12 @@ Example (run inside the repository's Linux Docker development runner):
 
 The JSON has one row each for N=1, N=2, and the requested raised count.  Every
 row includes wall time, cgroup memory/PID/event readings, and the maxima of
-observed Cargo/compiler/toolchain processes.  ``max_memory_current_bytes`` is
-the per-invocation transient peak; ``memory.peak`` is retained as before/after
-context because a read-only cgroup may not allow it to be reset.
+observed Cargo/compiler/toolchain processes.  The runner resolves its own
+cgroup-v2 membership rather than assuming ``/sys/fs/cgroup`` is the governing
+scope: nested Actions/container cgroups have their own limits and OOM events.
+``max_memory_current_bytes`` is the per-invocation transient peak;
+``memory.peak`` is retained as before/after context because a read-only cgroup
+may not allow it to be reset.
 """
 
 from __future__ import annotations
@@ -38,7 +41,8 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 
-CGROUP_ROOT = Path("/sys/fs/cgroup")
+PROC_SELF_CGROUP = Path("/proc/self/cgroup")
+PROC_SELF_MOUNTINFO = Path("/proc/self/mountinfo")
 DEFAULT_INTERVAL_SECONDS = 0.2
 DEFAULT_TIMEOUT_SECONDS = 30 * 60
 TOOLCHAIN_EXECUTABLES = frozenset(
@@ -116,6 +120,64 @@ def _read_memory_events(cgroup_root: Path) -> dict[str, int]:
     return events
 
 
+def _unescape_mountinfo(raw: str) -> str:
+    """Decode the octal escapes Linux uses in mountinfo path columns."""
+    for encoded, decoded in ((r"\040", " "), (r"\011", "\t"), (r"\012", "\n"), (r"\134", "\\")):
+        raw = raw.replace(encoded, decoded)
+    return raw
+
+
+def cgroup_v2_mount_from(mountinfo: str) -> tuple[Path, Path] | None:
+    """Return ``(mountpoint, mount-root)`` for the process-visible v2 mount."""
+    for line in mountinfo.splitlines():
+        before, separator, after = line.partition(" - ")
+        if not separator or after.split()[:1] != ["cgroup2"]:
+            continue
+        fields = before.split()
+        # mountinfo: id parent major:minor root mountpoint options ...
+        if len(fields) < 5:
+            continue
+        return Path(_unescape_mountinfo(fields[4])), Path(_unescape_mountinfo(fields[3]))
+    return None
+
+
+def cgroup_v2_dir_from(membership: str, mountinfo: str) -> Path | None:
+    """Resolve this process's v2 membership below its actual mount root.
+
+    A cgroup namespace may mount only a subtree, so simply joining membership
+    to a hard-coded mountpoint can read its parent and miss the limit/events
+    that control the process being measured.
+    """
+    mount = cgroup_v2_mount_from(mountinfo)
+    if mount is None:
+        return None
+    mountpoint, mount_root = mount
+    for line in membership.splitlines():
+        if not line.startswith("0::"):
+            continue
+        member = Path(line.removeprefix("0::").strip())
+        try:
+            relative = member.relative_to(mount_root)
+        except ValueError:
+            return None
+        if ".." in relative.parts:
+            return None
+        return mountpoint / relative
+    return None
+
+
+def controlling_cgroup_v2_dir(
+    membership_path: Path = PROC_SELF_CGROUP,
+    mountinfo_path: Path = PROC_SELF_MOUNTINFO,
+) -> Path | None:
+    """Resolve the cgroup-v2 directory that governs this telemetry process."""
+    membership = _read_text(membership_path)
+    mountinfo = _read_text(mountinfo_path)
+    if membership is None or mountinfo is None:
+        return None
+    return cgroup_v2_dir_from(membership, mountinfo)
+
+
 def _command_name(proc_dir: Path) -> str | None:
     raw = _read_text(proc_dir / "comm")
     if raw:
@@ -155,11 +217,22 @@ def process_counts(proc_root: Path = Path("/proc")) -> ProcessCounts:
 
 
 def snapshot(
-    cgroup_root: Path = CGROUP_ROOT,
+    cgroup_root: Path | None = None,
     proc_root: Path = Path("/proc"),
     clock: Callable[[], float] = time.monotonic,
 ) -> Snapshot:
     """Capture one cheap cgroup/process sample without requiring root access."""
+    cgroup_root = cgroup_root or controlling_cgroup_v2_dir()
+    if cgroup_root is None:
+        return Snapshot(
+            monotonic_seconds=clock(),
+            memory_current_bytes=None,
+            memory_peak_bytes=None,
+            memory_swap_current_bytes=None,
+            pids_current=None,
+            memory_events={},
+            processes=process_counts(proc_root),
+        )
     return Snapshot(
         monotonic_seconds=clock(),
         memory_current_bytes=_read_int(cgroup_root / "memory.current"),
@@ -206,7 +279,7 @@ def run_case(
     jobs: int,
     command: list[str],
     *,
-    cgroup_root: Path = CGROUP_ROOT,
+    cgroup_root: Path | None = None,
     proc_root: Path = Path("/proc"),
     interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
@@ -217,6 +290,9 @@ def run_case(
     """Run one explicit fan-out value and collect samples through process exit."""
     if jobs < 1:
         raise ValueError("jobs must be positive")
+    cgroup_root = cgroup_root or controlling_cgroup_v2_dir()
+    if cgroup_root is None:
+        raise RuntimeError("could not resolve this process's controlling cgroup v2 directory")
     environment = os.environ.copy()
     environment["CARGO_BUILD_JOBS"] = str(jobs)
     environment["SOLDR_JOBS"] = str(jobs)
@@ -342,10 +418,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    cgroup_root = controlling_cgroup_v2_dir()
+    if cgroup_root is None:
+        print(
+            "soldr#2878 telemetry requires the controlling cgroup-v2 directory; "
+            "could not resolve it from /proc/self/cgroup and /proc/self/mountinfo",
+            file=sys.stderr,
+        )
+        return 2
     results = [
         run_case(
             jobs,
             args.command,
+            cgroup_root=cgroup_root,
             interval_seconds=args.interval_seconds,
             timeout_seconds=args.timeout_seconds,
         )
@@ -354,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
     report = {
         "schema_version": 1,
         "purpose": "soldr#2878 Cargo pre-compiler orchestration telemetry",
-        "cgroup_root": str(CGROUP_ROOT),
+        "cgroup_root": str(cgroup_root),
         "command": args.command,
         "results": results,
         "notes": [

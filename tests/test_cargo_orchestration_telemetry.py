@@ -50,6 +50,50 @@ def test_snapshot_reads_transient_resource_inputs_and_process_census(tmp_path: P
     assert sample.processes.toolchain == 3
 
 
+def test_nested_membership_resolves_below_the_process_visible_cgroup_mount() -> None:
+    resolved = telemetry.cgroup_v2_dir_from(
+        "0::/runner/step-12\n",
+        "36 25 0:32 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+    )
+
+    assert resolved == Path("/sys/fs/cgroup/runner/step-12")
+
+
+def test_mount_subtree_is_removed_before_joining_the_membership_path() -> None:
+    resolved = telemetry.cgroup_v2_dir_from(
+        "0::/delegated/job/step\n",
+        "36 25 0:32 /delegated /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+    )
+
+    assert resolved == Path("/sys/fs/cgroup/job/step")
+
+
+def test_controlling_resolver_reads_injected_proc_membership_and_mountinfo(
+    tmp_path: Path,
+) -> None:
+    membership = tmp_path / "self.cgroup"
+    mountinfo = tmp_path / "self.mountinfo"
+    membership.write_text("0::/actions/job-42/step\n", encoding="utf-8")
+    mountinfo.write_text(
+        "36 25 0:32 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+        encoding="utf-8",
+    )
+
+    assert telemetry.controlling_cgroup_v2_dir(membership, mountinfo) == Path(
+        "/sys/fs/cgroup/actions/job-42/step"
+    )
+
+
+def test_missing_v2_membership_does_not_fall_back_to_a_parent_cgroup() -> None:
+    assert (
+        telemetry.cgroup_v2_dir_from(
+            "0::/runner/step\n",
+            "36 25 0:32 / /sys/fs/cgroup rw - tmpfs tmpfs rw\n",
+        )
+        is None
+    )
+
+
 def test_matrix_requires_an_explicit_opt_in_before_running_raised_count() -> None:
     with pytest.raises(SystemExit):
         telemetry.parse_args(["--raised-jobs", "8", "--", "soldr", "cargo", "check"])
