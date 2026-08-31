@@ -39,13 +39,19 @@ const AMALGAMATION_BYTES: u64 = 1_000_000;
 /// next.
 const KNOWN_AMALGAMATIONS: &[&str] = &["sqlite3.c", "zstd.c", "rocksdb.cc"];
 
-/// Soldr dependencies that collapse a much more granular source workspace
-/// into one rustc compilation unit, beyond zccache's built-in classification.
+/// Rust units that need exclusive access while they compile without linking.
+///
+/// These are either published-workspace amalgamations or first-party analysis
+/// units with the same memory shape.  `soldr_cli` is intentionally included:
+/// CI run 33389568913 killed its nightly Dylint workspace-analysis compiler
+/// child while Nextest owned the other shared slot.  The observed invocation
+/// is `--crate-type lib` with metadata output, so the predicate preserves
+/// ordinary linking forms while protecting the measured heavy analysis form.
 ///
 /// zccache itself owns the built-in names `zccache`, `zccache_cli_core`, and
 /// `zccache_daemon_core`. Repeating them here would put the two predicates back
 /// on a drift path even though there is now only one lock.
-const SOLDR_RUST_AMALGAMATIONS: &[&str] = &["kernal_api"];
+const SOLDR_RUST_EXCLUSIVE_NON_LINKING_UNITS: &[&str] = &["kernal_api", "soldr_cli"];
 
 /// First-party test links measured to exceed the safe parallel-memory envelope.
 ///
@@ -103,7 +109,8 @@ fn soldr_rust_crate_requires_exclusive_access(args: &[String]) -> bool {
         return false;
     };
 
-    (SOLDR_RUST_AMALGAMATIONS.contains(&name) && rust_crate_types_are_non_linking(args))
+    (SOLDR_RUST_EXCLUSIVE_NON_LINKING_UNITS.contains(&name)
+        && rust_crate_types_are_non_linking(args))
         || (SOLDR_HEAVY_TEST_LINKS.contains(&name) && args.iter().any(|arg| arg == "--test"))
 }
 
@@ -497,6 +504,18 @@ mod tests {
         ];
 
         assert!(!soldr_rust_crate_requires_exclusive_access(&args));
+    }
+
+    #[test]
+    fn soldr_cli_dylint_workspace_analysis_has_exclusive_access() {
+        let args = vec![
+            "--crate-name=soldr_cli".to_string(),
+            "--crate-type=lib".to_string(),
+            "--emit=dep-info,metadata".to_string(),
+            "crates/soldr-cli/src/lib.rs".to_string(),
+        ];
+
+        assert!(soldr_rust_crate_requires_exclusive_access(&args));
     }
 
     #[test]
