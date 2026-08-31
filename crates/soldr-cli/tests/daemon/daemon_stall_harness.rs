@@ -46,16 +46,20 @@ fn spawn_wedged_daemon() -> (std::path::PathBuf, WedgeGuard) {
     // directly under /tmp therefore fails correctly: the test must not try to
     // chmod the shared sticky directory. Keep this directory short enough for
     // macOS's `sun_path` limit while retaining it for the listener's lifetime.
-    let directory = tempfile::Builder::new()
-        .prefix("soldr-stall-")
-        .tempdir_in("/tmp")
-        .expect("create private wedged-daemon directory");
-    let endpoint =
-        if soldr_platform::host::facts::os() == soldr_platform::host::facts::HostOs::Windows {
-            soldr_platform::ipc::endpoint::ephemeral("soldr-stall-harness")
-        } else {
-            directory.path().join("daemon.sock").display().to_string()
-        };
+    let host_os = soldr_platform::host::facts::os();
+    let directory = if host_os == soldr_platform::host::facts::HostOs::Windows {
+        tempfile::tempdir().expect("create wedged-daemon directory")
+    } else {
+        tempfile::Builder::new()
+            .prefix("soldr-stall-")
+            .tempdir_in("/tmp")
+            .expect("create private wedged-daemon directory")
+    };
+    let endpoint = if host_os == soldr_platform::host::facts::HostOs::Windows {
+        soldr_platform::ipc::endpoint::ephemeral("soldr-stall-harness")
+    } else {
+        directory.path().join("daemon.sock").display().to_string()
+    };
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
     let server_endpoint = endpoint.clone();
     let handle = std::thread::spawn(move || {
