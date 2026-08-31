@@ -3,6 +3,11 @@
 
 use std::sync::OnceLock;
 
+/// cgroup v2 is a Linux facility.
+pub fn cgroup_v2_dir() -> Option<std::path::PathBuf> {
+    None
+}
+
 /// Physical CPU cores on this machine, or `None` when the topology could
 /// not be read. Memoized: the daemon asks once at startup.
 pub fn physical_cores() -> Option<usize> {

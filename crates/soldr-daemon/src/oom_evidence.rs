@@ -29,10 +29,7 @@
 //! this inside the platform-cfg boundary rule and means the Windows and macOS
 //! builds exercise the same code.
 
-use std::path::{Path, PathBuf};
-
-/// The default cgroup v2 mount point.
-pub(crate) const CGROUP_ROOT: &str = "/sys/fs/cgroup";
+use std::path::Path;
 
 /// What the cgroup can tell us about an OOM kill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,9 +86,11 @@ pub(crate) fn read_at(cgroup_root: &Path) -> OomEvidence {
     }
 }
 
-/// Read the counters from the host's cgroup mount.
+/// Read the counters from the cgroup-v2 directory that owns this process.
 pub(crate) fn read() -> OomEvidence {
-    read_at(&PathBuf::from(CGROUP_ROOT))
+    soldr_platform::host::resources::cgroup_v2_dir()
+        .map(|path| read_at(&path))
+        .unwrap_or(OomEvidence::Unknown)
 }
 
 /// `oom_kill` + `oom_group_kill` from a `memory.events` body.

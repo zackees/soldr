@@ -2,9 +2,11 @@
 #
 # Companion to `_ci-cross-build-linux.yml`. Downloads the artifact produced by
 # the Linux cross-builder, provisions the pinned repository toolchain through
-# the target-native soldr binary, and runs every pre-built test binary on the
-# native runner. The checkout supplies source-tree context while SOLDR_BIN and
-# SOLDR_TEST_FIXTURES_DIR point tests at target-native packaged artifacts.
+# the target-native soldr binary, and runs the positively owned host-sensitive
+# subset of the pre-built test archive. The complete archive remains available
+# to the ownership guard so a stale selector fails instead of dropping native
+# coverage silently. The checkout supplies source-tree context while SOLDR_BIN
+# and SOLDR_TEST_FIXTURES_DIR point tests at target-native packaged artifacts.
 
 name: CI target run (download + nextest run)
 
@@ -178,7 +180,9 @@ jobs:
             echo "TOOLCHAIN_ENSURE_JSON=$RUNNER_TEMP/soldr-toolchain-ensure.json"
             echo "TOOLCHAIN_LINK_JSON=$RUNNER_TEMP/soldr-toolchain-link.json"
             echo "TOOLCHAIN_SHIM_DIR=$RUNNER_TEMP/soldr-toolchain-shims"
+            echo "NEXTEST_ALL_LIST_JSON=$RUNNER_TEMP/nextest-all-list.json"
             echo "NEXTEST_LIST_JSON=$RUNNER_TEMP/nextest-list.json"
+            echo "TARGET_RUN_FILTER_FILE=$RUNNER_TEMP/target-run-filter.txt"
             echo "TARGET_RUN_SUMMARY=$RUNNER_TEMP/target-run-summary.json"
           } >> "$GITHUB_ENV"
           python .github/scripts/target_run_summary.py \
@@ -318,7 +322,7 @@ jobs:
             --soldr "$SOLDR_BIN" \
             --target '${{ inputs.target }}'
 
-      - name: Run complete pre-built test archive
+      - name: Run owned pre-built native tests
         shell: bash
         run: |
           set -euo pipefail
@@ -367,14 +371,15 @@ jobs:
           # shard across three shards. `--extract-to` names a destination on
           # the volume chosen above and leaves it in place afterwards, so the
           # inventory pass doubles as the extraction and the execution pass
-          # below consumes what it produced.
+          # below consumes what it produced. This first inventory is complete:
+          # ownership is validated before partitioning so every declaration
+          # must match somewhere in the archive, including on sharded lanes.
           python .github/scripts/run_target_command.py --execution '${{ inputs.target_execution }}' -- "$NEXTEST_BIN" nextest list \
             --archive-file "$archive" \
             --extract-to "$NEXTEST_EXTRACT_DIR" \
             --workspace-remap "$GITHUB_WORKSPACE" \
             --profile target-run \
-            --partition "$REPLAY_PARTITION" \
-            --message-format json-pretty > "$NEXTEST_LIST_JSON"
+            --message-format json-pretty > "$NEXTEST_ALL_LIST_JSON"
 
           # The reading that the original failure needed and did not have:
           # what the extraction actually cost, measured immediately after it
@@ -384,11 +389,21 @@ jobs:
             --path "$NEXTEST_EXTRACT_DIR" \
             --min-free-gib 10
 
-          python .github/scripts/target_run_summary.py \
-            --target '${{ inputs.target }} (${{ matrix.replay.label }})' \
-            --partition "$REPLAY_PARTITION" \
-            --output "$TARGET_RUN_SUMMARY" \
-            --list-json "$NEXTEST_LIST_JSON"
+          # soldr#2999: native tests opt in through a reviewed declaration.
+          # The helper also checks every owner against the complete inventory
+          # and scans source for unowned host-sensitive integration modules.
+          python .github/scripts/target_run_ownership.py \
+            --manifest ci/target-run-ownership.json \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --list-json "$NEXTEST_ALL_LIST_JSON" \
+            --target '${{ inputs.target }}' \
+            --filter-output "$TARGET_RUN_FILTER_FILE" \
+            --github-summary "$GITHUB_STEP_SUMMARY"
+          IFS= read -r TARGET_RUN_FILTER < "$TARGET_RUN_FILTER_FILE"
+          test -n "$TARGET_RUN_FILTER" || {
+            echo "target-run ownership emitted an empty filter" >&2
+            exit 1
+          }
 
           # soldr#2933: the execution pass consumes the extraction instead of
           # decompressing the archive a second time. The helper emits nextest's
@@ -417,12 +432,30 @@ jobs:
             exit 1
           fi
 
+          # List the positively owned partition separately. This filtered
+          # inventory is the denominator for execution coverage below, while
+          # NEXTEST_ALL_LIST_JSON remains proof that declarations are live.
+          python .github/scripts/run_target_command.py --execution '${{ inputs.target_execution }}' -- "$NEXTEST_BIN" nextest list \
+            "${reuse_args[@]}" \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --profile target-run \
+            --partition "$REPLAY_PARTITION" \
+            -E "$TARGET_RUN_FILTER" \
+            --message-format json-pretty > "$NEXTEST_LIST_JSON"
+
+          python .github/scripts/target_run_summary.py \
+            --target '${{ inputs.target }} (${{ matrix.replay.label }})' \
+            --partition "$REPLAY_PARTITION" \
+            --output "$TARGET_RUN_SUMMARY" \
+            --list-json "$NEXTEST_LIST_JSON"
+
           set +e
           python .github/scripts/run_target_command.py --execution '${{ inputs.target_execution }}' -- "$NEXTEST_BIN" nextest run \
             "${reuse_args[@]}" \
             --workspace-remap "$GITHUB_WORKSPACE" \
             --profile target-run \
             --partition "$REPLAY_PARTITION" \
+            -E "$TARGET_RUN_FILTER" \
             --max-fail 3:immediate
           run_status=$?
           set -e
@@ -535,7 +568,9 @@ jobs:
           path: |
             ${{ runner.temp }}/soldr-toolchain-ensure.json
             ${{ runner.temp }}/soldr-toolchain-link.json
+            ${{ runner.temp }}/nextest-all-list.json
             ${{ runner.temp }}/nextest-list.json
+            ${{ runner.temp }}/target-run-filter.txt
             ${{ runner.temp }}/target-run-summary.json
             ${{ runner.temp }}/nextest-archive-bytes.json
             target/nextest/target-run/junit.xml

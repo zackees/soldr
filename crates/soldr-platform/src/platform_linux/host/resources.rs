@@ -3,6 +3,26 @@
 
 use std::sync::OnceLock;
 
+/// Resolve the cgroup-v2 directory that owns this process.
+///
+/// Containers may place a process below the mount root. Reading counters from
+/// `/sys/fs/cgroup` directly in that case observes the parent rather than the
+/// budget and OOM events that actually govern Soldr.
+pub fn cgroup_v2_dir() -> Option<std::path::PathBuf> {
+    let membership = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    cgroup_v2_dir_from(&membership, std::path::Path::new("/sys/fs/cgroup"))
+}
+
+fn cgroup_v2_dir_from(
+    membership: &str,
+    mount: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    membership.lines().find_map(|line| {
+        let relative = line.strip_prefix("0::")?.trim();
+        Some(mount.join(relative.trim_start_matches('/')))
+    })
+}
+
 /// Physical CPU cores on this machine, or `None` when the topology could
 /// not be read. Memoized: the daemon asks once at startup.
 pub fn physical_cores() -> Option<usize> {
@@ -81,6 +101,15 @@ pub fn commit_charge_mb() -> Option<(u64, u64)> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn nested_cgroup_v2_membership_resolves_below_the_mount() {
+        let mount = std::path::Path::new("/sys/fs/cgroup");
+        assert_eq!(
+            cgroup_v2_dir_from("0::/actions_job/step\n", mount),
+            Some(mount.join("actions_job/step"))
+        );
+    }
 
     #[test]
     fn cpuinfo_parser_counts_distinct_packages_and_cores() {

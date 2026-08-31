@@ -75,7 +75,6 @@ use crate::daemon::protocol::{
 #[derive(Clone)]
 pub struct SoldrZccacheService {
     inner: Arc<ZccacheService>,
-    compile_resource_gate: crate::amalgamation::CompileResourceGate,
     identity: HostIdentity,
     cache_root: PathBuf,
     disk_policy: EmbeddedDiskPolicy,
@@ -204,15 +203,21 @@ impl SoldrZccacheService {
         };
 
         let (disk_limits, disk_policy) = disk_cache_limits_from_env()?;
-        let svc = ZccacheService::start_with_options(
+        // soldr#2932 / zccache#1539: zccache owns the one canonical compiler
+        // capacity semaphore and fair shared/exclusive gate. It invokes this
+        // Soldr-specific classifier only after cache-hit classification, then
+        // acquires capacity -> resource admission immediately before spawning
+        // a real compiler child. Keeping no Soldr-side gate here ensures an
+        // eligible cache hit never drains ordinary compiler work.
+        let svc = ZccacheService::start_with_options_and_host_admission_classifier(
             cfg,
             crate::zccache_staging::options(&cache_root, disk_limits),
+            Arc::new(crate::amalgamation::SoldrHostAdmissionClassifier),
         )
         .await
         .map_err(|e| EmbeddedServiceError::Start(e.to_string()))?;
         Ok(Self {
             inner: Arc::new(svc),
-            compile_resource_gate: crate::amalgamation::CompileResourceGate::default(),
             identity,
             cache_root,
             disk_policy,
@@ -270,8 +275,6 @@ impl SoldrZccacheService {
         // Kept for the failure path: `cwd` is moved into the request below,
         // and soldr#2781's detector resolves relative source paths against it.
         let compile_cwd = cwd.as_path().to_path_buf();
-        let exclusive = crate::amalgamation::requires_exclusive_access(&req.args, &compile_cwd);
-        let _resource_permit = self.compile_resource_gate.acquire(exclusive).await;
         // soldr#2781: say so on the way IN, not only in the post-mortem. If
         // this process is killed for memory, the user needs to know which
         // file the compiler was holding -- and by then the compile is gone.

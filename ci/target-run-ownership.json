@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "policy_issue": "soldr#2999",
+  "owners": [
+    {
+      "id": "platform-host-primitives",
+      "package": "soldr-platform",
+      "binary": "soldr_platform",
+      "reason": "The platform leaf owns real filesystem, process, executable, IPC, and host-resource mechanics selected for each native target."
+    },
+    {
+      "id": "cli-broker-contracts",
+      "package": "soldr-cli",
+      "binary": "broker",
+      "reason": "Broker integration tests exercise native process identity, singleton leases, IPC routes, kill semantics, and executable replacement."
+    },
+    {
+      "id": "cli-daemon-contracts",
+      "package": "soldr-cli",
+      "binary": "daemon",
+      "reason": "Daemon integration tests exercise native process lifetime, IPC, file-backed state, restart, stall, and cache-maintenance behavior."
+    },
+    {
+      "id": "cli-cargo-front-door-contracts",
+      "package": "soldr-cli",
+      "binary": "cargo_front_door",
+      "reason": "Front-door integration tests launch target-native soldr, cargo, rustc, compiler wrappers, linkers, and trampolines."
+    },
+    {
+      "id": "cli-cache-gc-contracts",
+      "package": "soldr-cli",
+      "binary": "cache_gc",
+      "reason": "Cache and GC integration tests exercise native filesystem traversal, deletion, locking, worktree discovery, and disk policy."
+    },
+    {
+      "id": "cli-cook-dylint-contracts",
+      "package": "soldr-cli",
+      "binary": "cook_dylint",
+      "reason": "Cook and Dylint integration tests execute native build tools and exchange materialized artifacts with the daemon."
+    },
+    {
+      "id": "cli-fetch-tool-contracts",
+      "package": "soldr-cli",
+      "binary": "fetch_tools",
+      "reason": "Tool integration tests execute downloaded or embedded target-native binaries and validate host archive and executable behavior."
+    },
+    {
+      "id": "cli-toolchain-environment-contracts",
+      "package": "soldr-cli",
+      "binary": "toolchain_env",
+      "reason": "Toolchain and environment integration tests exercise native discovery, shims, process environments, archives, and host tooling."
+    },
+    {
+      "id": "cache-archive-executable-bit",
+      "package": "soldr-cache",
+      "binary": "cook_archive_executable_bit",
+      "reason": "The integration test validates executable-mode preservation through the host filesystem and archive implementation."
+    },
+    {
+      "id": "daemon-windows-pipe-peer",
+      "package": "soldr-daemon",
+      "binary": "daemon_windows_pipe_peer",
+      "targets": [
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-gnu",
+        "aarch64-pc-windows-msvc"
+      ],
+      "reason": "The integration test validates target-native Windows named-pipe peer identity and attribution."
+    },
+    {
+      "id": "daemon-embedded-cache-host-contracts",
+      "package": "soldr-daemon",
+      "binary": "daemon_zccache_embedded",
+      "reason": "The integration tests exercise native link, permission, executable, and child-process behavior around the embedded compiler service."
+    },
+    {
+      "id": "daemon-environment-deduplication-benchmark",
+      "package": "soldr-daemon",
+      "binary": "env_dedup_bench",
+      "reason": "The target-native executable contract catches host environment representation and process-launch regressions."
+    }
+  ]
+}
