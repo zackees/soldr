@@ -6,11 +6,12 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 import target_run_ownership as ownership
 
 
-def inventory(*suites: dict[str, object]) -> dict[str, object]:
+def inventory(*suites: dict[str, Any]) -> dict[str, object]:
     return {
         "test-count": sum(len(suite["testcases"]) for suite in suites),
         "rust-suites": {f"suite-{index}": suite for index, suite in enumerate(suites)},
