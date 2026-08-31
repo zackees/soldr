@@ -6,7 +6,6 @@ ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / ".github/scripts/download_large_asset.sh"
 TARGETS = {
     ROOT / ".github/workflows/baseline-zero-deps.yml": 2,
-    ROOT / ".github/workflows/cross-compile-all-targets.yml": 2,
     ROOT / "ci/docker-aarch64-musl-cross/Dockerfile": 3,
     ROOT / "ci/docker-aarch64-windows-msvc-cross/Dockerfile": 3,
 }
