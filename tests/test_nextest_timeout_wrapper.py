@@ -390,19 +390,18 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
             'grace-period = "30s"' in block
         ), f"a raised budget with no explicit grace period:\n{block}"
     # Kept beside it: the count still makes an addition deliberate rather than
-    # incidental. 10 = the default profile + eight measured per-test override
-    # blocks + one on `[profile.target-run]`. Newest: soldr#2968's
-    # `gc_list_json_reports_built_project_target_dir` block, which lives on
-    # `target-run` rather than `default` because the measurement that forced
-    # it -- 120.273s against a 120s budget -- came from the x86_64 macOS
-    # replay running under Rosetta on `macos-15` ARM. Scoping it to that
-    # profile keeps the 120s deadline on every lane that runs the same test
-    # natively, so a real regression there still surfaces.
+    # incidental. 11 = the default profile + eight measured per-test override
+    # blocks + two on `[profile.target-run]`. Both target-run blocks are
+    # scoped Rosetta exceptions, preserving the 120s deadline on native lanes.
     #
     # The block above walks `[[profile.default.overrides]]` only, so the
     # grace-period-with-every-raised-budget rule is not enforced for
     # `target-run` blocks; this count is what makes one visible.
-    assert config.count('grace-period = "30s"') == 10
+    assert config.count('grace-period = "30s"') == 11
+    assert (
+        "test(=cli_cargo_native_cc::no_cache_global_disables_native_too)"
+        in config
+    )
 
 
 def test_every_binary_named_in_nextest_filters_is_a_real_test_target() -> None:
