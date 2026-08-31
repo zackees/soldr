@@ -294,8 +294,9 @@ jobs:
           "$source_soldr" daemon start
 
       # soldr#2868: one source-owned verb now covers rustfmt, lint-ci, Clippy,
-      # all Dylint domains, exactly one Nextest invocation, doctests, and the
-      # dependency-policy fanout. Use the source binary as its own explicit
+      # all Dylint domains, one Nextest test-profile compilation plus its
+      # Fresh execution, doctests, and the dependency-policy fanout. Use the
+      # source binary as its own explicit
       # rustc wrapper: nested tests override SOLDR_CACHE_DIR and must not inherit
       # an older bootstrap wrapper whose daemon route is unavailable there.
       - name: Run prescribed host validation

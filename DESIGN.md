@@ -37,15 +37,16 @@ the per-rustc cache; `ci-test` only fixes the order, scope, target directories,
 and compatibility boundaries between them.
 
 Compatible stable host work shares one target tree. Clippy subsumes a separate
-`soldr cargo check`, and Nextest performs the sole test-profile build before
-running tests. After Clippy, stable Nextest overlaps the serial Dylint
-libraries -> workspace analysis -> UI-test branch; doctests are the explicit
-join and dependency policy follows them. The frozen resource policy defaults
-Cargo and Soldr compiler work to one job and one Nextest test process; callers
-may override those three explicit limits with `CARGO_BUILD_JOBS`, `SOLDR_JOBS`,
-and `NEXTEST_TEST_THREADS`. Both branches use the same Soldr daemon and its one
-canonical post-hit compiler admission gate. Because separate Cargo processes
-own separate jobservers, the parent also checks their aggregate
+`soldr cargo check`, and Nextest performs the sole test-profile build through
+`--no-run` before the Dylint branch begins. The corresponding Fresh Nextest
+execution then overlaps the serial Dylint libraries -> workspace analysis ->
+UI-test branch; doctests are the explicit join and dependency policy follows
+them. The frozen resource policy defaults Cargo and Soldr compiler work to one
+job and one Nextest test process; callers may override those three explicit
+limits with `CARGO_BUILD_JOBS`, `SOLDR_JOBS`, and `NEXTEST_TEST_THREADS`. Both
+branches use the same Soldr daemon and its one canonical post-hit compiler
+admission gate. Because separate Cargo processes own separate jobservers, the
+parent also checks their aggregate
 `CARGO_BUILD_JOBS` demand against the same cgroup-aware Cargo budget. When that
 aggregate cannot fit, it preserves the explicit per-process value and runs the
 branches serially. Doctests remain a rustdoc execution family. Dylint is the
