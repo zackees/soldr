@@ -204,7 +204,6 @@ pub(crate) fn run_rustc_wrapper(
     raw_args: &[String],
     mut profile: WrapperProfile,
 ) -> Result<i32, SoldrError> {
-    ensure_ci_test_compiler_allowed()?;
     let tool_arg = raw_args
         .get(1)
         .ok_or_else(|| SoldrError::Other("missing tool path in wrapper mode".into()))?;
@@ -309,6 +308,7 @@ pub(crate) fn run_rustc_wrapper(
         tracing::debug!("soldr: {tool_stem} invocation is non-cacheable; bypassing zccache");
         profile.mark("non_cacheable_bypass");
     }
+    ensure_ci_test_compiler_allowed(ci_test_compiler_work(tool_stem, &compile_args))?;
 
     // Route rustc-like compiler invocations through the daemon's
     // embedded zccache compile service. This includes `clippy-driver`
@@ -332,12 +332,19 @@ pub(crate) fn run_rustc_wrapper(
     direct_exec_tool(tool_arg, tool_stem, &compile_args, Some(profile))
 }
 
-/// Reject a compiler callback from a stage whose frozen ci-test plan declares
-/// that execution compiler-free. This runs before probe classification,
-/// daemon admission, or direct tool spawn; the daemon repeats the check as a
-/// defense-in-depth boundary for requests from older wrapper clients.
-fn ensure_ci_test_compiler_allowed() -> Result<(), SoldrError> {
-    if std::env::var(crate::core::CI_TEST_FORBID_COMPILER_ENV_VAR).as_deref() == Ok("1") {
+/// Reject codegen/compiler work from a stage whose frozen ci-test plan declares
+/// that execution compiler-free. Cargo still performs harmless rustc metadata
+/// probes such as `rustc -vV`; those are classified first and direct-executed.
+/// Real compiler work is rejected before daemon admission or a direct compiler
+/// spawn. The daemon repeats the check for requests from older wrapper clients.
+fn ci_test_compiler_work(tool_stem: &str, args: &[String]) -> bool {
+    routes_through_embedded_zccache(tool_stem) && !is_non_cacheable_rustc(args)
+}
+
+fn ensure_ci_test_compiler_allowed(is_compiler_work: bool) -> Result<(), SoldrError> {
+    if is_compiler_work
+        && std::env::var(crate::core::CI_TEST_FORBID_COMPILER_ENV_VAR).as_deref() == Ok("1")
+    {
         let stage =
             std::env::var(crate::core::CI_TEST_STAGE_ENV_VAR).unwrap_or_else(|_| "unknown".into());
         return Err(SoldrError::Other(format!(
@@ -603,11 +610,23 @@ mod tests {
         let _forbid = crate::EnvVarGuard::set(crate::core::CI_TEST_FORBID_COMPILER_ENV_VAR, "1");
         let _stage = crate::EnvVarGuard::set(crate::core::CI_TEST_STAGE_ENV_VAR, "nextest");
 
-        let error = ensure_ci_test_compiler_allowed().expect_err("compiler must be rejected");
+        let error =
+            ensure_ci_test_compiler_allowed(true).expect_err("compiler work must be rejected");
 
         let message = error.to_string();
         assert!(message.contains("nextest"), "{message}");
         assert!(message.contains("scheduler invariant"), "{message}");
+    }
+
+    #[test]
+    fn compiler_free_ci_test_stage_allows_metadata_probe() {
+        let _lock = crate::TEST_PROCESS_ENV_LOCK.lock().expect("env lock");
+        let _forbid = crate::EnvVarGuard::set(crate::core::CI_TEST_FORBID_COMPILER_ENV_VAR, "1");
+
+        let version_probe = args(&["soldr", "rustc", "-vV"]);
+        assert!(!ci_test_compiler_work("rustc", &version_probe));
+        ensure_ci_test_compiler_allowed(ci_test_compiler_work("rustc", &version_probe))
+            .expect("metadata probe is not compiler work");
     }
 
     #[test]

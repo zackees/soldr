@@ -45,9 +45,10 @@ them. Unset `CARGO_BUILD_JOBS` and `SOLDR_JOBS` remain unset so Cargo and the
 canonical Soldr compiler admission gate retain their normal parallelism.
 Explicit values are preserved byte-for-byte. Only `NEXTEST_TEST_THREADS`
 defaults to one test process. Nextest compilation completes before the fork,
-so the overlap has one compiler-bearing Cargo branch; the daemon rejects any
-compiler request from the declared compiler-free Nextest execution before
-cache lookup or admission. Host/cgroup memory remains observational telemetry,
+so the overlap has one compiler-bearing Cargo branch. Harmless Cargo/rustc
+metadata probes remain allowed; codegen or other compiler work from the
+declared compiler-free Nextest execution is rejected before cache lookup or
+admission. Host/cgroup memory remains observational telemetry,
 never an applied global Cargo job cap. Doctests remain a rustdoc execution
 family. Dylint is the
 explicit exception: its exact pinned nightly uses separate nightly-keyed
