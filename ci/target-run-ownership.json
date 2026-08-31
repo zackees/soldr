@@ -298,8 +298,8 @@
     {
       "id": "broker-singleton",
       "source_id": "broker-target-replay",
-      "test_name": "cli_broker_single_instance::two_brokers_against_one_endpoint_never_coexist",
-      "reason": "Prove native singleton exclusion on each target."
+      "test_name": "cli_broker_single_instance::already_bound_endpoint_reports_cli_diagnostic_and_exit_75",
+      "reason": "Prove native already-bound refusal and the Soldr-owned CLI diagnostic on each target."
     },
     {
       "id": "broker-stop",
