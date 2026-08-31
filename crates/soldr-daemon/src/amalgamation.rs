@@ -99,8 +99,21 @@ impl HostAdmissionClassifier for SoldrHostAdmissionClassifier {
         &self,
         request: &HostCompilerRequest<'_>,
     ) -> Result<bool, HostAdmissionError> {
-        Ok(request.family() == CompilerFamily::Rustc
-            && soldr_rust_crate_requires_exclusive_access(request.args()))
+        let exclusive = request.family() == CompilerFamily::Rustc
+            && soldr_rust_crate_requires_exclusive_access(request.args());
+        if exclusive {
+            // zccache owns the actual permit and emits its acquisition at
+            // `tracing::info!`, while Soldr's detached daemon deliberately
+            // records WARN-and-above. Keep this one-line request diagnostic:
+            // it is rare, identifies the policy decision, and lets an
+            // operator distinguish a classifier miss from an admission-gate
+            // failure without turning on per-compile trace logging.
+            eprintln!(
+                "soldr-daemon: compiler admission requests exclusive access for Rustc crate {}",
+                rust_crate_name(request.args()).unwrap_or("<unnamed>")
+            );
+        }
+        Ok(exclusive)
     }
 }
 
@@ -234,7 +247,7 @@ fn has_source_extension(arg: &str) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     fn write(dir: &Path, name: &str, bytes: usize) -> PathBuf {
         let path = dir.join(name);
@@ -558,6 +571,28 @@ mod tests {
         }
     }
 
+    type RecordedAdmission = (CompilerFamily, Vec<String>, bool);
+    type RecordedAdmissions = Arc<Mutex<Vec<RecordedAdmission>>>;
+
+    struct RecordingSoldrPolicy {
+        requests: RecordedAdmissions,
+    }
+
+    impl HostAdmissionClassifier for RecordingSoldrPolicy {
+        fn requires_exclusive(
+            &self,
+            request: &HostCompilerRequest<'_>,
+        ) -> Result<bool, HostAdmissionError> {
+            let exclusive = SoldrHostAdmissionClassifier.requires_exclusive(request)?;
+            self.requests.lock().expect("recording policy lock").push((
+                request.family(),
+                request.args().to_vec(),
+                exclusive,
+            ));
+            Ok(exclusive)
+        }
+    }
+
     // This is the behavior the removed Soldr-side gate could not provide: a
     // hit never reaches the product classifier or takes compiler admission.
     // Keep the test here, against the exact zccache release Soldr embeds, so a
@@ -630,6 +665,115 @@ mod tests {
             calls.load(Ordering::Relaxed),
             1,
             "cache hit must bypass host policy and compiler admission"
+        );
+        service
+            .shutdown(ShutdownMode::Graceful)
+            .await
+            .expect("shutdown");
+    }
+
+    // This reaches the exact production route: zccache identifies a real
+    // rustc request, normalizes its compiler arguments, and only then calls
+    // Soldr's embedded admission policy.  A pure argv test above cannot catch
+    // a future zccache change that drops `--test` or calls the host policy
+    // with a non-Rust family on this pipeline.
+    #[tokio::test]
+    async fn pinned_embedded_hook_marks_real_soldr_daemon_test_rustc_exclusive() {
+        use zccache::audit::{AuditId, AuditMode};
+        use zccache::embedded::{
+            AuditConfig, AuditContext, CompileRequest, HostIdentity, RuntimeHooks, ServiceLimits,
+            ShutdownMode, ZccacheConfig, ZccacheService, ZccacheStartOptions,
+        };
+
+        let Some(compiler) = zccache::test_support::find_rustc() else {
+            return;
+        };
+        let current_dir = std::env::current_dir().expect("resolve current directory");
+        let repo = current_dir
+            .ancestors()
+            .find(|candidate| candidate.join("rust-toolchain.toml").is_file())
+            .expect("find repository rust-toolchain.toml");
+        let pinned_toolchain = crate::core::read_rust_toolchain_manifest(repo)
+            .expect("read repository rust-toolchain.toml")
+            .channel
+            .expect("repository rust-toolchain.toml declares a channel");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("workspace");
+        std::fs::create_dir_all(project.join("src")).expect("create source directory");
+        std::fs::write(
+            project.join("src/lib.rs"),
+            "#[test]\nfn admission_fixture() { assert_eq!(2 + 2, 4); }\n",
+        )
+        .expect("write source");
+        let requests: RecordedAdmissions = Arc::new(Mutex::new(Vec::new()));
+        let service = ZccacheService::start_with_options_and_host_admission_classifier(
+            ZccacheConfig {
+                host: HostIdentity {
+                    product: "soldr-rustc-host-policy-test".into(),
+                    instance_id: temp.path().display().to_string(),
+                    workspace_id: "soldr-rustc-host-policy-workspace".into(),
+                },
+                cache_root: temp.path().join("cache").into(),
+                audit: AuditConfig {
+                    mode: AuditMode::Off,
+                    ..AuditConfig::default()
+                },
+                limits: ServiceLimits::default(),
+                runtime: RuntimeHooks::default(),
+                cancellation: None,
+            },
+            ZccacheStartOptions::default(),
+            Arc::new(RecordingSoldrPolicy {
+                requests: Arc::clone(&requests),
+            }),
+        )
+        .await
+        .expect("embedded service starts");
+        let request = CompileRequest {
+            audit: AuditContext::new(
+                AuditId::new("soldr-rustc-host-policy-run").expect("run id"),
+                AuditId::new("soldr-rustc-host-policy-trace").expect("trace id"),
+            ),
+            compiler,
+            args: vec![
+                "--edition=2021".into(),
+                "--crate-name=soldr_daemon".into(),
+                "--test".into(),
+                "--emit=metadata".into(),
+                "--out-dir".into(),
+                "target/debug/deps".into(),
+                "src/lib.rs".into(),
+            ],
+            cwd: project.clone().into(),
+            env: std::env::vars()
+                .filter(|(key, _)| key != "RUSTUP_TOOLCHAIN")
+                .chain(std::iter::once((
+                    "RUSTUP_TOOLCHAIN".into(),
+                    pinned_toolchain,
+                )))
+                .collect(),
+            stdin: Vec::new(),
+        };
+
+        let response = service.compile(request).await.expect("rustc compile");
+        assert_eq!(
+            response.exit_code,
+            0,
+            "real rustc failed: {}",
+            String::from_utf8_lossy(&response.stderr)
+        );
+        let recorded = {
+            let mut guard = requests.lock().expect("recorded rustc request");
+            std::mem::take(&mut *guard)
+        };
+        assert_eq!(recorded.len(), 1, "one cold rustc miss reaches the policy");
+        let (family, args, exclusive) = &recorded[0];
+        assert_eq!(*family, CompilerFamily::Rustc);
+        assert!(args.iter().any(|arg| arg == "--crate-name=soldr_daemon"));
+        assert!(args.iter().any(|arg| arg == "--test"));
+        assert!(
+            *exclusive,
+            "real soldr_daemon test rustc needs exclusive admission"
         );
         service
             .shutdown(ShutdownMode::Graceful)
