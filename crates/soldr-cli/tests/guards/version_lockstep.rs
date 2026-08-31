@@ -200,7 +200,7 @@ fn externalized_dependencies_are_exact_and_consistent() {
         ),
         (
             "running-process",
-            "4.10.6",
+            "4.10.9",
             &[
                 "crates/soldr-cli/Cargo.toml",
                 "crates/soldr-daemon/Cargo.toml",
