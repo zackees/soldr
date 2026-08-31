@@ -324,10 +324,16 @@ def run_case(
     environment["SOLDR_JOBS"] = str(jobs)
     environment["SOLDR_CI_ORCHESTRATION_TELEMETRY_JOBS"] = str(jobs)
     # The Cargo registry remains shared, but every measured graph must start
-    # from no target artifacts and no Soldr compiler-cache entries. Otherwise
-    # N=1 would make the later rows look cheaper simply by warming them.
+    # from no target artifacts, no Soldr compiler-cache entries, and no
+    # compatibility/session cache entries. Otherwise N=1 would make the later
+    # rows look cheaper simply by warming them. Command lifetime also prevents
+    # a row's daemon from remaining in the cgroup and inflating every later
+    # row's process/memory baseline.
     environment["CARGO_TARGET_DIR"] = str(target_dir)
     environment["SOLDR_CACHE_DIR"] = str(cache_dir)
+    environment["ZCCACHE_CACHE_DIR"] = str(cache_dir / "cache" / "zccache")
+    environment["SOLDR_CACHE_LIFECYCLE"] = "command"
+    environment["SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS"] = "30"
     started = snapshot(cgroup_root, proc_root, clock)
     samples = [started]
     began = clock()

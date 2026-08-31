@@ -145,6 +145,44 @@ def test_case_uses_a_fresh_target_and_soldr_cache_tree(tmp_path: Path) -> None:
     assert (case_root / "command.log").read_text(encoding="utf-8") == "case output\n"
 
 
+def test_case_isolates_session_cache_and_stops_its_daemon(tmp_path: Path) -> None:
+    cgroup = write_cgroup(
+        tmp_path / "cgroup",
+        memory_current="1\n",
+        memory_peak="1\n",
+        memory_swap_current="0\n",
+        pids_current="1\n",
+        memory_events="oom_kill 0\n",
+    )
+    case_root = tmp_path / "jobs-1"
+    keys = (
+        "CARGO_TARGET_DIR",
+        "SOLDR_CACHE_DIR",
+        "ZCCACHE_CACHE_DIR",
+        "SOLDR_CACHE_LIFECYCLE",
+        "SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS",
+    )
+    expression = (
+        "import os; print('\\n'.join(os.environ[key] for key in " + repr(keys) + "))"
+    )
+
+    telemetry.run_case(
+        1,
+        [sys.executable, "-c", expression],
+        case_root=case_root,
+        cgroup_root=cgroup,
+        interval_seconds=0.001,
+    )
+
+    assert (case_root / "command.log").read_text(encoding="utf-8").splitlines() == [
+        str(case_root / "target"),
+        str(case_root / "soldr-cache"),
+        str(case_root / "soldr-cache" / "cache" / "zccache"),
+        "command",
+        "30",
+    ]
+
+
 def test_prepared_toolchain_preflight_requires_cargo_proxy_or_rustup(tmp_path: Path) -> None:
     environment = {"CARGO_HOME": str(tmp_path / "cargo-home"), "PATH": ""}
 
