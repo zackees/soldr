@@ -488,9 +488,16 @@ def test_embedded_zccache_pin_has_no_platform_asset_gate() -> None:
 
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     instructions = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    trust_boundaries = (REPO_ROOT / "docs" / "TRUST_BOUNDARIES.md").read_text(
+        encoding="utf-8"
+    )
+    vendoring = (REPO_ROOT / "docs" / "VENDORING.md").read_text(encoding="utf-8")
     assert "check_zccache_asset.py" not in ci
     assert "check_zccache_asset.py" not in instructions
     assert "six platform support archives" not in instructions
+    assert "managed `zccache` download" not in trust_boundaries
+    assert "MANAGED_ZCCACHE_VERSION" not in vendoring
+    assert "embed/manifest.json" not in vendoring
 
 
 def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
