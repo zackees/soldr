@@ -219,3 +219,158 @@ fn rejects_ambiguous_feature_scope() {
         .to_string();
     assert!(error.contains("conflicts"));
 }
+
+fn write_lockfile_root(root: &std::path::Path) {
+    std::fs::write(
+        root.join(concat!("Car", "go.toml")),
+        "[package]\nname='demo'\nversion='0.1.0'\n",
+    )
+    .unwrap();
+    std::fs::write(root.join(concat!("Car", "go.lock")), "version = 3\n").unwrap();
+}
+
+// This is the golden test that `--tree` defaulting to `analysis` changed no
+// path: the historical `dylint/target/<nightly>` layout must be
+// byte-for-byte unchanged.
+#[test]
+fn dylint_cook_defaults_to_the_analysis_tree_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_lockfile_root(root);
+    let args = DylintCookArgs {
+        target_root: Some(root.join("target")),
+        ..Default::default()
+    };
+    let plan = DylintToolchainPlan::identity(
+        "nightly-2026-05-28".into(),
+        "1.99.0-nightly".into(),
+        "0123456789abcdef".into(),
+    );
+    let output = build_output(root, &args, &plan, false).unwrap();
+    let directory = PathBuf::from(&output.target_directory);
+    let tail: Vec<_> = directory
+        .components()
+        .rev()
+        .take(3)
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        tail,
+        vec![
+            "nightly-2026-05-28".to_string(),
+            "target".to_string(),
+            "dylint".to_string(),
+        ]
+    );
+}
+
+// FACT 1 (soldr#3042 step 3): `ci_test/plan.rs`'s UI-test stages resolve
+// their target dir with the host-triple-suffixed `canonical_channel`, so
+// the tests-tree cook must land in the identically-suffixed directory.
+#[test]
+fn dylint_cook_tests_tree_matches_the_ui_test_stage_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_lockfile_root(root);
+    let args = DylintCookArgs {
+        target_root: Some(root.join("target")),
+        tree: CookTree::Tests,
+        ..Default::default()
+    };
+    let plan = DylintToolchainPlan::identity(
+        "nightly-2026-05-28".into(),
+        "1.99.0-nightly".into(),
+        "0123456789abcdef".into(),
+    );
+    let output = build_output(root, &args, &plan, false).unwrap();
+    let directory = PathBuf::from(&output.target_directory);
+    let tail: Vec<_> = directory
+        .components()
+        .rev()
+        .take(3)
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let expected_leaf = format!(
+        "nightly-2026-05-28-{}",
+        crate::core::TargetTriple::host().unwrap().triple()
+    );
+    assert_eq!(
+        tail,
+        vec![expected_leaf, "tests".to_string(), "dylint".to_string()]
+    );
+}
+
+#[test]
+fn the_two_trees_never_share_a_cook_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_lockfile_root(root);
+    let plan = DylintToolchainPlan::identity(
+        "nightly-2026-05-28".into(),
+        "1.99.0-nightly".into(),
+        "0123456789abcdef".into(),
+    );
+    let analysis_args = DylintCookArgs {
+        target_root: Some(root.join("target")),
+        ..Default::default()
+    };
+    let tests_args = DylintCookArgs {
+        target_root: Some(root.join("target")),
+        tree: CookTree::Tests,
+        ..Default::default()
+    };
+    let analysis_output = build_output(root, &analysis_args, &plan, false).unwrap();
+    let tests_output = build_output(root, &tests_args, &plan, false).unwrap();
+    assert_ne!(analysis_output.cache_key, tests_output.cache_key);
+}
+
+#[test]
+fn tests_tree_cooks_are_build_shaped() {
+    let plan = DylintToolchainPlan::identity(
+        "nightly-2099-01-02".into(),
+        "1.99.0-nightly".into(),
+        "0123456789abcdef".into(),
+    );
+    let analysis_args = DylintCookArgs::default();
+    let analysis_built = build_check_args(&analysis_args, &plan, Path::new("isolated-target"));
+    assert_eq!(analysis_built[1], DYLINT_DEPENDENCY_COOK_FLAG);
+    assert!(analysis_built.contains(&"check".to_string()));
+    assert!(!analysis_built.contains(&"build".to_string()));
+
+    let tests_args = DylintCookArgs {
+        tree: CookTree::Tests,
+        ..Default::default()
+    };
+    let tests_built = build_check_args(&tests_args, &plan, Path::new("isolated-target"));
+    assert_eq!(tests_built[1], DYLINT_DEPENDENCY_COOK_FLAG);
+    assert!(tests_built.contains(&"build".to_string()));
+    assert!(!tests_built.contains(&"check".to_string()));
+}
+
+#[test]
+fn unknown_tree_values_are_rejected() {
+    let error = parse_args(&argv(&["--tree", "analysis-tree"]))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("unknown --tree"), "{error}");
+    assert!(
+        error.contains("analysis") && error.contains("tests"),
+        "{error}"
+    );
+}
+
+#[test]
+fn target_with_tests_tree_is_rejected() {
+    let error = parse_args(&argv(&[
+        "--tree",
+        "tests",
+        "--target",
+        "aarch64-unknown-linux-gnu",
+    ]))
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("--target conflicts with --tree tests"),
+        "{error}"
+    );
+}

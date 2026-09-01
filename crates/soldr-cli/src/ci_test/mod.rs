@@ -4,7 +4,7 @@ mod execute;
 mod execute_report;
 mod model;
 mod parse;
-mod plan;
+pub(crate) mod plan;
 mod test_targets;
 
 use crate::core::SoldrError;

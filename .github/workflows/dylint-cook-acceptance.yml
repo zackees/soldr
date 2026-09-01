@@ -43,7 +43,10 @@ jobs:
   dylint-cook:
     name: check-shaped dependency cook matrix
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # soldr#3042 added a second three-mode matrix that builds the
+    # dylint_testing dependency layer (compiletest_rs, git2, libgit2-sys),
+    # roughly doubling the run.
+    timeout-minutes: 140
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
