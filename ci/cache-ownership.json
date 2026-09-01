@@ -146,6 +146,14 @@
       "rationale": "Opportunistically receives the exact-workflow-SHA dev-profile Soldr driver already produced for cross lanes. Missing or mismatched provenance falls back to the identical local dev-profile source build; it is never restored across workflow runs."
     },
     {
+      "id": "build-and-test-zccache-unit",
+      "workflow": "_build-and-test.yml",
+      "step": "Restore Tier-2 zccache object store (soldr#3039)",
+      "mechanism": "actions/cache",
+      "tier": "zccache-unit",
+      "rationale": "Content-addressed per-unit compiler outputs for the ci-test host lane; the path selects cache/zccache/daemon-state only, so the compile journals (cache/zccache/history) and session logs (cache/zccache/logs) that the build-logs artifact ships stay run-scoped and outside the entry. Not a new cache family: zccache-unit is already declared durable and live in normal lanes. soldr#3039 Phase 0."
+    },
+    {
       "id": "cross-build-xwin-sdk",
       "workflow": "_ci-cross-build-linux.yml",
       "step": "Cache MSVC CRT+SDK (via XWIN_CACHE_DIR)",

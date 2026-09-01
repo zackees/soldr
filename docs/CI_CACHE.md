@@ -229,6 +229,32 @@ In [`.github/workflows/ci.yml`](../.github/workflows/ci.yml):
 - `Swatinem/rust-cache` is used with `shared-key:` only — no `key:`,
   `prefix-key:`, or `save-if:` anywhere in the tree.
 
+### The Tier-2 object store is persisted, not just isolated (soldr#3041)
+
+In [`.github/workflows/_build-and-test.yml`](../.github/workflows/_build-and-test.yml)
+the host validation lane points `SOLDR_CACHE_DIR` at a per-target directory
+under `runner.temp` so every step in the lane shares one wrapper and one
+compiler cache. That choice is about *isolation*; `runner.temp` also threw the
+store away at the end of every run, so the lane's only per-unit cache was cold
+every time. An `actions/cache` step now persists it:
+
+- **Path is selected positively**: `…/cache/zccache/daemon-state` — the
+  embedded service's object store
+  (`daemon-state/embedded-v1/v<VERSION>/`). The compile journals
+  (`cache/zccache/history/`) and session logs (`cache/zccache/logs/`) are
+  siblings *outside* that directory and stay run-scoped, shipped by the
+  build-logs artifact. Do not switch this to `cache/zccache` plus `!…/history`
+  negations: `actions/cache` globs `path` with `implicitDescendants: false`
+  and hands the matched directory to `tar`, which recurses, so the negation
+  removes nothing.
+- **The key rolls**: it ends in `${{ github.run_id }}`, because
+  `actions/cache` never re-saves on an exact-key hit — a stable key would
+  freeze the store after its first save. Two `restore-keys` fall back to the
+  same dependency graph first, then to any earlier entry.
+- **Tier**: `zccache-unit`, already declared durable in
+  `ci/cache-ownership.json`. This is not a new cache family; content-addressed
+  per-unit caching was never what soldr#2931 banned.
+
 ### Cache key scheme (soldr#1978 item 6)
 
 Ordinary CI lanes are keyed on **(profile, target)**, not on the job:

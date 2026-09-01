@@ -1,0 +1,8 @@
+# Local `act` defaults for reproducing _build-and-test.yml off a runner
+# (soldr#3039 / soldr#3041). act reads this file and keeps only lines that
+# start with `-`, splitting each on the FIRST whitespace into flag + value --
+# so the value must not be quoted here, or the quotes reach docker verbatim.
+-P ubuntu-24.04=catthehacker/ubuntu:act-24.04
+--container-options --memory=16g --cpus=8
+--cache-server-path .act-cache
+--artifact-server-path .act-artifacts

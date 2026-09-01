@@ -53,6 +53,12 @@ FINGERPRINT_LOG = "$SOLDR_CACHE_DIR/logs/cargo-fingerprint.log"
 COMPILE_JOURNAL_BASELINE = (
     REPO_ROOT / ".github" / "scripts" / "baselines" / "compile_journal_baseline_33536940076.json"
 )
+BUILD_LOGS_UPLOAD = "Upload build log artifacts"
+ZCCACHE_STORE = "Restore Tier-2 zccache object store (soldr#3039)"
+ZCCACHE_STORE_PATH = (
+    "${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}"
+    "/cache/zccache/daemon-state"
+)
 CACHE_ENV_VARS = ("SOLDR_CACHE_DIR", "ZCCACHE_CACHE_DIR")
 CACHE_SHELL_ASSIGNMENT = re.compile(
     r"^(?:(?:export|env)\s+)?(?:SOLDR_CACHE_DIR|ZCCACHE_CACHE_DIR)\s*="
@@ -374,3 +380,87 @@ def test_the_analysis_scripts_and_baseline_exist() -> None:
     assert metrics["hits"] == 0
     assert metrics["context_not_found"] == 1447
     assert metrics["uncacheable_input"] == 120
+
+
+def test_the_tier2_object_store_is_restored_before_any_compile() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert workflow.count(f"- name: {ZCCACHE_STORE}") == 1
+    # The store has to be on disk before the first cacheable compile, and it
+    # must not be restored before the canonical domain step chooses where
+    # that store lives.
+    assert (
+        workflow.index(CANONICAL_CACHE)
+        < workflow.index(ZCCACHE_STORE)
+        < workflow.index(CI_TEST_DRIVER)
+    )
+
+
+def test_the_object_store_entry_excludes_the_compile_journals() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    body = _step_body(workflow, ZCCACHE_STORE)
+    assert f"path: {ZCCACHE_STORE_PATH}" in body
+    assert "/cache/zccache/history" not in body
+    assert "/cache/zccache/logs" not in body
+    # actions/cache globs `path` with implicitDescendants=false and then tars
+    # the matched directory recursively, so a `!subdir` negation is a silent
+    # no-op -- the journals stay out by POSITIVE selection of `daemon-state`,
+    # and a future edit that swaps to a negation must fail here.
+    path_line = next(
+        line for line in body.splitlines() if line.strip().startswith("path:")
+    )
+    assert "!" not in path_line
+
+    # The artifact step still ships the journals and session logs, and it does
+    # so from OUTSIDE the cached tree -- if `daemon-state` ever appears in that
+    # step, the two stores have started to overlap and the run-scoped artifact
+    # would be carrying cross-run cache content.
+    artifact = _step_body(workflow, BUILD_LOGS_UPLOAD)
+    assert "/cache/zccache/history/**/*.jsonl" in artifact
+    assert "/cache/zccache/logs/" in artifact
+    assert "daemon-state" not in artifact
+
+
+def test_the_object_store_key_rotates_and_falls_back() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    body = _step_body(workflow, ZCCACHE_STORE)
+    # actions/cache never re-saves on an exact-key hit, so the run_id suffix
+    # is what keeps the store from freezing after the first save; the two
+    # restore-keys are the same-graph and any-graph fallbacks.
+    key_line = next(
+        line for line in body.splitlines() if line.strip().startswith("key:")
+    )
+    assert key_line.rstrip().endswith("-${{ github.run_id }}")
+    assert "restore-keys: |" in body
+    restore_lines = [line.strip() for line in body.splitlines()]
+    assert "zccache-unit-v1-${{ inputs.target }}-" in restore_lines
+    assert any(
+        line.startswith("zccache-unit-v1-${{ inputs.target }}-")
+        and line.endswith("}}-")
+        and line != "zccache-unit-v1-${{ inputs.target }}-"
+        for line in restore_lines
+    )
+    assert (
+        "hashFiles('Cargo.lock', 'dylints/**/Cargo.lock', 'rust-toolchain.toml', "
+        "'dylints/**/rust-toolchain.toml')"
+    ) in key_line
+
+
+def test_the_object_store_is_registered_in_the_ownership_manifest() -> None:
+    manifest = json.loads(
+        (REPO_ROOT / "ci" / "cache-ownership.json").read_text(encoding="utf-8")
+    )
+    entry = next(
+        (
+            item
+            for item in manifest["entries"]
+            if item.get("id") == "build-and-test-zccache-unit"
+        ),
+        None,
+    )
+    # The manifest is how a reviewer finds every cross-run store, and a step
+    # name that drifts from its entry makes it unfindable.
+    assert entry is not None
+    assert entry["tier"] == "zccache-unit"
+    assert entry["workflow"] == "_build-and-test.yml"
+    assert entry["mechanism"] == "actions/cache"
+    assert entry["step"] == ZCCACHE_STORE
