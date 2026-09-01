@@ -58,7 +58,16 @@ message WireRequest {
     // v22 / soldr#2251: daemon-owned target-registry snapshot and cleanup.
     WireUnit list_target_registry = 19;
     WireRemoveTargetRegistry remove_target_registry = 20;
+    // v24 / soldr#3024: a long-lived CI branch reserves compile capacity on
+    // this connection. The daemon retains the permits until an explicit
+    // release on the same connection or transport disconnect.
+    WireAcquireResidentCapacity acquire_resident_capacity = 21;
+    WireUnit release_resident_capacity = 22;
   }
+}
+
+message WireAcquireResidentCapacity {
+  uint32 permits = 1;
 }
 
 message WireBuildLogInputsRequest {
@@ -232,7 +241,12 @@ message WireResponse {
     // v22 / soldr#2251: target-registry rows are owned by the daemon.
     WireTargetRegistryRows target_registry_rows = 19;
     WireTargetRegistryRemoved target_registry_removed = 20;
+    WireResidentCapacityAcquired resident_capacity_acquired = 21;
   }
+}
+
+message WireResidentCapacityAcquired {
+  uint32 permits = 1;
 }
 
 // soldr#1838. Carries no payload today; a message rather than a bare bool so

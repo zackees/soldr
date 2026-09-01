@@ -455,6 +455,7 @@ jobs:
     with:
       runner: ubuntu-24.04
       target: x86_64-unknown-linux-gnu
+      source_driver_artifact_name: soldr-ci-bootstrap-linux-gnu
 
   pep517-daemon-smoke:
     name: PEP 517 daemon smoke (${{ matrix.name }})
@@ -668,9 +669,10 @@ jobs:
           # #2448 binary and drove every cross lane with a pre-#947 broker →
           # "broker is unreachable (os error 2)". `github.sha` changes on every
           # commit (including submodule-only bumps), so the driver can never be
-          # stale; same-SHA re-runs still hit. Profile is fixed at
-          # --profile ci-bootstrap below, so it no longer needs to be in the key.
-          key: bootstrap-soldr-blessed-linux-gnu-ci-bootstrap-${{ github.sha }}
+          # stale; same-SHA re-runs still hit. This dev-profile binary is also
+          # the exact build shape used by prescribed host validation, so the
+          # same-run artifact can replace that lane's local source build.
+          key: bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ github.sha }}
 
       # soldr#3016: one of exactly two lanes that keeps a Swatinem/rust-cache
       # after soldr#2996 made `soldr cook` the only durable cache. Cook cannot
@@ -688,9 +690,9 @@ jobs:
         if: steps.bootstrap_cache.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          # soldr#1479 lowered ci-bootstrap to opt-level 0; v2 keeps
-          # cache saves aligned with the new helper-binary profile.
-          shared-key: bootstrap-soldr-linux-gnu-ci-bootstrap-v2
+          # Keep profile products isolated: prescribed host validation and
+          # this shared source driver both use Cargo's dev profile.
+          shared-key: bootstrap-soldr-linux-gnu-dev-v1
 
       - name: Build bootstrap soldr
         if: steps.bootstrap_cache.outputs.cache-hit != 'true'
@@ -699,11 +701,11 @@ jobs:
           RUSTC_WRAPPER: ""
         run: |
           set -euo pipefail
-          cargo build --profile ci-bootstrap --package soldr-cli \
+          cargo build --profile dev --package soldr-cli \
             --bin soldr \
             --target x86_64-unknown-linux-gnu
           mkdir -p "$RUNNER_TEMP/soldr-bin"
-          cp target/x86_64-unknown-linux-gnu/ci-bootstrap/soldr "$RUNNER_TEMP/soldr-bin/soldr"
+          cp target/x86_64-unknown-linux-gnu/debug/soldr "$RUNNER_TEMP/soldr-bin/soldr"
 
       - name: Verify bootstrap soldr
         shell: bash
@@ -711,12 +713,13 @@ jobs:
           set -euo pipefail
           chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
           "$RUNNER_TEMP/soldr-bin/soldr" --version
+          printf '%s\n' "${{ github.sha }}" > "$RUNNER_TEMP/soldr-bin/source-sha"
 
       - name: Upload bootstrap soldr artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: soldr-ci-bootstrap-linux-gnu
-          path: ${{ runner.temp }}/soldr-bin/soldr
+          path: ${{ runner.temp }}/soldr-bin
           if-no-files-found: error
           retention-days: 7
           compression-level: 0

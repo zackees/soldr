@@ -75,6 +75,7 @@ use crate::daemon::protocol::{
 #[derive(Clone)]
 pub struct SoldrZccacheService {
     inner: Arc<ZccacheService>,
+    compile_admission: Arc<crate::resident_compile_admission::ResidentCompileAdmission>,
     identity: HostIdentity,
     cache_root: PathBuf,
     disk_policy: EmbeddedDiskPolicy,
@@ -123,6 +124,8 @@ pub enum EmbeddedServiceError {
     Stats(String),
     #[error("zccache embedded maintenance failed: {0}")]
     Maintenance(String),
+    #[error("resident compile capacity failed: {0}")]
+    ResidentCapacity(String),
     /// Issue #977 Phase 5 / #980 L1 — surfaced by [`SoldrZccacheService::compile`].
     /// Maps to a soldr-side `Response::Error`; the mandatory broker route
     /// propagates the compile-service failure without changing execution mode.
@@ -209,15 +212,21 @@ impl SoldrZccacheService {
         // acquires capacity -> resource admission immediately before spawning
         // a real compiler child. Keeping no Soldr-side gate here ensures an
         // eligible cache hit never drains ordinary compiler work.
+        let compile_admission = Arc::new(
+            crate::resident_compile_admission::ResidentCompileAdmission::new(resolved_jobs.jobs),
+        );
+        let host_admission: Arc<dyn zccache::embedded::HostAdmissionClassifier> =
+            compile_admission.clone();
         let svc = ZccacheService::start_with_options_and_host_admission_classifier(
             cfg,
             crate::zccache_staging::options(&cache_root, disk_limits),
-            Arc::new(crate::amalgamation::SoldrHostAdmissionClassifier),
+            host_admission,
         )
         .await
         .map_err(|e| EmbeddedServiceError::Start(e.to_string()))?;
         Ok(Self {
             inner: Arc::new(svc),
+            compile_admission,
             identity,
             cache_root,
             disk_policy,
@@ -234,6 +243,21 @@ impl SoldrZccacheService {
     /// do?", which is the other half of the comparison a client makes.
     pub fn applied_jobs(&self) -> crate::core::jobs::ResolvedJobs {
         self.applied_jobs
+    }
+
+    /// Reserve compile capacity for a resident compiler process.
+    ///
+    /// The returned guard releases the reservation when dropped. A valid
+    /// reservation always leaves at least one slot for ordinary cache-miss
+    /// compiler work.
+    pub async fn acquire_resident_capacity(
+        &self,
+        permits: u32,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, EmbeddedServiceError> {
+        self.compile_admission
+            .acquire_resident(permits)
+            .await
+            .map_err(|error| EmbeddedServiceError::ResidentCapacity(error.to_string()))
     }
 
     /// Resolved on-disk cache root. Useful for diagnostics surfaces.

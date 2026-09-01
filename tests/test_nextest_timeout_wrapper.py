@@ -351,11 +351,16 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     # not been in effect. Keep the dead suffix from creeping back.
     assert "exec_cargo_build_routes_through_child_shims_and_zccache" not in cold_filter
     assert 'threads-required = "num-cpus"' not in cold_override
+    # soldr#3024 attempt 2 promoted this group to priority 100. That made the
+    # four-thread Linux run contend with cold nested builds from the start and
+    # regressed Fresh Nextest from an 18m11 median to 26m14. Keep the group
+    # serial, but let Nextest's normal queue order decide when it enters.
+    assert "priority =" not in cold_override
     cold_full_runner_overrides = [
         block
         for block in config.split("[[profile.default.overrides]]")[1:]
         if 'threads-required = "num-cpus"' in block
-        and 'target = \'cfg(target_os = "windows")\'' in block
+        and "target = 'cfg(target_os = \"windows\")'" in block
     ]
     assert len(cold_full_runner_overrides) == 1
     cold_filter_line = next(
@@ -414,10 +419,7 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     # grace-period-with-every-raised-budget rule is not enforced for
     # `target-run` blocks; this count is what makes one visible.
     assert config.count('grace-period = "30s"') == 11
-    assert (
-        "test(=cli_cargo_native_cc::no_cache_global_disables_native_too)"
-        in config
-    )
+    assert "test(=cli_cargo_native_cc::no_cache_global_disables_native_too)" in config
 
 
 def test_every_binary_named_in_nextest_filters_is_a_real_test_target() -> None:

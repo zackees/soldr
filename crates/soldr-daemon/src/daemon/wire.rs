@@ -433,6 +433,14 @@ impl From<&Request> for proto::WireRequest {
                     paths: paths.clone(),
                 })
             }
+            Request::AcquireResidentCapacity { permits } => {
+                proto::WireRequestKind::AcquireResidentCapacity(
+                    proto::WireAcquireResidentCapacity { permits: *permits },
+                )
+            }
+            Request::ReleaseResidentCapacity => {
+                proto::WireRequestKind::ReleaseResidentCapacity(proto::WireUnit {})
+            }
             Request::BuildLogInputs { session_id } => {
                 proto::WireRequestKind::BuildLogInputs(proto::WireBuildLogInputsRequest {
                     session_id: *session_id,
@@ -615,6 +623,10 @@ impl TryFrom<proto::WireRequest> for Request {
             proto::WireRequestKind::RemoveTargetRegistry(m) => {
                 Request::RemoveTargetRegistry { paths: m.paths }
             }
+            proto::WireRequestKind::AcquireResidentCapacity(m) => {
+                Request::AcquireResidentCapacity { permits: m.permits }
+            }
+            proto::WireRequestKind::ReleaseResidentCapacity(_) => Request::ReleaseResidentCapacity,
             proto::WireRequestKind::BuildLogInputs(m) => Request::BuildLogInputs {
                 session_id: m.session_id,
             },
@@ -712,6 +724,11 @@ impl From<&Response> for proto::WireResponse {
                 proto::WireResponseKind::TargetRegistryRemoved(proto::WireTargetRegistryRemoved {
                     removed: *removed,
                 })
+            }
+            Response::ResidentCapacityAcquired { permits } => {
+                proto::WireResponseKind::ResidentCapacityAcquired(
+                    proto::WireResidentCapacityAcquired { permits: *permits },
+                )
             }
             Response::ShuttingDown(ack) => {
                 proto::WireResponseKind::ShuttingDown(proto::WireShuttingDown {
@@ -839,6 +856,9 @@ impl TryFrom<proto::WireResponse> for Response {
             ),
             proto::WireResponseKind::TargetRegistryRemoved(m) => {
                 Response::TargetRegistryRemoved { removed: m.removed }
+            }
+            proto::WireResponseKind::ResidentCapacityAcquired(m) => {
+                Response::ResidentCapacityAcquired { permits: m.permits }
             }
             proto::WireResponseKind::ShuttingDown(reply) => Response::ShuttingDown(ShutdownAck {
                 pid: reply.pid,

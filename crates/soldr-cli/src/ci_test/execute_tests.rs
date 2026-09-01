@@ -91,6 +91,28 @@ fn nonzero_stage_code_stops_the_dag() {
 }
 
 #[test]
+fn tail_dependency_validation_pins_every_stage_to_the_shared_join() {
+    let last_ui = "dylint-test-final";
+    let dependencies = ["nextest", last_ui];
+    let mut stages = [
+        test_stage("doctests"),
+        test_stage("cargo-deny-bans"),
+        test_stage("cargo-audit"),
+        test_stage("cargo-machete"),
+    ];
+    for stage in &mut stages {
+        stage.depends_on = dependencies.iter().map(|value| (*value).into()).collect();
+    }
+
+    validate_tail_dependencies(&stages, last_ui).expect("shared join is valid");
+
+    stages[2].depends_on = vec!["doctests".into()];
+    let error = validate_tail_dependencies(&stages, last_ui)
+        .expect_err("the historical serial policy edge must be rejected");
+    assert!(error.to_string().contains("cargo-audit"), "{error}");
+}
+
+#[test]
 fn dylint_tool_path_keeps_the_exact_toolchain_path() {
     let tool_bin = PathBuf::from("managed-dylint-bin");
     let nightly_bin = PathBuf::from("exact-nightly-bin");
@@ -228,6 +250,81 @@ fn parallel_failure_cancels_the_sibling_process_tree() {
         started.elapsed() < Duration::from_secs(5),
         "the sibling process tree was not canceled promptly"
     );
+}
+
+/// RED for soldr#3024: after the Nextest + Dylint join, doctests and the
+/// independent policy tools must all enter the tail before any one can finish.
+#[test]
+fn doctests_and_policy_tail_really_overlap() {
+    if !posix_fixture_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().expect("barrier directory");
+    let stages = [
+        test_stage("doctests"),
+        test_stage("cargo-deny-bans"),
+        test_stage("cargo-audit"),
+        test_stage("cargo-machete"),
+    ];
+    let scripts = stages
+        .iter()
+        .map(|stage| {
+            let marker = format!("{}-started", stage.name);
+            let peers = stages
+                .iter()
+                .map(|peer| format!("[ -f \"$FIXTURE_DIR/{}-started\" ]", peer.name))
+                .collect::<Vec<_>>()
+                .join(" && ");
+            (
+                stage.name.clone(),
+                format!(
+                    "touch \"$FIXTURE_DIR/{marker}\"; i=0; while [ \"$i\" -lt 100 ]; do {peers} && exit 0; i=$((i + 1)); sleep 0.02; done; exit 73"
+                ),
+            )
+        })
+        .collect();
+    let spawner = ScriptSpawner {
+        directory: directory.path(),
+        scripts,
+    };
+    let stage_refs = stages.iter().collect::<Vec<_>>();
+
+    assert_eq!(run_stage_group(&spawner, &stage_refs).unwrap(), 0);
+    for stage in &stages {
+        assert!(directory
+            .path()
+            .join(format!("{}-started", stage.name))
+            .is_file());
+    }
+}
+
+#[test]
+fn failed_policy_tail_stage_cancels_doctest_process_tree() {
+    if !posix_fixture_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().expect("cancellation directory");
+    let stages = [test_stage("doctests"), test_stage("cargo-audit")];
+    let scripts = BTreeMap::from([
+        (
+            "doctests".into(),
+            "touch \"$FIXTURE_DIR/doctests-started\"; sleep 30; touch \"$FIXTURE_DIR/doctests-finished\"".into(),
+        ),
+        (
+            "cargo-audit".into(),
+            "i=0; while [ \"$i\" -lt 100 ]; do [ -f \"$FIXTURE_DIR/doctests-started\" ] && exit 73; i=$((i + 1)); sleep 0.02; done; exit 74".into(),
+        ),
+    ]);
+    let spawner = ScriptSpawner {
+        directory: directory.path(),
+        scripts,
+    };
+    let stage_refs = stages.iter().collect::<Vec<_>>();
+    let started = Instant::now();
+
+    assert_eq!(run_stage_group(&spawner, &stage_refs).unwrap(), 73);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(!directory.path().join("doctests-finished").exists());
 }
 
 /// RED for soldr#3024: compiler-bearing stable and nightly branches may run

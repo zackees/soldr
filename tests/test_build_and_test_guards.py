@@ -40,6 +40,8 @@ GUARD_1838 = "Assert the build did not silently run uncached (soldr#1838)"
 CI_TEST_DRIVER = "Build ci-test driver"
 CI_TEST_RUN = "Run prescribed host validation"
 BROKER_HANDOFF = "Hand off bootstrap broker to source revision"
+SOURCE_DRIVER_DOWNLOAD = "Reuse shared source driver if already available"
+SOURCE_DRIVER_VERIFY = "Verify shared source driver provenance"
 CANONICAL_CACHE = "Select canonical host CI cache domain"
 FINAL_CACHE_STOP = "Stop canonical host CI cache"
 CACHE_ENV_VARS = ("SOLDR_CACHE_DIR", "ZCCACHE_CACHE_DIR")
@@ -123,6 +125,52 @@ def test_setup_soldr_job_caps_are_cleared_before_source_work() -> None:
         body = _step_body(workflow, step_name)
         assert clear_caps in body
         assert body.index(clear_caps) < body.index(source_command)
+
+
+def test_source_driver_reuse_is_exact_sha_opportunistic_and_fails_closed() -> None:
+    """A same-run driver may save the duplicate link, never gate this lane."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    download = _step_body(workflow, SOURCE_DRIVER_DOWNLOAD)
+    verify = _step_body(workflow, SOURCE_DRIVER_VERIFY)
+    build = _step_body(workflow, CI_TEST_DRIVER)
+
+    assert "source_driver_artifact_name:" in workflow
+    assert "required: false" in workflow
+    assert 'default: ""' in workflow
+
+    assert "actions/download-artifact@" in download
+    assert "continue-on-error: true" in download
+    assert "inputs.source_driver_artifact_name != ''" in download
+    assert "run-id:" not in download
+    assert "repository:" not in download
+    assert "github-token:" not in download
+
+    assert "steps.source_driver_download.outcome == 'success'" in verify
+    assert "continue-on-error: true" in verify
+    assert 'expected_sha="${{ github.sha }}"' in verify
+    assert 'actual_sha=$(<"$artifact_dir/source-sha")' in verify
+    assert '[[ "$actual_sha" == "$expected_sha" ]]' in verify
+    assert verify.index('[[ "$actual_sha" == "$expected_sha" ]]') < verify.index(
+        '"$artifact_soldr" --version'
+    )
+    assert verify.index('"$artifact_soldr" --version') < verify.index(
+        'cp "$artifact_soldr" "$source_soldr"'
+    )
+
+    assert "steps.shared_source_driver.outcome != 'success'" in build
+    assert "soldr cargo build" in build
+    assert 'source_soldr="${GITHUB_WORKSPACE}/target/' in verify
+
+
+def test_source_compile_guards_cover_the_complete_validation_run() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    validation = workflow.index(f"- name: {CI_TEST_RUN}")
+    fallback_guard = workflow.index(f"- name: {GUARD_1838}")
+    home_guard = workflow.index(f"- name: {GUARD_1799}")
+
+    assert validation < fallback_guard < home_guard
+    assert "if: always()" in _step_body(workflow, GUARD_1838)
+    assert "if: always()" in _step_body(workflow, GUARD_1799)
 
 
 def test_dev_and_test_profiles_share_all_host_ci_compile_settings() -> None:

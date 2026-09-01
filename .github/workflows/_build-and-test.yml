@@ -19,6 +19,13 @@ on:
       target:
         required: true
         type: string
+      source_driver_artifact_name:
+        description: >-
+          Same-run exact-SHA Soldr driver to reuse only when already available.
+          Missing or invalid artifacts fall back to the local source build.
+        required: false
+        type: string
+        default: ""
       # soldr#1664 — `shared_key` input removed. It was `required: true`,
       # so every caller had to supply it, but the body never read it:
       # the cache step keys off `build-and-test-${{ inputs.target }}`
@@ -225,59 +232,51 @@ jobs:
             target/dylint/target
           key: dylint-foundation-v1-${{ inputs.target }}-${{ hashFiles('dylints/**/rust-toolchain.toml', 'dylints/**/Cargo.toml', 'dylints/**/src/**') }}
 
+      # soldr#3024: the unconditional cross-bootstrap job already builds this
+      # exact workflow SHA with the pinned 1.95.0 toolchain, dev profile, and
+      # default soldr-cli features. Reuse its run-scoped driver when the producer has
+      # already finished. There is deliberately no `needs:` edge: a cold or
+      # failed producer must not lengthen native validation, and both download
+      # and provenance failures fall through to the source build below.
+      - name: Reuse shared source driver if already available
+        id: source_driver_download
+        if: inputs.source_driver_artifact_name != ''
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.source_driver_artifact_name }}
+          path: ${{ runner.temp }}/host-source-driver
+
+      - name: Verify shared source driver provenance
+        id: shared_source_driver
+        if: steps.source_driver_download.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_dir="${RUNNER_TEMP}/host-source-driver"
+          artifact_soldr="$artifact_dir/soldr"
+          expected_sha="${{ github.sha }}"
+          test -f "$artifact_dir/source-sha"
+          actual_sha=$(<"$artifact_dir/source-sha")
+          [[ "$actual_sha" == "$expected_sha" ]]
+          test -f "$artifact_soldr"
+          chmod +x "$artifact_soldr"
+          "$artifact_soldr" --version
+          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          mkdir -p "$(dirname "$source_soldr")"
+          cp "$artifact_soldr" "$source_soldr"
+
       - name: Build ci-test driver
+        if: steps.shared_source_driver.outcome != 'success'
         shell: bash
         run: |
           # setup-soldr 0.9.10 writes its historical ci-tests=1 caps through
           # GITHUB_ENV. This lane deliberately leaves both knobs unset so
           # source Soldr's exclusive heavy-unit admission owns concurrency.
           unset CARGO_BUILD_JOBS SOLDR_JOBS
-          soldr cargo build -p soldr-cli --bin soldr \
+          soldr cargo build --profile dev -p soldr-cli --bin soldr \
             --target ${{ inputs.target }}
-      # soldr#1838 Phase 4: fail the lane when the build silently ran uncached
-      # via the direct compiler. `soldr status --json` surfaces the same
-      # compile-daemon fallback rollup operators see (default home = the one the
-      # build above used); the guard reads it and exits non-zero on any
-      # fallback. Hard-fail only on the native linux-gnu lane, whose daemon is
-      # reliable; advisory elsewhere so a flaky Windows/macOS daemon race
-      # surfaces in the log without gating the build. Until now this was a
-      # stderr line nothing asserted on.
-      - name: Assert the build did not silently run uncached (soldr#1838)
-        if: success()
-        continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
-        shell: bash
-        run: |
-          soldr status --json > soldr-status.json
-          python3 .github/scripts/check_compile_fallbacks.py soldr-status.json
-
-      # soldr#1799: fail the lane if soldr's managed toolchain homes leaked onto
-      # a host-resolved tool (the #1768 bug). It never fails loudly -- it flips
-      # which rustc runs, invalidating cargo fingerprints and zccache keys, so
-      # warm builds silently recompile the world. The build log already records
-      # `home_origin` beside the resolved `binary`; this asserts the pair.
-      # Unconditional, unlike the #1838 guard above. That one is advisory off
-      # linux-gnu for a stated reason -- a flaky Windows/macOS daemon race
-      # should surface in the log without gating the build. This check has no
-      # such platform story: `home_origin` correctness is the invariant in
-      # CLAUDE.md ("one canonical toolchain-home pair per execution, chosen by
-      # where the binary lives"), and it holds on every platform. The advisory
-      # expression here was the neighbour's, not a decision.
-      #
-      # It is dead today either way -- ci.yml is the only caller and passes
-      # x86_64-unknown-linux-gnu, so the expression is always false. The point
-      # is that adding a Windows or macOS caller would silently downgrade this
-      # to advisory, and soldr#1799 exists precisely because a home leak never
-      # fails loudly: it flips which rustc runs, invalidating cargo
-      # fingerprints and zccache keys, so warm builds silently recompile the
-      # world. A guard that quietly stops guarding is how that got missed once
-      # already.
-      - name: Assert managed toolchain homes did not leak (soldr#1799)
-        if: success()
-        shell: bash
-        run: |
-          python3 .github/scripts/check_toolchain_homes.py "$SOLDR_CACHE_DIR/logs/builds" \
-            --managed-root "$HOME/.soldr" --managed-root "$HOME/.soldr-dev"
-
       # The broker is intentionally a stable singleton and never replaces
       # itself across Soldr images. The setup action started the released
       # bootstrap generation; retire it explicitly before the source wrapper
@@ -323,6 +322,29 @@ jobs:
           export PATH="$cargo_guard/trap:$PATH"
           SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr" \
             ci-test --target "${{ inputs.target }}"
+
+      # soldr#1838 Phase 4: inspect the complete source-owned validation run,
+      # not merely the optional local driver build. `always()` keeps the cache
+      # and toolchain diagnostics available when ci-test itself fails.
+      - name: Assert the build did not silently run uncached (soldr#1838)
+        if: always()
+        continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
+        shell: bash
+        run: |
+          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          "$source_soldr" status --json > soldr-status.json
+          python3 .github/scripts/check_compile_fallbacks.py soldr-status.json
+
+      # soldr#1799: a managed-home leak silently changes the compiler identity
+      # and invalidates Cargo/zccache reuse. Check every build log emitted by
+      # ci-test, even on a failing validation run; unlike #1838 this is a hard
+      # invariant on every platform.
+      - name: Assert managed toolchain homes did not leak (soldr#1799)
+        if: always()
+        shell: bash
+        run: |
+          python3 .github/scripts/check_toolchain_homes.py "$SOLDR_CACHE_DIR/logs/builds" \
+            --managed-root "$HOME/.soldr" --managed-root "$HOME/.soldr-dev"
 
       # soldr#2996 Phase 6 proposes persisting `target/dylint/` -- the only
       # mechanism that reaches the 638s Dylint block, since Swatinem/rust-cache
