@@ -165,6 +165,61 @@ jobs:
           echo "SOLDR_CACHE_LIFECYCLE=command" >> "$GITHUB_ENV"
           echo "SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS=30" >> "$GITHUB_ENV"
 
+      # soldr#3039 Phase 0 (soldr#3041): the Tier-2 per-unit object store
+      # under this canonical domain is the only compiler cache this lane has,
+      # and `runner.temp` discarded it every run -- 1,447 of 1,567 compiles
+      # missed with `context_not_found` in the run-33536940076 baseline. The
+      # step above exists for ISOLATION (one domain, one wrapper, one compiler
+      # cache), not for ephemerality, so persisting it changes nothing about
+      # that contract, and no setup-soldr reuse layer is re-enabled
+      # (soldr#2451 toggles are untouched).
+      #
+      # Path shape is a deliberate reference fix against soldr#3041's literal
+      # text, recorded in soldr#3039: the issue proposed caching
+      # `cache/zccache` with `!.../logs` and `!.../history` negations.
+      # actions/cache globs `path` with `implicitDescendants: false` and then
+      # hands the matched DIRECTORY to tar, which recurses -- so a `!subdir`
+      # negation removes nothing, the compile journals would ride along, every
+      # warm-run measurement would double-count prior runs, and the entry would
+      # grow without bound. Positive selection is exact instead: the embedded
+      # service's object store lives under
+      # `cache/zccache/daemon-state/embedded-v1/v<VERSION>/`
+      # (crates/soldr-daemon/src/zccache_embedded.rs), while the journals
+      # (`cache/zccache/history/`) and session logs (`cache/zccache/logs/`)
+      # that `Upload build log artifacts` ships are siblings OUTSIDE it.
+      #
+      # The `github.run_id` suffix plus `restore-keys` is load-bearing:
+      # actions/cache never re-saves on an exact-key hit, so a key without it
+      # freezes the store after the first save. The lockfile+toolchain hash
+      # prefers a same-graph entry; the bare prefix still restores something
+      # after a dependency bump. The save runs in the post-step, after
+      # `Stop canonical host CI cache` has flushed the daemon.
+      #
+      # No size cap is set here, deliberately, and the number that would set it
+      # already exists: the embedded service's own budget is
+      # `ZCCACHE_CACHE_SIZE_BYTES` / `ZCCACHE_CACHE_SIZE_PERCENT`
+      # (docs/API.md), NOT `gc_policy.rs`: the `zccache_compile` category's
+      # `size_cap` is `None` there, and nothing outside `gc_policy.rs` reads
+      # `EvictionAction.size_cap` for that category at all, so setting it would
+      # be an inert third spelling of the cap. That budget defaults to 5%
+      # of the filesystem clamped to a 40 GiB FLOOR, so the service will not
+      # bound this entry anywhere near the 2.0 GiB family allocation; only the
+      # measured plateau across runs will say whether it needs to. If it does,
+      # the fix is one `ZCCACHE_CACHE_SIZE_BYTES=<n>` line in the step above,
+      # not new eviction code. Note also that the `run_id` suffix means each
+      # run writes a NEW entry, so the family's footprint is entry size times
+      # the number of retained runs under GitHub's 10 GB repo LRU -- soldr#3039
+      # owns whether that needs a `save-if` before soldr#3047's budget gate.
+      - name: Restore Tier-2 zccache object store (soldr#3039)
+        id: zccache_unit_store
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/daemon-state
+          key: zccache-unit-v1-${{ inputs.target }}-${{ hashFiles('Cargo.lock', 'dylints/**/Cargo.lock', 'rust-toolchain.toml', 'dylints/**/rust-toolchain.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            zccache-unit-v1-${{ inputs.target }}-${{ hashFiles('Cargo.lock', 'dylints/**/Cargo.lock', 'rust-toolchain.toml', 'dylints/**/rust-toolchain.toml') }}-
+            zccache-unit-v1-${{ inputs.target }}-
+
       # soldr#1241 — cache ~/.cargo/{registry,git} + target/ so the source
       # driver and its ci-test plan do not recompile ~700 dependencies from
       # scratch every run. Same SHA-pinned action as
@@ -349,9 +404,15 @@ jobs:
       # soldr#2996 Phase 6 proposes persisting `target/dylint/` -- the only
       # mechanism that reaches the 638s Dylint block, since Swatinem/rust-cache
       # deletes those trees at save time and a per-unit object cache alone
-      # still misses. The directive admits at most one cache family beyond
-      # `soldr cook` against a 5 GB budget, so the carve-out has to be costed
-      # before it is granted. Nobody has the number; this reports it.
+      # still misses. The directive that admitted at most one cache family
+      # beyond `soldr cook` against a flat 5 GB budget is superseded by
+      # soldr#3039: the Tier-2 per-unit object store persisted above is NOT a
+      # new family -- ci/cache-ownership.json already defines `zccache-unit`
+      # as durable and deliberately live in normal lanes -- and the flat
+      # figure is replaced by the per-family allocation in that manifest's
+      # `budget` map (soldr#3047), of which this store's share is 2.0 GiB.
+      # The Dylint tree carve-out still has to be costed and nobody has the
+      # number; this reports it.
       #
       # `always()` because the sizes are just as interesting when ci-test
       # failed, and the script reports rather than fails, so it can never be
