@@ -125,6 +125,49 @@ jobs:
         if: steps.rustup_cache.outputs.cache-hit != 'true'
         run: rustup toolchain install 1.95.0 --profile minimal --no-self-update
 
+      # soldr#2349: resolve the Dylint nightly + cargo-dylint version once, from
+      # the same authority soldr's own resolver uses, so the cache key below,
+      # the driver-cache key further down, and the `dylint-toolchain:` /
+      # `cargo-dylint-version:` / `dylint-link-version:` inputs passed to
+      # setup-soldr never carry a second, independently-hand-edited copy of
+      # either value. CLAUDE.md: "The Dylint nightly is declared by the lint
+      # libraries, never derived" (soldr#2945) — a workflow-YAML literal that
+      # drifted from `dylints/*/rust-toolchain.toml` would reproduce that exact
+      # failure one layer up: CI would keep pre-installing/caching a nightly the
+      # `ci-test` Dylint plan no longer resolves, silently wasting the cache
+      # without ever going red. `dylint_toolchain_channel.py` is a thin wrapper
+      # around `check_dylint_driver_assets.py`'s existing library/pin readers.
+      - name: Resolve Dylint nightly + cargo-dylint version
+        id: dylint_identity
+        shell: bash
+        run: python3 .github/scripts/dylint_toolchain_channel.py
+
+      # soldr#2349: `rustc-dev` is the largest component setup-soldr's
+      # `dylint-toolchain:` install pulls, and it was downloaded from scratch
+      # every run because nothing cached the nightly toolchain tree (only the
+      # stable 1.95.0 toolchain above was cached). Mirrors the 1.95.0 pattern:
+      # cache the exact toolchain directory rustup creates for this channel.
+      # Host triple is hard-coded the same way the 1.95.0 cache above hard-codes
+      # it — this template has one caller today (ci.yml's build-linux-x64,
+      # ubuntu-24.04/x86_64-unknown-linux-gnu); a second OS caller needs this
+      # literal parameterized the same day the 1.95.0 one is.
+      #
+      # Assumption flagged: this relies on setup-soldr detecting the nightly +
+      # its rustc-dev/rust-src/llvm-tools-preview components are already present
+      # on disk and skipping its own install/component-add on a cache hit, the
+      # same way it does for the pre-cached 1.95.0 toolchain per the comment
+      # above. setup-soldr is an external action; that behavior could not be
+      # verified here (no build/test allowed in this change). Even if that
+      # assumption is wrong, a cache hit still avoids re-downloading the raw
+      # toolchain archive, and a miss costs exactly what today's uncached run
+      # already costs — there is no regression either way.
+      - name: Cache Dylint nightly toolchain in ~/.rustup
+        id: dylint_nightly_cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.rustup/toolchains/${{ steps.dylint_identity.outputs.channel }}-x86_64-unknown-linux-gnu
+          key: dylint-nightly-v1-${{ inputs.target }}-${{ steps.dylint_identity.outputs.channel }}
+
       # soldr#1799: pin the soldr that builds us. This prevents action-default
       # drift from changing build or catalogue behavior between lanes.
       - name: Setup pinned soldr toolchain
@@ -135,9 +178,13 @@ jobs:
           # Provision the ci-test Dylint foundation once, separately from
           # the stable source-driver target tree used by the prescribed DAG.
           ci-tests: true
-          dylint-toolchain: nightly-2026-05-28
-          cargo-dylint-version: 6.0.3
-          dylint-link-version: 6.0.3
+          # soldr#2349: sourced from the "Resolve Dylint nightly + cargo-dylint
+          # version" step above instead of a literal, so this can never drift
+          # from `dylints/*/rust-toolchain.toml` / `known_tools.rs` the way a
+          # hand-edited copy could (see that step's comment).
+          dylint-toolchain: ${{ steps.dylint_identity.outputs.channel }}
+          cargo-dylint-version: ${{ steps.dylint_identity.outputs.dylint_version }}
+          dylint-link-version: ${{ steps.dylint_identity.outputs.dylint_version }}
           # soldr#2451: disable every setup-soldr reuse layer, not just the
           # `cache` umbrella (soldr-mini / solo-toolchain / build-cache each
           # ignore it). This lane builds + tests the soldr under test, so it
@@ -267,8 +314,13 @@ jobs:
       # design" now applies only to the linked UI-test products themselves.
       #
       # 961.2 MiB to recover 302.6s of the 638s. The key covers the exact
-      # nightly every lint manifest declares plus the lint sources themselves,
-      # so a driver bump or a lint edit invalidates it.
+      # nightly every lint manifest declares, the lint sources, their
+      # `Cargo.toml`/`Cargo.lock` dependency graphs, and their
+      # `.cargo/config.toml` (soldr#2349 — this carries `-C linker=dylint-link`;
+      # a rustflag change there recompiles every object the tree holds, and the
+      # v1 key missed it, so a linker-config edit used to restore a stale tree
+      # instead of invalidating it). Bumped to v2 because the key's semantics
+      # changed (two more hashed globs), not just its inputs.
       - name: Restore Dylint libraries and analysis trees
         id: dylint_trees
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -276,7 +328,54 @@ jobs:
           path: |
             target/dylint/libraries
             target/dylint/target
-          key: dylint-foundation-v1-${{ inputs.target }}-${{ hashFiles('dylints/**/rust-toolchain.toml', 'dylints/**/Cargo.toml', 'dylints/**/src/**') }}
+          key: dylint-foundation-v2-${{ inputs.target }}-${{ hashFiles('dylints/**/rust-toolchain.toml', 'dylints/**/Cargo.toml', 'dylints/**/Cargo.lock', 'dylints/**/.cargo/config.toml', 'dylints/**/src/**') }}
+
+      # soldr#2349: the dylint driver (`<SOLDR_CACHE_DIR>/dylint/drivers/
+      # <nightly>-<host>/`) and the warm-run prepared-plan TTL marker
+      # (`<SOLDR_CACHE_DIR>/dylint/prepared/v1/`) both live under
+      # `paths.root` (`crates/soldr-cli/src/dylint_driver.rs` `driver_root()`,
+      # `crates/soldr-cli/src/dylint_toolchain.rs` `prepared_marker_path()`).
+      # `paths.root` is `SOLDR_CACHE_DIR`, exported above to
+      # `${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}` — a per-run
+      # scratch directory, wiped between jobs — so both go cold and the driver
+      # is re-fetched from the soldr-toolchain catalogue every run even though
+      # nothing about its identity changed. Cache that subtree directly rather
+      # than redirecting `DYLINT_DRIVER_PATH` elsewhere: the prepared-plan
+      # marker has no such env override (`SoldrPaths::new()` only), so it needs
+      # a path-based cache regardless, and caching both under one entry avoids
+      # a second, differently-rooted cache for the driver alone. Keyed on the
+      # nightly identity plus the cargo-dylint version setup-soldr installs
+      # (same two values the "Resolve Dylint nightly + cargo-dylint version"
+      # step above already resolved) — not on lint sources, since the driver
+      # and the prepared marker depend only on toolchain/tool identity.
+      - name: Restore Dylint driver and prepared-plan marker
+        id: dylint_driver_cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/dylint/drivers
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/dylint/prepared
+          key: dylint-driver-v1-${{ inputs.target }}-${{ steps.dylint_identity.outputs.channel }}-${{ steps.dylint_identity.outputs.dylint_version }}
+
+      # soldr#2349: snapshot the per-library stage-skip marker's state
+      # *before* `ci-test` runs (`crates/soldr-cli/src/ci_test/
+      # dylint_library_marker.rs`). That marker sits inside the tree the
+      # "Restore Dylint libraries and analysis trees" cache step above may
+      # have just restored, so it can already exist on disk before `ci-test`
+      # ever starts — presence alone cannot tell a skip from a rebuild,
+      # because `record()` only rewrites it on a rebuild and leaves it
+      # untouched on a skip. Comparing this snapshot's `state` against the
+      # marker's state again after `ci-test` (in "Report Dylint tree sizes"
+      # below) is what makes the two distinguishable. Path mirrors
+      # `plan.rs`'s `target_root/dylint/libraries/<canonical_channel(nightly,
+      # host)>/`; host triple is the same hard-coded
+      # `x86_64-unknown-linux-gnu` assumption as the caches above.
+      - name: Snapshot Dylint library stage-skip marker
+        id: dylint_library_marker_before
+        shell: bash
+        run: |
+          python3 .github/scripts/report_dylint_tree_size.py \
+            --snapshot-library-marker "target/dylint/libraries/${{ steps.dylint_identity.outputs.channel }}-x86_64-unknown-linux-gnu/.soldr-dylint-library-marker-v1.json"
 
       # The two paths are the cook artifact store (`cook_cache_dir` =
       # `<SOLDR_CACHE_DIR>/cache/cook`, crates/soldr-cache/src/cache_lib/cook_archive.rs)
@@ -616,13 +715,27 @@ jobs:
       # `always()` because the sizes are just as interesting when ci-test
       # failed, and the script reports rather than fails, so it can never be
       # the reason this lane goes red.
+      #
+      # soldr#2349: also report whether each Dylint-related cache layer
+      # restored or was rebuilt, using the `cache-hit` output each
+      # `actions/cache` step already produces, plus the per-library
+      # stage-skip marker snapshotted before `ci-test` above. This is what
+      # turns "we added caches" into "CI can show the caches are working" --
+      # without it, a cache key typo that always misses looks identical to a
+      # healthy lane.
       - name: Report Dylint tree sizes
         if: always()
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
-          python3 .github/scripts/report_dylint_tree_size.py
+          python3 .github/scripts/report_dylint_tree_size.py \
+            --cache-hit "rustup 1.95.0=${{ steps.rustup_cache.outputs.cache-hit }}" \
+            --cache-hit "dylint nightly toolchain=${{ steps.dylint_nightly_cache.outputs.cache-hit }}" \
+            --cache-hit "dylint libraries+target trees=${{ steps.dylint_trees.outputs.cache-hit }}" \
+            --cache-hit "dylint driver+prepared marker=${{ steps.dylint_driver_cache.outputs.cache-hit }}" \
+            --library-stage-skip-marker "target/dylint/libraries/${{ steps.dylint_identity.outputs.channel }}-x86_64-unknown-linux-gnu/.soldr-dylint-library-marker-v1.json" \
+            --library-stage-skip-marker-before "${{ steps.dylint_library_marker_before.outputs.state }}"
 
       # soldr#3047 — actions/cache has no `save-if`, so main-only saving
       # needs the restore/save split: PRs restore main's tree and no longer

@@ -392,9 +392,13 @@ fn nextest_execution_and_dylint_ui_really_start_before_either_branch_can_finish(
         scripts,
     };
 
-    let code =
-        supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
-            .expect("parallel branch supervisor");
+    let code = supervise_parallel_stage_and_dylint(
+        &spawner,
+        &nextest,
+        fixture_branch(&ui_tests),
+        &NoopVerifier,
+    )
+    .expect("parallel branch supervisor");
 
     assert_eq!(code, 0);
     assert!(directory.path().join("nextest-started").is_file());
@@ -426,9 +430,13 @@ fn nextest_failure_lets_the_dylint_branch_finish_and_reports_it() {
         directory: directory.path(),
         scripts,
     };
-    let code =
-        supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
-            .expect("Nextest failure result");
+    let code = supervise_parallel_stage_and_dylint(
+        &spawner,
+        &nextest,
+        fixture_branch(&ui_tests),
+        &NoopVerifier,
+    )
+    .expect("Nextest failure result");
     assert_eq!(code, 73);
     assert!(directory.path().join("dylint-one-done").is_file());
     assert!(directory.path().join("dylint-two-done").is_file());
@@ -459,9 +467,13 @@ fn dylint_failure_stops_its_branch_but_lets_nextest_finish() {
         directory: directory.path(),
         scripts,
     };
-    let code =
-        supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
-            .expect("Dylint failure result");
+    let code = supervise_parallel_stage_and_dylint(
+        &spawner,
+        &nextest,
+        fixture_branch(&ui_tests),
+        &NoopVerifier,
+    )
+    .expect("Dylint failure result");
     assert_eq!(code, 74);
     assert!(directory.path().join("nextest-done").is_file());
     assert!(!directory.path().join("should-not-start").exists());
@@ -483,9 +495,13 @@ fn the_first_failure_wins_when_both_branches_fail() {
         directory: directory.path(),
         scripts,
     };
-    let code =
-        supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
-            .expect("both failed");
+    let code = supervise_parallel_stage_and_dylint(
+        &spawner,
+        &nextest,
+        fixture_branch(&ui_tests),
+        &NoopVerifier,
+    )
+    .expect("both failed");
     assert_eq!(code, 74);
 }
 #[test]
@@ -512,9 +528,13 @@ fn branch_join_waits_for_both_terminal_stages() {
     };
     let started = Instant::now();
 
-    let code =
-        supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
-            .expect("branch join");
+    let code = supervise_parallel_stage_and_dylint(
+        &spawner,
+        &nextest,
+        fixture_branch(&ui_tests),
+        &NoopVerifier,
+    )
+    .expect("branch join");
 
     assert_eq!(code, 0);
     assert!(started.elapsed() >= Duration::from_millis(700));
@@ -540,9 +560,13 @@ fn second_branch_spawn_failure_cancels_the_first_branch() {
     };
     let started = Instant::now();
 
-    let error =
-        supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
-            .expect_err("fixture spawn must fail");
+    let error = supervise_parallel_stage_and_dylint(
+        &spawner,
+        &nextest,
+        fixture_branch(&ui_tests),
+        &NoopVerifier,
+    )
+    .expect_err("fixture spawn must fail");
 
     assert!(error.to_string().contains("fixture spawn failure"));
     assert!(started.elapsed() < Duration::from_secs(5));

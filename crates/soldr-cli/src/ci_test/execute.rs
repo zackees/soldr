@@ -1,3 +1,4 @@
+use super::dylint_library_marker;
 use super::execute_report::{
     summarize_compiler_report, write_compiler_run_report, CompilerEvent, CompilerIdentity,
 };
@@ -25,6 +26,10 @@ pub(super) use super::executor_contract::{require_dependencies, validate_tail_de
 /// Dylint manifests remain sequential because all six intentionally share one
 /// target tree per domain. After both branches join, doctests and the three
 /// non-compiling policy consumers run together from that completed join.
+///
+/// soldr#2349: the library half of the Dylint branch may be fast-forwarded
+/// by an input-keyed marker skip straight to `dylint-workspace`. The skip is
+/// OPT-IN (`SOLDR_DYLINT_LIBRARY_SKIP=on`); see `dylint_library_marker`.
 pub(crate) async fn run(
     plan: &CiTestPlan,
     cache_enabled: bool,
@@ -44,17 +49,21 @@ pub(crate) async fn run(
     stop_on_failure!(run_group(&factory, plan, &["rustfmt", "lint-ci"]));
     stop_on_failure!(run_group(&factory, plan, &["clippy"]));
     factory.prepare_dylint().await?;
+    // soldr#2349: library-skip wiring lives in dylint_library_marker::decide/finish.
+    let library_decision = dylint_library_marker::decide(plan, &factory.dylint)?;
     eprintln!(
         "soldr ci-test: overlapping Nextest compilation with Dylint library/workspace compilation under canonical compiler admission"
     );
     stop_on_failure!(run_parallel_nextest_compile_and_dylint_compile(
-        &factory, plan
+        &factory,
+        plan,
+        library_decision.skip
     ));
-    // Compiler admission cannot account for the resident memory of ordinary
-    // test processes. Starting Nextest before the exclusive soldr_cli nightly
-    // compile completed still let the pair exceed the runner envelope and
-    // SIGTERM the compiler with zero cgroup OOM events (soldr#3024). UI-test
-    // compiles are the remaining independent domain and retain useful overlap.
+    dylint_library_marker::finish(&library_decision);
+    // Compiler admission cannot account for ordinary test processes' resident
+    // memory: starting Nextest before the exclusive nightly compile completed
+    // once exceeded the runner envelope and SIGTERM'd the compiler with zero
+    // cgroup OOM events (soldr#3024). UI-test compiles remain independent.
     eprintln!(
         "soldr ci-test: overlapping Fresh Nextest execution with Dylint UI tests after exclusive workspace analysis"
     );
@@ -145,13 +154,27 @@ impl<'a> DylintBranch<'a> {
         })
     }
 
-    fn compilation_from_plan(plan: &'a CiTestPlan) -> Result<Self, SoldrError> {
+    /// `skip_libraries` (soldr#2349) fast-forwards to `Workspace`, skipping
+    /// the six `dylint-library-*` stages; `libraries_complete()` still runs
+    /// eagerly as a safety net against the tree being wiped meanwhile.
+    fn compilation_from_plan(
+        plan: &'a CiTestPlan,
+        skip_libraries: bool,
+        verifier: &impl DylintBranchVerifier,
+    ) -> Result<Self, SoldrError> {
         let libraries = plan
             .stages
             .iter()
             .filter(|stage| stage.name.starts_with("dylint-library-"))
             .collect();
-        Self::compilation(libraries, stage_named(plan, "dylint-workspace")?)
+        let mut branch = Self::compilation(libraries, stage_named(plan, "dylint-workspace")?)?;
+        if skip_libraries {
+            let names: Vec<&str> = branch.libraries.iter().map(|s| s.name.as_str()).collect();
+            dylint_library_marker::announce_skip(&names);
+            verifier.libraries_complete()?;
+            branch.phase = DylintPhase::Workspace;
+        }
+        Ok(branch)
     }
 
     fn new(ui_tests: Vec<&'a Stage>) -> Result<Self, SoldrError> {
@@ -218,25 +241,18 @@ fn run_parallel_nextest_and_dylint(
 ) -> Result<i32, SoldrError> {
     let nextest = stage_named(plan, "nextest")?;
     let dylint = DylintBranch::from_plan(plan)?;
-    supervise_nextest_and_dylint(factory, nextest, dylint, &PlanDylintVerifier(plan))
+    supervise_parallel_stage_and_dylint(factory, nextest, dylint, &PlanDylintVerifier(plan))
 }
 
 fn run_parallel_nextest_compile_and_dylint_compile(
     factory: &StageCommandFactory,
     plan: &CiTestPlan,
+    skip_libraries: bool,
 ) -> Result<i32, SoldrError> {
     let nextest_compile = stage_named(plan, "nextest-compile")?;
-    let dylint = DylintBranch::compilation_from_plan(plan)?;
-    supervise_parallel_stage_and_dylint(factory, nextest_compile, dylint, &PlanDylintVerifier(plan))
-}
-
-fn supervise_nextest_and_dylint<'a>(
-    spawner: &impl StageSpawner,
-    nextest_stage: &'a Stage,
-    dylint_branch: DylintBranch<'a>,
-    verifier: &impl DylintBranchVerifier,
-) -> Result<i32, SoldrError> {
-    supervise_parallel_stage_and_dylint(spawner, nextest_stage, dylint_branch, verifier)
+    let verifier = PlanDylintVerifier(plan);
+    let dylint = DylintBranch::compilation_from_plan(plan, skip_libraries, &verifier)?;
+    supervise_parallel_stage_and_dylint(factory, nextest_compile, dylint, &verifier)
 }
 
 fn supervise_parallel_stage_and_dylint<'a>(
