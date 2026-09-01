@@ -529,6 +529,18 @@ mod tests {
         std::env::remove_var(SOLDR_COOK_AUTO_HYDRATE_ENV);
     }
 
+    /// The env state every `resolve_target_dir` assertion below depends on:
+    /// no `CARGO_TARGET_DIR` and no cook target scope, so the expected root is
+    /// the tempdir's own `target/`. Not hypothetical — the documented Linux
+    /// dev loop (`ci/perf_local.py`) exports `CARGO_TARGET_DIR=/target` into
+    /// the runner container, and an inherited value moves the resolved root
+    /// out of the tempdir and fails these tests for reasons unrelated to the
+    /// behaviour they pin. Callers must already hold [`ENV_LOCK`].
+    fn clear_target_dir_env() {
+        std::env::remove_var("CARGO_TARGET_DIR");
+        std::env::remove_var(SOLDR_COOK_HYDRATE_TARGET_ENV);
+    }
+
     #[test]
     fn env_var_disables_overriding_everything() {
         let _g = ENV_LOCK.lock().unwrap();
@@ -662,7 +674,7 @@ mod tests {
     #[test]
     fn resolve_target_dir_without_explicit_target_is_the_bare_target_dir() {
         let _g = ENV_LOCK.lock().unwrap();
-        std::env::remove_var(SOLDR_COOK_HYDRATE_TARGET_ENV);
+        clear_target_dir_env();
         let dir = TempDir::new().unwrap();
         let args = [
             "chef".to_string(),
@@ -680,6 +692,7 @@ mod tests {
         // Serialized with the CARGO_TARGET_DIR-mutating test below: that one
         // sets a process-global var this assertion depends on being unset.
         let _g = ENV_LOCK.lock().unwrap();
+        clear_target_dir_env();
         let dir = TempDir::new().unwrap();
         let args = [
             "build".to_string(),
@@ -693,6 +706,7 @@ mod tests {
     #[test]
     fn resolve_target_dir_accepts_the_equals_spelling() {
         let _g = ENV_LOCK.lock().unwrap();
+        clear_target_dir_env();
         let dir = TempDir::new().unwrap();
         let args = [
             "build".to_string(),
@@ -727,6 +741,7 @@ mod tests {
     #[test]
     fn resolve_target_dir_falls_back_to_the_cook_target_scope_env() {
         let _g = ENV_LOCK.lock().unwrap();
+        clear_target_dir_env();
         let dir = TempDir::new().unwrap();
         let args = [
             "chef".to_string(),
@@ -744,6 +759,7 @@ mod tests {
     #[test]
     fn an_explicit_target_argv_beats_the_cook_target_scope_env() {
         let _g = ENV_LOCK.lock().unwrap();
+        clear_target_dir_env();
         let dir = TempDir::new().unwrap();
         let args = [
             "chef".to_string(),
@@ -761,6 +777,7 @@ mod tests {
     #[test]
     fn a_blank_cook_target_scope_env_is_ignored() {
         let _g = ENV_LOCK.lock().unwrap();
+        clear_target_dir_env();
         let dir = TempDir::new().unwrap();
         let args = ["chef".to_string(), "prepare".to_string()];
         std::env::set_var(SOLDR_COOK_HYDRATE_TARGET_ENV, "   ");

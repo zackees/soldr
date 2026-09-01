@@ -156,28 +156,6 @@ def test_main_propagates_other_nonzero_exit_codes_verbatim(mod):
     assert status == 7
 
 
-# --- main: --allow-cook-failure --------------------------------------------
-
-
-def test_allow_cook_failure_downgrades_an_ordinary_failure(mod, capsys):
-    status = mod.main(
-        ["--soldr", "/opt/soldr", "--target", "T", "--allow-cook-failure"],
-        runner=_runner("", "boom\n", returncode=7),
-    )
-    assert status == 0
-    assert "::warning title=soldr cook" in capsys.readouterr().out
-
-
-def test_allow_cook_failure_never_downgrades_the_uncookable_workspace_guard(mod):
-    # soldr#3043 step 3: exit 3 names a workspace defect with a named fix
-    # (`-p` the offending member). The soft-fail escape must not reach it.
-    status = mod.main(
-        ["--soldr", "/opt/soldr", "--target", "T", "--allow-cook-failure"],
-        runner=_runner("", "soldr cook: skipped - workspace depends on...\n", returncode=3),
-    )
-    assert status == 3
-
-
 # --- main: --require-warm ------------------------------------------------------
 
 

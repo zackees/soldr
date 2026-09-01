@@ -85,6 +85,13 @@ export SOLDR_DAEMON_TOKIO_CONSOLE_PUBLISH_INTERVAL_MS=20
 SOLDR=/target/debug/soldr
 REPO="$(pwd)"
 WORK=/tmp/stable-cook/work
+# Load-bearing, not housekeeping: `ci/perf_local.py` exports
+# `CARGO_TARGET_DIR=/target` into this runner container, and every warm-scenario
+# assertion below (`test -d "target/$TRIPLE/debug/deps"`,
+# `test ! -e target/debug/deps`) is a path RELATIVE to $WORK. Left set, cook
+# writes to /target instead and the negative assertion passes trivially on a
+# path nothing ever wrote, while the positive one fails for a reason that has
+# nothing to do with the extraction root it exists to check. Do not remove.
 unset CARGO_TARGET_DIR
 rm -rf /tmp/stable-cook
 DIAGNOSTICS=/tmp/stable-cook/diagnostics

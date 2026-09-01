@@ -19,10 +19,7 @@ Exit codes are keyed to the constants `soldr cook` itself defines
         prior cook artifact nor warm-skipped Phase 2. Without `--require-warm`
         this case only emits a `::warning` annotation -- the acceptance
         number is not measurable until soldr#3040's analyzer lands.
-    N   any other non-zero exit from `soldr cook` itself, propagated as-is
-        unless `--allow-cook-failure` is set (see that flag's help: a cook
-        that fails costs the lane its speedup, it does not make the lane's
-        verdict wrong, so the caller decides whether that is fatal).
+    N   any other non-zero exit from `soldr cook` itself, propagated as-is.
 
 This is a diagnostic layer over `soldr cook`, not a reimplementation of it:
 every classification is read back out of cook's own stderr markers, which are
@@ -200,19 +197,6 @@ def main(argv: list[str] | None = None, runner: Runner = default_runner) -> int:
         default=None,
         help="SOLDR_CACHE_DIR, used only to report the cook archive size",
     )
-    parser.add_argument(
-        "--allow-cook-failure",
-        action="store_true",
-        help=(
-            "downgrade a non-zero `soldr cook` exit to a ::warning and exit 0. "
-            "COOK_SKIPPED_UNCOOKABLE_WORKSPACE (3) stays fatal regardless -- "
-            "that one names a real workspace defect with a named fix "
-            "(soldr#3043 step 3). Every other failure only costs the caller "
-            "its pre-warmed dependency tree; the build that follows is "
-            "correct, merely cold, so a lane whose subject is something else "
-            "should not go red for it"
-        ),
-    )
     args = parser.parse_args(argv)
 
     chef_args = args.chef_args if args.chef_args else list(DEFAULT_CHEF_ARGS)
@@ -239,18 +223,14 @@ def main(argv: list[str] | None = None, runner: Runner = default_runner) -> int:
         )
         return COOK_SKIPPED_UNCOOKABLE_WORKSPACE
     if result.returncode != 0:
-        level = "warning" if args.allow_cook_failure else "error"
         print(
-            f"::{level} title=soldr cook::cook[{args.target}] exited "
+            f"::error title=soldr cook::cook[{args.target}] exited "
             f"{result.returncode}. cargo-chef 0.1.73 may have rejected one of "
             f"the --chef-arg values ({list(chef_args)!r}) passed after `--`; "
             "the documented fallback is to drop --all-targets (losing "
             "dev-dependency coverage), not to add a new flag to `soldr cook`."
         )
-        # A failed cook leaves the caller with a cold dependency tree, not a
-        # wrong one. Whether that is fatal is the caller's call, so it is a
-        # flag rather than a decision baked in here.
-        return 0 if args.allow_cook_failure else result.returncode
+        return result.returncode
 
     outcome, detail = classify(result.stderr)
     warm = outcome in ("hydrated", "warm-skip")
