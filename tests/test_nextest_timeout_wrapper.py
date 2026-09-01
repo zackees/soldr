@@ -351,6 +351,11 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     # not been in effect. Keep the dead suffix from creeping back.
     assert "exec_cargo_build_routes_through_child_shims_and_zccache" not in cold_filter
     assert 'threads-required = "num-cpus"' not in cold_override
+    # soldr#3024 attempt 2 promoted this group to priority 100. That made the
+    # four-thread Linux run contend with cold nested builds from the start and
+    # regressed Fresh Nextest from an 18m11 median to 26m14. Keep the group
+    # serial, but let Nextest's normal queue order decide when it enters.
+    assert "priority =" not in cold_override
     cold_full_runner_overrides = [
         block
         for block in config.split("[[profile.default.overrides]]")[1:]
@@ -415,45 +420,6 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     # `target-run` blocks; this count is what makes one visible.
     assert config.count('grace-period = "30s"') == 11
     assert "test(=cli_cargo_native_cc::no_cache_global_disables_native_too)" in config
-
-
-def test_serial_cold_build_chain_runs_before_unrelated_tests() -> None:
-    """The longest serial lane must enter the four-thread pool immediately.
-
-    In all three soldr#3036 samples this group was the Fresh Nextest critical
-    tail, but lexicographic scheduling delayed its first member by 3m46s,
-    4m27s, and 4m07s. Priority changes only queue order: the group remains
-    one-at-a-time, and the separate Windows-target override still reserves
-    the complete pool.
-    """
-
-    config = CONFIG.read_text(encoding="utf-8")
-    cold_overrides = [
-        block
-        for block in config.split("[[profile.default.overrides]]")[1:]
-        if "test-group = 'soldr-cargo-cold-builds'" in block
-    ]
-    assert len(cold_overrides) == 1
-    cold_override = cold_overrides[0]
-    assert "priority = 100" in cold_override
-    assert 'threads-required = "num-cpus"' not in cold_override
-
-    windows_full_pool = [
-        block
-        for block in config.split("[[profile.default.overrides]]")[1:]
-        if 'threads-required = "num-cpus"' in block
-        and "target = 'cfg(target_os = \"windows\")'" in block
-    ]
-    assert len(windows_full_pool) == 1
-    cold_filter = next(
-        line for line in cold_override.splitlines() if line.startswith("filter = '")
-    )
-    windows_filter = next(
-        line
-        for line in windows_full_pool[0].splitlines()
-        if line.startswith("filter = '")
-    )
-    assert windows_filter == cold_filter
 
 
 def test_every_binary_named_in_nextest_filters_is_a_real_test_target() -> None:
