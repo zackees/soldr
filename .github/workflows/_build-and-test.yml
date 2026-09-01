@@ -227,9 +227,13 @@ jobs:
 
       - name: Build ci-test driver
         shell: bash
-        run: >-
-          soldr cargo build -p soldr-cli --bin soldr
-          --target ${{ inputs.target }}
+        run: |
+          # setup-soldr 0.9.10 writes its historical ci-tests=1 caps through
+          # GITHUB_ENV. This lane deliberately leaves both knobs unset so
+          # source Soldr's exclusive heavy-unit admission owns concurrency.
+          unset CARGO_BUILD_JOBS SOLDR_JOBS
+          soldr cargo build -p soldr-cli --bin soldr \
+            --target ${{ inputs.target }}
       # soldr#1838 Phase 4: fail the lane when the build silently ran uncached
       # via the direct compiler. `soldr status --json` surfaces the same
       # compile-daemon fallback rollup operators see (default home = the one the
@@ -282,6 +286,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          unset CARGO_BUILD_JOBS SOLDR_JOBS
           soldr cache shutdown --shutdown-timeout-seconds 30 || soldr zccache stop
           soldr broker remove
           source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
@@ -302,6 +307,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Clear setup-soldr's bootstrap-only legacy caps at the source-owned
+          # boundary. Explicit overrides remain untouched outside this lane.
+          unset CARGO_BUILD_JOBS SOLDR_JOBS
           source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
           real_cargo=$("$source_soldr" rustup which cargo)
           cargo_guard="${RUNNER_TEMP}/soldr-ci-cargo-guard"

@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 
 fn test_stage(name: &str) -> Stage {
     Stage {
@@ -61,6 +62,14 @@ impl StageSpawner for ScriptSpawner<'_> {
 struct NoopVerifier;
 
 impl DylintBranchVerifier for NoopVerifier {
+    fn libraries_complete(&self) -> Result<(), SoldrError> {
+        Ok(())
+    }
+
+    fn analysis_complete(&self) -> Result<(), SoldrError> {
+        Ok(())
+    }
+
     fn ui_tests_complete(&self) -> Result<(), SoldrError> {
         Ok(())
     }
@@ -68,6 +77,11 @@ impl DylintBranchVerifier for NoopVerifier {
 
 fn fixture_branch(ui_tests: &[Stage]) -> DylintBranch<'_> {
     DylintBranch::new(ui_tests.iter().collect()).expect("fixture Dylint branch")
+}
+
+fn fixture_compile_branch<'a>(libraries: &'a [Stage], workspace: &'a Stage) -> DylintBranch<'a> {
+    DylintBranch::compilation(libraries.iter().collect(), workspace)
+        .expect("fixture Dylint compilation branch")
 }
 
 #[test]
@@ -214,6 +228,48 @@ fn parallel_failure_cancels_the_sibling_process_tree() {
         started.elapsed() < Duration::from_secs(5),
         "the sibling process tree was not canceled promptly"
     );
+}
+
+/// RED for soldr#3024: compiler-bearing stable and nightly branches may run
+/// concurrently because the daemon's shared/exclusive admission sees both of
+/// them. The join must happen before Fresh Nextest starts, so ordinary test
+/// processes never overlap the exclusive `soldr_cli --test` nightly link.
+#[test]
+fn nextest_compilation_and_dylint_compilation_really_overlap() {
+    if !posix_fixture_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().expect("barrier directory");
+    let nextest_compile = test_stage("nextest-compile");
+    let libraries = [test_stage("dylint-library-one")];
+    let workspace = test_stage("dylint-workspace");
+    let scripts = BTreeMap::from([
+        (
+            "nextest-compile".into(),
+            "touch \"$FIXTURE_DIR/nextest-compile-started\"; i=0; while [ \"$i\" -lt 100 ]; do [ -f \"$FIXTURE_DIR/dylint-compile-started\" ] && exit 0; i=$((i + 1)); sleep 0.02; done; exit 73".into(),
+        ),
+        (
+            "dylint-library-one".into(),
+            "touch \"$FIXTURE_DIR/dylint-compile-started\"; i=0; while [ \"$i\" -lt 100 ]; do [ -f \"$FIXTURE_DIR/nextest-compile-started\" ] && exit 0; i=$((i + 1)); sleep 0.02; done; exit 74".into(),
+        ),
+        ("dylint-workspace".into(), "exit 0".into()),
+    ]);
+    let spawner = ScriptSpawner {
+        directory: directory.path(),
+        scripts,
+    };
+
+    let code = supervise_parallel_stage_and_dylint(
+        &spawner,
+        &nextest_compile,
+        fixture_compile_branch(&libraries, &workspace),
+        &NoopVerifier,
+    )
+    .expect("parallel compilation supervisor");
+
+    assert_eq!(code, 0);
+    assert!(directory.path().join("nextest-compile-started").is_file());
+    assert!(directory.path().join("dylint-compile-started").is_file());
 }
 
 #[test]

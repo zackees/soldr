@@ -50,7 +50,7 @@ zstd = { workspace = true }
 # soldr#1368: there is no longer a separately-downloaded managed zccache
 # binary. soldr#1592 exposes the compiled-in CLI by materializing the main
 # `soldr` executable under the `zccache` multicall name.
-zccache = { version = "=1.13.17", default-features = false, features = ["cli"] }
+zccache = { version = "=1.13.20", default-features = false, features = ["cli"] }
 
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
 # and detached spawn (setsid). On Windows the equivalent

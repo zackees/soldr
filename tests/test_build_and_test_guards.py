@@ -39,6 +39,7 @@ GUARD_1799 = "Assert managed toolchain homes did not leak (soldr#1799)"
 GUARD_1838 = "Assert the build did not silently run uncached (soldr#1838)"
 CI_TEST_DRIVER = "Build ci-test driver"
 CI_TEST_RUN = "Run prescribed host validation"
+BROKER_HANDOFF = "Hand off bootstrap broker to source revision"
 CANONICAL_CACHE = "Select canonical host CI cache domain"
 FINAL_CACHE_STOP = "Stop canonical host CI cache"
 CACHE_ENV_VARS = ("SOLDR_CACHE_DIR", "ZCCACHE_CACHE_DIR")
@@ -101,6 +102,29 @@ def test_hosted_runner_compile_concurrency_uses_heavy_unit_exclusivity() -> None
     assert "Enlarge swap (OOM headroom)" in workflow
 
 
+def test_setup_soldr_job_caps_are_cleared_before_source_work() -> None:
+    """The bootstrap action must not silently cap the source revision.
+
+    setup-soldr 0.9.10 exports both legacy one-job overrides through
+    ``GITHUB_ENV`` when ``ci-tests: true``.  Omitting the variables from the
+    reusable job's ``env`` block therefore does not make them unset.  Keep the
+    cleanup local to this host-validation boundary so normal callers' explicit
+    Soldr/Cargo overrides continue to win everywhere else.
+    """
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    clear_caps = "unset CARGO_BUILD_JOBS SOLDR_JOBS"
+
+    command_by_step = {
+        CI_TEST_DRIVER: "soldr cargo build",
+        BROKER_HANDOFF: '"$source_soldr" daemon start',
+        CI_TEST_RUN: "ci-test --target",
+    }
+    for step_name, source_command in command_by_step.items():
+        body = _step_body(workflow, step_name)
+        assert clear_caps in body
+        assert body.index(clear_caps) < body.index(source_command)
+
+
 def test_dev_and_test_profiles_share_all_host_ci_compile_settings() -> None:
     # The warm-up path drives dev and nextest drives test. They share
     # target/<triple>/debug, so a setting delta makes every unit stale at the
@@ -149,8 +173,8 @@ def test_ci_test_traps_bare_cargo_but_keeps_nested_cargo_on_soldr() -> None:
     )
     assert "GITHUB_ENV" not in body
     assert "GITHUB_PATH" not in body
-    assert "CARGO_BUILD_JOBS" not in body
-    assert "SOLDR_JOBS" not in body
+    assert "CARGO_BUILD_JOBS=" not in body
+    assert "SOLDR_JOBS=" not in body
 
     nextest_config = NEXTEST_CONFIG.read_text(encoding="utf-8")
     wrapper_start = nextest_config.index("[scripts.wrapper.timeout-diagnostics]")
