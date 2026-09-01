@@ -6,6 +6,7 @@ mod execute;
 mod execute_report;
 mod executor_contract;
 mod model;
+mod nextest_resident_lease;
 mod parse;
 pub(crate) mod plan;
 mod test_targets;

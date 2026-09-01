@@ -3,6 +3,7 @@ use super::execute_report::{
     summarize_compiler_report, write_compiler_run_report, CompilerEvent, CompilerIdentity,
 };
 use super::model::{CiTestPlan, Stage};
+use super::nextest_resident_lease;
 use crate::core::SoldrError;
 use std::path::PathBuf;
 use std::process::{Child, Command};
@@ -241,7 +242,20 @@ fn run_parallel_nextest_and_dylint(
 ) -> Result<i32, SoldrError> {
     let nextest = stage_named(plan, "nextest")?;
     let dylint = DylintBranch::from_plan(plan)?;
-    supervise_parallel_stage_and_dylint(factory, nextest, dylint, &PlanDylintVerifier(plan))
+    // soldr#2878: activate the daemon's resident-capacity lease around
+    // Nextest EXECUTION only. `run_parallel_nextest_compile_and_dylint_compile`
+    // below calls `supervise_parallel_stage_and_dylint` directly and never
+    // references `nextest_resident_lease` -- there is no parameter through
+    // which `nextest-compile` could acquire this lease. See
+    // `nextest_resident_lease`'s module doc for the regression this closes,
+    // the chosen weight, and why release is unconditional here (covers both
+    // the success and the failure/cancel outcomes of the guarded call).
+    let lease_controller = nextest_resident_lease::DaemonResidentLeaseController {
+        permits: nextest_resident_lease::NEXTEST_RESIDENT_LEASE_PERMITS,
+    };
+    nextest_resident_lease::run_nextest_execution(&lease_controller, &nextest.name, || {
+        supervise_parallel_stage_and_dylint(factory, nextest, dylint, &PlanDylintVerifier(plan))
+    })
 }
 
 fn run_parallel_nextest_compile_and_dylint_compile(
