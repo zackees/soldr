@@ -41,6 +41,7 @@ GUARD_1838 = "Assert the build did not silently run uncached (soldr#1838)"
 CI_TEST_DRIVER = "Build ci-test driver"
 CI_TEST_RUN = "Run prescribed host validation"
 BROKER_HANDOFF = "Hand off bootstrap broker to source revision"
+DYLINT_TESTS_COOK = "Cook the Dylint UI-test dependency layer (soldr#3042)"
 SOURCE_DRIVER_DOWNLOAD = "Reuse shared source driver if already available"
 SOURCE_DRIVER_VERIFY = "Verify shared source driver provenance"
 CANONICAL_CACHE = "Select canonical host CI cache domain"
@@ -135,12 +136,40 @@ def test_setup_soldr_job_caps_are_cleared_before_source_work() -> None:
     command_by_step = {
         CI_TEST_DRIVER: "soldr cargo build",
         BROKER_HANDOFF: '"$source_soldr" daemon start',
+        DYLINT_TESTS_COOK: "cook_dylint_tests_tree.py",
         CI_TEST_RUN: "ci-test --target",
     }
     for step_name, source_command in command_by_step.items():
         body = _step_body(workflow, step_name)
         assert clear_caps in body
         assert body.index(clear_caps) < body.index(source_command)
+
+
+def test_dylint_tests_tree_is_cooked_between_broker_handoff_and_validation() -> None:
+    """The tests-tree cook (soldr#3042) has a load-bearing position.
+
+    It must run AFTER the broker handoff, not before: `--tree` exists only on
+    the source binary (the pinned setup-soldr 0.9.10 builder has no such
+    flag), and the compiles must route through the same source-owned daemon
+    `ci-test` uses -- the handoff step is what makes that daemon current. It
+    must run BEFORE prescribed host validation, or the whole point (keeping
+    these compiles out of the concurrent Dylint UI-test / Fresh Nextest
+    window) is lost. A future re-order that moves this step either direction
+    silently reintroduces the contention soldr#3042 removed.
+    """
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert workflow.count(f"- name: {DYLINT_TESTS_COOK}") == 1
+    assert (
+        workflow.index(f"- name: {BROKER_HANDOFF}")
+        < workflow.index(f"- name: {DYLINT_TESTS_COOK}")
+        < workflow.index(f"- name: {CI_TEST_RUN}")
+    )
+
+    body = _step_body(workflow, DYLINT_TESTS_COOK)
+    assert "--target-root" in body
+    assert "cook_dylint_tests_tree.py" in body
+    assert "continue-on-error: true" not in body
 
 
 def test_source_driver_reuse_is_exact_sha_opportunistic_and_fails_closed() -> None:

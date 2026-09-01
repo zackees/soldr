@@ -256,6 +256,11 @@ pub(crate) mod daemon_status_render;
 pub mod docker_cross;
 pub mod doctor;
 mod dylint_cook;
+/// soldr#3042 step 3 — which of the two Dylint target trees a
+/// `soldr dylint cook` invocation is preparing (`target/dylint/target` vs.
+/// `target/dylint/tests`), split out so `dylint_cook.rs` does not have to
+/// grow past the line ceiling to add the second tree.
+mod dylint_cook_tree;
 /// soldr#2945 — the driver half of the old `dylint_toolchain.rs`: the
 /// binary-or-exit gate on `dylint-driver`, its catalogue fetch, and the
 /// per-host runtime environment the driver needs to load a nightly's

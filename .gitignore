@@ -191,3 +191,10 @@ uv.lock
 .act-cache/
 .act-artifacts/
 act-run-*.log
+
+# `soldr dylint cook` takes an advisory workspace-source lock so two nightlies
+# cannot be inside cargo-chef's in-place skeleton reconstruction at once. In a
+# git checkout it lives under `.git/`, but each crate under `dylints/` is its
+# own Cargo workspace with no `.git/` of its own, so the lock lands beside the
+# manifest instead. It holds no state (soldr#3042).
+.soldr-dylint-cook.lock

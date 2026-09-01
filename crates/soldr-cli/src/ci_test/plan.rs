@@ -628,7 +628,9 @@ fn workspace_metadata_fingerprint(root: &Path, config: &[String]) -> Result<Stri
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn canonical_channel(channel: &str, host: &str) -> String {
+/// Shared with `dylint_cook_tree::CookTree::channel_segment` so the cook and
+/// the UI-test stage name the same directory (soldr#3042).
+pub(crate) fn canonical_channel(channel: &str, host: &str) -> String {
     if channel.ends_with(host) {
         channel.into()
     } else {

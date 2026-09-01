@@ -4,6 +4,7 @@ use crate::cargo_front_door::{self, DYLINT_DEPENDENCY_COOK_FLAG};
 use crate::core::{read_rust_toolchain_manifest, SoldrError};
 // soldr#2945: one definition of "reduce a channel to the driver identity",
 // shared with the glob-aware library reader that needs the same rule.
+use crate::dylint_cook_tree::CookTree;
 use crate::dylint_libraries::canonical_channel;
 use crate::dylint_toolchain::DylintToolchainPlan;
 use fs2::FileExt;
@@ -85,6 +86,15 @@ struct DylintCookArgs {
     offline: bool,
     cargo_config: Vec<String>,
     toolchain: Option<String>,
+    // Both `#[serde(skip)]`: `tree` enters the digest explicitly (see
+    // `build_output`'s `digest.update(args.tree.name().as_bytes())`) and
+    // `target_root` is already covered by the marker's `target_directory`
+    // field comparison, so double-hashing either through the generic
+    // `BuildShape`/`args` JSON encoding would be redundant.
+    #[serde(skip)]
+    tree: CookTree,
+    #[serde(skip)]
+    target_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,6 +108,9 @@ struct CompilerPlan {
 #[derive(Debug, Clone, Serialize)]
 struct BuildShape {
     operation: &'static str,
+    /// Which of the two Dylint target trees this cook prepared
+    /// (`"analysis"` or `"tests"`, soldr#3042 step 3).
+    tree: &'static str,
     profile: String,
     target: Option<String>,
     workspace: bool,
@@ -161,12 +174,20 @@ fn parse_args(args: &[String]) -> Result<DylintCookArgs, SoldrError> {
             "--frozen" => parsed.frozen = true,
             "--offline" => parsed.offline = true,
             "--target" => parsed.target = Some(next("--target", &mut index)?),
+            "--tree" => parsed.tree = CookTree::parse(&next("--tree", &mut index)?)?,
+            "--target-root" => {
+                parsed.target_root = Some(PathBuf::from(next("--target-root", &mut index)?))
+            }
             "--profile" => parsed.profile = Some(next("--profile", &mut index)?),
             "-p" | "--package" => parsed.packages.push(next("--package", &mut index)?),
             "--features" => extend_features(&mut parsed.features, &next("--features", &mut index)?),
             "--config" => parsed.cargo_config.push(next("--config", &mut index)?),
             "--toolchain" => parsed.toolchain = Some(next("--toolchain", &mut index)?),
             value if value.starts_with("--target=") => parsed.target = Some(value[9..].to_string()),
+            value if value.starts_with("--tree=") => parsed.tree = CookTree::parse(&value[7..])?,
+            value if value.starts_with("--target-root=") => {
+                parsed.target_root = Some(PathBuf::from(&value[14..]))
+            }
             value if value.starts_with("--profile=") => {
                 parsed.profile = Some(value[10..].to_string())
             }
@@ -205,6 +226,14 @@ fn parse_args(args: &[String]) -> Result<DylintCookArgs, SoldrError> {
     if parsed.all_features && parsed.no_default_features {
         return Err(SoldrError::Other(
             "soldr dylint cook: --all-features conflicts with --no-default-features".into(),
+        ));
+    }
+    if parsed.tree == CookTree::Tests && parsed.target.is_some() {
+        // `ci_test/plan.rs` passes no `--target` to the UI-test stage, so a
+        // `--target` cook would land artifacts under `<key>/<triple>/debug`,
+        // where cargo will not look.
+        return Err(SoldrError::Other(
+            "soldr dylint cook: --target conflicts with --tree tests; the Dylint UI-test stages compile for the host only".into(),
         ));
     }
     parsed.features.sort();
@@ -257,6 +286,21 @@ pub(crate) async fn run(args: &[String], cache_enabled: bool) -> Result<i32, Sol
 
     let plan = crate::dylint_toolchain::prepare(requested, &root).await?;
     crate::dylint_toolchain::verify_observed_identity(&plan)?;
+    if parsed.tree == CookTree::Tests {
+        // FACT 3 (soldr#3042 step 3): mirror the environment
+        // `ci_test/execute.rs:848-861` gives every `dylint-*` stage —
+        // the `ensure_known_subcommand_tool(["dylint"])` bootstrap env +
+        // bin dirs (this is where `dylint-link` comes from), and
+        // `SOLDR_LINKER=default` / `SOLDR_NO_GC_TARGET=1`. Without this,
+        // the tests-tree cook produces artifacts the UI-test stage's own
+        // fingerprint (RUSTFLAGS included) rejects as stale.
+        let paths = crate::core::SoldrPaths::new()?;
+        paths.ensure_dirs()?;
+        let bootstrap =
+            crate::cargo_front_door::ensure_known_subcommand_tool(&["dylint".to_string()], &paths)
+                .await?;
+        crate::dylint_cook_tree::apply_dylint_ui_test_environment(&bootstrap)?;
+    }
     let mut output = build_output(&root, &parsed, &plan, true)?;
     let target_dir = PathBuf::from(&output.target_directory);
     std::fs::create_dir_all(&target_dir)?;
@@ -302,6 +346,7 @@ fn print_help() {
         "Prepare Dylint dependencies with an exact nightly check-shaped pass.\n\n\
 Usage: soldr dylint cook [OPTIONS]\n\n\
 Options:\n  --plan-only --json\n  --toolchain <NIGHTLY>\n  --target <TRIPLE>\n  \
+--tree <analysis|tests>\n  --target-root <DIR>\n  \
 --release | --profile <NAME>\n  --workspace | --package <NAME>\n  \
 --features <LIST> | --all-features | --no-default-features\n  \
 --all-targets --tests --benches --examples\n  --config <KEY=VALUE>\n  \
@@ -361,6 +406,15 @@ async fn run_check_shaped_cook(
     .await
 }
 
+/// Build the cargo invocation for the cook's final build/check step.
+///
+/// The operation is tree-dependent, not always `check`: FACT 2 (soldr#3042
+/// step 3) is that `cargo check` emits `.rmeta` under a different
+/// fingerprint mode than the `cargo test` the UI-test stage runs
+/// (`ci_test/plan.rs:160-177`), so a check-shaped cook of the tests tree
+/// would be recompiled wholesale the first time the UI-test stage touched
+/// it. `args.tree.operation()` resolves to `"check"` for the historical
+/// analysis tree and `"build"` for the tests tree.
 fn build_check_args(
     args: &DylintCookArgs,
     plan: &DylintToolchainPlan,
@@ -373,7 +427,7 @@ fn build_check_args(
     for config in &args.cargo_config {
         result.extend(["--config".into(), config.clone()]);
     }
-    result.push("check".into());
+    result.push(args.tree.operation().into());
     result.extend(["--target-dir".into(), target_dir.display().to_string()]);
     if args.release {
         result.push("--release".into());
@@ -480,12 +534,15 @@ fn build_output(
     plan: &DylintToolchainPlan,
     verified: bool,
 ) -> Result<DylintCookOutput, SoldrError> {
-    let target_directory = cargo_target_root(root)?
+    let host = crate::core::TargetTriple::host()?.triple().to_string();
+    let target_directory = cook_target_root(root, args)?
         .join("dylint")
-        .join("target")
-        .join(canonical_channel(&plan.channel));
+        .join(args.tree.directory())
+        .join(args.tree.channel_segment(&plan.channel, &host));
     let mut digest = Sha256::new();
     digest.update(b"soldr-dylint-cook-v1\0");
+    digest.update(args.tree.name().as_bytes());
+    digest.update([0]);
     digest.update(plan.channel.as_bytes());
     digest.update([0]);
     digest.update(plan.compiler_release.as_bytes());
@@ -519,7 +576,8 @@ fn build_output(
         },
         target_directory: target_directory.display().to_string(),
         build_shape: BuildShape {
-            operation: "check",
+            operation: args.tree.operation(),
+            tree: args.tree.name(),
             profile: args
                 .profile
                 .clone()
@@ -605,6 +663,23 @@ fn cargo_target_root(root: &Path) -> Result<PathBuf, SoldrError> {
         }
     }
     Ok(root.join("target"))
+}
+
+/// The target root the cook should fill, honouring `--target-root` when
+/// given.
+///
+/// soldr#3042: the tests-tree cook runs with cwd inside `dylints/<lint>`
+/// (its own workspace, its own `Cargo.lock`), but the tree it must fill
+/// lives under the REPO's `target/`. Without this flag the path would
+/// resolve under `cargo_target_root` relative to the lint's own root —
+/// i.e. `dylints/<lint>/target/...` — which
+/// `.github/scripts/verify_dylint_target_dirs.py` fails the build over.
+fn cook_target_root(root: &Path, args: &DylintCookArgs) -> Result<PathBuf, SoldrError> {
+    match &args.target_root {
+        Some(path) if path.is_absolute() => Ok(path.clone()),
+        Some(path) => Ok(std::env::current_dir()?.join(path)),
+        None => cargo_target_root(root),
+    }
 }
 
 fn semantic_input_hash(root: &Path, args: &DylintCookArgs) -> Result<String, SoldrError> {

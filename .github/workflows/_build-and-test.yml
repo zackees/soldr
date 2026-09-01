@@ -268,6 +268,12 @@ jobs:
       # (soldr#3003): an archive scoped to a DIRECTORY rather than an artifact
       # tier. So the UI-test stages stay cold by design, not by omission.
       #
+      # The directory exclusion still stands and is still correct. As of
+      # soldr#3042, though, the THIRD-PARTY DEPENDENCY LAYER inside that
+      # directory is prepared ahead of time by a `soldr dylint cook
+      # --tree tests` step below, so "the UI-test stages stay cold by
+      # design" now applies only to the linked UI-test products themselves.
+      #
       # 961.2 MiB to recover 302.6s of the 638s. The key covers the exact
       # nightly every lint manifest declares plus the lint sources themselves,
       # so a driver bump or a lint edit invalidates it.
@@ -338,6 +344,38 @@ jobs:
           soldr broker remove
           source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
           "$source_soldr" daemon start
+
+      # soldr#3042: pre-compile the `target/dylint/tests` third-party
+      # dependency layer (dylint_testing -> compiletest_rs, git2,
+      # libgit2-sys, plus dylint's own build script) before validation
+      # starts. In the baseline warm run those 137 units compiled inside
+      # the Dylint UI-test branch, concurrently with Fresh Nextest --
+      # the window that produced PR #3038's fixture timeout, its 14 GiB
+      # compiler shed, and the ETXTBSY exec race on dylint's just-linked
+      # build script. Admission control does not close that window; not
+      # compiling there does.
+      #
+      # Position is load-bearing in both directions. AFTER "Build ci-test
+      # driver" because `--tree` exists only on the source binary -- the
+      # pinned setup-soldr 0.9.10 builder has no such flag -- and AFTER
+      # the broker handoff so these compiles route through the same
+      # source-owned daemon ci-test will use. BEFORE "Run prescribed host
+      # validation" or it buys nothing.
+      #
+      # This persists nothing across runs: it fills an in-run target tree.
+      # `target/dylint/tests` stays banned from every cross-run store
+      # (ci/cache-ownership.json); the cross-run saving is the Tier-2
+      # object store (soldr#3041).
+      - name: Cook the Dylint UI-test dependency layer (soldr#3042)
+        continue-on-error: false
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset CARGO_BUILD_JOBS SOLDR_JOBS
+          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          python3 .github/scripts/cook_dylint_tests_tree.py \
+            --soldr "$source_soldr" \
+            --target-root "${GITHUB_WORKSPACE}/target"
 
       # soldr#2868: one source-owned verb now covers rustfmt, lint-ci, Clippy,
       # all Dylint domains, one Nextest test-profile compilation plus its
