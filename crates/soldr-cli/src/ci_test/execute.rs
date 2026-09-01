@@ -1,7 +1,8 @@
+use super::execute_report::{
+    summarize_compiler_report, write_compiler_run_report, CompilerEvent, CompilerIdentity,
+};
 use super::model::{CiTestPlan, Stage};
 use crate::core::SoldrError;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -944,80 +945,6 @@ impl Drop for StageCommandFactory {
 fn configure_stage_cache_lifecycle(command: &mut Command) {
     command.env(crate::zccache::SOLDR_CACHE_LIFECYCLE_ENV_VAR, "job");
     command.env_remove(crate::zccache::SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR);
-}
-
-fn summarize_compiler_report(path: &std::path::Path) -> std::io::Result<CompilerRunReport> {
-    let contents = std::fs::read_to_string(path)?;
-    let mut groups: BTreeMap<String, Vec<CompilerEvent>> = BTreeMap::new();
-    for line in contents.lines() {
-        if let Ok(event) = serde_json::from_str::<CompilerEvent>(line) {
-            groups
-                .entry(event.identity.digest.clone())
-                .or_default()
-                .push(event);
-        }
-    }
-    let compiler_executions = groups.values().map(Vec::len).sum();
-    let duplicates: Vec<DuplicateCompilerIdentity> = groups
-        .values()
-        .filter(|events| events.len() > 1)
-        .map(|events| DuplicateCompilerIdentity {
-            identity: events[0].identity.clone(),
-            executions: events.len(),
-            stages: events
-                .iter()
-                .filter_map(|event| event.stage.clone())
-                .collect(),
-        })
-        .collect();
-    let duplicate_executions = duplicates
-        .iter()
-        .map(|duplicate| duplicate.executions.saturating_sub(1))
-        .sum();
-    Ok(CompilerRunReport {
-        schema_version: 1,
-        compiler_executions,
-        unique_identities: groups.len(),
-        duplicate_executions,
-        duplicates,
-    })
-}
-
-fn write_compiler_run_report(
-    path: &std::path::Path,
-    report: &CompilerRunReport,
-) -> std::io::Result<()> {
-    let json = serde_json::to_vec_pretty(report).map_err(std::io::Error::other)?;
-    std::fs::write(path, json)
-}
-
-#[derive(Debug, Serialize)]
-struct CompilerRunReport {
-    schema_version: u32,
-    compiler_executions: usize,
-    unique_identities: usize,
-    duplicate_executions: usize,
-    duplicates: Vec<DuplicateCompilerIdentity>,
-}
-
-#[derive(Debug, Serialize)]
-struct DuplicateCompilerIdentity {
-    identity: CompilerIdentity,
-    executions: usize,
-    stages: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct CompilerEvent {
-    stage: Option<String>,
-    identity: CompilerIdentity,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct CompilerIdentity {
-    digest: String,
-    #[serde(flatten)]
-    fields: BTreeMap<String, serde_json::Value>,
 }
 
 fn prepend_command_path(command: &mut Command, prefixes: &[PathBuf]) -> Result<(), SoldrError> {

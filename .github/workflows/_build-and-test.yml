@@ -232,7 +232,7 @@ jobs:
           # GITHUB_ENV. This lane deliberately leaves both knobs unset so
           # source Soldr's exclusive heavy-unit admission owns concurrency.
           unset CARGO_BUILD_JOBS SOLDR_JOBS
-          soldr cargo build -p soldr-cli --bin soldr
+          soldr cargo build -p soldr-cli --bin soldr \
             --target ${{ inputs.target }}
       # soldr#1838 Phase 4: fail the lane when the build silently ran uncached
       # via the direct compiler. `soldr status --json` surfaces the same
