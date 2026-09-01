@@ -57,11 +57,15 @@ const SOLDR_RUST_EXCLUSIVE_NON_LINKING_UNITS: &[&str] = &["kernal_api", "soldr_c
 ///
 /// Unlike the registry amalgamations above, these are not source amalgamations:
 /// their test link pulls the complete daemon/cache service graph into one rustc
-/// child.  CI run 33384831827 killed `soldr_daemon`'s `--test` compiler child
-/// while a Dylint library build held the other slot, despite `oom_kill=0` in
-/// the job cgroup.  Giving only this exact test-link form exclusive admission
-/// preserves two-way parallelism for ordinary first-party crate compilation.
-const SOLDR_HEAVY_TEST_LINKS: &[&str] = &["soldr_daemon"];
+/// child. CI run 33384831827 killed `soldr_daemon`'s `--test` compiler child
+/// while a Dylint library build held the other slot. The #3024 completion run
+/// then reproduced `soldr_cli --test` dying twice at more than 5 GiB while a
+/// different ordinary test target occupied the other slot each time. Neither
+/// run incremented the job cgroup's OOM counters: the actionable invariant is
+/// that these measured heavy links must not overlap any other compiler child.
+/// Giving only these exact test-link forms exclusive admission preserves
+/// parallelism for ordinary first-party crate compilation.
+const SOLDR_HEAVY_TEST_LINKS: &[&str] = &["soldr_daemon", "soldr_cli"];
 
 /// Extensions that name a C/C++ translation unit on a compiler command line.
 const SOURCE_EXTENSIONS: &[&str] = &["c", "cc", "cpp", "cxx", "c++", "m", "mm"];
@@ -503,6 +507,17 @@ mod tests {
             "--crate-name=soldr_daemon".to_string(),
             "--test".to_string(),
             "crates/soldr-daemon/src/lib.rs".to_string(),
+        ];
+
+        assert!(soldr_rust_crate_requires_exclusive_access(&args));
+    }
+
+    #[test]
+    fn soldr_cli_test_link_has_exclusive_access() {
+        let args = vec![
+            "--crate-name=soldr_cli".to_string(),
+            "--test".to_string(),
+            "crates/soldr-cli/src/lib.rs".to_string(),
         ];
 
         assert!(soldr_rust_crate_requires_exclusive_access(&args));

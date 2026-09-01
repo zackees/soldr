@@ -130,7 +130,7 @@ fn cook_prepare_only_against_example_project_runs_end_to_end() {
     std::fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
 
     // Force cargo to materialise Cargo.lock so the recipe has lock data.
-    let lock_status = Command::new("cargo")
+    let lock_status = Command::new(common::cargo_bin())
         .args(["generate-lockfile"])
         .current_dir(tmp.path())
         .status()
@@ -218,7 +218,7 @@ serde_json = "1"
 
     // Materialise Cargo.lock once up front so neither side pays the
     // resolver cost during the timed build.
-    let lock_status = Command::new("cargo")
+    let lock_status = Command::new(common::cargo_bin())
         .args(["generate-lockfile"])
         .current_dir(project)
         .status()
@@ -227,7 +227,7 @@ serde_json = "1"
 
     // Pre-fetch dep sources so the timed builds don't include network
     // download time — we're measuring compile, not curl.
-    let fetch_status = Command::new("cargo")
+    let fetch_status = Command::new(common::cargo_bin())
         .args(["fetch"])
         .current_dir(project)
         .status()

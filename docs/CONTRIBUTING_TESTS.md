@@ -39,6 +39,27 @@ per-test timeouts come from cargo-nextest (`.config/nextest.toml`), and the
 workspace guard in `crates/soldr-cli/tests/guards/no_timed_test_guard.rs` keeps
 the removed `timed_test!` watchdog from returning (soldr#2493).
 
+### Broker/runtime ownership boundary
+
+Generic process substrate conformance belongs to the exact `running-process`
+dependency, not to Soldr's host suite. At running-process 4.10.9 the canonical
+coverage is:
+
+| Generic contract | Authoritative running-process test |
+| --- | --- |
+| singleton refusal and real concurrent starters | `broker::server::singleton_bind::tests::bind_singleton_binds_once_and_refuses_a_second_bind`; `broker::broker_v2_scaffold_accepts_connection::concurrent_starters_yield_exactly_one_singleton_survivor` |
+| serialized stale-endpoint recovery | `broker::server::singleton_bind::tests::stale_endpoint_n_way_recovery_has_exactly_one_winner` |
+| broker restart and live-route adoption | `broker::lifecycle_process_conformance::broker_restart_re_adopts_live_backend_and_serves_next_client` |
+| dead-route replacement, single flight, and other-route isolation | `broker::lifecycle_process_conformance::backend_crash_concurrent_reconnects_launch_one_replacement_without_disturbing_other_instance` |
+| child and descendant termination | `core::containment_test::test_contained_group_kills_grandchildren`; `core::containment_test::test_local_kill_tree_kills_root_and_grandchildren` |
+
+Soldr retains adapter acceptance only where its own contract is observable:
+the already-bound CLI diagnostic/exit code; Soldr route claims and daemon-image
+replacement; cache warmth/durability across daemon restart; wire/session
+bridging; service-definition generation; and root/config isolation. The
+`cli_kill_matrix` source inventory guard prevents generic multi-route and
+restart-storm cases from being silently added back beside the upstream suite.
+
 On Unix hosts, Nextest runs each test through
 `.github/scripts/nextest_timeout_wrapper.py`. When Nextest's per-test timeout
 sends SIGTERM, the wrapper terminates the isolated child process group and

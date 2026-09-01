@@ -197,6 +197,12 @@ jobs:
       - name: Spawn-path guard
         run: uv run --no-project --python 3.13 python .github/scripts/spawn_path_guard.py
 
+      # soldr#3024 — runtime PATH trapping catches dynamic bypasses while this
+      # ripgrep guard catches literal `Command::new("cargo")` calls before any
+      # test binary is built. Intentional nested Cargo must use $CARGO.
+      - name: Nextest bare-Cargo guard
+        run: uv run --no-project --python 3.13 python .github/scripts/check_nextest_bare_cargo.py
+
       # soldr#2763 -- the v0.9.3 release died on macOS ARM64 because a release
       # script ran under the runner image's own python3, which predated the
       # 3.10 API it used. The interpreter floor was a per-file convention that

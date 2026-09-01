@@ -6,11 +6,15 @@ use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
+const CI_TEST_CARGO_RUNNER_ENV: &str = "SOLDR_CI_TEST_CARGO_RUNNER";
+
 /// Execute the frozen plan in its dependency order. Stable Nextest compilation
-/// completes after Clippy, before the serial Dylint chain begins. Its Fresh
-/// test execution then overlaps that chain. The Nextest Cargo command does not
-/// rebuild its test profile, but individual tests may launch nested compiler
-/// fixtures; those and Dylint share the daemon's canonical admission gate.
+/// completes after Clippy, before the serial Dylint chain begins. Dylint's
+/// workspace-wide analysis compiles the very large `soldr_cli --test` unit, so
+/// it finishes before Nextest processes (which are outside compiler admission)
+/// start. Fresh Nextest execution then overlaps only the Dylint UI-test chain.
+/// Individual tests may launch nested compiler fixtures; those and Dylint
+/// still share the daemon's canonical admission gate.
 /// Dylint manifests remain sequential because all six intentionally share one
 /// target tree per domain.
 pub(crate) async fn run(
@@ -33,12 +37,17 @@ pub(crate) async fn run(
     stop_on_failure!(run_group(&factory, plan, &["clippy"]));
     stop_on_failure!(run_group(&factory, plan, &["nextest-compile"]));
     factory.prepare_dylint().await?;
-    // nextest-compile already materialized the stable test profile. Tests may
-    // still launch nested Cargo fixtures; those compiles are expected and use
-    // the same shared/exclusive daemon admission as Dylint. Do not infer a
-    // global Cargo cap from their dynamic child-jobserver count.
+    stop_on_failure!(run_named_prefix(&factory, plan, "dylint-library-"));
+    verify_target_tree("Dylint library", &plan.dylint_target_trees.libraries)?;
+    stop_on_failure!(run_group(&factory, plan, &["dylint-workspace"]));
+    verify_target_tree("Dylint analysis", &plan.dylint_target_trees.analysis)?;
+    // Compiler admission cannot account for the resident memory of ordinary
+    // test processes. Starting Nextest before the exclusive soldr_cli nightly
+    // compile completed still let the pair exceed the runner envelope and
+    // SIGTERM the compiler with zero cgroup OOM events (soldr#3024). UI-test
+    // compiles are the remaining independent domain and retain useful overlap.
     eprintln!(
-        "soldr ci-test: overlapping Fresh Nextest execution with Dylint under canonical compiler admission"
+        "soldr ci-test: overlapping Fresh Nextest execution with Dylint UI tests after exclusive workspace analysis"
     );
     stop_on_failure!(run_parallel_nextest_and_dylint(&factory, plan));
     stop_on_failure!(run_group(&factory, plan, &["doctests"]));
@@ -47,25 +56,6 @@ pub(crate) async fn run(
         plan,
         &["cargo-deny-bans", "cargo-audit", "cargo-machete"],
     )
-}
-
-fn run_dylint_branch(factory: &StageCommandFactory, plan: &CiTestPlan) -> Result<i32, SoldrError> {
-    let code = run_named_prefix(factory, plan, "dylint-library-")?;
-    if code != 0 {
-        return Ok(code);
-    }
-    verify_target_tree("Dylint library", &plan.dylint_target_trees.libraries)?;
-    let code = run_group(factory, plan, &["dylint-workspace"])?;
-    if code != 0 {
-        return Ok(code);
-    }
-    verify_target_tree("Dylint analysis", &plan.dylint_target_trees.analysis)?;
-    let code = run_named_prefix(factory, plan, "dylint-test-")?;
-    if code != 0 {
-        return Ok(code);
-    }
-    verify_dylint_test_targets(plan)?;
-    Ok(0)
 }
 
 trait StageSpawner {
@@ -79,22 +69,12 @@ impl StageSpawner for StageCommandFactory {
 }
 
 trait DylintBranchVerifier {
-    fn libraries_complete(&self) -> Result<(), SoldrError>;
-    fn analysis_complete(&self) -> Result<(), SoldrError>;
     fn ui_tests_complete(&self) -> Result<(), SoldrError>;
 }
 
 struct PlanDylintVerifier<'a>(&'a CiTestPlan);
 
 impl DylintBranchVerifier for PlanDylintVerifier<'_> {
-    fn libraries_complete(&self) -> Result<(), SoldrError> {
-        verify_target_tree("Dylint library", &self.0.dylint_target_trees.libraries)
-    }
-
-    fn analysis_complete(&self) -> Result<(), SoldrError> {
-        verify_target_tree("Dylint analysis", &self.0.dylint_target_trees.analysis)
-    }
-
     fn ui_tests_complete(&self) -> Result<(), SoldrError> {
         verify_dylint_test_targets(self.0)
     }
@@ -102,57 +82,39 @@ impl DylintBranchVerifier for PlanDylintVerifier<'_> {
 
 #[derive(Clone, Copy)]
 enum DylintPhase {
-    Library(usize),
-    Workspace,
     UiTest(usize),
     Complete,
 }
 
 struct DylintBranch<'a> {
-    libraries: Vec<&'a Stage>,
-    workspace: &'a Stage,
     ui_tests: Vec<&'a Stage>,
     phase: DylintPhase,
 }
 
 impl<'a> DylintBranch<'a> {
     fn from_plan(plan: &'a CiTestPlan) -> Result<Self, SoldrError> {
-        let libraries: Vec<_> = plan
-            .stages
-            .iter()
-            .filter(|stage| stage.name.starts_with("dylint-library-"))
-            .collect();
-        let workspace = stage_named(plan, "dylint-workspace")?;
         let ui_tests: Vec<_> = plan
             .stages
             .iter()
             .filter(|stage| stage.name.starts_with("dylint-test-"))
             .collect();
-        Self::new(libraries, workspace, ui_tests)
+        Self::new(ui_tests)
     }
 
-    fn new(
-        libraries: Vec<&'a Stage>,
-        workspace: &'a Stage,
-        ui_tests: Vec<&'a Stage>,
-    ) -> Result<Self, SoldrError> {
-        if libraries.is_empty() || ui_tests.is_empty() {
+    fn new(ui_tests: Vec<&'a Stage>) -> Result<Self, SoldrError> {
+        if ui_tests.is_empty() {
             return Err(SoldrError::Other(
-                "soldr ci-test: parallel Dylint branch has an empty stage family".into(),
+                "soldr ci-test: parallel Dylint UI-test branch is empty".into(),
             ));
         }
         Ok(Self {
-            libraries,
-            workspace,
             ui_tests,
-            phase: DylintPhase::Library(0),
+            phase: DylintPhase::UiTest(0),
         })
     }
 
     fn current(&self) -> Option<&'a Stage> {
         match self.phase {
-            DylintPhase::Library(index) => self.libraries.get(index).copied(),
-            DylintPhase::Workspace => Some(self.workspace),
             DylintPhase::UiTest(index) => self.ui_tests.get(index).copied(),
             DylintPhase::Complete => None,
         }
@@ -163,17 +125,6 @@ impl<'a> DylintBranch<'a> {
         verifier: &impl DylintBranchVerifier,
     ) -> Result<Option<&'a Stage>, SoldrError> {
         match self.phase {
-            DylintPhase::Library(index) if index + 1 < self.libraries.len() => {
-                self.phase = DylintPhase::Library(index + 1);
-            }
-            DylintPhase::Library(_) => {
-                verifier.libraries_complete()?;
-                self.phase = DylintPhase::Workspace;
-            }
-            DylintPhase::Workspace => {
-                verifier.analysis_complete()?;
-                self.phase = DylintPhase::UiTest(0);
-            }
             DylintPhase::UiTest(index) if index + 1 < self.ui_tests.len() => {
                 self.phase = DylintPhase::UiTest(index + 1);
             }
@@ -679,6 +630,8 @@ struct StageCommandFactory {
     cache_enabled: bool,
     cargo_build_jobs: Option<String>,
     soldr_jobs: Option<String>,
+    host_triple: String,
+    nextest_test_cargo_runner: Option<PathBuf>,
     dylint: crate::dylint_toolchain::DylintToolchainPlan,
     dylint_bin_dirs: Vec<PathBuf>,
     dylint_env: Vec<(String, String)>,
@@ -728,6 +681,9 @@ impl StageCommandFactory {
             cache_enabled,
             cargo_build_jobs,
             soldr_jobs,
+            host_triple: plan.host_triple.clone(),
+            nextest_test_cargo_runner: std::env::var_os(CI_TEST_CARGO_RUNNER_ENV)
+                .map(PathBuf::from),
             // Reconstructed from the frozen plan document rather than
             // re-derived, so it carries no precedence tier (soldr#2945).
             dylint: crate::dylint_toolchain::DylintToolchainPlan::identity(
@@ -779,6 +735,12 @@ impl StageCommandFactory {
         );
         command.env(crate::core::CI_TEST_STAGE_ENV_VAR, &stage.name);
         configure_stage_cache_lifecycle(&mut command);
+        configure_nextest_test_cargo_runner(
+            &mut command,
+            stage,
+            &self.host_triple,
+            self.nextest_test_cargo_runner.as_deref(),
+        )?;
         if stage.domain.starts_with("dylint-") {
             for (key, value) in &self.dylint_env {
                 command.env(key, value);
@@ -821,6 +783,33 @@ impl StageCommandFactory {
                 ))
             })
     }
+}
+
+fn configure_nextest_test_cargo_runner(
+    command: &mut Command,
+    stage: &Stage,
+    host_triple: &str,
+    runner: Option<&std::path::Path>,
+) -> Result<(), SoldrError> {
+    // Cargo deliberately replaces an inherited CARGO with the real binary
+    // performing the build. Nextest carries that value into tests. A target
+    // runner is the last process boundary before the test executable, so the
+    // generated runner can restore the allowed Soldr shim after Cargo's write.
+    if stage.name != "nextest" {
+        return Ok(());
+    }
+    let Some(runner) = runner else {
+        return Ok(());
+    };
+    if !runner.is_absolute() || !runner.is_file() {
+        return Err(SoldrError::Other(format!(
+            "soldr ci-test: {CI_TEST_CARGO_RUNNER_ENV} must name an absolute runner file: {}",
+            runner.display()
+        )));
+    }
+    let target = host_triple.to_ascii_uppercase().replace('-', "_");
+    command.env(format!("CARGO_TARGET_{target}_RUNNER"), runner);
+    Ok(())
 }
 
 fn apply_stage_resource_limits(

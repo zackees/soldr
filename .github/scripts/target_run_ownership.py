@@ -21,10 +21,21 @@ SCHEMA_VERSION = 2
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 SAFE_TEST = re.compile(r"^[A-Za-z0-9_:]+$")
 SAFE_TARGET = re.compile(r"^[A-Za-z0-9_.-]+$")
-MODULE_DECLARATION = re.compile(r"(?m)^\s*(?:pub\s+)?mod\s+([A-Za-z0-9_]+)\s*;")
-HOST_CFG = re.compile(
-    r"cfg(?:_attr)?\s*\([^\n]*(?:windows|unix|target_os|target_arch|target_env)"
+MODULE_DECLARATION = re.compile(
+    r"(?m)(?P<attrs>(?:^\s*#\[[^]]+\]\s*\n)*)"
+    r"^\s*(?:pub\s+)?mod\s+(?P<name>[A-Za-z0-9_]+)\s*;"
 )
+TEST_DECLARATION = re.compile(
+    r"(?m)(?P<attrs>(?:^\s*#\[[^]]+\]\s*\n)+)"
+    r"^\s*(?:pub(?:\([^\n)]+\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+"
+    r"(?P<name>[A-Za-z0-9_]+)\s*\("
+)
+TEST_ATTRIBUTE = re.compile(r"(?m)^\s*#\[(?:[A-Za-z0-9_]+::)?test(?:\([^]]*\))?\]")
+ATTRIBUTE_LINE = re.compile(r"(?m)^\s*#\[(?P<body>[^]]+)\]\s*$")
+HOST_CFG = re.compile(
+    r"cfg(?:_attr)?\s*\([^]]*(?:windows|unix|target_os|target_arch|target_env)"
+)
+HOST_CFG_TERM = re.compile(r"\b(?:windows|unix|target_os|target_arch|target_env)\b")
 DISPOSITIONS = {"native-linux-once", "target-replay"}
 
 HOST_MARKERS = (
@@ -89,6 +100,41 @@ class ReplaySelector:
         else:
             expression += f" & test(/^{self.test_prefix}/)"
         return f"({expression})"
+
+
+@dataclass(frozen=True)
+class CanonicalTarget:
+    triple: str
+    arch: str
+    os: str
+    env: str
+    unix: bool
+
+
+@dataclass(frozen=True)
+class HostCfgPredicate:
+    operation: str
+    value: str | None = None
+    children: tuple[HostCfgPredicate, ...] = ()
+
+    def matches(self, target: CanonicalTarget) -> bool:
+        if self.operation == "windows":
+            return target.os == "windows"
+        if self.operation == "unix":
+            return target.unix
+        if self.operation == "target_os":
+            return target.os == self.value
+        if self.operation == "target_arch":
+            return target.arch == self.value
+        if self.operation == "target_env":
+            return target.env == self.value
+        if self.operation == "all":
+            return all(child.matches(target) for child in self.children)
+        if self.operation == "any":
+            return any(child.matches(target) for child in self.children)
+        if self.operation == "not":
+            return not self.children[0].matches(target)
+        raise AssertionError(f"unknown host cfg operation: {self.operation}")
 
 
 @dataclass(frozen=True)
@@ -421,6 +467,214 @@ def _is_host_sensitive(source: str) -> bool:
     )
 
 
+def _declared_tests(source: str) -> tuple[tuple[str, str], ...]:
+    """Return directly declared test names and their attribute blocks."""
+
+    return tuple(
+        (match.group("name"), match.group("attrs"))
+        for match in TEST_DECLARATION.finditer(source)
+        if TEST_ATTRIBUTE.search(match.group("attrs")) is not None
+    )
+
+
+def _split_cfg_arguments(value: str) -> tuple[str, ...]:
+    arguments: list[str] = []
+    start = 0
+    depth = 0
+    quoted = False
+    escaped = False
+    for index, character in enumerate(value):
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                quoted = False
+            continue
+        if character == '"':
+            quoted = True
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth < 0:
+                raise ValueError(f"unbalanced host cfg expression: {value!r}")
+        elif character == "," and depth == 0:
+            arguments.append(value[start:index].strip())
+            start = index + 1
+    if quoted or depth != 0:
+        raise ValueError(f"unbalanced host cfg expression: {value!r}")
+    arguments.append(value[start:].strip())
+    if any(not argument for argument in arguments):
+        raise ValueError(f"empty host cfg operand: {value!r}")
+    return tuple(arguments)
+
+
+def _parse_host_cfg(expression: str) -> HostCfgPredicate:
+    expression = expression.strip()
+    if expression in {"windows", "unix"}:
+        return HostCfgPredicate(expression)
+    keyed = re.fullmatch(
+        r'(target_os|target_arch|target_env)\s*=\s*"([A-Za-z0-9_.-]*)"',
+        expression,
+    )
+    if keyed is not None:
+        return HostCfgPredicate(keyed.group(1), keyed.group(2))
+    compound = re.fullmatch(r"(all|any|not)\s*\((.*)\)", expression)
+    if compound is not None:
+        operation = compound.group(1)
+        children = tuple(
+            _parse_host_cfg(argument)
+            for argument in _split_cfg_arguments(compound.group(2))
+        )
+        if operation == "not" and len(children) != 1:
+            raise ValueError("host cfg not(...) requires exactly one operand")
+        return HostCfgPredicate(operation, children=children)
+    raise ValueError(
+        "unsupported or ambiguous host cfg; expected windows/unix, "
+        "target_os/target_arch/target_env, or all/any/not over those predicates: "
+        f"{expression!r}"
+    )
+
+
+def _attributes_host_cfg(attributes: str) -> HostCfgPredicate | None:
+    predicates: list[HostCfgPredicate] = []
+    for match in ATTRIBUTE_LINE.finditer(attributes):
+        body = match.group("body").strip()
+        if body.startswith("cfg_attr(") and HOST_CFG_TERM.search(body) is not None:
+            raise ValueError(
+                "unsupported or ambiguous host cfg: cfg_attr does not gate test execution"
+            )
+        if not body.startswith("cfg("):
+            continue
+        if not body.endswith(")"):
+            if HOST_CFG_TERM.search(body) is not None:
+                raise ValueError(f"unsupported or ambiguous host cfg: {body!r}")
+            continue
+        expression = body[4:-1]
+        if HOST_CFG_TERM.search(expression) is not None:
+            predicates.append(_parse_host_cfg(expression))
+    if HOST_CFG.search(attributes) is not None and not predicates:
+        raise ValueError(
+            f"unsupported or ambiguous host cfg attributes: {attributes!r}"
+        )
+    if not predicates:
+        return None
+    if len(predicates) == 1:
+        return predicates[0]
+    return HostCfgPredicate("all", children=tuple(predicates))
+
+
+def _platform_gated_tests(
+    source: str, module: str | None, *, module_attributes: str = ""
+) -> tuple[tuple[str, HostCfgPredicate], ...]:
+    """Return test IDs and the host cfg that controls their compilation."""
+
+    module_predicate = _attributes_host_cfg(module_attributes)
+    tests: list[tuple[str, HostCfgPredicate]] = []
+    for name, attributes in _declared_tests(source):
+        test_predicate = _attributes_host_cfg(attributes)
+        predicates = tuple(
+            predicate
+            for predicate in (module_predicate, test_predicate)
+            if predicate is not None
+        )
+        if not predicates:
+            continue
+        predicate = (
+            predicates[0]
+            if len(predicates) == 1
+            else HostCfgPredicate("all", children=predicates)
+        )
+        test_name = f"{module}::{name}" if module is not None else name
+        tests.append((test_name, predicate))
+    return tuple(tests)
+
+
+def _canonical_target(triple: str) -> CanonicalTarget:
+    arch = triple.split("-", 1)[0]
+    if "-pc-windows-" in triple:
+        return CanonicalTarget(triple, arch, "windows", triple.rsplit("-", 1)[1], False)
+    if triple.endswith("-apple-darwin"):
+        return CanonicalTarget(triple, arch, "macos", "", True)
+    if "-unknown-linux-" in triple:
+        return CanonicalTarget(triple, arch, "linux", triple.rsplit("-", 1)[1], True)
+    raise ValueError(f"unsupported canonical target triple for host cfg: {triple}")
+
+
+def _load_canonical_targets(
+    repo_root: Path,
+) -> tuple[dict[str, CanonicalTarget], set[str], list[str]]:
+    contract_path = repo_root / "ci" / "canonical-targets.json"
+    if not contract_path.is_file():
+        # Focused source fixtures need not reproduce the repository CI contract.
+        return {}, set(), []
+    payload = json.loads(contract_path.read_text(encoding="utf-8"))
+    raw_targets = payload.get("targets") if isinstance(payload, dict) else None
+    if not isinstance(raw_targets, list):
+        return (
+            {},
+            set(),
+            [f"canonical target contract has no targets array: {contract_path}"],
+        )
+
+    canonical: dict[str, CanonicalTarget] = {}
+    replayed: set[str] = set()
+    failures: list[str] = []
+    for raw in raw_targets:
+        if not isinstance(raw, dict):
+            failures.append(
+                f"canonical target contract contains an invalid target: {raw!r}"
+            )
+            continue
+        triple = raw.get("triple")
+        if not isinstance(triple, str):
+            failures.append(
+                f"canonical target contract contains an invalid target: {raw!r}"
+            )
+            continue
+        try:
+            canonical[triple] = _canonical_target(triple)
+        except ValueError as error:
+            failures.append(str(error))
+            continue
+        ci = raw.get("ci")
+        if (
+            isinstance(ci, dict)
+            and ci.get("kind") == "cross"
+            and isinstance(ci.get("run_job"), str)
+        ):
+            replayed.add(triple)
+    return canonical, replayed, failures
+
+
+def _validate_selector_target_scopes(
+    manifest: OwnershipManifest,
+    canonical: dict[str, CanonicalTarget],
+    replayed: set[str],
+) -> list[str]:
+    """Reject target scopes that cannot reach any canonical target-run lane."""
+
+    if not canonical:
+        return []
+
+    failures: list[str] = []
+    for selector in manifest.selectors:
+        if selector.targets is None:
+            continue
+        unknown = sorted(set(selector.targets) - set(canonical))
+        if unknown:
+            failures.append(
+                f"target-run selector {selector.id} names non-canonical targets: {unknown}"
+            )
+        if set(selector.targets).isdisjoint(replayed):
+            failures.append(
+                f"target-run selector {selector.id} applies to no canonical replay lane"
+            )
+    return failures
+
+
 def validate_source_ownership(manifest: dict[str, object], repo_root: Path) -> None:
     """Fail on unclassified host source or a stale/overlapping classification."""
 
@@ -435,6 +689,13 @@ def validate_source_ownership(manifest: dict[str, object], repo_root: Path) -> N
     observed_sources: set[tuple[str, str, str | None]] = set()
     host_sensitive_sources: set[tuple[str, str, str | None]] = set()
     category_binaries: set[tuple[str, str]] = set()
+    platform_gated_tests: list[
+        tuple[tuple[str, str, str | None], str, HostCfgPredicate]
+    ] = []
+
+    canonical, replayed, target_failures = _load_canonical_targets(repo_root)
+    failures.extend(target_failures)
+    failures.extend(_validate_selector_target_scopes(parsed, canonical, replayed))
 
     if crates_root.is_dir():
         for crate in sorted(path for path in crates_root.iterdir() if path.is_dir()):
@@ -447,7 +708,8 @@ def validate_source_ownership(manifest: dict[str, object], repo_root: Path) -> N
                 binary = main_path.parent.name
                 category_binaries.add((package, binary))
                 main_source = main_path.read_text(encoding="utf-8")
-                for module in MODULE_DECLARATION.findall(main_source):
+                for declaration in MODULE_DECLARATION.finditer(main_source):
+                    module = declaration.group("name")
                     if module == "common":
                         continue
                     module_path = main_path.parent / f"{module}.rs"
@@ -458,15 +720,29 @@ def validate_source_ownership(manifest: dict[str, object], repo_root: Path) -> N
                             f"{main_path.relative_to(repo_root)} declares missing {module}.rs"
                         )
                         continue
-                    if _is_host_sensitive(module_path.read_text(encoding="utf-8")):
+                    module_source = module_path.read_text(encoding="utf-8")
+                    if _is_host_sensitive(module_source):
                         host_sensitive_sources.add(source_key)
+                    platform_gated_tests.extend(
+                        (source_key, test_name, predicate)
+                        for test_name, predicate in _platform_gated_tests(
+                            module_source,
+                            module,
+                            module_attributes=declaration.group("attrs"),
+                        )
+                    )
 
             for source_path in sorted(tests_root.glob("*.rs")):
                 binary = source_path.stem
                 source_key = (package, binary, None)
                 observed_sources.add(source_key)
-                if _is_host_sensitive(source_path.read_text(encoding="utf-8")):
+                source = source_path.read_text(encoding="utf-8")
+                if _is_host_sensitive(source):
                     host_sensitive_sources.add(source_key)
+                platform_gated_tests.extend(
+                    (source_key, test_name, predicate)
+                    for test_name, predicate in _platform_gated_tests(source, None)
+                )
 
     platform_root = repo_root / "crates" / "soldr-platform"
     if platform_root.is_dir():
@@ -481,6 +757,38 @@ def validate_source_ownership(manifest: dict[str, object], repo_root: Path) -> N
             failures.append(
                 "unclassified host-sensitive test source: "
                 f"package={package} binary={binary}{module_note}"
+            )
+
+    for source_key, test_name, predicate in sorted(
+        platform_gated_tests, key=lambda item: (item[0], item[1])
+    ):
+        package, binary, _module = source_key
+        matching_selectors = tuple(
+            selector.matches(package, binary, test_name)
+            for selector in parsed.selectors
+        )
+        selectors = tuple(
+            selector
+            for selector, matches in zip(
+                parsed.selectors, matching_selectors, strict=True
+            )
+            if matches
+        )
+        if not selectors:
+            failures.append(
+                "platform-gated test lacks a positive replay selector: "
+                f"package={package} binary={binary} test={test_name}"
+            )
+            continue
+        if canonical and not any(
+            predicate.matches(canonical[target])
+            for selector in selectors
+            for target in (selector.targets or tuple(sorted(replayed)))
+            if target in replayed and target in canonical
+        ):
+            failures.append(
+                "platform-gated test has no replay selector on a compatible target: "
+                f"package={package} binary={binary} test={test_name}"
             )
 
     for source_key, classification in classifications.items():
