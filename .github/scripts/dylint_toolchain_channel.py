@@ -49,7 +49,11 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from check_dylint_driver_assets import (  # noqa: E402
+# The sibling import must follow the `sys.path` insert above, so both flake8's
+# E402 and pylint's wrong-import-position are suppressed deliberately here
+# rather than by duplicating `check_dylint_driver_assets`'s readers (soldr#2740:
+# one parser per concept).
+from check_dylint_driver_assets import (  # noqa: E402  # pylint: disable=wrong-import-position
     KNOWN_TOOLS_RELATIVE,
     GuardError,
     dylint_library_manifests,
@@ -91,7 +95,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"dylint_toolchain_channel: {error}", file=sys.stderr)
         return 1
     except OSError as error:
-        print(f"dylint_toolchain_channel: could not read a Dylint pin: {error}", file=sys.stderr)
+        print(
+            f"dylint_toolchain_channel: could not read a Dylint pin: {error}",
+            file=sys.stderr,
+        )
         return 1
 
     emit("channel", channel)
