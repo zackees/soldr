@@ -260,17 +260,31 @@ pub(crate) fn snapshot_project_source(
 }
 
 /// Restore the project to its snapshotted state: delete every current
-/// project-source file (removing cargo-chef's stubs / any added crate roots),
-/// then rewrite the captured originals. `target/`/`.git/` are never touched,
-/// so the cooked dependency artifacts survive.
+/// project-source file that the snapshot does not contain (removing any
+/// crate roots cargo-chef added for crates that previously had none), then
+/// rewrite the captured originals. Files whose on-disk contents already
+/// match the snapshot are left untouched so their mtimes survive —
+/// zackees/soldr#3043: cook runs inside CI jobs after earlier build steps,
+/// and rewriting every file on every restore bumps mtimes and invalidates
+/// Cargo's fingerprints for work that already completed in the same job.
+/// `target/`/`.git/` are never touched, so the cooked dependency artifacts
+/// survive.
 pub(crate) fn restore_project_source(
     manifest_dir: &Path,
     snapshot: &ProjectSourceSnapshot,
 ) -> Result<(), SoldrError> {
-    // 1. Remove chef's in-place rewrites (manifests + .rs outside target/.git).
+    // 1. Remove files cargo-chef added that the snapshot never captured
+    // (manifests + .rs outside target/.git). Files present in the snapshot
+    // are handled below by content comparison instead of blind delete+write.
+    let known: std::collections::HashSet<PathBuf> =
+        snapshot.files.iter().map(|(rel, _)| rel.clone()).collect();
     let mut to_delete: Vec<PathBuf> = Vec::new();
     {
-        let mut mark = |abs: &Path, _rel: PathBuf| to_delete.push(abs.to_path_buf());
+        let mut mark = |abs: &Path, rel: PathBuf| {
+            if !known.contains(&rel) {
+                to_delete.push(abs.to_path_buf());
+            }
+        };
         // Best-effort: a read error here just means fewer deletions; the
         // rewrite below still restores originals.
         let _ = walk_project_source(manifest_dir, manifest_dir, &mut mark);
@@ -278,9 +292,17 @@ pub(crate) fn restore_project_source(
     for path in to_delete {
         let _ = std::fs::remove_file(&path);
     }
-    // 2. Rewrite the captured originals.
+    // 2. Rewrite the captured originals, skipping files whose content is
+    // already correct so their mtime is preserved.
     for (rel, bytes) in &snapshot.files {
         let dest = manifest_dir.join(rel);
+        // Already byte-identical: leave the file (and therefore its mtime)
+        // alone. A read error — missing file, unreadable, or a directory
+        // standing where a file belongs — falls through to the write below so
+        // the failure is still reported by the original error path.
+        if std::fs::read(&dest).is_ok_and(|current| current == *bytes) {
+            continue;
+        }
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 SoldrError::Other(format!(
@@ -368,6 +390,24 @@ pub(crate) async fn run_cook(args: &[String], cache_enabled: bool) -> Result<i32
     let cwd = std::env::current_dir()
         .map_err(|e| SoldrError::Other(format!("soldr cook: failed to read cwd: {e}")))?;
     let (ctx, _tempdir_guard) = build_cook_context(&cwd, &parsed)?;
+
+    // soldr#3043: publish this cook's target scope to the cargo front door
+    // before ANY phase runs. Phase 1 below is `cargo chef prepare`, whose argv
+    // cannot carry `--target` (cargo-chef's `prepare` takes no such flag), yet
+    // it is "build-like" enough that the front door runs its cook-index
+    // pre-flight hydrate. With only the argv to read, that hydrate would
+    // extract a `--target X` archive into the bare `target/` root — a full
+    // duplicate extraction into a directory Cargo never reads for a `--target`
+    // build, and the restored warm-cook marker would land outside
+    // `resolve_cook_target_dir`, so the #621 short-circuit checked below could
+    // never fire on a hydrated tree. Left unset for a `--target`-less cook, so
+    // that path keeps its existing bare-`target/` behaviour exactly.
+    if let Some(triple) = parsed.target.as_deref() {
+        std::env::set_var(
+            crate::cargo_front_door::cook_hydrate::SOLDR_COOK_HYDRATE_TARGET_ENV,
+            triple,
+        );
+    }
 
     // Phase 1: prepare. Cheap, deterministic, reads only the manifest tree.
     if !parsed.cook_only {

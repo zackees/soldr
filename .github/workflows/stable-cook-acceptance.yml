@@ -1,0 +1,81 @@
+name: Stable Cook Acceptance
+
+
+# Not a per-PR job (soldr#3043 Phase 2, same rationale as
+# dylint-cook-acceptance.yml's soldr#1900 follow-up).
+#
+# This acceptance runs its scenarios inside a Docker container via
+# `ci/perf_local.py`. That container earns its keep *locally*: it is a
+# named, reusable runner with persistent target/Cargo/soldr volumes, so
+# a developer's second run is warm.
+#
+# On GitHub Actions there is nothing to reuse. The runner is already an
+# ephemeral, isolated VM, so the container adds no isolation the job did
+# not already have -- it only adds a full image build to every run. Three
+# cold/warm/object-cache-only cooks of the real workspace, each watchdog-
+# capped at 1800s, is real wall time that has no business sitting between
+# a one-line change and a merge.
+#
+# So it moves to manual dispatch plus a weekly schedule, on a different
+# hour than `dylint-cook-acceptance.yml` so the two do not contend for a
+# runner slot: the coverage stays, and it stops sitting in the critical
+# path. Run it on demand before touching stable-tree cook caching:
+#
+#     gh workflow run "Stable Cook Acceptance"
+#
+# This workflow's whole subject is what `actions/cache` controls in
+# `_build-and-test.yml`'s stable lane -- which `$SOLDR_CACHE_DIR` subpaths
+# survive between runs -- so `check_cache_ownership.py` exempts it as a
+# `cache-experiment`: constraining what it persists would destroy the
+# measurement it exists to make (see that guard's `EXPERIMENT_WORKFLOWS`
+# and `ci/cache-ownership.json`).
+#
+# Note the deliberate distinction: Docker stays where it provides an
+# environment the runner genuinely is not -- `baseline-zero-deps.yml`
+# builds an old-glibc image to prove the binary runs there. That is
+# testing a different platform, not re-isolating an isolated one.
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# soldr#1985 - stop superseded runs from holding runner slots.
+concurrency:
+  group: stable-cook-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stable-cook:
+    name: stable-tree cook matrix (cold / warm / object-cache-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+
+      # soldr#2763: uv must exist before the first step that uses it.
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+
+      # The acceptance re-invokes itself through `sys.executable`, so pinning
+      # the interpreter here pins the whole chain rather than just the entry
+      # point. The script is stdlib-only; the pin is about the runner image's
+      # Python being reproducible.
+      - name: Run Docker acceptance and benchmarks
+        env:
+          SOLDR_PERF_LOCAL_PTRACE: "1"
+        run: uv run --no-project --python 3.13 python .github/scripts/stable_cook_acceptance.py
+
+      - name: Upload watchdog stacks and Tokio recording
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: stable-cook-watchdog-${{ github.run_id }}
+          path: ${{ runner.temp }}/stable-cook-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7

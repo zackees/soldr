@@ -685,6 +685,88 @@ fn restore_project_source_reports_failure_instead_of_allowing_success() {
 }
 
 // ---------------------------------------------------------------------------
+// soldr#3043: restore must be idempotent w.r.t. mtimes, so a cook run late
+// in a CI job does not dirty Cargo's fingerprints for units already built.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn restore_project_source_preserves_mtime_of_unchanged_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let manifest = "[package]\nname = \"unchanged\"\nversion = \"0.1.0\"\n";
+    let lib_rs = "pub fn real() -> i32 {\n    1\n}\n";
+    std::fs::write(root.join("Cargo.toml"), manifest).unwrap();
+    std::fs::write(root.join("src/lib.rs"), lib_rs).unwrap();
+
+    // Pin the mtime to a known value in the past so this assertion cannot
+    // pass by coincidence (e.g. two writes landing in the same clock tick).
+    let old_time = filetime::FileTime::from_unix_time(1_700_000_000, 0);
+    filetime::set_file_mtime(root.join("src/lib.rs"), old_time).unwrap();
+    let meta_before = std::fs::metadata(root.join("src/lib.rs")).unwrap();
+    let before = meta_before.modified().unwrap();
+
+    let snapshot = snapshot_project_source(root).unwrap();
+    restore_project_source(root, &snapshot).unwrap();
+
+    let meta_after = std::fs::metadata(root.join("src/lib.rs")).unwrap();
+    let after = meta_after.modified().unwrap();
+    assert_eq!(
+        before, after,
+        "restore must not rewrite a file whose content is unchanged"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        lib_rs
+    );
+}
+
+#[test]
+fn restore_project_source_rewrites_files_cargo_chef_stubbed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let manifest = "[package]\nname = \"stubbed\"\nversion = \"0.1.0\"\n";
+    let lib_rs = "pub fn real() -> i32 {\n    2\n}\n";
+    std::fs::write(root.join("Cargo.toml"), manifest).unwrap();
+    std::fs::write(root.join("src/lib.rs"), lib_rs).unwrap();
+
+    let snapshot = snapshot_project_source(root).unwrap();
+
+    // Simulate cargo-chef stubbing the crate root down to an empty file.
+    std::fs::write(root.join("src/lib.rs"), "").unwrap();
+
+    restore_project_source(root, &snapshot).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        lib_rs
+    );
+}
+
+#[test]
+fn restore_project_source_deletes_files_absent_from_the_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let manifest = "[package]\nname = \"absent\"\nversion = \"0.1.0\"\n";
+    let lib_rs = "pub fn real() -> i32 {\n    3\n}\n";
+    std::fs::write(root.join("Cargo.toml"), manifest).unwrap();
+    std::fs::write(root.join("src/lib.rs"), lib_rs).unwrap();
+
+    let snapshot = snapshot_project_source(root).unwrap();
+
+    // Simulate cargo-chef adding a spurious crate root that wasn't there
+    // when the snapshot was captured.
+    std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+    assert!(root.join("src/main.rs").exists());
+
+    restore_project_source(root, &snapshot).unwrap();
+
+    assert!(!root.join("src/main.rs").exists());
+}
+
+// ---------------------------------------------------------------------------
 // #621 warm-cook marker round-trip
 // ---------------------------------------------------------------------------
 

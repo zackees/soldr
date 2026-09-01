@@ -31,7 +31,8 @@
     "nextest-cacheability.yml",
     "parent-cache-bench.yml",
     "perf-cold-warm.yml",
-    "perf-matrix.yml"
+    "perf-matrix.yml",
+    "stable-cook-acceptance.yml"
   ],
   "setup_soldr_layers": {
     "comment": "setup-soldr provisions several independent reuse layers. Each is gated on its own input, NOT on the `cache` umbrella (soldr#2451) -- which is why this repo's self-build lanes spell out `false` for all of them: this repo IS soldr and no self-build lane may restore a prebuilt soldr binary. Only layers a workflow turns ON get an entry below. soldr#2996 removed the target-cache layers entirely: the thin slice was a freshness slice whose library bytes zccache had to reproduce anyway, and `full` was a banned bulk target/ snapshot. soldr cook is the only durable compiler cache.",
@@ -161,6 +162,14 @@
       "tier": "zccache-unit",
       "rationale": "Content-addressed per-unit compiler outputs for the ci-test host lane; the path selects cache/zccache/daemon-state only, so the compile journals (cache/zccache/history) and session logs (cache/zccache/logs) that the build-logs artifact ships stay run-scoped and outside the entry. Not a new cache family: zccache-unit is already declared durable and live in normal lanes. soldr#3039 Phase 0.",
       "notes": "The service's own versioned log directory (daemon-state/embedded-v1/v<VERSION>/logs/) is INSIDE the selected path and is stored with the objects; zccache owns its rotation, and an actions/cache path negation could not exclude it. The lane scrubs staging/ and every lock/socket/pid file from the tree after the daemon stops and before the post-step tar, mirroring archive_always_excludes_cache_path in crates/soldr-cache/src/cache_lib/save_inventory.rs -- those files are never cache payload, they race the tar, and restoring them breaks a later daemon start. No per-entry size cap is set: the embedded budget (ZCCACHE_CACHE_SIZE_BYTES / ZCCACHE_CACHE_SIZE_PERCENT) is the one real cap. The per-family allocation belongs to soldr#3047, which sizes this store's share at 2.0 GiB; this entry states that share and does not enforce it."
+    },
+    {
+      "id": "build-and-test-stable-cook",
+      "workflow": "_build-and-test.yml",
+      "step": "Restore stable cook archives (soldr#3043)",
+      "mechanism": "actions/cache",
+      "tier": "cook",
+      "rationale": "Holds the content-addressed `soldr cook` artifacts for the stable tree (`<SOLDR_CACHE_DIR>/cache/cook`) plus the `cook_index_v2` rows in `state.sqlite3` that name them. This is Tier 1 by identity key: the key is the cargo-chef recipe hash plus triple/profile/channel/rustc version, which moves only with the locked dependency graph. No `target/` snapshot and no linked test product is persisted -- the archive is the post-`StripTargetOptions::cook` trimmed dependency tree. It counts against soldr#3047's 2.0 GiB allocation alongside soldr#3041's object store, into whose single cache block it should be folded when that hunk lands."
     },
     {
       "id": "cross-build-xwin-sdk",
@@ -498,6 +507,14 @@
       "mechanism": "*",
       "tier": "cache-experiment",
       "rationale": "The perf sweep; cache state is an independent variable of the measurement."
+    },
+    {
+      "id": "stable-cook-acceptance-experiment",
+      "workflow": "stable-cook-acceptance.yml",
+      "step": "*",
+      "mechanism": "*",
+      "tier": "cache-experiment",
+      "rationale": "Acceptance for cook behaviour on the ci-test stable tree (soldr#3043)."
     }
   ]
 }

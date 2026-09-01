@@ -99,12 +99,16 @@ jobs:
       # `rustup target add` is required. Components are installed further
       # down via the "Install requested Rust components" step.
       #
-      # soldr#2996: cook is not yet wired into this lane, and
-      # Swatinem/rust-cache is the current target/ restore -- but it is being
-      # deprecated, not kept. The `ws-dev-*` key it uses misses 100% of the
-      # time (its environment hash covers every toolchain in
-      # `rustup toolchain list`, so it flips with the Dylint nightly), and the
-      # replacement is a workflow-level `soldr cook` step ahead of ci-test.
+      # soldr#2996: Swatinem/rust-cache is the current target/ restore -- but
+      # it is being deprecated, not kept. The `ws-dev-*` key it uses misses
+      # 100% of the time (its environment hash covers every toolchain in
+      # `rustup toolchain list`, so it flips with the Dylint nightly). The
+      # replacement HAS landed as soldr#3043: the "Restore stable cook
+      # archives (soldr#3043)" cache step and the "Cook stable dependency
+      # tree (soldr#3043)" step below wire a workflow-level `soldr cook`
+      # ahead of ci-test. Swatinem/rust-cache's own retirement is soldr#3047's
+      # B-hunk, not this one -- the step stays here because its removal
+      # belongs to another PR in the serialized integration lane.
       # The older soldr#1248 wording here claimed cook restore was being
       # "reintroduced in the cross/release lanes first"; that has pointed the
       # wrong way since soldr#2867.
@@ -286,6 +290,60 @@ jobs:
             target/dylint/target
           key: dylint-foundation-v1-${{ inputs.target }}-${{ hashFiles('dylints/**/rust-toolchain.toml', 'dylints/**/Cargo.toml', 'dylints/**/src/**') }}
 
+      # The two paths are the cook artifact store (`cook_cache_dir` =
+      # `<SOLDR_CACHE_DIR>/cache/cook`, crates/soldr-cache/src/cache_lib/cook_archive.rs)
+      # and the `cook_index_v2` rows that name them
+      # (`<SOLDR_CACHE_DIR>/state.sqlite3`, crates/soldr-cache/src/cache_lib/cook_index.rs).
+      # Persisting one without the other is useless: the front-door hydrate
+      # looks the artifact up through the daemon's index, it does not scan
+      # the directory.
+      #
+      # The `-wal`/`-shm` sidecars are listed because `state_store` opens the
+      # database with `PRAGMA journal_mode=WAL`
+      # (crates/soldr-cache/src/cache_lib/state_store.rs). A clean shutdown
+      # checkpoints and removes them -- actions/cache just warns on a path that
+      # is not there -- but an unclean one leaves committed rows living only in
+      # the `-wal`. Saving the database without them would restore an index
+      # that is silently missing its most recent entries, which presents as an
+      # unexplained cold cook rather than as an error.
+      #
+      # The literal paths mirror `SOLDR_CACHE_DIR` as set by "Select canonical
+      # host CI cache domain"; that step writes GITHUB_ENV, which is why this
+      # block repeats the path expression instead of referencing the
+      # variable.
+      #
+      # Correctness does NOT come from this cache key. It comes from the cook
+      # index key (recipe hash + triple + profile + channel + rustc version).
+      # A loose actions/cache key can therefore only cost a wasted restore,
+      # never a stale artifact -- and a bumped dependency changes the recipe
+      # hash, so the index misses and cook rebuilds. That is soldr#3043's
+      # staleness negative test, satisfied by construction.
+      #
+      # An exact key hit means actions/cache does not re-save, so the entry
+      # cannot grow run over run. Sizes count against soldr#3047's 2.0 GiB
+      # allocation and are reported by the cook step.
+      #
+      # Fold this block into soldr#3041's single Soldr-domain `actions/cache`
+      # block when that hunk lands; it is separate only because #3041 is not
+      # on main yet.
+      #
+      # No broad `target/` snapshot is restored and no linked test product is
+      # persisted: the cook archive is the trimmed dependency tree
+      # (`StripTargetOptions::cook`, crates/soldr-cache/src/cache_lib/strip_target.rs),
+      # which is tier 1 `cook` in ci/cache-ownership.json.
+      - name: Restore stable cook archives (soldr#3043)
+        id: stable_cook_cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/cook
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/state.sqlite3
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/state.sqlite3-wal
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/state.sqlite3-shm
+          key: stable-cook-v1-${{ inputs.target }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
+          restore-keys: |
+            stable-cook-v1-${{ inputs.target }}-
+
       # soldr#3024: the unconditional cross-bootstrap job already builds this
       # exact workflow SHA with the pinned 1.95.0 toolchain, dev profile, and
       # default soldr-cli features. Reuse its run-scoped driver when the producer has
@@ -324,6 +382,19 @@ jobs:
       - name: Build ci-test driver
         if: steps.shared_source_driver.outcome != 'success'
         shell: bash
+        env:
+          # soldr#3043: the stable-cook cache restored above makes the cook
+          # index non-empty for the FIRST time this early in the job, so this
+          # step's front-door pre-flight would now try to hydrate it -- under
+          # the PINNED 0.9.10 bootstrap Soldr, which predates both this PR's
+          # `cook_hydrate::resolve_target_dir` fix and its
+          # `SOLDR_COOK_HYDRATE_TARGET` companion. That binary extracts a
+          # `--target`-scoped archive into the bare `target/` root, which cargo
+          # never reads for a `--target` build: a multi-GB write that buys
+          # nothing and competes for runner disk with the tree ci-test needs.
+          # The source-revision cook step below does the hydrate correctly.
+          # Remove this once the pinned setup-soldr Soldr carries the fix.
+          SOLDR_COOK_AUTO_HYDRATE: "0"
         run: |
           # setup-soldr 0.9.10 writes its historical ci-tests=1 caps through
           # GITHUB_ENV. This lane deliberately leaves both knobs unset so
@@ -376,6 +447,102 @@ jobs:
           python3 .github/scripts/cook_dylint_tests_tree.py \
             --soldr "$source_soldr" \
             --target-root "${GITHUB_WORKSPACE}/target"
+
+      # BUCKET (soldr#3043 step 1). `soldr ci-test --explain-plan` freezes
+      # exactly one stable compile domain (crates/soldr-cli/src/ci_test/plan.rs):
+      # `id: stable`, toolchain = `rust-toolchain.toml`'s channel, target
+      # triple = host, target_directory = `target/<host>`, profile `test`;
+      # the `rustdoc` domain shares that same directory and profile. Its
+      # consumers are `clippy --all-targets --target <host>`,
+      # `nextest run --no-run --lib --tests --target <host>`,
+      # `nextest run`, and `test --doc --target <host>`. "Build ci-test
+      # driver" uses `--profile dev` in the same directory. `[profile.test]`
+      # in the root Cargo.toml deliberately mirrors `[profile.dev]` ("Mirror
+      # dev's effective codegen settings here so their fingerprints remain
+      # reusable across that handoff (soldr#2864)"), so dev and test are ONE
+      # bucket, not two. Hence exactly one cook invocation: `--workspace
+      # --target <host>`, dev profile, default features, `-- --all-targets`
+      # for dev-dependency coverage.
+      #
+      # PATH-DEP GUARD (soldr#3043 step 3). The only `exclude` entry in the
+      # root workspace is `.extern-repos/soldr-maturin`, and every path
+      # dependency in `crates/*/Cargo.toml` points at a workspace MEMBER, so
+      # `unmaterializable_path_deps` should not fire. `dylints/*` are
+      # separate `[workspace]` roots and are not part of the stable tree. If
+      # exit 3 appears anyway, exclude the offending member with `-p`; do not
+      # relax the guard.
+      #
+      # OPTION (b) IS CHOSEN, NOT (a), and the issue's own preference is
+      # overridden for two measured reasons. (i) The pinned setup-soldr
+      # 0.9.10 binary is soldr v0.9.10 = commit dcc19c61, which predates
+      # soldr#2870 (commit 623f0b49). #2870 added `compile_duration_ms` /
+      # `save_elapsed_ms` to `CookEntry` plus the `decide_cook_restore` cost
+      # gate, and that gate refuses any row whose timings are zero ("no prior
+      # compile duration is recorded"). A cook run by 0.9.10 writes exactly
+      # such rows, so it would poison the store for every later HEAD reader.
+      # (ii) 0.9.10 also predates this PR's fix to
+      # `cook_hydrate::resolve_target_dir`, so its hydrate extracts a
+      # `--target` archive to `target/` instead of `target/<triple>/` and the
+      # warm path cannot work at all. Option (a) is therefore blocked behind
+      # the full soldr-release -> setup-soldr-ingest -> pin-bump loop; option
+      # (b) needs none of it.
+      #
+      # WHY (b) COSTS ALMOST NOTHING HERE, contrary to the issue's framing.
+      # "Build ci-test driver" is gated on
+      # `steps.shared_source_driver.outcome != 'success'`, so on the normal
+      # path (soldr#3024 reuses the cross-bootstrap driver artifact) NO
+      # first-party compile happens before this step and cook pre-warms the
+      # entire tree ci-test then compiles against. On the fallback path the
+      # driver is built first; `restore_project_source` used to bump every
+      # workspace source mtime and would have thrown that build away, which
+      # is why this PR also makes that restore leave unchanged files
+      # untouched.
+      #
+      # WHY THE STEP SITS AFTER THE BROKER HANDOFF: the cook index is
+      # written and read through the daemon, and "Hand off bootstrap broker
+      # to source revision" is where the source-revision daemon takes over.
+      # Cooking before it would record rows via the 0.9.10 daemon.
+      #
+      # WHY `SOLDR_RUSTC_WRAPPER` IS EXPORTED: "Run prescribed host
+      # validation" runs ci-test with `SOLDR_RUSTC_WRAPPER="$source_soldr"`.
+      # `RUSTC_WRAPPER` is part of Cargo's fingerprint, so if cook compiled
+      # under a differently-named generated shim every unit it built would
+      # be dirty for ci-test. The two steps must name the identical wrapper
+      # path.
+      #
+      # `CookDecision { action: "not-run" }` in ci_test/plan.rs is unchanged
+      # and stays unchanged: cook runs at workflow level, never inside the
+      # verb.
+      #
+      # The `< 130` third-party journal-record acceptance is measured with
+      # soldr#3040's `analyze_compile_journal.py`, which is not on main yet;
+      # `run_stable_cook.py` runs without `--require-warm` until then, so a
+      # non-warm run annotates rather than fails.
+      #
+      # WHY `--allow-cook-failure` AND NOT `continue-on-error`: this step is a
+      # pre-warm for the step after it. A cook that fails leaves ci-test with a
+      # COLD dependency tree, not a wrong one, so it must not decide the
+      # verdict of the lane whose subject is soldr itself. `continue-on-error`
+      # would swallow the uncookable-workspace guard too; the flag keeps
+      # COOK_SKIPPED_UNCOOKABLE_WORKSPACE (exit 3) fatal, because that one
+      # names a real workspace defect with a named fix (exclude the member
+      # with `-p` -- soldr#3043 step 3), and downgrades only the failures whose
+      # single cost is wall time. The one to watch on the first runs is
+      # cargo-chef 0.1.73's handling of `-- --all-targets`: the `--`
+      # passthrough is documented (docs/API.md `soldr cook`) but is not covered
+      # by an end-to-end test, so if the annotation says cook exited non-zero,
+      # read the echoed cook stderr before assuming a workspace problem.
+      - name: Cook stable dependency tree (soldr#3043)
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset CARGO_BUILD_JOBS SOLDR_JOBS
+          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          SOLDR_RUSTC_WRAPPER="$source_soldr" python3 .github/scripts/run_stable_cook.py \
+            --soldr "$source_soldr" \
+            --target "${{ inputs.target }}" \
+            --cache-dir "$SOLDR_CACHE_DIR" \
+            --allow-cook-failure
 
       # soldr#2868: one source-owned verb now covers rustfmt, lint-ci, Clippy,
       # all Dylint domains, one Nextest test-profile compilation plus its
