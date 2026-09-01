@@ -76,6 +76,30 @@ fn flush_caches_request_round_trips() {
 }
 
 #[test]
+fn resident_capacity_control_frames_round_trip() {
+    let acquire = Request::AcquireResidentCapacity { permits: 3 };
+    let bytes = encode_request(&acquire);
+    assert!(matches!(
+        decode_request(&bytes).expect("decode acquire"),
+        Request::AcquireResidentCapacity { permits: 3 }
+    ));
+
+    let release = Request::ReleaseResidentCapacity;
+    let bytes = encode_request(&release);
+    assert!(matches!(
+        decode_request(&bytes).expect("decode release"),
+        Request::ReleaseResidentCapacity
+    ));
+
+    let acquired = Response::ResidentCapacityAcquired { permits: 3 };
+    let bytes = encode_response(&acquired);
+    assert!(matches!(
+        decode_response(&bytes).expect("decode acquired"),
+        Response::ResidentCapacityAcquired { permits: 3 }
+    ));
+}
+
+#[test]
 fn cache_flush_response_preserves_incomplete_step_details() {
     let info = CacheFlushInfo {
         complete: false,

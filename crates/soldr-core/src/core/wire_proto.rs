@@ -13,7 +13,7 @@ use prost::{Message, Oneof};
 pub struct WireRequest {
     #[prost(
         oneof = "WireRequestKind",
-        tags = "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20"
+        tags = "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22"
     )]
     pub kind: Option<WireRequestKind>,
 }
@@ -67,6 +67,16 @@ pub enum WireRequestKind {
     ListTargetRegistry(WireUnit),
     #[prost(message, tag = "20")]
     RemoveTargetRegistry(WireRemoveTargetRegistry),
+    #[prost(message, tag = "21")]
+    AcquireResidentCapacity(WireAcquireResidentCapacity),
+    #[prost(message, tag = "22")]
+    ReleaseResidentCapacity(WireUnit),
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireAcquireResidentCapacity {
+    #[prost(uint32, tag = "1")]
+    pub permits: u32,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -263,7 +273,7 @@ pub struct WireResponse {
         // soldr#1838: a tag missing from this list decodes as EmptyOneof even
         // though the variant exists on the enum below -- prost only accepts
         // tags enumerated here. Keep it in sync when adding a variant.
-        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20"
+        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21"
     )]
     pub kind: Option<WireResponseKind>,
 }
@@ -329,6 +339,14 @@ pub enum WireResponseKind {
     TargetRegistryRows(WireTargetRegistryRows),
     #[prost(message, tag = "20")]
     TargetRegistryRemoved(WireTargetRegistryRemoved),
+    #[prost(message, tag = "21")]
+    ResidentCapacityAcquired(WireResidentCapacityAcquired),
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireResidentCapacityAcquired {
+    #[prost(uint32, tag = "1")]
+    pub permits: u32,
 }
 
 #[derive(Clone, PartialEq, Message)]

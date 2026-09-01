@@ -80,9 +80,9 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(2_000);
 /// longer than the generic status/shutdown request timeout.
 const CACHE_FLUSH_REPLY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Historical protocols that must remain able to retire their daemon during
-/// an in-place upgrade. v22 is the immediately preceding released daemon;
+/// an in-place upgrade. v23 is the immediately preceding daemon protocol;
 /// v17 is the last protocol whose shutdown acknowledgement lacked identity.
-const SHUTDOWN_COMPAT_PROTOCOL_VERSIONS: &[u32] = &[22, 17];
+const SHUTDOWN_COMPAT_PROTOCOL_VERSIONS: &[u32] = &[23, 17];
 
 /// Default compile-dispatch timeout — rustc may take minutes for a release
 /// build of a large crate, so the default stays generous (30 minutes): a
@@ -336,6 +336,97 @@ pub fn compile_stats(sock_path: &Path) -> Result<CompileStatsInfo, ClientError> 
         Response::Error(msg) => Err(ClientError::Protocol(msg)),
         other => Err(ClientError::Protocol(format!(
             "unexpected response: {other:?}"
+        ))),
+    }
+}
+
+/// A connection-scoped reservation of the daemon's embedded compile capacity.
+///
+/// The stream is intentionally retained for the lease lifetime. Calling
+/// [`Self::finish`] sends the release frame and waits for its acknowledgement;
+/// dropping the lease closes the stream, which makes the daemon drop the same
+/// server-side permit guard without polling or a separate cleanup request.
+#[must_use = "dropping the lease immediately releases its resident compile capacity"]
+pub struct ResidentCapacityLease {
+    stream: Option<BoxedControlStream>,
+    permits: u32,
+}
+
+impl std::fmt::Debug for ResidentCapacityLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResidentCapacityLease")
+            .field("permits", &self.permits)
+            .field("active", &self.stream.is_some())
+            .finish()
+    }
+}
+
+impl ResidentCapacityLease {
+    pub fn permits(&self) -> u32 {
+        self.permits
+    }
+
+    /// Release the reservation explicitly and wait until the daemon confirms
+    /// that its server-side permit guard has been dropped.
+    pub fn finish(mut self) -> Result<(), ClientError> {
+        let mut stream = self
+            .stream
+            .take()
+            .expect("an owned resident-capacity lease always has a stream");
+        write_frame_sync(&mut stream, &Request::ReleaseResidentCapacity)?;
+        match read_frame_sync(&mut stream)? {
+            Response::Ack => Ok(()),
+            Response::Error(message) => Err(ClientError::Protocol(message)),
+            other => Err(ClientError::Protocol(format!(
+                "unexpected resident-capacity release response: {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Acquire `permits` from the daemon's embedded compile-capacity semaphore.
+/// The call returns only after the daemon holds every requested permit.
+pub fn acquire_resident_capacity(
+    sock_path: &Path,
+    permits: u32,
+) -> Result<ResidentCapacityLease, ClientError> {
+    if permits == 0 {
+        return Err(ClientError::Protocol(
+            "resident capacity requires at least one permit".to_string(),
+        ));
+    }
+    let timeout = compile_reply_timeout();
+    let stream = if let Some(stream) = connect_through_override(sock_path, timeout)? {
+        stream
+    } else {
+        Box::new(connect(sock_path, timeout)?) as BoxedControlStream
+    };
+    acquire_resident_capacity_on_stream(stream, permits)
+}
+
+fn acquire_resident_capacity_on_stream(
+    mut stream: BoxedControlStream,
+    permits: u32,
+) -> Result<ResidentCapacityLease, ClientError> {
+    if permits == 0 {
+        return Err(ClientError::Protocol(
+            "resident capacity requires at least one permit".to_string(),
+        ));
+    }
+    write_frame_sync(&mut stream, &Request::AcquireResidentCapacity { permits })?;
+    match read_frame_sync(&mut stream)? {
+        Response::ResidentCapacityAcquired { permits: acquired } if acquired == permits => {
+            Ok(ResidentCapacityLease {
+                stream: Some(stream),
+                permits,
+            })
+        }
+        Response::ResidentCapacityAcquired { permits: acquired } => Err(ClientError::Protocol(
+            format!("daemon acquired {acquired} resident permits; requested {permits}"),
+        )),
+        Response::Error(message) => Err(ClientError::Protocol(message)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected resident-capacity acquire response: {other:?}"
         ))),
     }
 }
