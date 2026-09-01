@@ -151,12 +151,11 @@ where
                 }
             };
 
-            match serve_resident_capacity_lease(&mut stream, permits, resident_capacity).await {
-                Ok(true) => {
-                    state.request_count.fetch_add(1, Ordering::Relaxed);
-                    state.touch_activity();
-                }
-                Ok(false) | Err(_) => {}
+            if let Ok(true) =
+                serve_resident_capacity_lease(&mut stream, permits, resident_capacity).await
+            {
+                state.request_count.fetch_add(1, Ordering::Relaxed);
+                state.touch_activity();
             }
         }
         Request::ReleaseResidentCapacity => {
