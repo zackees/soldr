@@ -200,6 +200,11 @@ jobs:
       # soldr#3024 — runtime PATH trapping catches dynamic bypasses while this
       # ripgrep guard catches literal `Command::new("cargo")` calls before any
       # test binary is built. Intentional nested Cargo must use $CARGO.
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y ripgrep
+
       - name: Nextest bare-Cargo guard
         run: uv run --no-project --python 3.13 python .github/scripts/check_nextest_bare_cargo.py
 

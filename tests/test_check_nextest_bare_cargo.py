@@ -31,4 +31,7 @@ def test_lint_job_runs_the_ripgrep_guard() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8"
     )
-    assert "check_nextest_bare_cargo.py" in workflow
+    assert "apt-get install --no-install-recommends -y ripgrep" in workflow
+    assert workflow.index("Install ripgrep") < workflow.index(
+        "check_nextest_bare_cargo.py"
+    )
