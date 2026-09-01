@@ -34,7 +34,9 @@ def write_manifest(tmp_path: Path, budget: dict) -> Path:
     return path
 
 
-def write_listing(tmp_path: Path, entries: list[dict], name: str = "listing.json") -> Path:
+def write_listing(
+    tmp_path: Path, entries: list[dict], name: str = "listing.json"
+) -> Path:
     path = tmp_path / name
     path.write_text(
         json.dumps({"captured": "test", "usage_bytes": None, "entries": entries}),
@@ -107,7 +109,9 @@ def test_unregistered_key_fails(
     )
     listing_path = write_listing(tmp_path, [entry("totally-unregistered-key-zzz", 10)])
 
-    code = guard.main(["--manifest", str(manifest_path), "--from-json", str(listing_path)])
+    code = guard.main(
+        ["--manifest", str(manifest_path), "--from-json", str(listing_path)]
+    )
     assert code == 1
     out = capsys.readouterr().out
     assert "totally-unregistered-key-zzz" in out
@@ -126,7 +130,9 @@ def test_family_over_its_own_budget_fails(
     )
     listing_path = write_listing(tmp_path, [entry("a-1", 150)])
 
-    code = guard.main(["--manifest", str(manifest_path), "--from-json", str(listing_path)])
+    code = guard.main(
+        ["--manifest", str(manifest_path), "--from-json", str(listing_path)]
+    )
     assert code == 1
     out = capsys.readouterr().out
     assert "fam-a" in out
@@ -151,7 +157,9 @@ def test_families_under_but_total_over_fail_total_bytes_fails(
         [entry("a-1", 600), entry("b-1", 600)],
     )
 
-    code = guard.main(["--manifest", str(manifest_path), "--from-json", str(listing_path)])
+    code = guard.main(
+        ["--manifest", str(manifest_path), "--from-json", str(listing_path)]
+    )
     assert code == 1
     out = capsys.readouterr().out
     assert "fail_total_bytes" in out
@@ -167,7 +175,10 @@ def test_manifest_budget_is_self_consistent() -> None:
     budget = manifest["budget"]
     families = budget["families"]
 
-    assert sum(spec["max_bytes"] for spec in families.values()) == budget["total_max_bytes"]
+    assert (
+        sum(spec["max_bytes"] for spec in families.values())
+        == budget["total_max_bytes"]
+    )
     assert budget["total_max_bytes"] == 9663676416
 
     owned_prefixes = [
@@ -179,9 +190,9 @@ def test_manifest_budget_is_self_consistent() -> None:
         for prefix_b, family_b in owned_prefixes:
             if family_a == family_b:
                 continue
-            assert not prefix_b.startswith(prefix_a), (
-                f"{prefix_a!r} ({family_a}) is a prefix of {prefix_b!r} ({family_b})"
-            )
+            assert not prefix_b.startswith(
+                prefix_a
+            ), f"{prefix_a!r} ({family_a}) is a prefix of {prefix_b!r} ({family_b})"
 
 
 # --------------------------------------------------------------------------

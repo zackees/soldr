@@ -369,10 +369,14 @@ carries a top-level `budget` map: one entry per producer family, each with a
 `key_prefixes` list, a `max_bytes` allocation, and the family's measured
 live-on-`main` size. Every allocation is `>=` that measured size, and the
 family allocations sum to exactly 9 GiB (`total_max_bytes`). The gate's hard
-ceiling, `fail_total_bytes`, is GitHub's documented 10 GB read as decimal
-bytes (10,000,000,000) — GitHub does not publish which byte-multiple it
-means, and the decimal reading is at or under the real limit either way, so
-the gate can never pass a store GitHub is already evicting:
+ceiling, `fail_total_bytes`, is set to 9.5 GiB (10,200,547,328 bytes) — half
+a GiB of headroom above the 9 GiB family total, so a family that is briefly
+over its own allocation does not fail the whole gate before the next prune
+sweep can catch up. GitHub does not publish which byte-multiple its
+documented "10 GB" is: 9.5 GiB sits under the binary reading (10,737,418,240)
+but 2% over the decimal one (10,000,000,000), which is why the enforced
+allocation that every family is sized against is the 9 GiB
+`total_max_bytes` — that one is under the ceiling on either reading:
 
 | Family | Allocation | Covers |
 |---|---|---|

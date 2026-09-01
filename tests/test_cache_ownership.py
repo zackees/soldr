@@ -417,9 +417,7 @@ def test_overlapping_key_prefixes_across_families_fails_r6() -> None:
         },
     }
     problems = guard.budget_problems(manifest)
-    assert any(
-        p.startswith("R6") and "overlaps" in p for p in problems
-    ), problems
+    assert any(p.startswith("R6") and "overlaps" in p for p in problems), problems
 
 
 def test_family_max_bytes_over_total_fails_r6() -> None:

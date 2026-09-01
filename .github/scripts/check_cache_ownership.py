@@ -518,9 +518,7 @@ def budget_problems(manifest: dict) -> list[str]:
         for family_b in family_ids[i + 1 :]:
             for prefix_a in prefixes_by_family[family_a]:
                 for prefix_b in prefixes_by_family[family_b]:
-                    if prefix_a.startswith(prefix_b) or prefix_b.startswith(
-                        prefix_a
-                    ):
+                    if prefix_a.startswith(prefix_b) or prefix_b.startswith(prefix_a):
                         problems.append(
                             f"R6 key_prefix {prefix_a!r} (family {family_a!r}) "
                             f"overlaps {prefix_b!r} (family {family_b!r}).\n"
@@ -565,7 +563,7 @@ def budget_coverage_problems(manifest: dict) -> list[str]:
                 f"R7 budget.families[{family_id!r}] claims no entries and is "
                 "not marked 'reserved'.\n"
                 "     An empty family is only legal as a deliberate future "
-                "allocation -- set \"reserved\": true, or claim at least one "
+                'allocation -- set "reserved": true, or claim at least one '
                 "entry."
             )
         for entry_id in claimed:

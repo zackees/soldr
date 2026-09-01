@@ -187,9 +187,13 @@ def test_windows_gnu_target_run_is_bounded_and_disk_safe() -> None:
     assert "nextest list" in target_run
     assert "nextest run" in target_run
     assert "matrix.replay.label }}-diagnostics" in target_run
+    # soldr#3047 retired the pep517 Swatinem/rust-cache restore from this
+    # lane, so the guard now appears on exactly three steps -- wheel build,
+    # daemon smoke, and the always()-guarded log upload -- not four.
     assert (
-        target_run.count("inputs.run_pep517_smoke && matrix.replay.run_followup") == 4
+        target_run.count("inputs.run_pep517_smoke && matrix.replay.run_followup") == 3
     )
+    assert "uses: Swatinem/rust-cache" not in target_run
 
 
 def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:

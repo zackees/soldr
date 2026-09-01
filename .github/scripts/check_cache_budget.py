@@ -4,10 +4,12 @@
 soldr#3047, Phase B of soldr#3039. GitHub evicts the oldest, least-recently-used
 entries once a repository's Actions cache crosses the 10 GB it documents as the
 per-repository ceiling, and it does so silently: no job goes red, the run whose
-warm cache disappeared underneath it just gets slower. GitHub does not publish
-which byte-multiple that "10 GB" is, so `budget.fail_total_bytes` is set to the
-decimal reading (10,000,000,000) -- at or under the ceiling on either reading,
-rather than betting the gate on the more generous one.
+warm cache disappeared underneath it just gets slower. The manifest's
+`budget.total_max_bytes` is 9 GiB -- the sum of the family allocations -- and
+`budget.fail_total_bytes` is 9.5 GiB (10,200,547,328), half a GiB of headroom
+so a family briefly over its own allocation does not fail the whole gate
+before the next `--prune` sweep catches up. Both numbers live in
+`ci/cache-ownership.json`; this script reads them and hard-codes neither.
 
 `zackees/soldr`'s cache had grown to 44.23 GiB across 143 entries by
 2026-09-01 (`tests/fixtures/actions-cache/listing-2026-09-01.json`, the RED
@@ -144,7 +146,11 @@ def normalize_entries(raw: list[object]) -> list[CacheEntry]:
         key = item.get("key")
         ref = item.get("ref")
         size = item.get("sizeInBytes")
-        if not isinstance(key, str) or not isinstance(ref, str) or not isinstance(size, int):
+        if (
+            not isinstance(key, str)
+            or not isinstance(ref, str)
+            or not isinstance(size, int)
+        ):
             continue
         entry_id = item.get("id")
         created_at = item.get("createdAt")
@@ -239,7 +245,11 @@ def family_for(key: str, families: dict[str, object]) -> str | None:
         if not isinstance(spec, dict):
             continue
         for prefix in spec.get("key_prefixes") or []:
-            if isinstance(prefix, str) and key.startswith(prefix) and len(prefix) > best_len:
+            if (
+                isinstance(prefix, str)
+                and key.startswith(prefix)
+                and len(prefix) > best_len
+            ):
                 best_len = len(prefix)
                 best_id = family_id
     return best_id
@@ -344,7 +354,9 @@ def check(manifest_path: pathlib.Path, entries: list[CacheEntry]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def build_table(budget: dict, entries: list[CacheEntry], usage_bytes: int | None) -> str:
+def build_table(
+    budget: dict, entries: list[CacheEntry], usage_bytes: int | None
+) -> str:
     """The pass-or-fail table printed on every run."""
     families = budget.get("families")
     if not isinstance(families, dict):
@@ -364,11 +376,17 @@ def build_table(budget: dict, entries: list[CacheEntry], usage_bytes: int | None
     lines = [f"{'family':<42} {'count':>6} {'used GiB':>10} {'alloc GiB':>10} {'%':>7}"]
     for family_id, count, used, max_bytes in rows:
         alloc_gib = max_bytes / GIB if isinstance(max_bytes, int) else float("nan")
-        pct = (used / max_bytes * 100) if isinstance(max_bytes, int) and max_bytes else 0.0
+        pct = (
+            (used / max_bytes * 100)
+            if isinstance(max_bytes, int) and max_bytes
+            else 0.0
+        )
         lines.append(
             f"{family_id:<42} {count:>6} {used / GIB:>10.2f} {alloc_gib:>10.2f} {pct:>6.1f}%"
         )
-    total_alloc_gib = total_max_bytes / GIB if isinstance(total_max_bytes, int) else float("nan")
+    total_alloc_gib = (
+        total_max_bytes / GIB if isinstance(total_max_bytes, int) else float("nan")
+    )
     lines.append(
         f"{'TOTAL':<42} {len(entries):>6} {total_bytes / GIB:>10.2f} {total_alloc_gib:>10.2f}"
     )
@@ -524,7 +542,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.prune:
         candidates = prune_candidates(entries)
         reclaimed = sum(e.size_bytes for e in candidates)
-        print(f"prune: {len(candidates)} candidate(s), {reclaimed / GIB:.2f} GiB reclaimable")
+        print(
+            f"prune: {len(candidates)} candidate(s), {reclaimed / GIB:.2f} GiB reclaimable"
+        )
         for entry in candidates:
             print(f"  {entry.key} ({entry.ref}) {entry.size_bytes / GIB:.3f} GiB")
         if args.apply:
