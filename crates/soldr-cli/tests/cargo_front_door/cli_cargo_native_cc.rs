@@ -131,6 +131,7 @@ fn remove_inherited_native_cache_env(cmd: &mut Command) {
         "CARGO_TARGET_DIR",
         "RUSTC_WRAPPER",
         "RUSTC_WORKSPACE_WRAPPER",
+        "SOLDR_RUSTC_WRAPPER",
         "SOLDR_EFFECTIVE_RUSTC_WRAPPER",
         "SOLDR_EFFECTIVE_RUSTC_WRAPPER_ORIGIN",
         "SOLDR_NATIVE_CACHE",

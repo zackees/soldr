@@ -622,7 +622,9 @@ mod tests {
 
         let original_modified = std::fs::metadata(&source).unwrap().modified().unwrap();
         std::fs::remove_file(&source).unwrap();
-        std::fs::write(&source, b"fake-soldr-v2").unwrap();
+        // A different length makes the FileStamp invalidation deterministic
+        // even when two writes share one coarse filesystem timestamp.
+        std::fs::write(&source, b"fake-soldr-v2-longer").unwrap();
         std::fs::File::options()
             .write(true)
             .open(&source)
@@ -632,7 +634,7 @@ mod tests {
         assert!(!materialization_memo_matches(&source, &target));
         let replaced = materialize_executable(&source, &target).unwrap();
         assert!(replaced.created);
-        assert_eq!(std::fs::read(target).unwrap(), b"fake-soldr-v2");
+        assert_eq!(std::fs::read(target).unwrap(), b"fake-soldr-v2-longer");
     }
 
     #[test]
@@ -645,7 +647,12 @@ mod tests {
         assert!(executable_matches(&target, &source).unwrap());
 
         std::fs::remove_file(&source).unwrap();
-        std::fs::write(&source, b"fake-soldr-v2").unwrap();
+        // Make the replacement a different length so the test proves a real
+        // FileStamp change even on mounts whose timestamp granularity cannot
+        // distinguish two immediate writes. Same-size content replacement is
+        // covered by `unchanged_copy_uses_validated_materialization_memo`,
+        // which restores the original mtime before the content comparison.
+        std::fs::write(&source, b"fake-soldr-v2-longer").unwrap();
         assert!(!write_materialization_memo_if_unchanged(
             &source,
             &target,

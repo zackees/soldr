@@ -232,6 +232,43 @@ class TargetRunOwnershipTests(unittest.TestCase):
         self.assertEqual(darwin.selected_count, 1)
         self.assertNotIn("daemon_windows_pipe_peer", darwin.filter_expression)
 
+    def test_selector_target_scope_must_reach_a_canonical_replay_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contract = root / "ci" / "canonical-targets.json"
+            contract.parent.mkdir(parents=True)
+            contract.write_text(
+                """{
+  "targets": [
+    {
+      "triple": "x86_64-pc-windows-msvc",
+      "ci": {"kind": "cross", "run_job": "windows-x64"}
+    }
+  ]
+}
+""",
+                encoding="utf-8",
+            )
+            declared = manifest(
+                classification(
+                    "pipe-native",
+                    "soldr-daemon",
+                    "daemon_windows_pipe_peer",
+                    "target-replay",
+                ),
+                selectors=[
+                    selector(
+                        "misspelled-windows-target",
+                        "pipe-native",
+                        test_prefix="accepted_pipe_",
+                        targets=["x86_64-pc-windwos-msvc"],
+                    )
+                ],
+            )
+
+            with self.assertRaisesRegex(ValueError, "non-canonical targets"):
+                ownership.validate_source_ownership(declared, root)
+
     def test_filter_file_is_one_lf_terminated_line(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "filter.txt"
@@ -296,6 +333,202 @@ class TargetRunOwnershipTests(unittest.TestCase):
                 )
             )
             ownership.validate_source_ownership(declared, root)
+
+    def test_platform_gated_test_in_classified_module_requires_replay_selector(
+        self,
+    ) -> None:
+        """A module-level owner must not hide a newly added native test.
+
+        This is the inverse half of the positive declaration: adding a second
+        platform-gated test to a source that already has one exact replay
+        selector must turn the guard red until that test is positively owned.
+        """
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            category = root / "crates" / "demo" / "tests" / "native"
+            category.mkdir(parents=True)
+            (category / "main.rs").write_text("mod os_contract;\n", encoding="utf-8")
+            (category / "os_contract.rs").write_text(
+                "#[cfg(windows)]\n"
+                "#[test]\n"
+                "fn already_owned() {}\n\n"
+                "#[cfg(windows)]\n"
+                "#[test]\n"
+                "fn newly_unowned() {}\n",
+                encoding="utf-8",
+            )
+            declared = manifest(
+                classification(
+                    "demo-target-replay",
+                    "demo",
+                    "native",
+                    "target-replay",
+                    modules=["os_contract"],
+                ),
+                selectors=[
+                    selector(
+                        "already-owned",
+                        "demo-target-replay",
+                        test_name="os_contract::already_owned",
+                        targets=["x86_64-pc-windows-msvc"],
+                    )
+                ],
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "platform-gated test lacks a positive replay selector.*newly_unowned",
+            ):
+                ownership.validate_source_ownership(declared, root)
+
+    def test_platform_gated_test_selector_must_reach_compatible_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            category = root / "crates" / "demo" / "tests" / "native"
+            category.mkdir(parents=True)
+            (category / "main.rs").write_text("mod os_contract;\n", encoding="utf-8")
+            (category / "os_contract.rs").write_text(
+                "#[cfg(windows)]\n#[test]\nfn windows_only() {}\n",
+                encoding="utf-8",
+            )
+            contract = root / "ci" / "canonical-targets.json"
+            contract.parent.mkdir(parents=True)
+            contract.write_text(
+                """{
+  "targets": [
+    {"triple": "x86_64-pc-windows-msvc", "ci": {"kind": "cross", "run_job": "win"}},
+    {"triple": "x86_64-apple-darwin", "ci": {"kind": "cross", "run_job": "mac"}}
+  ]
+}
+""",
+                encoding="utf-8",
+            )
+            declared = manifest(
+                classification(
+                    "demo-target-replay",
+                    "demo",
+                    "native",
+                    "target-replay",
+                    modules=["os_contract"],
+                ),
+                selectors=[
+                    selector(
+                        "wrong-host",
+                        "demo-target-replay",
+                        test_name="os_contract::windows_only",
+                        targets=["x86_64-apple-darwin"],
+                    )
+                ],
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "platform-gated test has no replay selector on a compatible target.*windows_only",
+            ):
+                ownership.validate_source_ownership(declared, root)
+
+            compatible = manifest(
+                classification(
+                    "demo-target-replay",
+                    "demo",
+                    "native",
+                    "target-replay",
+                    modules=["os_contract"],
+                ),
+                selectors=[
+                    selector(
+                        "windows-host",
+                        "demo-target-replay",
+                        test_name="os_contract::windows_only",
+                        targets=["x86_64-pc-windows-msvc"],
+                    )
+                ],
+            )
+            ownership.validate_source_ownership(compatible, root)
+
+    def test_module_level_host_cfg_is_propagated_to_declared_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            category = root / "crates" / "demo" / "tests" / "native"
+            category.mkdir(parents=True)
+            (category / "main.rs").write_text(
+                '#[cfg(target_os = "windows")]\nmod os_contract;\n',
+                encoding="utf-8",
+            )
+            (category / "os_contract.rs").write_text(
+                "#[test]\nfn module_gated() {}\n",
+                encoding="utf-8",
+            )
+            contract = root / "ci" / "canonical-targets.json"
+            contract.parent.mkdir(parents=True)
+            contract.write_text(
+                """{
+  "targets": [
+    {"triple": "aarch64-pc-windows-msvc", "ci": {"kind": "cross", "run_job": "win"}},
+    {"triple": "aarch64-apple-darwin", "ci": {"kind": "cross", "run_job": "mac"}}
+  ]
+}
+""",
+                encoding="utf-8",
+            )
+            declared = manifest(
+                classification(
+                    "demo-target-replay",
+                    "demo",
+                    "native",
+                    "target-replay",
+                    modules=["os_contract"],
+                ),
+                selectors=[
+                    selector(
+                        "wrong-module-host",
+                        "demo-target-replay",
+                        test_name="os_contract::module_gated",
+                        targets=["aarch64-apple-darwin"],
+                    )
+                ],
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "platform-gated test has no replay selector on a compatible target.*module_gated",
+            ):
+                ownership.validate_source_ownership(declared, root)
+
+    def test_supported_host_cfg_predicates_match_canonical_target_facts(self) -> None:
+        windows = ownership._canonical_target("x86_64-pc-windows-msvc")
+        mac_arm = ownership._canonical_target("aarch64-apple-darwin")
+        linux_arm = ownership._canonical_target("aarch64-unknown-linux-musl")
+
+        self.assertTrue(ownership._parse_host_cfg("windows").matches(windows))
+        self.assertFalse(ownership._parse_host_cfg("unix").matches(windows))
+        self.assertTrue(ownership._parse_host_cfg("unix").matches(mac_arm))
+        self.assertTrue(
+            ownership._parse_host_cfg('target_os = "macos"').matches(mac_arm)
+        )
+        self.assertTrue(
+            ownership._parse_host_cfg('target_arch = "aarch64"').matches(linux_arm)
+        )
+        self.assertTrue(
+            ownership._parse_host_cfg('target_env = "musl"').matches(linux_arm)
+        )
+        self.assertTrue(
+            ownership._parse_host_cfg(
+                'all(unix, target_os = "linux", target_arch = "aarch64", '
+                'target_env = "musl")'
+            ).matches(linux_arm)
+        )
+        self.assertTrue(ownership._parse_host_cfg("not(windows)").matches(mac_arm))
+
+    def test_host_cfg_with_unmodeled_operand_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported or ambiguous host cfg"):
+            ownership._parse_host_cfg('all(windows, feature = "live-host")')
+
+        with self.assertRaisesRegex(ValueError, "unsupported or ambiguous host cfg"):
+            ownership._attributes_host_cfg(
+                '#[cfg(all(windows, feature = "live-host"))]\n#[test]\n'
+            )
 
     def test_target_replay_classification_requires_a_positive_selector(self) -> None:
         declared = manifest(

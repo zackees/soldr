@@ -93,7 +93,14 @@ def test_workflow_retains_json_and_per_case_command_logs_after_failure() -> None
     assert "Upload Cargo orchestration telemetry evidence" in workflow
     assert "if: ${{ always() }}" in workflow
     assert "retention-days: 14" in workflow
-    assert "${{ runner.temp }}/soldr-2878-telemetry" in workflow
+    upload = workflow[
+        workflow.index("- name: Upload Cargo orchestration telemetry evidence") :
+    ]
+    assert "${{ runner.temp }}/soldr-2878-telemetry/telemetry.json" in upload
+    assert "${{ runner.temp }}/soldr-2878-telemetry/cases/jobs-*/command.log" in upload
+    assert "soldr-2878-telemetry/cases/jobs-*/target" not in upload
+    assert "soldr-2878-telemetry/cases/jobs-*/soldr-cache" not in upload
+    assert "path: ${{ runner.temp }}/soldr-2878-telemetry\n" not in upload
     assert '"telemetry.json"' in driver
     assert '"cases"' in driver
     assert '"command.log"' in telemetry

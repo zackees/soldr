@@ -7,8 +7,6 @@
 //! caller's or Cargo's job count. OOM/resource failures are scheduling and
 //! admission defects, not a reason to silently serialize every build.
 
-use std::path::Path;
-
 const GIB: u64 = 1024 * 1024 * 1024;
 
 /// Leave room for Cargo itself, the embedded daemon, the kernel, and unrelated
@@ -23,75 +21,17 @@ const HOST_HEADROOM_BYTES: u64 = GIB;
 /// fixed job cap.
 const BYTES_PER_CARGO_JOB: u64 = 3 * GIB;
 
-const PROC_MEMINFO: &str = "/proc/meminfo";
+pub(super) type CargoMemoryTelemetry = soldr_platform::host::resources::HostResourceSnapshot;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct CargoMemoryTelemetry {
-    pub(super) cgroup_current_bytes: Option<u64>,
-    pub(super) cgroup_peak_bytes: Option<u64>,
-    pub(super) cgroup_limit_bytes: Option<u64>,
-    pub(super) cgroup_limit_unbounded: bool,
-    pub(super) cgroup_swap_current_bytes: Option<u64>,
-    pub(super) cgroup_swap_limit_bytes: Option<u64>,
-    pub(super) cgroup_swap_limit_unbounded: bool,
-    pub(super) cgroup_oom_kills: Option<u64>,
-    pub(super) cgroup_pids_current: Option<u64>,
-    pub(super) cgroup_pids_limit: Option<u64>,
-    pub(super) cgroup_pids_limit_unbounded: bool,
-    pub(super) system_available_bytes: Option<u64>,
-}
-
-impl CargoMemoryTelemetry {
-    pub(super) fn capture() -> Self {
-        let meminfo = Path::new(PROC_MEMINFO);
-        soldr_platform::host::resources::cgroup_v2_dir().map_or_else(
-            || Self {
-                system_available_bytes: read_text(meminfo).as_deref().and_then(mem_available),
-                ..Self::default()
-            },
-            |cgroup_dir| Self::read_at(&cgroup_dir, meminfo),
-        )
-    }
-
-    fn read_at(cgroup_dir: &Path, meminfo_path: &Path) -> Self {
-        let events = read_text(cgroup_dir.join("memory.events"));
-        let (cgroup_limit_bytes, cgroup_limit_unbounded) =
-            read_limit(cgroup_dir.join("memory.max"));
-        let (cgroup_swap_limit_bytes, cgroup_swap_limit_unbounded) =
-            read_limit(cgroup_dir.join("memory.swap.max"));
-        let (cgroup_pids_limit, cgroup_pids_limit_unbounded) =
-            read_limit(cgroup_dir.join("pids.max"));
-        Self {
-            cgroup_current_bytes: read_u64(cgroup_dir.join("memory.current")),
-            cgroup_peak_bytes: read_u64(cgroup_dir.join("memory.peak")),
-            cgroup_limit_bytes,
-            cgroup_limit_unbounded,
-            cgroup_swap_current_bytes: read_u64(cgroup_dir.join("memory.swap.current")),
-            cgroup_swap_limit_bytes,
-            cgroup_swap_limit_unbounded,
-            cgroup_oom_kills: events.as_deref().and_then(total_oom_kills),
-            cgroup_pids_current: read_u64(cgroup_dir.join("pids.current")),
-            cgroup_pids_limit,
-            cgroup_pids_limit_unbounded,
-            system_available_bytes: read_text(meminfo_path).as_deref().and_then(mem_available),
-        }
-    }
-
-    fn cgroup_headroom(&self) -> Option<u64> {
-        Some(
-            self.cgroup_limit_bytes?
-                .saturating_sub(self.cgroup_current_bytes?),
-        )
-    }
-
-    fn available_for_budget(&self) -> Option<(u64, CargoJobBudgetSource)> {
-        self.cgroup_headroom()
-            .map(|bytes| (bytes, CargoJobBudgetSource::CgroupHeadroom))
-            .or_else(|| {
-                self.system_available_bytes
-                    .map(|bytes| (bytes, CargoJobBudgetSource::SystemAvailable))
-            })
-    }
+fn available_for_budget(telemetry: &CargoMemoryTelemetry) -> Option<(u64, CargoJobBudgetSource)> {
+    telemetry
+        .cgroup_headroom()
+        .map(|bytes| (bytes, CargoJobBudgetSource::CgroupHeadroom))
+        .or_else(|| {
+            telemetry
+                .system_available_bytes
+                .map(|bytes| (bytes, CargoJobBudgetSource::SystemAvailable))
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,7 +169,7 @@ pub(super) fn resolve_cargo_job_budget_from(
         };
     }
 
-    let Some((available_bytes, source)) = telemetry.available_for_budget() else {
+    let Some((available_bytes, source)) = available_for_budget(telemetry) else {
         return CargoJobBudget {
             requested_jobs: logical_jobs,
             effective_jobs: logical_jobs,
@@ -303,9 +243,9 @@ fn precompiler_exhaustion_diagnostic_from(
     }
 
     let override_note = if budget.is_explicit() {
-        "The explicit override was retained. This is a Cargo-work scheduling/admission defect; preserve the resource evidence and compiler timeline."
+        "The explicit override was retained. This is a Cargo-work scheduling/admission defect; any OOM is a Soldr scheduling bug, never a reason to lower global build concurrency. Preserve the resource evidence and compiler timeline."
     } else {
-        "Cargo's default jobserver policy was retained; Soldr did not lower the global job count. This is a Cargo-work scheduling/admission defect."
+        "Cargo's default jobserver policy was retained; Soldr did not lower the global job count. This is a Cargo-work scheduling/admission defect; any OOM is a Soldr scheduling bug, never a reason to lower global build concurrency."
     };
     let oom_kills = after
         .cgroup_oom_kills
@@ -321,7 +261,7 @@ fn precompiler_exhaustion_diagnostic_from(
         .unwrap_or_else(|| "unknown".to_string());
     Some(format!(
         "soldr: Cargo orchestration exhausted host resources before compiler admission; this failure occurred during Cargo fingerprint/directory scanning, so rustc/zccache exclusive admission could not protect it.\n{}\n\
-         soldr: post-failure cgroup evidence: memory.current={}, memory.peak={}, memory.max={}, memory.swap.current={}, memory.swap.max={}, memory.events oom_kill={}, pids.current={}, pids.max={}.\n\
+         soldr: post-failure cgroup evidence: memory.current={}, memory.peak={}, memory.max={}, memory.swap.current={}, memory.swap.max={}, memory.events oom_kill+oom_group_kill={}, pids.current={}, pids.max={}.\n\
          soldr: {override_note}",
         budget.decision(before),
         format_bytes(after.cgroup_current_bytes),
@@ -344,53 +284,8 @@ fn precompiler_exhaustion_diagnostic_from(
     ))
 }
 
-fn read_text(path: impl AsRef<Path>) -> Option<String> {
-    std::fs::read_to_string(path).ok()
-}
-
-fn read_u64(path: impl AsRef<Path>) -> Option<u64> {
-    read_text(path)?.trim().parse().ok()
-}
-
-fn read_limit(path: impl AsRef<Path>) -> (Option<u64>, bool) {
-    let Some(raw) = read_text(path) else {
-        return (None, false);
-    };
-    let raw = raw.trim();
-    if raw == "max" {
-        (None, true)
-    } else {
-        (raw.parse().ok(), false)
-    }
-}
-
 fn parse_positive(raw: &str) -> Option<usize> {
     raw.trim().parse().ok().filter(|value| *value > 0)
-}
-
-fn mem_available(raw: &str) -> Option<u64> {
-    raw.lines().find_map(|line| {
-        let value = line.strip_prefix("MemAvailable:")?;
-        let kib = value.split_whitespace().next()?.parse::<u64>().ok()?;
-        kib.checked_mul(1024)
-    })
-}
-
-fn total_oom_kills(raw: &str) -> Option<u64> {
-    let mut total = None;
-    for line in raw.lines() {
-        let mut fields = line.split_whitespace();
-        let (Some(name), Some(value)) = (fields.next(), fields.next()) else {
-            continue;
-        };
-        if name != "oom_kill" && name != "oom_group_kill" {
-            continue;
-        }
-        if let Ok(value) = value.parse::<u64>() {
-            total = Some(total.unwrap_or(0u64).saturating_add(value));
-        }
-    }
-    total
 }
 
 fn format_bytes(bytes: Option<u64>) -> String {
@@ -510,7 +405,10 @@ mod tests {
             "{diagnostic}"
         );
         assert!(diagnostic.contains("memory.peak=4.00 GiB"), "{diagnostic}");
-        assert!(diagnostic.contains("oom_kill=1"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("oom_kill+oom_group_kill=1"),
+            "{diagnostic}"
+        );
         assert!(diagnostic.contains("pids.current=42"), "{diagnostic}");
         assert!(diagnostic.contains("pids.max=512"), "{diagnostic}");
         assert!(

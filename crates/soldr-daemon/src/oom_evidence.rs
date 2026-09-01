@@ -1,192 +1,147 @@
-//! Whether the kernel actually OOM-killed anything in this cgroup.
-//!
-//! soldr#2878 / soldr#2781: when a compiler dies to a signal, soldr says the
-//! kill "can indicate an OOM/resource-limit kill" and tells the reader to
-//! "inspect the host's memory-pressure counters". Soldr is running on that
-//! host. The counters are two file reads away, and every triage of this so far
-//! has stopped at the hedge.
-//!
-//! Measured on a 4-core / 7.9 GiB Linux container at `SOLDR_JOBS=8`: a cold
-//! `soldr cargo check -p soldr-cli` compiled 461 units, then died to a signal
-//! on `soldr_daemon` with that message -- while `memory.events` reported
-//! `oom_kill 0`, peak cgroup usage was 2.2 GiB, and `MemAvailable` never fell
-//! below 4.2 GiB. The message named the most likely cause and was wrong.
-//!
-//! The evidence is asymmetric, and the wording downstream reflects that:
-//!
-//! * **Zero is decisive.** `memory.events` counts every process in the cgroup
-//!   killed by *any* OOM killer over the cgroup's whole lifetime, so a zero
-//!   means no OOM kill has ever happened here -- it rules memory out.
-//! * **Non-zero is suggestive only.** The counter is cumulative and never
-//!   resets, so a positive value may belong to an earlier build. It raises
-//!   the hypothesis; it does not confirm it for *this* compile.
-//! * **Unreadable says nothing.** A missing file (cgroup v1, a non-Linux host,
-//!   a restricted mount) must not read as "no kill" -- a false exoneration is
-//!   worse than the hedge it would replace.
-//!
-//! No `#[cfg]`: the paths simply do not exist off Linux, so the reader returns
-//! `Unknown` there by the same path it uses for a restricted mount. That keeps
-//! this inside the platform-cfg boundary rule and means the Windows and macOS
-//! builds exercise the same code.
+//! Canonical host-resource evidence attached to abnormal compiler exits.
 
-use std::path::Path;
+use soldr_platform::host::resources::HostResourceSnapshot;
 
-/// What the cgroup can tell us about an OOM kill.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OomEvidence {
-    /// The counters are readable and have never recorded a kill here.
-    NoKillRecorded,
-    /// The counters recorded `n` kills at some point in this cgroup's life.
-    KillsRecorded(u64),
-    /// The counters could not be read, so there is nothing to say.
-    Unknown,
+const GIB: f64 = (1024 * 1024 * 1024) as f64;
+
+pub(crate) fn read() -> HostResourceSnapshot {
+    HostResourceSnapshot::capture()
 }
 
-impl OomEvidence {
-    /// One sentence for a compiler's stderr, or nothing.
-    ///
-    /// `Unknown` renders as an empty string on purpose: appending "could not
-    /// read the counters" to a build failure adds noise on every non-Linux
-    /// host without helping anyone.
-    pub(crate) fn describe(self) -> String {
-        match self {
-            Self::NoKillRecorded => concat!(
-                "soldr: the kernel has recorded no OOM kill in this cgroup ",
-                "(memory.events oom_kill=0), so this was not the memory limit ",
-                "-- lowering the job count is unlikely to help, and the cause ",
-                "is elsewhere (soldr#2878).\n"
-            )
-            .to_string(),
-            Self::KillsRecorded(count) => format!(
-                concat!(
-                    "soldr: the kernel has OOM-killed {count} process(es) in ",
-                    "this cgroup (memory.events oom_kill), which supports a ",
-                    "memory kill here. The counter is cumulative for the ",
-                    "cgroup's lifetime, so it is evidence rather than proof ",
-                    "for this compile (soldr#2878).\n"
-                ),
-                count = count
-            ),
-            Self::Unknown => String::new(),
-        }
+/// Render the same cgroup fields used by Cargo-front-door diagnostics.
+/// Unknown snapshots add nothing, which keeps non-Linux failures concise.
+pub(crate) fn describe(snapshot: &HostResourceSnapshot) -> String {
+    let has_cgroup_evidence = snapshot.cgroup_current_bytes.is_some()
+        || snapshot.cgroup_peak_bytes.is_some()
+        || snapshot.cgroup_limit_bytes.is_some()
+        || snapshot.cgroup_limit_unbounded
+        || snapshot.cgroup_swap_current_bytes.is_some()
+        || snapshot.cgroup_swap_limit_bytes.is_some()
+        || snapshot.cgroup_swap_limit_unbounded
+        || snapshot.cgroup_oom_kills.is_some()
+        || snapshot.cgroup_pids_current.is_some()
+        || snapshot.cgroup_pids_limit.is_some()
+        || snapshot.cgroup_pids_limit_unbounded;
+    if !has_cgroup_evidence {
+        return String::new();
     }
-}
 
-/// Read the OOM counters under `cgroup_root`.
-pub(crate) fn read_at(cgroup_root: &Path) -> OomEvidence {
-    let Ok(raw) = std::fs::read_to_string(cgroup_root.join("memory.events")) else {
-        return OomEvidence::Unknown;
+    let conclusion = match snapshot.cgroup_oom_kills {
+        Some(0) => concat!(
+            "memory.events oom_kill+oom_group_kill=0 rules out a kernel cgroup OOM kill for this signal; ",
+            "the abnormal exit remains a Soldr scheduling/admission defect to diagnose"
+        )
+        .to_string(),
+        Some(count) => format!(
+            "memory.events oom_kill+oom_group_kill={count} is cumulative evidence of a possible OOM kill; any OOM is a Soldr scheduling/admission bug, never a reason to lower global build concurrency"
+        ),
+        None => concat!(
+            "memory.events oom_kill+oom_group_kill is unreadable, so the kernel OOM cause is unknown; ",
+            "the abnormal exit remains a Soldr scheduling/admission defect to diagnose"
+        )
+        .to_string(),
     };
-    match total_oom_kills(&raw) {
-        Some(0) => OomEvidence::NoKillRecorded,
-        Some(count) => OomEvidence::KillsRecorded(count),
-        // The file existed but carried neither key. Treat a shape we do not
-        // recognise as unknown rather than as zero.
-        None => OomEvidence::Unknown,
+
+    format!(
+        "soldr: compiler-exit cgroup evidence: memory.current={}, memory.peak={}, memory.max={}, memory.swap.current={}, memory.swap.max={}, memory.events oom_kill+oom_group_kill={}, pids.current={}, pids.max={}; {conclusion} (soldr#3031).\n",
+        format_bytes(snapshot.cgroup_current_bytes),
+        format_bytes(snapshot.cgroup_peak_bytes),
+        format_limit(snapshot.cgroup_limit_bytes, snapshot.cgroup_limit_unbounded),
+        format_bytes(snapshot.cgroup_swap_current_bytes),
+        format_limit(
+            snapshot.cgroup_swap_limit_bytes,
+            snapshot.cgroup_swap_limit_unbounded,
+        ),
+        snapshot
+            .cgroup_oom_kills
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        snapshot
+            .cgroup_pids_current
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        format_count_limit(
+            snapshot.cgroup_pids_limit,
+            snapshot.cgroup_pids_limit_unbounded,
+        ),
+    )
+}
+
+fn format_bytes(value: Option<u64>) -> String {
+    value
+        .map(|bytes| format!("{:.2} GiB", bytes as f64 / GIB))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn format_limit(value: Option<u64>, unbounded: bool) -> String {
+    if unbounded {
+        "max".to_string()
+    } else {
+        format_bytes(value)
     }
 }
 
-/// Read the counters from the cgroup-v2 directory that owns this process.
-pub(crate) fn read() -> OomEvidence {
-    soldr_platform::host::resources::cgroup_v2_dir()
-        .map(|path| read_at(&path))
-        .unwrap_or(OomEvidence::Unknown)
-}
-
-/// `oom_kill` + `oom_group_kill` from a `memory.events` body.
-///
-/// Both are counted: a cgroup with `memory.oom.group` set reports its kills
-/// under `oom_group_kill`, and a reader that looked only at `oom_kill` would
-/// call that case "no OOM".
-///
-/// `None` when neither key is present -- an unrecognised shape is not a zero.
-fn total_oom_kills(raw: &str) -> Option<u64> {
-    let mut total: Option<u64> = None;
-    for line in raw.lines() {
-        let mut parts = line.split_whitespace();
-        let (Some(key), Some(value)) = (parts.next(), parts.next()) else {
-            continue;
-        };
-        if key != "oom_kill" && key != "oom_group_kill" {
-            continue;
-        }
-        let Ok(count) = value.parse::<u64>() else {
-            continue;
-        };
-        total = Some(total.unwrap_or(0) + count);
+fn format_count_limit(value: Option<u64>, unbounded: bool) -> String {
+    if unbounded {
+        "max".to_string()
+    } else {
+        value
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
     }
-    total
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn cgroup_with(events: &str) -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("memory.events"), events).expect("write events");
-        dir
+    #[test]
+    fn compiler_evidence_has_the_full_canonical_snapshot() {
+        let snapshot = HostResourceSnapshot {
+            cgroup_current_bytes: Some(1 << 30),
+            cgroup_peak_bytes: Some(4 << 30),
+            cgroup_limit_bytes: Some(8 << 30),
+            cgroup_swap_current_bytes: Some(1 << 29),
+            cgroup_swap_limit_bytes: Some(2 << 30),
+            cgroup_oom_kills: Some(1),
+            cgroup_pids_current: Some(37),
+            cgroup_pids_limit: Some(512),
+            ..HostResourceSnapshot::default()
+        };
+        let text = describe(&snapshot);
+        for field in [
+            "memory.current=1.00 GiB",
+            "memory.peak=4.00 GiB",
+            "memory.max=8.00 GiB",
+            "memory.swap.current=0.50 GiB",
+            "memory.swap.max=2.00 GiB",
+            "oom_kill+oom_group_kill=1",
+            "pids.current=37",
+            "pids.max=512",
+        ] {
+            assert!(text.contains(field), "missing {field}: {text}");
+        }
+        assert!(text.contains("Soldr scheduling/admission bug"), "{text}");
+        assert!(!text.contains("lower the job"), "{text}");
     }
 
     #[test]
-    fn a_zero_counter_rules_the_memory_limit_out() {
-        let dir = cgroup_with("low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n");
-        assert_eq!(read_at(dir.path()), OomEvidence::NoKillRecorded);
-        let text = read_at(dir.path()).describe();
-        assert!(text.contains("no OOM kill"), "{text}");
-        assert!(text.contains("unlikely to help"), "{text}");
+    fn zero_oom_is_decisive_without_prescribing_a_blanket_throttle() {
+        let snapshot = HostResourceSnapshot {
+            cgroup_oom_kills: Some(0),
+            ..HostResourceSnapshot::default()
+        };
+        let text = describe(&snapshot);
+        assert!(
+            text.contains("rules out a kernel cgroup OOM kill"),
+            "{text}"
+        );
+        assert!(text.contains("scheduling/admission defect"), "{text}");
+        assert!(!text.contains("lowering"), "{text}");
     }
 
     #[test]
-    fn group_kills_count_toward_the_total() {
-        // A cgroup with `memory.oom.group` set reports kills here instead, so
-        // reading only `oom_kill` would exonerate a real memory kill.
-        let dir = cgroup_with("oom_kill 0\noom_group_kill 3\n");
-        assert_eq!(read_at(dir.path()), OomEvidence::KillsRecorded(3));
-    }
-
-    #[test]
-    fn both_kill_counters_are_summed() {
-        let dir = cgroup_with("oom_kill 2\noom_group_kill 1\n");
-        assert_eq!(read_at(dir.path()), OomEvidence::KillsRecorded(3));
-    }
-
-    #[test]
-    fn a_recorded_kill_is_offered_as_evidence_not_proof() {
-        // The counter never resets, so a positive value may belong to an
-        // earlier build in the same container. Overclaiming here would just
-        // move the hedge rather than remove it.
-        let text = OomEvidence::KillsRecorded(1).describe();
-        assert!(text.contains("evidence rather than proof"), "{text}");
-        assert!(text.contains("cumulative"), "{text}");
-    }
-
-    #[test]
-    fn a_missing_file_is_unknown_and_says_nothing() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        assert_eq!(read_at(dir.path()), OomEvidence::Unknown);
-        assert_eq!(read_at(dir.path()).describe(), "");
-    }
-
-    #[test]
-    fn an_unrecognised_shape_is_unknown_rather_than_zero() {
-        // cgroup v1, or a future rename. Reporting "no OOM kill" because the
-        // keys were absent is a false exoneration, which is worse than the
-        // hedge it would replace.
-        let dir = cgroup_with("usage_in_bytes 1234\nfailcnt 7\n");
-        assert_eq!(read_at(dir.path()), OomEvidence::Unknown);
-    }
-
-    #[test]
-    fn a_malformed_count_does_not_derail_the_read() {
-        let dir = cgroup_with("oom_kill notanumber\noom_group_kill 2\n");
-        assert_eq!(read_at(dir.path()), OomEvidence::KillsRecorded(2));
-    }
-
-    #[test]
-    fn the_host_read_never_panics() {
-        // Runs on every platform in CI; off Linux it must take the Unknown
-        // path rather than failing.
-        let _ = read().describe();
+    fn wholly_unreadable_snapshot_says_nothing() {
+        assert_eq!(describe(&HostResourceSnapshot::default()), "");
     }
 }

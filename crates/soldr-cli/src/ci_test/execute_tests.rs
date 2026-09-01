@@ -61,30 +61,13 @@ impl StageSpawner for ScriptSpawner<'_> {
 struct NoopVerifier;
 
 impl DylintBranchVerifier for NoopVerifier {
-    fn libraries_complete(&self) -> Result<(), SoldrError> {
-        Ok(())
-    }
-
-    fn analysis_complete(&self) -> Result<(), SoldrError> {
-        Ok(())
-    }
-
     fn ui_tests_complete(&self) -> Result<(), SoldrError> {
         Ok(())
     }
 }
 
-fn fixture_branch<'a>(
-    libraries: &'a [Stage],
-    workspace: &'a Stage,
-    ui_tests: &'a [Stage],
-) -> DylintBranch<'a> {
-    DylintBranch::new(
-        libraries.iter().collect(),
-        workspace,
-        ui_tests.iter().collect(),
-    )
-    .expect("fixture Dylint branch")
+fn fixture_branch(ui_tests: &[Stage]) -> DylintBranch<'_> {
+    DylintBranch::new(ui_tests.iter().collect()).expect("fixture Dylint branch")
 }
 
 #[test]
@@ -170,6 +153,47 @@ fn explicit_job_limits_are_stamped_without_normalization() {
 }
 
 #[test]
+fn nextest_execution_injects_the_cargo_restoring_test_runner() {
+    let directory = tempfile::tempdir().unwrap();
+    let runner = directory.path().join("soldr-ci-test-runner");
+    std::fs::write(&runner, b"runner").unwrap();
+    let mut command = Command::new("unused");
+
+    configure_nextest_test_cargo_runner(
+        &mut command,
+        &test_stage("nextest"),
+        "x86_64-unknown-linux-gnu",
+        Some(&runner),
+    )
+    .unwrap();
+
+    assert!(command.get_envs().any(|(key, value)| {
+        key == std::ffi::OsStr::new("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER")
+            && value == Some(runner.as_os_str())
+    }));
+}
+
+#[test]
+fn cargo_restoring_runner_is_not_injected_into_nextest_compilation() {
+    let directory = tempfile::tempdir().unwrap();
+    let runner = directory.path().join("soldr-ci-test-runner");
+    std::fs::write(&runner, b"runner").unwrap();
+    let mut command = Command::new("unused");
+
+    configure_nextest_test_cargo_runner(
+        &mut command,
+        &test_stage("nextest-compile"),
+        "x86_64-unknown-linux-gnu",
+        Some(&runner),
+    )
+    .unwrap();
+
+    assert!(!command
+        .get_envs()
+        .any(|(key, _)| key.to_string_lossy().ends_with("_RUNNER")));
+}
+
+#[test]
 fn parallel_failure_cancels_the_sibling_process_tree() {
     if !posix_fixture_available() {
         // The fixture uses the POSIX shell. Windows process-tree
@@ -193,14 +217,12 @@ fn parallel_failure_cancels_the_sibling_process_tree() {
 }
 
 #[test]
-fn nextest_execution_and_dylint_really_start_before_either_branch_can_finish() {
+fn nextest_execution_and_dylint_ui_really_start_before_either_branch_can_finish() {
     if !posix_fixture_available() {
         return;
     }
     let directory = tempfile::tempdir().expect("barrier directory");
     let nextest = test_stage("nextest");
-    let libraries = [test_stage("dylint-library-one")];
-    let workspace = test_stage("dylint-workspace");
     let ui_tests = [test_stage("dylint-test-one")];
     let scripts = BTreeMap::from([
         (
@@ -208,24 +230,18 @@ fn nextest_execution_and_dylint_really_start_before_either_branch_can_finish() {
             "touch \"$FIXTURE_DIR/nextest-started\"; i=0; while [ \"$i\" -lt 100 ]; do [ -f \"$FIXTURE_DIR/dylint-started\" ] && exit 0; i=$((i + 1)); sleep 0.02; done; exit 73".into(),
         ),
         (
-            "dylint-library-one".into(),
+            "dylint-test-one".into(),
             "touch \"$FIXTURE_DIR/dylint-started\"; i=0; while [ \"$i\" -lt 100 ]; do [ -f \"$FIXTURE_DIR/nextest-started\" ] && exit 0; i=$((i + 1)); sleep 0.02; done; exit 74".into(),
         ),
-        ("dylint-workspace".into(), "exit 0".into()),
-        ("dylint-test-one".into(), "exit 0".into()),
     ]);
     let spawner = ScriptSpawner {
         directory: directory.path(),
         scripts,
     };
 
-    let code = supervise_nextest_and_dylint(
-        &spawner,
-        &nextest,
-        fixture_branch(&libraries, &workspace, &ui_tests),
-        &NoopVerifier,
-    )
-    .expect("parallel branch supervisor");
+    let code =
+        supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
+            .expect("parallel branch supervisor");
 
     assert_eq!(code, 0);
     assert!(directory.path().join("nextest-started").is_file());
@@ -239,20 +255,17 @@ fn nextest_failure_cancels_dylint_and_starts_no_later_stage() {
     }
     let directory = tempfile::tempdir().expect("cancellation directory");
     let nextest = test_stage("nextest");
-    let libraries = [test_stage("dylint-library-one")];
-    let workspace = test_stage("dylint-workspace");
-    let ui_tests = [test_stage("dylint-test-one")];
+    let ui_tests = [test_stage("dylint-test-one"), test_stage("dylint-test-two")];
     let scripts = BTreeMap::from([
         ("nextest".into(), "exit 73".into()),
         (
-            "dylint-library-one".into(),
+            "dylint-test-one".into(),
             "touch \"$FIXTURE_DIR/dylint-started\"; sleep 30".into(),
         ),
         (
-            "dylint-workspace".into(),
+            "dylint-test-two".into(),
             "touch \"$FIXTURE_DIR/should-not-start\"".into(),
         ),
-        ("dylint-test-one".into(), "exit 0".into()),
     ]);
     let spawner = ScriptSpawner {
         directory: directory.path(),
@@ -260,13 +273,9 @@ fn nextest_failure_cancels_dylint_and_starts_no_later_stage() {
     };
     let started = Instant::now();
 
-    let code = supervise_nextest_and_dylint(
-        &spawner,
-        &nextest,
-        fixture_branch(&libraries, &workspace, &ui_tests),
-        &NoopVerifier,
-    )
-    .expect("Nextest failure result");
+    let code =
+        supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
+            .expect("Nextest failure result");
 
     assert_eq!(code, 73);
     assert!(started.elapsed() < Duration::from_secs(5));
@@ -280,20 +289,17 @@ fn dylint_failure_cancels_nextest_and_starts_no_later_stage() {
     }
     let directory = tempfile::tempdir().expect("cancellation directory");
     let nextest = test_stage("nextest");
-    let libraries = [test_stage("dylint-library-one")];
-    let workspace = test_stage("dylint-workspace");
-    let ui_tests = [test_stage("dylint-test-one")];
+    let ui_tests = [test_stage("dylint-test-one"), test_stage("dylint-test-two")];
     let scripts = BTreeMap::from([
         (
             "nextest".into(),
             "touch \"$FIXTURE_DIR/nextest-started\"; sleep 30".into(),
         ),
-        ("dylint-library-one".into(), "exit 74".into()),
+        ("dylint-test-one".into(), "exit 74".into()),
         (
-            "dylint-workspace".into(),
+            "dylint-test-two".into(),
             "touch \"$FIXTURE_DIR/should-not-start\"".into(),
         ),
-        ("dylint-test-one".into(), "exit 0".into()),
     ]);
     let spawner = ScriptSpawner {
         directory: directory.path(),
@@ -301,13 +307,9 @@ fn dylint_failure_cancels_nextest_and_starts_no_later_stage() {
     };
     let started = Instant::now();
 
-    let code = supervise_nextest_and_dylint(
-        &spawner,
-        &nextest,
-        fixture_branch(&libraries, &workspace, &ui_tests),
-        &NoopVerifier,
-    )
-    .expect("Dylint failure result");
+    let code =
+        supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
+            .expect("Dylint failure result");
 
     assert_eq!(code, 74);
     assert!(started.elapsed() < Duration::from_secs(5));
@@ -321,16 +323,12 @@ fn branch_join_waits_for_both_terminal_stages() {
     }
     let directory = tempfile::tempdir().expect("join directory");
     let nextest = test_stage("nextest");
-    let libraries = [test_stage("dylint-library-one")];
-    let workspace = test_stage("dylint-workspace");
     let ui_tests = [test_stage("dylint-test-one")];
     let scripts = BTreeMap::from([
         (
             "nextest".into(),
             "sleep 0.8; touch \"$FIXTURE_DIR/nextest-done\"".into(),
         ),
-        ("dylint-library-one".into(), "exit 0".into()),
-        ("dylint-workspace".into(), "exit 0".into()),
         (
             "dylint-test-one".into(),
             "touch \"$FIXTURE_DIR/dylint-done\"".into(),
@@ -342,13 +340,9 @@ fn branch_join_waits_for_both_terminal_stages() {
     };
     let started = Instant::now();
 
-    let code = supervise_nextest_and_dylint(
-        &spawner,
-        &nextest,
-        fixture_branch(&libraries, &workspace, &ui_tests),
-        &NoopVerifier,
-    )
-    .expect("branch join");
+    let code =
+        supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
+            .expect("branch join");
 
     assert_eq!(code, 0);
     assert!(started.elapsed() >= Duration::from_millis(700));
@@ -363,14 +357,10 @@ fn second_branch_spawn_failure_cancels_the_first_branch() {
     }
     let directory = tempfile::tempdir().expect("spawn directory");
     let nextest = test_stage("nextest");
-    let libraries = [test_stage("dylint-library-one")];
-    let workspace = test_stage("dylint-workspace");
     let ui_tests = [test_stage("dylint-test-one")];
     let scripts = BTreeMap::from([
         ("nextest".into(), "sleep 30".into()),
-        ("dylint-library-one".into(), "__spawn_error__".into()),
-        ("dylint-workspace".into(), "exit 0".into()),
-        ("dylint-test-one".into(), "exit 0".into()),
+        ("dylint-test-one".into(), "__spawn_error__".into()),
     ]);
     let spawner = ScriptSpawner {
         directory: directory.path(),
@@ -378,13 +368,9 @@ fn second_branch_spawn_failure_cancels_the_first_branch() {
     };
     let started = Instant::now();
 
-    let error = supervise_nextest_and_dylint(
-        &spawner,
-        &nextest,
-        fixture_branch(&libraries, &workspace, &ui_tests),
-        &NoopVerifier,
-    )
-    .expect_err("fixture spawn must fail");
+    let error =
+        supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
+            .expect_err("fixture spawn must fail");
 
     assert!(error.to_string().contains("fixture spawn failure"));
     assert!(started.elapsed() < Duration::from_secs(5));

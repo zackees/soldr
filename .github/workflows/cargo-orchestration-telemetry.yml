@@ -73,6 +73,12 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: cargo-orchestration-telemetry-${{ github.run_id }}
-          path: ${{ runner.temp }}/soldr-2878-telemetry
+          # Evidence is the compact report plus causal logs. The per-case
+          # target and compiler-cache trees are cold-build inputs, not
+          # evidence; uploading them produced a 1.30 GB artifact in run
+          # 33446589675 without adding any diagnostic information.
+          path: |
+            ${{ runner.temp }}/soldr-2878-telemetry/telemetry.json
+            ${{ runner.temp }}/soldr-2878-telemetry/cases/jobs-*/command.log
           if-no-files-found: warn
           retention-days: 14

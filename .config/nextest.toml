@@ -256,9 +256,10 @@ slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 filter = 'test(=cli_toolchain::toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=cli_toolchain::toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cli_toolchain::toolchain_link_emits_schema_v1_json_payload) + test(=cli_toolchain::toolchain_link_force_overwrites_user_modified_shim) + test(=cli_toolchain_home_boundary::cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
 slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 
-# 240s: the soldr#2442 kill-matrix — each test cold-starts a broker and
-# daemon (sometimes twice), pays the soldr#2517 image-hash cost per start,
-# and then waits bounded recovery deadlines after real SIGKILLs.
+# 240s: the retained soldr#2442 adapter kill-matrix. Generic multi-route
+# isolation and concurrent single-flight replacement live in running-process
+# 4.10.9; these cases retain only Soldr CLI/route/image behavior after real
+# SIGKILLs (plus a source-only ownership inventory guard).
 [[profile.default.overrides]]
 filter = 'binary(broker) & test(/^cli_kill_matrix::/)'
 slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }

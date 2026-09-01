@@ -33,6 +33,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "_build-and-test.yml"
 CARGO_TOML = REPO_ROOT / "Cargo.toml"
+NEXTEST_CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 
 GUARD_1799 = "Assert managed toolchain homes did not leak (soldr#1799)"
 GUARD_1838 = "Assert the build did not silently run uncached (soldr#1838)"
@@ -128,6 +129,36 @@ def test_ci_test_is_the_only_host_test_orchestration_entrypoint() -> None:
     assert 'ci-test --target "${{ inputs.target }}"' in body
     assert "nextest run --no-run" not in workflow
     assert "Run library + CLI smoke tests" not in workflow
+
+
+def test_ci_test_traps_bare_cargo_but_keeps_nested_cargo_on_soldr() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    body = _step_body(workflow, CI_TEST_RUN)
+
+    assert 'real_cargo=$("$source_soldr" rustup which cargo)' in body
+    assert "install_ci_cargo_guard.py" in body
+    assert 'export SOLDR_REAL_CARGO="$real_cargo"' in body
+    assert 'export CARGO="$(<"$cargo_guard/allowed-cargo-path")"' in body
+    assert (
+        'export SOLDR_CI_TEST_CARGO_RUNNER="$(<"$cargo_guard/test-runner-path")"'
+        in body
+    )
+    assert 'export PATH="$cargo_guard/trap:$PATH"' in body
+    assert body.index("install_ci_cargo_guard.py") < body.index(
+        'SOLDR_RUSTC_WRAPPER="$source_soldr"'
+    )
+    assert "GITHUB_ENV" not in body
+    assert "GITHUB_PATH" not in body
+    assert "CARGO_BUILD_JOBS" not in body
+    assert "SOLDR_JOBS" not in body
+
+    nextest_config = NEXTEST_CONFIG.read_text(encoding="utf-8")
+    wrapper_start = nextest_config.index("[scripts.wrapper.timeout-diagnostics]")
+    wrapper_end = nextest_config.find("\n[", wrapper_start + 1)
+    wrapper = nextest_config[
+        wrapper_start : wrapper_end if wrapper_end != -1 else len(nextest_config)
+    ]
+    assert 'target-runner = "within-wrapper"' in wrapper
 
 
 def test_canonical_cache_domain_precedes_every_host_build_and_test() -> None:

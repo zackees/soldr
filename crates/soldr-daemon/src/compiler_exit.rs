@@ -1,6 +1,7 @@
 //! Diagnostics for compiler processes terminated outside their own control.
 
-/// zccache currently represents `ExitStatus::code() == None` as `-1`.
+/// zccache 1.13.17 represents Unix signal `N` as `-(128 + N)` and retains
+/// `-1` only as the legacy unknown-signal sentinel.
 ///
 /// Without a diagnostic, the wrapper's exit guard misclassifies that result as
 /// an internal SESSION transport fault. Preserve the compiler's stderr and add
@@ -24,7 +25,7 @@ fn annotate_with_evidence(
     stderr: Vec<u8>,
     args: &[String],
     cwd: &std::path::Path,
-    evidence: crate::oom_evidence::OomEvidence,
+    evidence: soldr_platform::host::resources::HostResourceSnapshot,
 ) -> Vec<u8> {
     let mut stderr = stderr;
     if crate::platform::process::exit::is_signal_termination(exit_code) {
@@ -32,15 +33,17 @@ fn annotate_with_evidence(
             stderr.push(b'\n');
         }
         match crate::amalgamation::detect(args, cwd) {
-            Some(unit) => stderr.extend_from_slice(amalgamation_diagnostic(&unit).as_bytes()),
-            None => stderr.extend_from_slice(signal_diagnostic(args).as_bytes()),
+            Some(unit) => {
+                stderr.extend_from_slice(amalgamation_diagnostic(exit_code, &unit).as_bytes())
+            }
+            None => stderr.extend_from_slice(signal_diagnostic(exit_code, args).as_bytes()),
         }
         // soldr#2878: both messages above guess at memory, and the generic one
         // tells the reader to go inspect counters that soldr can read itself.
         // Appended after, not folded in, so the guess and the measurement stay
         // separable -- and so an unreadable cgroup adds nothing rather than
         // adding a hedge about a hedge.
-        stderr.extend_from_slice(evidence.describe().as_bytes());
+        stderr.extend_from_slice(crate::oom_evidence::describe(&evidence).as_bytes());
     }
     stderr
 }
@@ -55,18 +58,35 @@ fn annotate_with_evidence(
 ///
 /// It also pointed at soldr#2453, which is closed and is about SESSION
 /// compile-execution faults. The open, on-topic issue is soldr#2781.
-fn signal_diagnostic(args: &[String]) -> String {
+fn signal_diagnostic(exit_code: i32, args: &[String]) -> String {
     let subject = match compilation_subject(args) {
         Some(name) => format!(" while compiling {name}"),
         None => String::new(),
     };
     format!(
-        "soldr: compiler process was terminated by a Unix signal{subject}; under \
+        "soldr: compiler process was terminated by {signal}{subject}; under \
          concurrent build load this can indicate an OOM/resource-limit kill. \
          Soldr must schedule compiler work within the host limit; preserve the \
          compiler timeline and memory-pressure counters as evidence of an \
-         admission defect (soldr#2781).\n"
+         admission defect (soldr#2781).\n",
+        signal = signal_context(exit_code),
     )
+}
+
+fn signal_context(exit_code: i32) -> String {
+    if (-255..=-129).contains(&exit_code) {
+        let signal = -exit_code - 128;
+        let name = match signal {
+            6 => "SIGABRT",
+            9 => "SIGKILL",
+            11 => "SIGSEGV",
+            15 => "SIGTERM",
+            _ => "unknown name",
+        };
+        format!("Unix signal {signal} ({name}; zccache exit {exit_code})")
+    } else {
+        format!("an unknown Unix signal (legacy zccache exit {exit_code})")
+    }
 }
 
 /// What the compiler was working on, for a message rather than for logic.
@@ -98,14 +118,15 @@ fn compilation_subject(args: &[String]) -> Option<String> {
 /// wrote, so the reader has to already know that one translation unit caused
 /// it. Naming the unit and its size identifies which exclusive-admission
 /// classification failed without prescribing a whole-build throttle.
-fn amalgamation_diagnostic(unit: &crate::amalgamation::Amalgamation) -> String {
+fn amalgamation_diagnostic(exit_code: i32, unit: &crate::amalgamation::Amalgamation) -> String {
     format!(
-        "soldr: compiler process was terminated by a Unix signal while compiling \
+        "soldr: compiler process was terminated by {} while compiling \
          {}, an amalgamated translation unit -- an entire library in one file, \
          orders of magnitude larger than an ordinary compile. Under concurrent \
          build load this usually means it was killed for memory. This unit \
          requires exclusive compiler admission; an OOM is a Soldr scheduling \
          defect, not a reason to lower whole-build concurrency (soldr#2781).\n",
+        signal_context(exit_code),
         unit.describe(),
     )
 }
@@ -114,7 +135,11 @@ fn amalgamation_diagnostic(unit: &crate::amalgamation::Amalgamation) -> String {
 mod tests {
     use super::*;
 
-    use crate::oom_evidence::OomEvidence::Unknown as UNKNOWN;
+    use soldr_platform::host::resources::HostResourceSnapshot;
+
+    fn unknown() -> HostResourceSnapshot {
+        HostResourceSnapshot::default()
+    }
 
     // Host-neutral: the per-host classification of `-1` lives in the
     // platform crate's exit tests; here the assertion is conditional on the
@@ -123,9 +148,9 @@ mod tests {
     #[test]
     fn signal_termination_gets_an_actionable_diagnostic() {
         let stderr =
-            annotate_with_evidence(-1, Vec::new(), &[], std::path::Path::new("."), UNKNOWN);
+            annotate_with_evidence(-1, Vec::new(), &[], std::path::Path::new("."), unknown());
         if crate::platform::process::exit::is_signal_termination(-1) {
-            assert_eq!(stderr, signal_diagnostic(&[]).as_bytes());
+            assert_eq!(stderr, signal_diagnostic(-1, &[]).as_bytes());
         }
     }
 
@@ -139,7 +164,7 @@ mod tests {
             "soldr_cli".to_string(),
             "src/lib.rs".to_string(),
         ];
-        let text = signal_diagnostic(&args);
+        let text = signal_diagnostic(-1, &args);
         assert!(
             text.contains("while compiling soldr_cli"),
             "must name the unit; got {text}"
@@ -150,10 +175,24 @@ mod tests {
         );
     }
 
+    /// RED for soldr#3031: zccache 1.13.17 preserves the signal in the
+    /// negative response code, so flattening this to merely "a Unix signal"
+    /// discards evidence that Cargo's own failure line cannot restore.
+    #[test]
+    fn exact_zccache_signal_is_reported_with_number_name_and_wire_code() {
+        if !crate::platform::process::exit::is_signal_termination(-137) {
+            return;
+        }
+        let text = signal_diagnostic(-137, &[]);
+        assert!(text.contains("Unix signal 9"), "{text}");
+        assert!(text.contains("SIGKILL"), "{text}");
+        assert!(text.contains("zccache exit -137"), "{text}");
+    }
+
     #[test]
     fn the_crate_name_may_be_joined_with_an_equals() {
         let args = vec!["rustc".to_string(), "--crate-name=soldr_daemon".to_string()];
-        assert!(signal_diagnostic(&args).contains("while compiling soldr_daemon"));
+        assert!(signal_diagnostic(-1, &args).contains("while compiling soldr_daemon"));
     }
 
     /// The compiler is argv[0], not the thing being compiled -- naming it would
@@ -162,7 +201,7 @@ mod tests {
     #[test]
     fn the_compiler_path_is_never_reported_as_the_subject() {
         let args = vec!["/usr/bin/rustc".to_string()];
-        let text = signal_diagnostic(&args);
+        let text = signal_diagnostic(-1, &args);
         assert!(!text.contains("rustc"), "named the compiler: {text}");
         assert!(!text.contains("while compiling"), "nothing to name: {text}");
     }
@@ -171,7 +210,7 @@ mod tests {
     #[test]
     fn a_bare_source_argument_is_used_when_there_is_no_crate_name() {
         let args = vec!["cc".to_string(), "-O2".to_string(), "foo.c".to_string()];
-        assert!(signal_diagnostic(&args).contains("while compiling foo.c"));
+        assert!(signal_diagnostic(-1, &args).contains("while compiling foo.c"));
     }
 
     #[test]
@@ -182,11 +221,11 @@ mod tests {
             original.clone(),
             &[],
             std::path::Path::new("."),
-            UNKNOWN,
+            unknown(),
         );
         if crate::platform::process::exit::is_signal_termination(-1) {
             assert!(stderr.starts_with(b"rustc said why\n"));
-            assert!(stderr.ends_with(signal_diagnostic(&[]).as_bytes()));
+            assert!(stderr.ends_with(signal_diagnostic(-1, &[]).as_bytes()));
         } else {
             assert_eq!(stderr, original);
         }
@@ -196,7 +235,13 @@ mod tests {
     fn ordinary_exit_codes_are_byte_identical() {
         let original = b"ordinary compiler error\n".to_vec();
         assert_eq!(
-            annotate_with_evidence(1, original.clone(), &[], std::path::Path::new("."), UNKNOWN),
+            annotate_with_evidence(
+                1,
+                original.clone(),
+                &[],
+                std::path::Path::new("."),
+                unknown()
+            ),
             original
         );
     }
@@ -212,7 +257,7 @@ mod tests {
         std::fs::write(dir.path().join("sqlite3.c"), vec![b'x'; 8_000_000]).expect("fixture");
         let args = vec!["-O3".to_string(), "-c".into(), "sqlite3.c".into()];
 
-        let stderr = annotate_with_evidence(-1, Vec::new(), &args, dir.path(), UNKNOWN);
+        let stderr = annotate_with_evidence(-1, Vec::new(), &args, dir.path(), unknown());
         let text = String::from_utf8_lossy(&stderr);
 
         assert!(text.contains("sqlite3.c (8.0 MB)"), "{text}");
@@ -220,7 +265,7 @@ mod tests {
         // The generic line would send the reader to the whole-build knob with
         // no idea one file caused it.
         assert!(
-            !stderr.ends_with(signal_diagnostic(&args).as_bytes()),
+            !stderr.ends_with(signal_diagnostic(-1, &args).as_bytes()),
             "{text}"
         );
     }
@@ -236,9 +281,9 @@ mod tests {
         std::fs::write(dir.path().join("util.c"), vec![b'x'; 2_048]).expect("fixture");
         let args = vec!["-c".to_string(), "util.c".into()];
 
-        let stderr = annotate_with_evidence(-1, Vec::new(), &args, dir.path(), UNKNOWN);
+        let stderr = annotate_with_evidence(-1, Vec::new(), &args, dir.path(), unknown());
 
-        assert_eq!(stderr, signal_diagnostic(&args).as_bytes());
+        assert_eq!(stderr, signal_diagnostic(-1, &args).as_bytes());
     }
 
     // soldr#2878: the two messages above name memory as the likely cause.
@@ -258,7 +303,10 @@ mod tests {
             Vec::new(),
             &[],
             std::path::Path::new("."),
-            crate::oom_evidence::OomEvidence::NoKillRecorded,
+            HostResourceSnapshot {
+                cgroup_oom_kills: Some(0),
+                ..HostResourceSnapshot::default()
+            },
         );
         let text = String::from_utf8_lossy(&stderr);
         // The guess still comes first: it is what the reader has been seeing,
@@ -267,8 +315,11 @@ mod tests {
             text.starts_with("soldr: compiler process was terminated"),
             "{text}"
         );
-        assert!(text.contains("no OOM kill"), "{text}");
-        assert!(text.contains("unlikely to help"), "{text}");
+        assert!(
+            text.contains("rules out a kernel cgroup OOM kill"),
+            "{text}"
+        );
+        assert!(text.contains("scheduling/admission defect"), "{text}");
     }
 
     #[test]
@@ -285,11 +336,28 @@ mod tests {
             Vec::new(),
             &args,
             dir.path(),
-            crate::oom_evidence::OomEvidence::KillsRecorded(1),
+            HostResourceSnapshot {
+                cgroup_current_bytes: Some(1 << 30),
+                cgroup_peak_bytes: Some(4 << 30),
+                cgroup_limit_bytes: Some(8 << 30),
+                cgroup_swap_current_bytes: Some(1 << 29),
+                cgroup_swap_limit_bytes: Some(2 << 30),
+                cgroup_oom_kills: Some(1),
+                cgroup_pids_current: Some(37),
+                cgroup_pids_limit: Some(512),
+                ..HostResourceSnapshot::default()
+            },
         );
         let text = String::from_utf8_lossy(&stderr);
         assert!(text.contains("sqlite3.c (8.0 MB)"), "{text}");
-        assert!(text.contains("OOM-killed 1 process"), "{text}");
+        assert!(text.contains("memory.current=1.00 GiB"), "{text}");
+        assert!(text.contains("memory.peak=4.00 GiB"), "{text}");
+        assert!(text.contains("memory.max=8.00 GiB"), "{text}");
+        assert!(text.contains("memory.swap.current=0.50 GiB"), "{text}");
+        assert!(text.contains("memory.swap.max=2.00 GiB"), "{text}");
+        assert!(text.contains("pids.current=37"), "{text}");
+        assert!(text.contains("pids.max=512"), "{text}");
+        assert!(text.contains("Soldr scheduling/admission bug"), "{text}");
     }
 
     #[test]
@@ -300,8 +368,8 @@ mod tests {
         // A hedge about a hedge is worse than the hedge. Off Linux this is
         // every invocation, so the message must be byte-identical to before.
         assert_eq!(
-            annotate_with_evidence(-1, Vec::new(), &[], std::path::Path::new("."), UNKNOWN),
-            signal_diagnostic(&[]).as_bytes()
+            annotate_with_evidence(-1, Vec::new(), &[], std::path::Path::new("."), unknown()),
+            signal_diagnostic(-1, &[]).as_bytes()
         );
     }
 
@@ -316,7 +384,10 @@ mod tests {
                 original.clone(),
                 &[],
                 std::path::Path::new("."),
-                crate::oom_evidence::OomEvidence::NoKillRecorded,
+                HostResourceSnapshot {
+                    cgroup_oom_kills: Some(0),
+                    ..HostResourceSnapshot::default()
+                },
             ),
             original
         );

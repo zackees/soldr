@@ -293,11 +293,26 @@ jobs:
       # source binary as its own explicit
       # rustc wrapper: nested tests override SOLDR_CACHE_DIR and must not inherit
       # an older bootstrap wrapper whose daemon route is unavailable there.
+      # Preserve the real rustup Cargo before shadowing its bare name. Code that
+      # intentionally launches nested Cargo must honor $CARGO, whose distinct
+      # shim re-enters this source revision through the Soldr front door. Cargo
+      # overwrites CARGO for build children, so ci-test also installs the
+      # generated target runner at the final Nextest test-process boundary.
       - name: Run prescribed host validation
         shell: bash
         run: |
           set -euo pipefail
           source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          real_cargo=$("$source_soldr" rustup which cargo)
+          cargo_guard="${RUNNER_TEMP}/soldr-ci-cargo-guard"
+          python3 .github/scripts/install_ci_cargo_guard.py \
+            --source-soldr "$source_soldr" \
+            --real-cargo "$real_cargo" \
+            --output-dir "$cargo_guard"
+          export SOLDR_REAL_CARGO="$real_cargo"
+          export CARGO="$(<"$cargo_guard/allowed-cargo-path")"
+          export SOLDR_CI_TEST_CARGO_RUNNER="$(<"$cargo_guard/test-runner-path")"
+          export PATH="$cargo_guard/trap:$PATH"
           SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr" \
             ci-test --target "${{ inputs.target }}"
 

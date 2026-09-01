@@ -565,6 +565,16 @@ their dynamic child-jobserver count is not converted into a global Cargo cap.
 Cgroup memory capacity remains diagnostic telemetry and is never applied as a
 global `CARGO_BUILD_JOBS` cap.
 
+The prescribed GitHub host lane also makes the Cargo front-door contract
+fail-closed during this command. `CARGO` names a shim that re-enters the
+source-built binary as `soldr cargo`, while a distinct bare `cargo` shim at the
+front of `PATH` rejects accidental bypasses. Cargo replaces `CARGO` with its
+own absolute path while launching build tooling, so the Nextest execution
+stage installs a target runner that restores the allowed shim immediately
+before each test process starts. Nested compiler fixtures remain supported
+when they invoke `$CARGO`. An intentional absolute path to another Cargo
+binary bypasses this name-based diagnostic; this guard is not an OS sandbox.
+
 All six repository Dylints are retained. They intentionally use their exact
 pinned nightly rather than the stable project toolchain. The command reads all
 six lint manifests, requires their pins to agree, and rejects an environment

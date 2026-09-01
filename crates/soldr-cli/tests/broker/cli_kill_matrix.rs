@@ -3,16 +3,18 @@
 //! The broker-fronted design's correctness contract: killing or upgrading
 //! any process has bounded, tested behavior. The in-process halves already
 //! exist (`race_against_disconnect` for client EOF mid-compile,
-//! zccache#1363's kill_on_drop + PDEATHSIG for compiler children, the
-//! 64-way broker stampede in `cli_broker_resurrection`); these tests prove
-//! the multi-process wiring end to end with real SIGKILLs:
+//! zccache#1363's kill_on_drop + PDEATHSIG for compiler children); these tests
+//! prove the Soldr adapter wiring end to end with real SIGKILLs:
 //!
 //! - daemon killed → only that route's generation is invalidated; the
 //!   broker survives untouched and the next start launches one replacement;
-//! - two roots → killing one root's daemon never disrupts the other;
-//! - daemon-kill recovery storm → concurrent restarts converge on exactly
-//!   one replacement daemon per route;
 //! - broker killed → the next front door brings up exactly one new broker.
+//!
+//! Generic multi-route isolation and concurrent single-flight replacement are
+//! owned by running-process 4.10.9's
+//! `backend_crash_concurrent_reconnects_launch_one_replacement_without_disturbing_other_instance`.
+//! Keep this file as the small Soldr route/CLI adapter matrix, not a second
+//! substrate conformance suite.
 //!
 //! Unix-gated at runtime (the platform-cfg boundary lives in
 //! soldr-platform): the matrix drives `kill -9` and pgrep-style process
@@ -159,9 +161,17 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);
+        // This isolated HOME owns its staged broker image and service-definition
+        // directory. `broker stop` acknowledges before process exit, so wait
+        // before deleting either tree; otherwise the still-live broker serves
+        // the next test from a definition directory we just removed.
+        let broker_pids = broker_pids(&self.home_root);
         let _ = run_soldr(&["broker", "stop"], &self.cache_root, &self.home_root);
-        for pid in broker_pids(&self.home_root) {
-            sigkill(pid);
+        for pid in broker_pids {
+            if !wait_for_process_exit(pid, Duration::from_secs(5)) {
+                sigkill(pid);
+                let _ = wait_for_process_exit(pid, Duration::from_secs(5));
+            }
         }
         let _ = fs::remove_dir_all(&self.cache_root);
         let _ = fs::remove_dir_all(&self.home_root);
@@ -221,86 +231,18 @@ fn daemon_kill_invalidates_only_its_route_and_one_replacement_launches() {
 }
 
 #[test]
-fn two_roots_killing_one_daemon_never_disrupts_the_other() {
-    if skip_on_windows() {
-        return;
-    }
-    let fx = Fixture::new("killmatrix-two-roots");
-    let root_b = unique_temp_dir("killmatrix-two-roots-b");
-
-    for root in [&fx.cache_root, &root_b] {
-        let start = run_soldr(&["daemon", "start"], root, &fx.home_root);
-        assert!(
-            start.status.success() && wait_for_running(root, &fx.home_root),
-            "daemon start for {} failed: {}",
-            root.display(),
-            String::from_utf8_lossy(&start.stderr)
-        );
-    }
-    let pid_a = daemon_pid(&fx.cache_root).expect("root A claim");
-    let pid_b = daemon_pid(&root_b).expect("root B claim");
-    assert_ne!(pid_a, pid_b, "distinct roots get distinct daemon routes");
-
-    sigkill(pid_a);
-    assert!(wait_for_process_exit(pid_a, Duration::from_secs(10)));
-
-    // Root B's generation is untouched: same pid, still serving.
-    assert!(process_is_alive(pid_b), "root B's daemon must survive");
-    assert!(
-        status_reports_running(&root_b, &fx.home_root),
-        "root B must keep serving status while root A is dead"
-    );
-
-    let _ = run_soldr(&["daemon", "stop"], &root_b, &fx.home_root);
-    let _ = fs::remove_dir_all(&root_b);
-}
-
-#[test]
-fn concurrent_restarts_after_a_kill_converge_on_one_replacement() {
-    if skip_on_windows() {
-        return;
-    }
-    let fx = Fixture::new("killmatrix-storm");
-    let start = run_soldr(&["daemon", "start"], &fx.cache_root, &fx.home_root);
-    assert!(start.status.success() && wait_for_running(&fx.cache_root, &fx.home_root));
-    let old_daemon = daemon_pid(&fx.cache_root).expect("initial claim");
-    sigkill(old_daemon);
-    assert!(wait_for_process_exit(old_daemon, Duration::from_secs(10)));
-
-    let mut children = Vec::new();
-    for _ in 0..8 {
-        children.push(
-            soldr_command(&["daemon", "start"], &fx.cache_root, &fx.home_root)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("spawn concurrent daemon start"),
-        );
-    }
-    for mut child in children {
-        let _ = child.wait();
-    }
-    assert!(
-        wait_for_running(&fx.cache_root, &fx.home_root),
-        "the route must be serving after the restart storm"
-    );
-    let survivor = daemon_pid(&fx.cache_root).expect("storm survivor claim");
-    assert_ne!(survivor, old_daemon);
-    // Exactly one daemon serves the route: the claim's pid is alive, and a
-    // follow-up status round-trip works. (Extra spawns must have deferred
-    // to the broker's single placement, not raced their own daemons in.)
-    assert!(process_is_alive(survivor));
-    assert!(status_reports_running(&fx.cache_root, &fx.home_root));
-}
-
-#[test]
 fn broker_kill_is_recovered_by_the_next_front_door_with_one_replacement() {
     if skip_on_windows() {
         return;
     }
     let fx = Fixture::new("killmatrix-broker");
     let start = run_soldr(&["daemon", "start"], &fx.cache_root, &fx.home_root);
-    assert!(start.status.success() && wait_for_running(&fx.cache_root, &fx.home_root));
+    assert!(
+        start.status.success() && wait_for_running(&fx.cache_root, &fx.home_root),
+        "initial daemon start failed: stdout={}; stderr={}",
+        String::from_utf8_lossy(&start.stdout),
+        String::from_utf8_lossy(&start.stderr),
+    );
     let brokers_before = broker_pids(&fx.home_root);
     assert_eq!(brokers_before.len(), 1, "one broker after bringup");
 
@@ -329,4 +271,43 @@ fn broker_kill_is_recovered_by_the_next_front_door_with_one_replacement() {
         "exactly one replacement broker: {brokers_after:?}"
     );
     assert_ne!(brokers_after[0], brokers_before[0]);
+}
+
+/// Keep the expensive real-process adapter matrix explicit. Generic route
+/// isolation/replacement belongs to running-process; adding another Soldr
+/// process test here requires updating this guard and the ownership table in
+/// `docs/CONTRIBUTING_TESTS.md` deliberately.
+#[test]
+fn generic_running_process_ownership_does_not_return_to_soldr_matrix() {
+    let this_file = include_str!("cli_kill_matrix.rs");
+    assert_eq!(
+        this_file
+            .lines()
+            .filter(|line| line.trim() == "#[test]")
+            .count(),
+        3,
+        "keep only two Soldr adapter processes plus this inventory guard"
+    );
+    for upstream_owned in [
+        concat!(
+            "fn two_roots_killing_one_daemon_",
+            "never_disrupts_the_other"
+        ),
+        concat!(
+            "fn concurrent_restarts_after_a_kill_",
+            "converge_on_one_replacement"
+        ),
+    ] {
+        assert!(
+            !this_file.contains(upstream_owned),
+            "{upstream_owned} is owned by running-process lifecycle_process_conformance"
+        );
+    }
+    assert!(
+        !include_str!("cli_broker_resurrection.rs").contains(concat!(
+            "fn issue_2476_sixty_four_process_",
+            "stampede_binds_one_broker"
+        )),
+        "generic singleton stampede coverage is owned by running-process"
+    );
 }

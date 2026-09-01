@@ -9,6 +9,7 @@ verdict logic without needing an ARM64 host.
 
 from __future__ import annotations
 
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -84,7 +85,9 @@ def test_a_runnable_binary_passes_even_when_it_exits_non_zero() -> None:
     # `--version` is not universally supported. The question is whether the
     # host could EXECUTE the file, not whether it liked the argument, and
     # conflating those would fail hosts that are perfectly fine.
-    runnable, _ = is_executable_here("/bin/false")
+    false_binary = shutil.which("false")
+    assert false_binary is not None
+    runnable, _ = is_executable_here(false_binary)
     assert runnable
 
 
