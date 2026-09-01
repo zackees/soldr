@@ -26,13 +26,23 @@ pub struct ProcessHolder {
 /// A zombie (an exited child awaiting reap) still answers `kill(pid, 0)`
 /// but can never serve IPC again, so it is reported as dead.
 pub fn is_alive(pid: u32) -> bool {
+    // A pid the kernel cannot name is not alive. Callers hand us `u32` from
+    // pid files, state rows and environment variables, and `pid_t` is signed:
+    // 4294967295 would reach `kill` as -1, which means "every process I may
+    // signal" and would answer this probe with a confident `true`.
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
     // SAFETY: kill(pid, 0) is a well-defined liveness probe — no signal is
     // delivered, the syscall just returns 0 if the pid exists and the
     // caller has permission to signal it.
-    if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+    if unsafe { libc::kill(pid, 0) } != 0 {
         return false;
     }
-    !is_zombie(pid)
+    !is_zombie(pid as u32)
 }
 
 /// True when `pid` names a process that has exited but is still awaiting

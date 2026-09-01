@@ -349,6 +349,13 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         })
     });
 
+    let owner_handle = opts.owner_pid.map(|owner_pid| {
+        let owner_state = state.clone();
+        tokio::spawn(async move {
+            run_owner_watchdog(owner_state, owner_pid).await;
+        })
+    });
+
     let maintenance_context = crate::daemon::maintenance::MaintenanceContext {
         paths: paths.clone(),
         db_path: state.db_path.clone(),
@@ -385,6 +392,9 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     session_handle.abort();
     handoff_handle.abort();
     if let Some(handle) = idle_handle {
+        handle.abort();
+    }
+    if let Some(handle) = owner_handle {
         handle.abort();
     }
     let shutdown_phase = |name| {

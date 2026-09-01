@@ -1828,12 +1828,21 @@ production `.soldr`, development `.soldr-dev`, or an explicit
 `.zccache` is owned only by a standalone zccache daemon; Soldr never discovers,
 migrates, links into, or deletes it.
 
-The daemon stays resident by default, performs a lightweight pressure check
-every five minutes, and performs a full age pass every 24 hours. The last
+The daemon performs a lightweight pressure check every five minutes and a full
+age pass every 24 hours, and exits after 30 minutes without work. The last
 completed full pass and the latest structured report are stored under
-`<root>/cache/soldr-daemon/`, so an overdue restart catches up immediately.
-Nonzero `soldr daemon start --idle-timeout <seconds>` remains an explicit
-auto-exit option. Soldr does not install Task Scheduler jobs, systemd timers,
+`<root>/cache/soldr-daemon/`, so an overdue restart catches up immediately and
+the schedule survives the exit. `soldr daemon start --idle-timeout <seconds>`
+sets a different budget.
+
+`soldr-daemon --owner-pid <PID>`, or `SOLDR_DAEMON_OWNER_PID`, ties a daemon's
+lifetime to another process: it exits once that process is gone, however the
+process ended. This is for callers that own a throwaway root, such as a test
+fixture with its own `SOLDR_CACHE_DIR`. A broker route is keyed on the soldr
+root, so each such caller gets a daemon of its own, and without an owner a
+fixture that is killed rather than shut down leaves that daemon resident.
+Liveness is polled at the idle interval, so a PID reused within one interval
+can be mistaken for the original owner. Soldr does not install Task Scheduler jobs, systemd timers,
 launchd agents, or any other OS scheduler.
 
 The embedded artifact budget defaults to 5% of filesystem capacity, clamped to

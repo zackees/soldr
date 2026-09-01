@@ -36,10 +36,26 @@ pub fn terminate_pid(pid: u32) {
 /// is already gone (ESRCH) counts as success.
 pub fn signal_pid(pid: u32, force: bool) -> io::Result<()> {
     let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+    // Refuse anything `pid_t` cannot represent as a single process, BEFORE
+    // the syscall. `pid_t` is signed, so a `u32` above `i32::MAX` arrives at
+    // `kill` as a negative number, and negative arguments do not mean "that
+    // process": -N signals process group N, and -1 signals every process the
+    // caller may signal. `signal_pid(4294967295, true)` would therefore
+    // SIGKILL the user's entire session rather than one stale pid. Real
+    // Linux and macOS pids never come near that range, but these values
+    // arrive from pid files and environment variables, not only from
+    // `Child::id()`.
+    let target = libc::pid_t::try_from(pid).ok().filter(|pid| *pid > 0);
+    let Some(target) = target else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("refusing to signal pid {pid}: not a single-process id"),
+        ));
+    };
     // SAFETY: kill(2) on a pid the caller captured. ESRCH — the process
     // exited between the probe and the signal — is success for a
     // terminate request.
-    let rc = unsafe { libc::kill(pid as libc::pid_t, signal) };
+    let rc = unsafe { libc::kill(target, signal) };
     if rc == 0 {
         return Ok(());
     }
@@ -89,5 +105,32 @@ mod tests {
             terminate_tree(&mut child).expect("tree kill"),
             TreeKill::TreeKilled
         );
+    }
+}
+
+#[cfg(test)]
+mod out_of_range_pid_tests {
+    use super::*;
+
+    /// `pid_t` is signed. Without a range check, `kill(4294967295, SIGKILL)`
+    /// is `kill(-1, SIGKILL)`, which the kernel reads as "every process this
+    /// user may signal". A stale pid file or a mistyped environment variable
+    /// would end the user's session. The value must be rejected before the
+    /// syscall, not merely reported afterwards.
+    #[test]
+    fn a_pid_outside_pid_t_is_refused_without_signalling_anything() {
+        for pid in [u32::MAX, i32::MAX as u32 + 1, 0] {
+            let error = signal_pid(pid, true).expect_err("must not reach kill(2)");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+    }
+
+    /// The companion probe answers the same way: a pid the kernel cannot name
+    /// is not alive. Left unguarded it returns `true`, because `kill(-1, 0)`
+    /// succeeds whenever the caller can signal anything at all.
+    #[test]
+    fn a_pid_outside_pid_t_is_not_alive() {
+        assert!(!crate::platform_linux::process::inspect::is_alive(u32::MAX));
+        assert!(!crate::platform_linux::process::inspect::is_alive(0));
     }
 }
