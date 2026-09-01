@@ -434,7 +434,7 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
     assert_eq!(
         doctests["depends_on"],
         serde_json::json!(["nextest", ui_tests[ui_tests.len() - 1]]),
-        "doctests are the join after both compiler-bearing branches"
+        "doctests consume the join after both compiler-bearing branches"
     );
     assert_eq!(
         doctests["command"],
@@ -448,6 +448,13 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
             host
         ])
     );
+    for policy in ["cargo-deny-bans", "cargo-audit", "cargo-machete"] {
+        assert_eq!(
+            find_stage(&plan, policy)["depends_on"],
+            serde_json::json!(["nextest", ui_tests[ui_tests.len() - 1]]),
+            "{policy} consumes the same join as doctests so the independent tail can overlap"
+        );
+    }
 
     for stage in array(&plan, "stages") {
         assert!(

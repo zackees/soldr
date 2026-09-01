@@ -169,6 +169,10 @@ threads-required = "num-cpus"
 [[profile.default.overrides]]
 filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + (binary(cargo_front_door) & test(/^cli_cargo_doc_routes::(cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct|bare_doc_keeps_rustc_wrapped_but_rustdoc_direct|cargo_doc_route_deadline_kills_wrapper_hold_tree|bare_doc_route_deadline_kills_rustdoc_hold_tree|cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct|rustdoc_path_shim_reenters_direct_passthrough_without_zccache)$/)) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
 test-group = 'soldr-cargo-cold-builds'
+# This serial group was the Fresh Nextest critical tail in all three soldr#3036
+# samples, despite starting 3m46s-4m27s after the run. Queue it first so its
+# existing one-at-a-time work overlaps the rest of the four-process pool.
+priority = 100
 
 [scripts.wrapper.timeout-diagnostics]
 command = { command-line = ".github/scripts/nextest_timeout_wrapper.py", relative-to = "workspace-root" }

@@ -138,6 +138,14 @@
       "rationale": "Run-scoped build XML + compile journals for toolchain-home and recompile-storm triage."
     },
     {
+      "id": "build-and-test-source-driver-download",
+      "workflow": "_build-and-test.yml",
+      "step": "Reuse shared source driver if already available",
+      "mechanism": "actions/download-artifact",
+      "tier": "same-run-transport",
+      "rationale": "Opportunistically receives the exact-workflow-SHA dev-profile Soldr driver already produced for cross lanes. Missing or mismatched provenance falls back to the identical local dev-profile source build; it is never restored across workflow runs."
+    },
+    {
       "id": "cross-build-xwin-sdk",
       "workflow": "_ci-cross-build-linux.yml",
       "step": "Cache MSVC CRT+SDK (via XWIN_CACHE_DIR)",
@@ -272,7 +280,7 @@
       "step": "Restore cached bootstrap soldr binary",
       "mechanism": "actions/cache",
       "tier": "bootstrap-driver-binary",
-      "rationale": "The ci-bootstrap driver keyed on the exact commit SHA (deliberately not hashFiles, which misses submodule content)."
+      "rationale": "The dev-profile bootstrap driver keyed on the exact commit SHA (deliberately not hashFiles, which misses submodule content)."
     },
     {
       "id": "ci-bootstrap-rust-cache",

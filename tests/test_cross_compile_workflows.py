@@ -542,6 +542,54 @@ def test_native_linux_integration_backstop_runs_on_pull_requests() -> None:
     assert "canonical native exception" in block
 
 
+def test_host_validation_opportunistically_reuses_exact_sha_bootstrap() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    host_template = (WORKFLOWS / "_build-and-test.yml").read_text(encoding="utf-8")
+    producer = _job_block(ci, "e2e-cross-bootstrap-soldr", "e2e-linux-x64-gnu-build")
+    host = _job_block(ci, "build-linux-x64", "pep517-daemon-smoke")
+    producer_header = producer[: producer.index("    steps:")]
+    verify = _step_block(ci, "Verify bootstrap soldr")
+    upload = _step_block(ci, "Upload bootstrap soldr artifact")
+    host_build = _step_block(host_template, "Build ci-test driver")
+
+    # The producer already runs unconditionally and independently. The host
+    # must not wait for it: a cold producer falls back to the existing local
+    # source build rather than extending the native critical path.
+    assert "\n    if:" not in producer_header
+    assert not re.search(r"(?m)^    needs:", host)
+    assert "source_driver_artifact_name: soldr-ci-bootstrap-linux-gnu" in host
+
+    assert "bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ github.sha }}" in producer
+    assert "key: rustup-1.95.0-linux-x64-v1" in producer
+    assert "rustup toolchain install 1.95.0 --profile minimal" in producer
+    assert "toolchain: 1.95.0" in host_template
+    assert "cargo build --profile dev --package soldr-cli" in producer
+    assert "soldr cargo build --profile dev -p soldr-cli" in host_build
+    assert "target/x86_64-unknown-linux-gnu/debug/soldr" in producer
+    assert "target/${{ inputs.target }}/debug/soldr" in host_template
+    assert "--bin soldr" in producer
+    assert "--target x86_64-unknown-linux-gnu" in producer
+    assert "--features" not in producer
+    assert (
+        'printf \'%s\\n\' "${{ github.sha }}" > "$RUNNER_TEMP/soldr-bin/source-sha"'
+        in verify
+    )
+    assert "path: ${{ runner.temp }}/soldr-bin" in upload
+
+    # source-sha is adjacent artifact metadata, not an executable or directory
+    # contract. Every pre-existing consumer addresses only the soldr file and
+    # therefore safely ignores the marker added for host provenance checks.
+    cross_template = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(
+        encoding="utf-8"
+    )
+    expose = _step_block(cross_template, "Expose bootstrap soldr on PATH")
+    wheel = _step_block(ci, "Build the wheel through `soldr wheel`")
+    assert "$RUNNER_TEMP/soldr-bin/soldr" in expose
+    assert 'driver="$RUNNER_TEMP/soldr-bin/soldr"' in wheel
+    assert "source-sha" not in expose
+    assert "source-sha" not in wheel
+
+
 def test_pep517_platform_smokes_run_on_pull_requests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     block = _job_block(ci, "pep517-daemon-smoke", "e2e-linux-x64")

@@ -214,17 +214,17 @@ pub(crate) async fn freeze(
     doctest.extend(workspace_selection(&invocation.scope));
     doctest.extend(["--doc".into(), "--target".into(), host.clone()]);
     doctest.extend(scope_args.clone());
+    let tail_dependencies = tail_join_dependencies(
+        dylint_test_names
+            .last()
+            .expect("the frozen Dylint test inventory is non-empty"),
+    );
     stages.push(stage(
         "doctests",
         "rustdoc",
         COMPILER_AND_TEST,
         cargo_command(&doctest, &[]),
-        &[
-            "nextest",
-            dylint_test_names
-                .last()
-                .expect("the frozen Dylint test inventory is non-empty"),
-        ],
+        &tail_dependencies,
         &root,
     ));
     for (name, args) in [
@@ -237,7 +237,7 @@ pub(crate) async fn freeze(
             "policy",
             POLICY,
             cargo_command(&args, &[]),
-            &["doctests"],
+            &tail_dependencies,
             &root,
         ));
     }
@@ -366,6 +366,13 @@ pub(crate) async fn freeze(
             stage_bytes: "reported where the child exposes byte counters",
         },
     })
+}
+
+/// The post-validation tail has one join and four independent consumers.
+/// Keeping this edge list shared with the executor prevents the frozen graph
+/// and its optimized schedule from silently drifting apart.
+pub(super) fn tail_join_dependencies(last_dylint_ui_test: &str) -> [&str; 2] {
+    ["nextest", last_dylint_ui_test]
 }
 
 #[derive(Clone, Copy)]
@@ -677,6 +684,14 @@ mod tests {
                 "x86_64-unknown-linux-gnu"
             ),
             "nightly-2026-05-28-x86_64-unknown-linux-gnu"
+        );
+    }
+
+    #[test]
+    fn post_validation_tail_has_one_shared_join() {
+        assert_eq!(
+            tail_join_dependencies("dylint-test-final"),
+            ["nextest", "dylint-test-final"]
         );
     }
 }

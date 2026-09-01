@@ -19,7 +19,8 @@ const CI_TEST_CARGO_RUNNER_ENV: &str = "SOLDR_CI_TEST_CARGO_RUNNER";
 /// tests. Individual tests may launch nested compiler fixtures; those and
 /// Dylint still share the daemon's canonical admission gate.
 /// Dylint manifests remain sequential because all six intentionally share one
-/// target tree per domain.
+/// target tree per domain. After both branches join, doctests and the three
+/// non-compiling policy consumers run together from that completed join.
 pub(crate) async fn run(
     plan: &CiTestPlan,
     cache_enabled: bool,
@@ -54,11 +55,18 @@ pub(crate) async fn run(
         "soldr ci-test: overlapping Fresh Nextest execution with Dylint UI tests after exclusive workspace analysis"
     );
     stop_on_failure!(run_parallel_nextest_and_dylint(&factory, plan));
-    stop_on_failure!(run_group(&factory, plan, &["doctests"]));
+    // All four tail stages consume the same completed Nextest + Dylint join.
+    // The policy tools inspect manifests/advisories and do not compile; they
+    // are independent of rustdoc's doctest compile-and-run domain.
     run_group(
         &factory,
         plan,
-        &["cargo-deny-bans", "cargo-audit", "cargo-machete"],
+        &[
+            "doctests",
+            "cargo-deny-bans",
+            "cargo-audit",
+            "cargo-machete",
+        ],
     )
 }
 
@@ -447,17 +455,32 @@ fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrError> {
             "soldr ci-test: Nextest execution must not rebuild its planned test profile after nextest-compile; nested compiler fixtures launched by tests remain allowed".into(),
         ));
     }
-    require_dependencies(
-        stage_named(plan, "doctests")?,
-        &[
-            "nextest",
-            ui_tests
-                .last()
-                .ok_or_else(|| SoldrError::Other("soldr ci-test: no Dylint UI tests".into()))?
-                .name
-                .as_str(),
-        ],
-    )?;
+    let last_ui_test = &ui_tests
+        .last()
+        .ok_or_else(|| SoldrError::Other("soldr ci-test: no Dylint UI tests".into()))?
+        .name;
+    validate_tail_dependencies(&plan.stages, last_ui_test)?;
+    Ok(())
+}
+
+fn validate_tail_dependencies(stages: &[Stage], last_ui_test: &str) -> Result<(), SoldrError> {
+    let tail_dependencies = super::plan::tail_join_dependencies(last_ui_test);
+    for stage in [
+        "doctests",
+        "cargo-deny-bans",
+        "cargo-audit",
+        "cargo-machete",
+    ] {
+        let planned = stages
+            .iter()
+            .find(|candidate| candidate.name == stage)
+            .ok_or_else(|| {
+                SoldrError::Other(format!(
+                    "soldr ci-test: frozen plan is missing stage {stage:?}"
+                ))
+            })?;
+        require_dependencies(planned, &tail_dependencies)?;
+    }
     Ok(())
 }
 
@@ -513,18 +536,30 @@ fn run_group(
                 })
         })
         .collect::<Result<_, _>>()?;
+    let code = run_stage_group(factory, &stages)?;
     if stages.len() == 1 {
-        let code = wait_one(factory.spawn(stages[0])?, stages[0])?;
         eprintln!(
             "soldr ci-test: stage `{}` completed in {} ms",
             stages[0].name,
             started.elapsed().as_millis()
         );
-        return Ok(code);
+    } else {
+        eprintln!(
+            "soldr ci-test: stage group [{}] completed in {} ms",
+            names.join(", "),
+            started.elapsed().as_millis()
+        );
+    }
+    Ok(code)
+}
+
+fn run_stage_group(spawner: &impl StageSpawner, stages: &[&Stage]) -> Result<i32, SoldrError> {
+    if stages.len() == 1 {
+        return wait_one(spawner.spawn_stage(stages[0])?, stages[0]);
     }
     let mut children = Vec::with_capacity(stages.len());
-    for stage in stages {
-        match factory.spawn(stage) {
+    for &stage in stages {
+        match spawner.spawn_stage(stage) {
             Ok(child) => children.push((stage, child)),
             Err(error) => {
                 cancel_remaining(&mut children, None);
@@ -532,13 +567,7 @@ fn run_group(
             }
         }
     }
-    let code = wait_parallel(&mut children)?;
-    eprintln!(
-        "soldr ci-test: stage group [{}] completed in {} ms",
-        names.join(", "),
-        started.elapsed().as_millis()
-    );
-    Ok(code)
+    wait_parallel(&mut children)
 }
 
 fn wait_one(mut child: Child, stage: &Stage) -> Result<i32, SoldrError> {
