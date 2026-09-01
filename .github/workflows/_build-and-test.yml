@@ -203,22 +203,6 @@ jobs:
       # prefers a same-graph entry; the bare prefix still restores something
       # after a dependency bump. The save runs in the post-step, after
       # `Stop canonical host CI cache` has flushed the daemon.
-      #
-      # No size cap is set here, deliberately, and the number that would set it
-      # already exists: the embedded service's own budget is
-      # `ZCCACHE_CACHE_SIZE_BYTES` / `ZCCACHE_CACHE_SIZE_PERCENT`
-      # (docs/API.md), NOT `gc_policy.rs`: the `zccache_compile` category's
-      # `size_cap` is `None` there, and nothing outside `gc_policy.rs` reads
-      # `EvictionAction.size_cap` for that category at all, so setting it would
-      # be an inert third spelling of the cap. That budget defaults to 5%
-      # of the filesystem clamped to a 40 GiB FLOOR, so the service will not
-      # bound this entry anywhere near the 2.0 GiB family allocation; only the
-      # measured plateau across runs will say whether it needs to. If it does,
-      # the fix is one `ZCCACHE_CACHE_SIZE_BYTES=<n>` line in the step above,
-      # not new eviction code. Note also that the `run_id` suffix means each
-      # run writes a NEW entry, so the family's footprint is entry size times
-      # the number of retained runs under GitHub's 10 GB repo LRU -- soldr#3039
-      # owns whether that needs a `save-if` before soldr#3047's budget gate.
       - name: Restore Tier-2 zccache object store (soldr#3039)
         id: zccache_unit_store
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -448,6 +432,48 @@ jobs:
           "$source_soldr" cache shutdown --shutdown-timeout-seconds 30 \
             || "$source_soldr" zccache stop
           "$source_soldr" broker remove || true
+
+      # soldr#3039 Phase 0: the `actions/cache` post-step tars the object store
+      # after every main step, and Soldr's OWN archive transport already refuses
+      # to collect part of that tree -- `archive_always_excludes_cache_path`
+      # (crates/soldr-cache/src/cache_lib/save_inventory.rs) drops any path with
+      # a `staging` component plus every `.lock` / `.sock` / `.socket` / `.pid`
+      # file "regardless of the requested save profile". That rule was written
+      # from a bench-lane failure in this exact directory: `soldr save` walked
+      # `daemon-state/embedded-v1/v*/staging/<session>/.active.lock`, the daemon
+      # deleted it before the stat, and the save died. tar has the same race, and
+      # a cache save that fails is only a WARNING -- the entry would silently
+      # never be written and the whole point of persisting the store would be
+      # lost with the lane still green.
+      #
+      # Restoring the files is the second half of the problem: a stale lock or
+      # socket landing in a later run's root is what that module documents as
+      # preventing the compile daemon from starting, and staging holds
+      # partially-written publishes by construction, so none of it is payload.
+      # Deleting it here is safe by the same evidence -- a `soldr load` restore
+      # never contains these files, so the service already has to tolerate their
+      # absence. The daemon is stopped by the step above, and this reports
+      # rather than fails so it can never redden the lane.
+      - name: Scrub runtime coordination state from the object store (soldr#3039)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          store="${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/daemon-state"
+          if [ ! -d "$store" ]; then
+            echo "no object store at $store -- nothing to scrub"
+            exit 0
+          fi
+          find "$store" -type d -name staging -prune -exec rm -rf {} + || true
+          # `-type s` matters: a unix socket is not a regular file, and a stale
+          # socket restored into a later root is the failure this is here for.
+          find "$store" \( -type f -o -type s \) \
+            \( -name '*.lock' -o -name '*.sock' -o -name '*.socket' \
+               -o -name '*.pid' -o -name 'lock' -o -name 'pid' \) \
+            -delete || true
+          echo "object store staged for the cache save:"
+          du -sh "$store" || true
 
       # soldr#1799 — surface the per-build XML logs and the JSONL compile
       # journals from CI compiles so toolchain-home leakage and warm-run

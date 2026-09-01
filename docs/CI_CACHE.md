@@ -246,11 +246,26 @@ every time. An `actions/cache` step now persists it:
   build-logs artifact. Do not switch this to `cache/zccache` plus `!…/history`
   negations: `actions/cache` globs `path` with `implicitDescendants: false`
   and hands the matched directory to `tar`, which recurses, so the negation
-  removes nothing.
+  removes nothing. What the positive selection does *not* exclude is the
+  service's own versioned log directory
+  (`daemon-state/embedded-v1/v<VERSION>/logs/`), which is inside the store and
+  rides along in the entry; zccache owns its rotation, and a `path` negation
+  could not drop it either.
 - **The key rolls**: it ends in `${{ github.run_id }}`, because
   `actions/cache` never re-saves on an exact-key hit — a stable key would
   freeze the store after its first save. Two `restore-keys` fall back to the
   same dependency graph first, then to any earlier entry.
+- **Runtime coordination state is scrubbed first**: a step after
+  `Stop canonical host CI cache` deletes `staging/` plus every
+  `.lock` / `.sock` / `.socket` / `.pid` file under `daemon-state`, mirroring
+  `archive_always_excludes_cache_path` in
+  `crates/soldr-cache/src/cache_lib/save_inventory.rs`. Soldr's own archive
+  transport already refuses to collect those files: the daemon deletes its
+  `.active.lock` between walk and stat, which killed a real `soldr save`, and
+  `tar` shares that race. A failed cache save is only a *warning*, so without
+  the scrub the entry could silently never be written while the lane stayed
+  green — and a restored stale lock or socket is documented in that module as
+  preventing the compile daemon from starting.
 - **Tier**: `zccache-unit`, already declared durable in
   `ci/cache-ownership.json`. This is not a new cache family; content-addressed
   per-unit caching was never what soldr#2931 banned.

@@ -55,6 +55,7 @@ COMPILE_JOURNAL_BASELINE = (
 )
 BUILD_LOGS_UPLOAD = "Upload build log artifacts"
 ZCCACHE_STORE = "Restore Tier-2 zccache object store (soldr#3039)"
+ZCCACHE_SCRUB = "Scrub runtime coordination state from the object store (soldr#3039)"
 ZCCACHE_STORE_PATH = (
     "${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}"
     "/cache/zccache/daemon-state"
@@ -443,6 +444,38 @@ def test_the_object_store_key_rotates_and_falls_back() -> None:
         "hashFiles('Cargo.lock', 'dylints/**/Cargo.lock', 'rust-toolchain.toml', "
         "'dylints/**/rust-toolchain.toml')"
     ) in key_line
+
+
+def test_runtime_coordination_state_is_scrubbed_before_the_cache_save() -> None:
+    """The post-step tars the same tree `soldr save` refuses to collect.
+
+    `archive_always_excludes_cache_path` (soldr-cache/src/cache_lib/
+    save_inventory.rs) drops any path with a `staging` component plus every
+    lock/socket/pid file *in every save profile*, because the daemon deletes
+    its own `.active.lock` between the walk and the stat and killed a real
+    `soldr save`. `tar` has that race too, and a failed cache save is only a
+    warning -- the entry would silently never be written while the lane stayed
+    green. Restoring a stale lock or socket into a later run's root is the
+    other half: that is documented as preventing the compile daemon from
+    starting.
+    """
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert workflow.count(f"- name: {ZCCACHE_SCRUB}") == 1
+    body = _step_body(workflow, ZCCACHE_SCRUB)
+
+    assert "if: always()" in body
+    assert "continue-on-error: true" in body
+    assert ZCCACHE_STORE_PATH in body
+    assert "-name staging -prune" in body
+    for pattern in ("'*.lock'", "'*.sock'", "'*.socket'", "'*.pid'"):
+        assert pattern in body, pattern
+
+    # Order is the point: scrubbing under a live daemon would not close the
+    # race, so this must follow the shutdown, and both must precede the
+    # `actions/cache` post-step (which runs after every main step).
+    assert workflow.index(f"- name: {FINAL_CACHE_STOP}\n") < workflow.index(
+        f"- name: {ZCCACHE_SCRUB}"
+    )
 
 
 def test_the_object_store_is_registered_in_the_ownership_manifest() -> None:

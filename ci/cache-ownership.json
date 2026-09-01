@@ -151,7 +151,8 @@
       "step": "Restore Tier-2 zccache object store (soldr#3039)",
       "mechanism": "actions/cache",
       "tier": "zccache-unit",
-      "rationale": "Content-addressed per-unit compiler outputs for the ci-test host lane; the path selects cache/zccache/daemon-state only, so the compile journals (cache/zccache/history) and session logs (cache/zccache/logs) that the build-logs artifact ships stay run-scoped and outside the entry. Not a new cache family: zccache-unit is already declared durable and live in normal lanes. soldr#3039 Phase 0."
+      "rationale": "Content-addressed per-unit compiler outputs for the ci-test host lane; the path selects cache/zccache/daemon-state only, so the compile journals (cache/zccache/history) and session logs (cache/zccache/logs) that the build-logs artifact ships stay run-scoped and outside the entry. Not a new cache family: zccache-unit is already declared durable and live in normal lanes. soldr#3039 Phase 0.",
+      "notes": "The service's own versioned log directory (daemon-state/embedded-v1/v<VERSION>/logs/) is INSIDE the selected path and is stored with the objects; zccache owns its rotation, and an actions/cache path negation could not exclude it. The lane scrubs staging/ and every lock/socket/pid file from the tree after the daemon stops and before the post-step tar, mirroring archive_always_excludes_cache_path in crates/soldr-cache/src/cache_lib/save_inventory.rs -- those files are never cache payload, they race the tar, and restoring them breaks a later daemon start. No per-entry size cap is set: the embedded budget (ZCCACHE_CACHE_SIZE_BYTES / ZCCACHE_CACHE_SIZE_PERCENT) is the one real cap. The per-family allocation belongs to soldr#3047, which sizes this store's share at 2.0 GiB; this entry states that share and does not enforce it."
     },
     {
       "id": "cross-build-xwin-sdk",
