@@ -438,7 +438,7 @@ jobs:
       # triple = host, target_directory = `target/<host>`, profile `test`;
       # the `rustdoc` domain shares that same directory and profile. Its
       # consumers are `clippy --all-targets --target <host>`,
-      # `nextest run --no-run --lib --tests --target <host>`,
+      # a no-run nextest compile of `--lib --tests --target <host>`,
       # `nextest run`, and `test --doc --target <host>`. "Build ci-test
       # driver" uses `--profile dev` in the same directory. `[profile.test]`
       # in the root Cargo.toml deliberately mirrors `[profile.dev]` ("Mirror
@@ -748,7 +748,8 @@ jobs:
           # Thresholds are deliberately unreachable today: this phase ships the
           # gate, not the reduction. Each #3039 phase lowers its own threshold
           # in its own PR -- that is how a phase proves it holds and how a
-          # later regression is caught. No continue-on-error on purpose: once a
+          # later regression is caught. The step is deliberately left able to
+          # fail the lane, with no soft-fail escape hatch: once a
           # threshold is real, it must be able to fail the lane.
           python3 .github/scripts/check_third_party_compiles.py \
             "$SOLDR_CACHE_DIR/cache/zccache" \

@@ -143,7 +143,9 @@ def test_main_returns_zero_on_a_clean_run(mod):
 def test_main_propagates_the_uncookable_workspace_exit_code(mod):
     status = mod.main(
         ["--soldr", "/opt/soldr", "--target", "T"],
-        runner=_runner("", "soldr cook: skipped - workspace depends on...\n", returncode=3),
+        runner=_runner(
+            "", "soldr cook: skipped - workspace depends on...\n", returncode=3
+        ),
     )
     assert status == 3
 
@@ -308,7 +310,9 @@ def test_main_writes_to_the_github_step_summary_when_set(mod, tmp_path, monkeypa
 def test_main_echoes_cook_stdout_and_stderr(mod, capsys):
     mod.main(
         ["--soldr", "/opt/soldr", "--target", "T"],
-        runner=_runner("cargo-chef stdout line\n", "soldr cook: auto-hydrate activated\n"),
+        runner=_runner(
+            "cargo-chef stdout line\n", "soldr cook: auto-hydrate activated\n"
+        ),
     )
     captured = capsys.readouterr()
     assert "cargo-chef stdout line" in captured.out

@@ -52,7 +52,11 @@ JOURNAL_REPORT = "Report compile journal analysis (soldr#3040)"
 THIRD_PARTY_RATCHET = "Ratchet third-party compiles (soldr#3040, report-only)"
 FINGERPRINT_LOG = "$SOLDR_CACHE_DIR/logs/cargo-fingerprint.log"
 COMPILE_JOURNAL_BASELINE = (
-    REPO_ROOT / ".github" / "scripts" / "baselines" / "compile_journal_baseline_33536940076.json"
+    REPO_ROOT
+    / ".github"
+    / "scripts"
+    / "baselines"
+    / "compile_journal_baseline_33536940076.json"
 )
 BUILD_LOGS_UPLOAD = "Upload build log artifacts"
 ZCCACHE_STORE = "Restore Tier-2 zccache object store (soldr#3039)"
@@ -145,7 +149,9 @@ def test_setup_soldr_job_caps_are_cleared_before_source_work() -> None:
         assert body.index(clear_caps) < body.index(source_command)
 
 
-def test_the_dylint_tests_tree_is_cooked_between_the_broker_handoff_and_validation() -> None:
+def test_the_dylint_tests_tree_is_cooked_between_the_broker_handoff_and_validation() -> (
+    None
+):
     """The tests-tree cook (soldr#3042) has a load-bearing position.
 
     It must run AFTER the broker handoff, not before: `--tree` exists only on
@@ -328,7 +334,9 @@ def test_cargo_fingerprint_logging_is_enabled_in_the_canonical_domain_step() -> 
     # that makes it visible to every later host build and test step.
     workflow = WORKFLOW.read_text(encoding="utf-8")
     domain = _step_body(workflow, CANONICAL_CACHE)
-    cargo_log_line = 'echo "CARGO_LOG=cargo::core::compiler::fingerprint=info" >> "$GITHUB_ENV"'
+    cargo_log_line = (
+        'echo "CARGO_LOG=cargo::core::compiler::fingerprint=info" >> "$GITHUB_ENV"'
+    )
     assert cargo_log_line in domain
     assert workflow.count(cargo_log_line) == 1
     assert "CARGO_LOG:" not in workflow

@@ -91,8 +91,12 @@ import sys
 # imported as a package. A `sys.path.insert` + plain `import` would work too,
 # but flake8's E402 (module-level import not at top of file) would then need
 # a per-file exemption in `.flake8` -- a file this task does not own.
-_ANALYZER_PATH = pathlib.Path(__file__).resolve().with_name("analyze_compile_journal.py")
-_SPEC = importlib.util.spec_from_file_location("analyze_compile_journal", _ANALYZER_PATH)
+_ANALYZER_PATH = (
+    pathlib.Path(__file__).resolve().with_name("analyze_compile_journal.py")
+)
+_SPEC = importlib.util.spec_from_file_location(
+    "analyze_compile_journal", _ANALYZER_PATH
+)
 if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - packaging accident
     raise ImportError(f"cannot load {_ANALYZER_PATH}")
 analyze_compile_journal = importlib.util.module_from_spec(_SPEC)
@@ -112,7 +116,9 @@ def _fmt_bucket(value: object) -> str:
     return "n/a" if value is None else str(value)
 
 
-def evaluate(summary: dict, max_misses: int, max_dirty: int) -> "tuple[bool, list[str]]":
+def evaluate(
+    summary: dict, max_misses: int, max_dirty: int
+) -> "tuple[bool, list[str]]":
     """Compare an analyzer summary against the two ratchet thresholds.
 
     Returns `(ok, lines)`: `ok` is True only when every threshold that was
@@ -209,7 +215,10 @@ def _load_summary_json(path: str) -> "tuple[dict | None, str | None]":
         # `UnicodeDecodeError` a truncated/binary artifact raises from
         # `read_text` -- neither is an `OSError`, and both are exactly the
         # kind of unreadable input this guard must never crash on.
-        return None, f"check_third_party_compiles: could not read --summary-json {path}: {error}"
+        return (
+            None,
+            f"check_third_party_compiles: could not read --summary-json {path}: {error}",
+        )
     if not isinstance(loaded, dict):
         return (
             None,
@@ -244,10 +253,15 @@ def main(argv: "list[str] | None" = None) -> int:
         help="add <repo-root>/Cargo.lock and every dylints/*/Cargo.lock that exists",
     )
     parser.add_argument(
-        "--repo-root", default=None, help="repository root (default: this script's repo)"
+        "--repo-root",
+        default=None,
+        help="repository root (default: this script's repo)",
     )
     parser.add_argument(
-        "--max-misses", type=int, required=True, help="max allowed third-party compile misses"
+        "--max-misses",
+        type=int,
+        required=True,
+        help="max allowed third-party compile misses",
     )
     parser.add_argument(
         "--max-dirty-third-party",
@@ -261,7 +275,9 @@ def main(argv: "list[str] | None" = None) -> int:
         help="load an already-computed analyzer summary instead of scanning journals",
     )
     parser.add_argument(
-        "--json-out", default=None, help="write the summary that was evaluated to this file"
+        "--json-out",
+        default=None,
+        help="write the summary that was evaluated to this file",
     )
     args = parser.parse_args(argv)
 
@@ -308,7 +324,9 @@ def main(argv: "list[str] | None" = None) -> int:
                 f"{args.json_out}: {error}"
             )
 
-    assert summary is not None  # either loaded from --summary-json or just computed above
+    assert (
+        summary is not None
+    )  # either loaded from --summary-json or just computed above
     ok, lines = evaluate(summary, args.max_misses, args.max_dirty_third_party)
     for line in lines:
         print(line)

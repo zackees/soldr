@@ -108,7 +108,9 @@ def main(argv: list[str] | None = None) -> int:
             with pathlib.Path(summary).open("a", encoding="utf-8") as handle:
                 handle.write(body + "\n")
         except OSError as error:
-            print(f"report_dylint_tree_size: summary unwritable: {error}", file=sys.stderr)
+            print(
+                f"report_dylint_tree_size: summary unwritable: {error}", file=sys.stderr
+            )
     return 0
 
 

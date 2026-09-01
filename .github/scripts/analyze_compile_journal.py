@@ -148,7 +148,9 @@ TS_RE = re.compile(
 
 MEMBERS_RE = re.compile(r"members\s*=\s*\[(?P<body>[^\]]*)\]", re.DOTALL)
 QUOTED_RE = re.compile(r'"([^"]+)"')
-PACKAGE_SECTION_NAME_RE = re.compile(r"\[package\].*?name\s*=\s*\"([^\"]+)\"", re.DOTALL)
+PACKAGE_SECTION_NAME_RE = re.compile(
+    r"\[package\].*?name\s*=\s*\"([^\"]+)\"", re.DOTALL
+)
 ANY_NAME_RE = re.compile(r'name\s*=\s*"([^"]+)"')
 
 DIRTY_RE = re.compile(
@@ -266,7 +268,7 @@ def _get_flag(args: list[str], flag: str) -> str | None:
                 return args[index + 1]
             return None
         if arg.startswith(eq_prefix):
-            return arg[len(eq_prefix):]
+            return arg[len(eq_prefix) :]
     return None
 
 
@@ -658,9 +660,7 @@ def _classify_duplicate(record: Record, others: list[Record]) -> str:
     if (
         others
         and record.daemon_generation is not None
-        and all(
-            other.daemon_generation != record.daemon_generation for other in others
-        )
+        and all(other.daemon_generation != record.daemon_generation for other in others)
     ):
         return "cross_generation"
     interval = _interval(record)
@@ -759,7 +759,11 @@ def _compute_cost(records: list[Record]) -> dict[str, Any]:
             }
         )
     items.sort(
-        key=lambda item: (-item["wall_seconds"], item["crate"], item["context_key"] or "")
+        key=lambda item: (
+            -item["wall_seconds"],
+            item["crate"],
+            item["context_key"] or "",
+        )
     )
 
     return {
@@ -877,9 +881,7 @@ def _compute_buckets(
             if name not in journal_names and name not in cargo_names
         )
         compiling_no_record = sum(
-            1
-            for name in lock_norm
-            if name in cargo_names and name not in journal_names
+            1 for name in lock_norm if name in cargo_names and name not in journal_names
         )
 
     return {
@@ -1006,7 +1008,9 @@ def _build_summary(
     workspace_names: set[str],
 ) -> dict[str, Any]:
     outcomes: Counter[str] = Counter(r.outcome for r in records if r.outcome)
-    miss_reasons: Counter[str] = Counter(r.miss_reason for r in records if r.miss_reason)
+    miss_reasons: Counter[str] = Counter(
+        r.miss_reason for r in records if r.miss_reason
+    )
     trees: Counter[str] = Counter(r.tree for r in records)
 
     first_party_stats = _party_stats(records, "first")
@@ -1169,7 +1173,9 @@ def render_text(summary: dict[str, Any], top: int = 10, verbose: bool = False) -
         f"  records_without_context_key: {duplicates['records_without_context_key']}"
     )
     for entry in duplicates["top_identities"][:top]:
-        lines.append(f"    {entry['count']:>5}  {entry['crate']}  {entry['context_key']}")
+        lines.append(
+            f"    {entry['count']:>5}  {entry['crate']}  {entry['context_key']}"
+        )
 
     trees = summary["trees"]
     _section(lines, "trees")
@@ -1218,7 +1224,9 @@ def render_text(summary: dict[str, Any], top: int = 10, verbose: bool = False) -
     _section(lines, "four-bucket join (#3039)")
     fresh_display = "n/a" if buckets["fresh"] is None else buckets["fresh"]
     no_record_display = (
-        "n/a" if buckets["compiling_no_record"] is None else buckets["compiling_no_record"]
+        "n/a"
+        if buckets["compiling_no_record"] is None
+        else buckets["compiling_no_record"]
     )
     lines.append(f"  third_party_total: {buckets['third_party_total']}")
     lines.append(f"  fresh: {fresh_display}")
@@ -1227,7 +1235,9 @@ def render_text(summary: dict[str, Any], top: int = 10, verbose: bool = False) -
     lines.append(f"  compiling_other: {buckets['compiling_other']}")
     lines.append(f"  compiling_no_record: {no_record_display}")
     bucket_sum = (
-        buckets["compiling_hit"] + buckets["compiling_miss"] + buckets["compiling_other"]
+        buckets["compiling_hit"]
+        + buckets["compiling_miss"]
+        + buckets["compiling_other"]
     )
     lines.append(
         f"  sum(compiling_hit+compiling_miss+compiling_other) = {bucket_sum} "
@@ -1315,10 +1325,14 @@ def main(argv: list[str] | None = None) -> int:
         help="add <repo-root>/Cargo.lock and every dylints/*/Cargo.lock that exists",
     )
     parser.add_argument(
-        "--repo-root", default=None, help="repository root (default: this script's repo)"
+        "--repo-root",
+        default=None,
+        help="repository root (default: this script's repo)",
     )
     parser.add_argument(
-        "--json", action="store_true", help="print the summary as JSON instead of a table"
+        "--json",
+        action="store_true",
+        help="print the summary as JSON instead of a table",
     )
     parser.add_argument(
         "--json-out", default=None, help="also write the summary JSON to this file"
@@ -1355,7 +1369,9 @@ def main(argv: list[str] | None = None) -> int:
 
     journal_files = discover_journal_files(args.paths)
     if not journal_files:
-        notice = f"analyze_compile_journal: no compile journals found under {args.paths!r}"
+        notice = (
+            f"analyze_compile_journal: no compile journals found under {args.paths!r}"
+        )
         if args.json:
             print(notice, file=sys.stderr)
         else:

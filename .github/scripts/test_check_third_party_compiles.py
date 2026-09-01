@@ -129,7 +129,12 @@ def _write_fixture(tmp_path: Path) -> dict:
     """
     journal_path = tmp_path / "compile_journal.jsonl"
     records = [
-        _journal_record(crate="hit_dep", version="1.0.0", outcome="hit", ts="2026-09-01T00:00:02.000000Z"),
+        _journal_record(
+            crate="hit_dep",
+            version="1.0.0",
+            outcome="hit",
+            ts="2026-09-01T00:00:02.000000Z",
+        ),
         _journal_record(
             crate="miss_dep",
             version="0.4.0",
@@ -138,7 +143,9 @@ def _write_fixture(tmp_path: Path) -> dict:
             ts="2026-09-01T00:00:03.000000Z",
         ),
     ]
-    journal_path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+    journal_path.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8"
+    )
 
     cargo_log_path = tmp_path / "cargo-fingerprint.log"
     cargo_log_path.write_text(CARGO_LOG, encoding="utf-8")
@@ -187,7 +194,9 @@ def test_bucket_counts_cover_all_four_buckets(tmp_path: Path) -> None:
     assert buckets["compiling_miss"] == 1
     assert buckets["compiling_no_record"] == 1
     assert (
-        buckets["compiling_hit"] + buckets["compiling_miss"] + buckets["compiling_other"]
+        buckets["compiling_hit"]
+        + buckets["compiling_miss"]
+        + buckets["compiling_other"]
         == buckets["third_party_total"]
     )
 
@@ -199,14 +208,18 @@ def test_third_party_misses_count_only_the_miss_outcome(tmp_path: Path) -> None:
 
 def test_evaluate_ok_for_generous_thresholds(tmp_path: Path) -> None:
     summary = _fixture_summary(tmp_path)
-    ok, lines = check_third_party_compiles.evaluate(summary, max_misses=100_000, max_dirty=100_000)
+    ok, lines = check_third_party_compiles.evaluate(
+        summary, max_misses=100_000, max_dirty=100_000
+    )
     assert ok
     assert any("OK" in line for line in lines)
 
 
 def test_evaluate_fails_on_zero_max_misses(tmp_path: Path) -> None:
     summary = _fixture_summary(tmp_path)
-    ok, lines = check_third_party_compiles.evaluate(summary, max_misses=0, max_dirty=100_000)
+    ok, lines = check_third_party_compiles.evaluate(
+        summary, max_misses=0, max_dirty=100_000
+    )
     assert not ok
     assert any("FAIL" in line for line in lines)
     assert any("soldr#3039" in line for line in lines)
@@ -215,7 +228,11 @@ def test_evaluate_fails_on_zero_max_misses(tmp_path: Path) -> None:
 def test_evaluate_never_fails_dirty_check_when_cargo_unavailable() -> None:
     summary = {
         "third_party": {"misses": 0, "records": []},
-        "cargo": {"available": False, "third_party_dirty_units": 999_999, "dirty_reasons": {}},
+        "cargo": {
+            "available": False,
+            "third_party_dirty_units": 999_999,
+            "dirty_reasons": {},
+        },
         "buckets": {
             "third_party_total": 0,
             "fresh": None,
@@ -243,15 +260,21 @@ def test_main_zero_max_misses_fails(tmp_path: Path) -> None:
     assert check_third_party_compiles.main(argv) == 1
 
 
-def test_main_over_empty_directory_returns_zero_and_says_so(tmp_path: Path, capsys) -> None:
+def test_main_over_empty_directory_returns_zero_and_says_so(
+    tmp_path: Path, capsys
+) -> None:
     empty_dir = tmp_path / "does-not-exist"
-    code = check_third_party_compiles.main([str(empty_dir), "--max-misses", "0", "--max-dirty-third-party", "0"])
+    code = check_third_party_compiles.main(
+        [str(empty_dir), "--max-misses", "0", "--max-dirty-third-party", "0"]
+    )
     assert code == 0
     out = capsys.readouterr().out
     assert "nothing to check" in out
 
 
-def test_summary_json_is_honoured_without_touching_journals(tmp_path: Path, capsys) -> None:
+def test_summary_json_is_honoured_without_touching_journals(
+    tmp_path: Path, capsys
+) -> None:
     summary = {
         "third_party": {"misses": 3, "records": []},
         "cargo": {
@@ -304,7 +327,8 @@ def test_a_missing_summary_json_falls_back_to_the_journals(
     # disk -- falling back to them keeps the gate live instead of silently
     # skipping exactly the run that went wrong.
     paths = _write_fixture(tmp_path)
-    argv = _fixture_argv(paths, max_misses=0, max_dirty=100_000) + [
+    argv = [
+        *_fixture_argv(paths, max_misses=0, max_dirty=100_000),
         "--summary-json",
         str(tmp_path / "never-written.json"),
     ]
@@ -376,7 +400,8 @@ def test_lockfiles_from_repo_still_honours_explicit_lockfiles(tmp_path: Path) ->
     paths = _write_fixture(tmp_path)
     repo_root = tmp_path / "empty-repo"
     repo_root.mkdir()
-    argv = _fixture_argv(paths, max_misses=100_000, max_dirty=100_000) + [
+    argv = [
+        *_fixture_argv(paths, max_misses=100_000, max_dirty=100_000),
         "--lockfiles-from-repo",
         "--repo-root",
         str(repo_root),

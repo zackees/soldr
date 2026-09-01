@@ -218,7 +218,9 @@ class RecordDerivationTests(unittest.TestCase):
         self.assertEqual(record.out_dir, "/tmp/target/debug/build/x/out")
 
     def test_missing_outcome_is_not_a_record(self) -> None:
-        self.assertIsNone(analyze_compile_journal.record_from_json({"foo": "bar"}, "src"))
+        self.assertIsNone(
+            analyze_compile_journal.record_from_json({"foo": "bar"}, "src")
+        )
         self.assertIsNone(analyze_compile_journal.record_from_json("not-a-dict", "src"))
 
     def test_source_is_stored(self) -> None:
@@ -259,7 +261,9 @@ class TreeClassificationTests(unittest.TestCase):
         )
 
     def test_unrecognized_out_dir_is_other(self) -> None:
-        self.assertEqual(analyze_compile_journal.classify_tree("/somewhere/else"), "other")
+        self.assertEqual(
+            analyze_compile_journal.classify_tree("/somewhere/else"), "other"
+        )
         self.assertEqual(analyze_compile_journal.classify_tree(""), "other")
 
 
@@ -486,7 +490,9 @@ class AnalyzeFixtureTests(unittest.TestCase):
         buckets = self.summary["buckets"]
         self.assertEqual(buckets["third_party_total"], 2)
         self.assertEqual(
-            buckets["compiling_hit"] + buckets["compiling_miss"] + buckets["compiling_other"],
+            buckets["compiling_hit"]
+            + buckets["compiling_miss"]
+            + buckets["compiling_other"],
             buckets["third_party_total"],
         )
         self.assertIsNone(buckets["fresh"])
