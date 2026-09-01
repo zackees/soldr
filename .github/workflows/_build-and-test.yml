@@ -99,16 +99,13 @@ jobs:
       # `rustup target add` is required. Components are installed further
       # down via the "Install requested Rust components" step.
       #
-      # soldr#2996: Swatinem/rust-cache is the current target/ restore -- but
-      # it is being deprecated, not kept. The `ws-dev-*` key it uses misses
-      # 100% of the time (its environment hash covers every toolchain in
-      # `rustup toolchain list`, so it flips with the Dylint nightly). The
-      # replacement HAS landed as soldr#3043: the "Restore stable cook
-      # archives (soldr#3043)" cache step and the "Cook stable dependency
-      # tree (soldr#3043)" step below wire a workflow-level `soldr cook`
-      # ahead of ci-test. Swatinem/rust-cache's own retirement is soldr#3047's
-      # B-hunk, not this one -- the step stays here because its removal
-      # belongs to another PR in the serialized integration lane.
+      # soldr#2996: cook was not yet wired into this lane, and
+      # Swatinem/rust-cache was the target/ restore in use here -- but it was
+      # removed in soldr#3047, not kept. Its `ws-dev-*` key held 2.15 GiB
+      # across 5 entries for a 0% hit rate (its environment hash covered every
+      # toolchain in `rustup toolchain list`, so it flipped with the Dylint
+      # nightly). The replacement is the Tier-2 object store in soldr#3041
+      # plus the workflow-level `soldr cook` step in soldr#3043.
       # The older soldr#1248 wording here claimed cook restore was being
       # "reintroduced in the cross/release lanes first"; that has pointed the
       # wrong way since soldr#2867.
@@ -217,19 +214,6 @@ jobs:
             zccache-unit-v1-${{ inputs.target }}-${{ hashFiles('Cargo.lock', 'dylints/**/Cargo.lock', 'rust-toolchain.toml', 'dylints/**/rust-toolchain.toml') }}-
             zccache-unit-v1-${{ inputs.target }}-
 
-      # soldr#1241 — cache ~/.cargo/{registry,git} + target/ so the source
-      # driver and its ci-test plan do not recompile ~700 dependencies from
-      # scratch every run. Same SHA-pinned action as
-      # #1228/#1233/#1236/#1238/#1240.
-      - name: Restore cargo + target caches
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          # soldr#1978 item 6 — keyed on (profile, target), not on the job,
-          # The native validation lane exclusively owns this dev-profile,
-          # target-specific namespace. The non-Rust lint lane intentionally
-          # neither restores nor populates Rust compilation artifacts.
-          shared-key: ws-dev-${{ inputs.target }}
-
       # soldr#1335 — removed `Enable Windows line-table debug symbols`
       # + `Upload Windows test PDBs on failure`. Both gated on
       # `runner.os == 'Windows'`; the only caller (build-linux-x64 in
@@ -283,7 +267,7 @@ jobs:
       # so a driver bump or a lint edit invalidates it.
       - name: Restore Dylint libraries and analysis trees
         id: dylint_trees
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: |
             target/dylint/libraries
@@ -630,6 +614,19 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/report_dylint_tree_size.py
+
+      # soldr#3047 — actions/cache has no `save-if`, so main-only saving
+      # needs the restore/save split: PRs restore main's tree and no longer
+      # write their own 0.21 GiB copy. This step sits after the size report
+      # so the reported numbers describe what is being saved.
+      - name: Save Dylint libraries and analysis trees (soldr#3047)
+        if: ${{ github.ref == 'refs/heads/main' && steps.dylint_trees.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            target/dylint/libraries
+            target/dylint/target
+          key: ${{ steps.dylint_trees.outputs.cache-primary-key }}
 
       - name: Stop canonical host CI cache
         if: always()

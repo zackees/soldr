@@ -231,36 +231,25 @@ jobs:
           path: ${{ runner.temp }}/setup-soldr-soldr/bin/apple-sdk/14.5/darwin-aarch64
           key: soldr-apple-sdk-14.5-darwin-aarch64-v1
 
-      # soldr#1227 — cache target/ + ~/.cargo/{registry,git} across runs.
-      # Bootstrap (host x86_64-linux-gnu) + Cross-build (target subtree)
-      # both live under target/ and share Cargo.lock-keyed rlibs. Keyed on
-      # Cargo.lock + rustc + toolchain by Swatinem/rust-cache so a hit
-      # happens even when source code changes (deps stable).
+      # soldr#3047 — removed the Swatinem/rust-cache step that used to live
+      # here (`Restore cargo + target caches`, shared-key
+      # cross-build-${{ inputs.target }}-v7). ci/cache-ownership.json already
+      # declared Tier 1 `cook` the surviving implementation of the dependency-
+      # graph cache, and this lane is the one soldr#2996 measured cook on
+      # (387.7s -> 9.3s). Running both meant two implementations of one tier,
+      # with the deprecated one carrying 23.79 GiB of a 10 GB repo cache
+      # budget for no wall-time benefit cook doesn't already provide. The
+      # surviving durable layer for this lane is the `Restore cooked
+      # dependency cache` step below.
       #
-      # Setup-soldr's `cache: false` covers only its own zccache seeding;
-      # rust-cache handles the cargo target-dir surface on top.
-      - name: Restore cargo + target caches
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          # soldr#1287 → v2 forced a fresh save with the ci-bootstrap/
-          # subdir; soldr#1315 → v3 forces another fresh save because
-          # the v2 primary key stuck with a cargo registry snapshot
-          # where libz-ng-sys-1.1.29's src/zlib-ng was missing
-          # zlib-ng.map.in + test/. soldr#1357 → v4 forces a fresh save
-          # after Stage B switched from --release to --profile ci-release:
-          # rust-cache's meta-hash doesn't include Cargo.toml profile
-          # additions, so the v3 primary key kept hitting with only
-          # target/<triple>/release/ deps cached — Stage B's cold
-          # ci-release/ subdir added ~5 min per lane in run 28750573776.
-          # Bumping to v4 forced one cache-miss cycle that saved the
-          # ci-release/ deps for every subsequent run. soldr#1248 → v5
-          # forces the same refresh for target/<triple>/ci-nextest after
-          # the nextest-archive lanes moved to a shared CI test profile.
-          # soldr#1479 → v6 forces a fresh save after the CI-only
-          # profiles lowered opt-levels; rust-cache's meta-hash does
-          # not include profile setting changes. soldr#2453 bumps v7 for the
-          # ci-nextest opt-level/codegen-unit memory-pressure changes.
-          shared-key: cross-build-${{ inputs.target }}-v7
+      # The one thing rust-cache covered that cook does not: the
+      # ~/.cargo/{registry,git} source tarballs, so the first `cargo fetch`
+      # of a run is now cold. If that shows up in lane wall time, the
+      # sanctioned fix is setup-soldr's `cargo-registry-cache` layer (tier
+      # `pinned-immutable-download`), NOT reinstating rust-cache. It is
+      # deliberately left `false` above for now because soldr#2451 turns
+      # every setup-soldr reuse layer off in self-build lanes, and flipping
+      # one of them back on is its own reviewed change.
 
       # Bootstrap soldr from the current checkout. Linux cross lanes need
       # the current front door's target-linker reconstruction and preflight;

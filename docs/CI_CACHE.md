@@ -226,8 +226,24 @@ In [`.github/workflows/ci.yml`](../.github/workflows/ci.yml):
   PR ran the whole sweep twice.
 - The heavy cache-producing CI workflow therefore *does* run on
   `pull_request`; that is the only way a feature branch gets coverage.
-- `Swatinem/rust-cache` is used with `shared-key:` only — no `key:`,
-  `prefix-key:`, or `save-if:` anywhere in the tree.
+- `Swatinem/rust-cache` survives in exactly three ordinary CI lanes
+  (soldr#3047 removed it from every other one): `_bootstrap-e2e.yml`, `ci.yml`'s
+  bootstrap driver build, and `ci.yml`'s wheel-cross build. The
+  cache-experiment workflows (`baseline-zero-deps.yml`,
+  `parent-cache-bench.yml`, `perf-matrix.yml`) keep their own rust-cache steps
+  because the cache is the subject under test there; they are budgeted under
+  `experiment-lanes` rather than gated. Each of the three ordinary lanes sets
+  `save-if: ${{ github.ref == 'refs/heads/main' }}`, so a PR run restores
+  whatever `main` last wrote and never saves its own branch-scoped copy — the
+  opposite of the `shared-key:`-only, no-`save-if:` posture this repo used to
+  have, and deliberate: every open PR used to carry its own copy of the
+  entry, which is what pushed the repository over its cache budget (see
+  [Repository cache budget](#repository-cache-budget-soldr3047) below).
+  `actions/cache` itself has no `save-if` input, so the two main-gated
+  `actions/cache` stores — the Dylint foundation trees and the dogfood
+  zccache store — get the same effect by splitting into an unconditional
+  `actions/cache/restore` followed by an `actions/cache/save` step gated on
+  `github.ref == 'refs/heads/main'`.
 
 ### The Tier-2 object store is persisted, not just isolated (soldr#3041)
 
@@ -272,7 +288,8 @@ every time. An `actions/cache` step now persists it:
 
 ### Cache key scheme (soldr#1978 item 6)
 
-Ordinary CI lanes are keyed on **(profile, target)**, not on the job:
+Where a rust-cache namespace still exists, it is keyed on **(profile,
+target)**, not on the job:
 
 ```
 shared-key: ws-<profile>-<target>
@@ -280,9 +297,19 @@ shared-key: ws-<profile>-<target>
 
 The point is that lanes compiling the same dependency graph, at the same
 profile, for the same triple should share one namespace instead of each
-owning a private one. `lint` and `build-linux-x64` are the case that matters:
-both build ~700 dependencies at the dev profile for
-`x86_64-unknown-linux-gnu`.
+owning a private one.
+
+The dev-profile instance of that scheme is **gone**, and the reason is worth
+keeping: `ws-dev-<target>` promised one `target/` restore for the native
+validation lane, but soldr#2996 measured the `Swatinem/rust-cache` step
+serving it at a 0% hit rate — the key's environment hash covers every
+installed toolchain, so it flipped with the Dylint nightly on every run.
+soldr#3047 deleted the step rather than re-key it; the successor is the
+Tier-2 per-unit object store (soldr#3041) plus the workflow-level `soldr
+cook` step (soldr#3043), not another shared-key namespace, and
+`tests/test_ci_cache_key_scheme.py` now pins the namespace's *absence*. The
+surviving `ws-release-*` pair lives in `baseline-zero-deps.yml`, where one
+job populates and the next restores inside a cache-experiment workflow.
 
 Two constraints make this less mechanical than it looks:
 
@@ -305,3 +332,75 @@ a change to a `[profile.*]` table does not invalidate these caches on its own;
 that is why the profile is spelled out in the key text.
 
 This repository itself is the reference implementation of that pattern.
+
+## Repository cache budget (soldr#3047)
+
+GitHub's Actions cache has a hard 10 GB ceiling per repository. Nothing asks
+permission before that ceiling is reached — GitHub silently evicts the
+least-recently-used entries to make room, so a producer that writes a lot but
+is rarely read can quietly starve a producer that is small but read on every
+run. That makes the ceiling a shared-resource problem, not a per-workflow one:
+a persisted object store (soldr#3041) and cook archives (soldr#3042/#3043) are
+worthless if an unrelated lane's growth evicts them before they are ever
+restored.
+
+Measured on 2026-09-01, before this PR: 47,489,917,871 bytes (44.23 GiB)
+across 143 entries — more than four times the ceiling. 23.79 GiB of that was
+`Swatinem/rust-cache` alone, and the reason was structural rather than a size
+problem with any one entry: nothing restricted saves to `main`, so every
+open PR wrote its own branch-scoped copy of every rust-cache producer, and
+those copies never got evicted fast enough to matter.
+
+The fix has two parts. First, stop writing what does not need to exist:
+`cross-build-rust-cache`, `build-and-test-rust-cache`, `ci-pep517-rust-cache`,
+and `target-run-pep517-rust-cache` are retired outright (their `setup-soldr
+cook` or plain "run uncached" replacements are cheaper than a rust-cache
+entry every PR pays for and few ever hit). What's left is one surviving
+`cook-unreachable-lane` exception — `ci.yml`'s bootstrap driver build, which
+runs bare `cargo build` with `RUSTC_WRAPPER` emptied and has no setup-soldr
+step, because it is the job that *builds* soldr and handing it a soldr to
+cook with would reintroduce the prebuilt-binary coupling soldr#2451 forbids.
+Second, gate what remains to `main`-only saves (see [How This Repo Is
+Wired](#how-this-repo-is-wired) above) so a PR restores but never writes.
+
+What survives that sweep is budgeted, not merely trimmed, because "smaller"
+is not the same guarantee as "under the ceiling forever." `ci/cache-ownership.json`
+carries a top-level `budget` map: one entry per producer family, each with a
+`key_prefixes` list, a `max_bytes` allocation, and the family's measured
+live-on-`main` size. Every allocation is `>=` that measured size, and the
+family allocations sum to exactly 9 GiB (`total_max_bytes`). The gate's hard
+ceiling, `fail_total_bytes`, is GitHub's documented 10 GB read as decimal
+bytes (10,000,000,000) — GitHub does not publish which byte-multiple it
+means, and the decimal reading is at or under the real limit either way, so
+the gate can never pass a store GitHub is already evicting:
+
+| Family | Allocation | Covers |
+|---|---|---|
+| `pinned-immutable-download` | 1.2 GiB | rustup, xwin SDK, Apple SDK, solo-toolchain, soldr-mini, setup-uv |
+| `bootstrap-driver-binary` | 0.15 GiB | the per-commit-SHA bootstrap driver |
+| `cook-layer` | 2.0 GiB | `setup-soldr/cook` archives for the cross lanes |
+| `dylint-foundation` | 0.8 GiB | the ci-test Dylint foundation + analysis trees |
+| `rust-cache-residual` | 1.4 GiB | the three `Swatinem/rust-cache` producers left after this PR |
+| `setup-soldr-action-stores` | 1.0 GiB | per-unit zccache stores + the action's own registry slice |
+| `experiment-lanes` | 0.45 GiB | workflows where the cache is the subject under test |
+| `zccache-unit` | 2.0 GiB | reserved for the Tier-2 object store soldr#3041 persists |
+
+`ci/cache-ownership.json`'s `budget` map is the single source of truth for
+this accounting: `.github/scripts/check_cache_budget.py` and
+`.github/scripts/check_cache_ownership.py` both read it rather than each
+carrying their own copy of the family list. `check_cache_budget.py` fails the
+build if a cache key does not match any registered `key_prefixes` entry — a
+new producer cannot appear without being registered in the same PR that adds
+it, and cannot be silently folded into an existing family's headroom by
+accident. Raising `total_max_bytes` is not one of the available levers; the
+only way to make room for a new producer is to retire or shrink an existing
+one.
+
+GitHub's own LRU eviction is not under this repo's control and does not
+consult the family allocations above, so the budget guard pairs with a
+`--prune` sweep that brings the live store back inside those allocations
+directly instead of waiting on GitHub's schedule; see the script's own
+docstring for the selection policy. See `ci/cache-ownership.json`'s
+`budget.comment` field for the exact measurement this table was derived from,
+including the one issue-scope adjustment (the pep517 rust-cache) made after
+the original soldr#3047 step-1 list was written.

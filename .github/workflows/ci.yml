@@ -511,16 +511,15 @@ jobs:
           solo-toolchain-cache: false
           zccache-seed-strict: true
 
-      # soldr#1438: the PEP 517 smoke source-builds soldr-maturin before
-      # building the current wheel. Reuse Cargo's target/registry cache here
-      # just like the Lint job does; keep a separate key because this job
-      # builds native ci-release wheels on macOS/Windows. soldr#1479 lowered
-      # ci-release opt-levels; v2 avoids restoring stale opt-level-3
-      # target trees under rust-cache's profile-blind meta-hash.
-      - name: Restore cargo + target caches for wheel build
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          shared-key: pep517-${{ matrix.name }}-ci-release-v2
+      # soldr#3047 retired this cache. Measured 2026-09-01, the pep517 family
+      # held 3.98 GiB across 10 entries (0.82 GiB live on `main` alone across
+      # the two shared keys), which is the single largest remaining consumer
+      # after the cross-build retirement, and holding it would have forced
+      # Phase 0's Tier-2 object store (soldr#3041) below the 2.0 GiB reserved
+      # for it in soldr#3039. This is a leaf smoke job on no other lane's
+      # critical path, so the cost is a cold `maturin build` here rather than
+      # a re-litigated Tier-2 allocation. Note the sibling deletion in
+      # `_ci-target-run.yml`, which shares the same key shape.
 
       - name: Build soldr wheel under test
         shell: pwsh
@@ -674,8 +673,11 @@ jobs:
           # same-run artifact can replace that lane's local source build.
           key: bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ github.sha }}
 
-      # soldr#3016: one of exactly two lanes that keeps a Swatinem/rust-cache
-      # after soldr#2996 made `soldr cook` the only durable cache. Cook cannot
+      # soldr#3016, narrowed by soldr#3047: the ONLY lane that still keeps a
+      # Swatinem/rust-cache as a named `cook-unreachable-lane` exception after
+      # soldr#2996 made `soldr cook` the only durable cache. (The sibling
+      # exception, `_ci-target-run.yml`'s pep517 wheel cache, was retired
+      # outright in soldr#3047 rather than kept.) Cook cannot
       # reach this step and no cook change can fix that: the build below runs
       # bare `cargo build` with RUSTC_WRAPPER emptied, and this job has no
       # setup-soldr step at all -- it is the job that BUILDS soldr, so handing
@@ -690,6 +692,9 @@ jobs:
         if: steps.bootstrap_cache.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
+          # soldr#3047 -- PRs restore from `main` and no longer write their
+          # own copy; without this each family carried one entry per open PR.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           # Keep profile products isolated: prescribed host validation and
           # this shared source driver both use Cargo's dev profile.
           shared-key: bootstrap-soldr-linux-gnu-dev-v1
@@ -1105,6 +1110,9 @@ jobs:
       - name: Restore cargo + target caches for the wheel build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
+          # soldr#3047 -- PRs restore from `main` and no longer write their
+          # own copy; without this each family carried one entry per open PR.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: wheel-cross-${{ matrix.target }}-release-v1
 
       # Deliberately no `pip install maturin` here: provisioning maturin is

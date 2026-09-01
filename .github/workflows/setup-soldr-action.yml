@@ -182,7 +182,7 @@ jobs:
 
       - id: dogfood-build-cache
         name: Restore dogfood build cache
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ runner.temp }}/soldr-build-under-test/cache/zccache
           key: setup-soldr-dogfood-zccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
@@ -286,3 +286,13 @@ jobs:
             exit 0
           }
           & $soldr.Source zccache stop
+
+      # actions/cache@v4 has no `save-if` input, so main-only saving requires
+      # the restore/save split (soldr#3047). This save must stay after the
+      # zccache stop above — the cache is saved with the daemon stopped.
+      - name: Save dogfood build cache (soldr#3047)
+        if: ${{ always() && github.ref == 'refs/heads/main' && steps.dogfood-build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/soldr-build-under-test/cache/zccache
+          key: ${{ steps.dogfood-build-cache.outputs.cache-primary-key }}
