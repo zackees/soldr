@@ -350,7 +350,23 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     # a name that existed nowhere in the tree, so this reservation had silently
     # not been in effect. Keep the dead suffix from creeping back.
     assert "exec_cargo_build_routes_through_child_shims_and_zccache" not in cold_filter
-    assert 'threads-required = "num-cpus"' in cold_override
+    assert 'threads-required = "num-cpus"' not in cold_override
+    cold_full_runner_overrides = [
+        block
+        for block in config.split("[[profile.default.overrides]]")[1:]
+        if 'threads-required = "num-cpus"' in block
+        and 'target = \'cfg(target_os = "windows")\'' in block
+    ]
+    assert len(cold_full_runner_overrides) == 1
+    cold_filter_line = next(
+        line for line in cold_filter.splitlines() if line.startswith("filter = '")
+    )
+    windows_filter_line = next(
+        line
+        for line in _filter_expressions(cold_full_runner_overrides[0]).splitlines()
+        if line.startswith("filter = '")
+    )
+    assert windows_filter_line == cold_filter_line
     # The daemon-lifecycle and worktree units are likewise modules now, so the
     # claim "this unit is still named by some filter" is spelled per binary.
     daemon_modules = _module_alternation(filters, "daemon")
