@@ -62,18 +62,18 @@ jobs:
       # not a reason to cap the entire host-validation DAG.
       # soldr#2996 Phase 8, measured over 3 runs against 6 baseline runs.
       #
-      # Expectations are bounded: the hot modules are already floored at
-      # serial execution by .config/nextest.toml's test-groups
-      # (soldr-runtime max-threads=1, soldr-cargo-cold-builds exclusive),
-      # which a global --test-threads does not lift. The gain can only come
-      # from overlapping the ungrouped body against that floor.
+      # Expectations are bounded: the hot modules stay serial within
+      # .config/nextest.toml's test groups. Windows-target cold builds retain
+      # full-pool reservation; native Linux permits unrelated tests beside
+      # the one-at-a-time cold-build family. Compiler work launched by those
+      # tests still enters Soldr's canonical shared/exclusive admission gate.
       #
       # Median nextest stage: 1,441,985 ms at 1 thread (6 samples) ->
       # 1,200,200 ms at 2 (3 samples), a 4.0 min saving, with every
-      # threads=2 sample faster than every baseline sample and zero
-      # TIMEOUT lines. A single sample read 908,594 ms and would have
-      # overstated the effect ~2x, which is why the 3-run bar exists.
-      NEXTEST_TEST_THREADS: "2"
+      # threads=2 sample faster than every baseline sample and zero TIMEOUT
+      # lines. soldr#3024 now measures 4 threads after compiler-admission and
+      # Cargo-orchestration OOM fixes; an OOM is a Soldr scheduling defect.
+      NEXTEST_TEST_THREADS: "4"
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

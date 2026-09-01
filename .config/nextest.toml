@@ -101,12 +101,15 @@ test-group = 'soldr-runtime'
 filter = 'test(=cli_toolchain::toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=cli_toolchain::toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cli_toolchain::toolchain_link_emits_schema_v1_json_payload) + test(=cli_toolchain::toolchain_link_force_overwrites_user_modified_shim) + test(=cli_toolchain_home_boundary::cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
 test-group = 'soldr-runtime'
 
-# These modules run real Cargo front doors from isolated homes. On hosted
-# Windows, launching several of their cold builds at once has produced clusters
-# of 120s timeouts while neighboring tests complete (soldr#2697). Keep their
+# These modules run real Cargo front doors from isolated homes. Keep their
 # shared pressure serial without coupling them to broker/daemon lifecycle tests.
-# Reserving every nextest thread makes each member globally exclusive: a
-# one-thread group alone still runs beside unrelated test groups (soldr#2697).
+# On hosted Windows, launching even one beside unrelated test processes has
+# produced clusters of 120s timeouts (soldr#2697), so the first override also
+# reserves the complete Windows-target Nextest pool. Linux does not need that
+# full-runner reservation: retaining it there left the second CI test thread
+# idle for 708 measured test-seconds and made Fresh Nextest take 26m57s. The
+# duplicated filter is guarded for exact equality in
+# tests/test_nextest_timeout_wrapper.py so membership cannot drift.
 #
 # The second windows-gnu replay named two more members of the same family
 # (run 32470380389): `cargo_without_timeout_allows_progress_cpu_and_lock_waits`
@@ -160,8 +163,12 @@ max-threads = 1
 
 [[profile.default.overrides]]
 filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + (binary(cargo_front_door) & test(/^cli_cargo_doc_routes::(cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct|bare_doc_keeps_rustc_wrapped_but_rustdoc_direct|cargo_doc_route_deadline_kills_wrapper_hold_tree|bare_doc_route_deadline_kills_rustdoc_hold_tree|cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct|rustdoc_path_shim_reenters_direct_passthrough_without_zccache)$/)) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
-test-group = 'soldr-cargo-cold-builds'
+platform = { target = 'cfg(target_os = "windows")' }
 threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + (binary(cargo_front_door) & test(/^cli_cargo_doc_routes::(cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct|bare_doc_keeps_rustc_wrapped_but_rustdoc_direct|cargo_doc_route_deadline_kills_wrapper_hold_tree|bare_doc_route_deadline_kills_rustdoc_hold_tree|cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct|rustdoc_path_shim_reenters_direct_passthrough_without_zccache)$/)) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
+test-group = 'soldr-cargo-cold-builds'
 
 [scripts.wrapper.timeout-diagnostics]
 command = { command-line = ".github/scripts/nextest_timeout_wrapper.py", relative-to = "workspace-root" }
