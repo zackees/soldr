@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Pre-cook the `target/dylint/tests` third-party dependency layer (soldr#3042).
 
-`soldr dylint cook --tree tests` pre-compiles the `dylint_testing` ->
+`soldr dylint cook --tree tests` compiles the `dylint_testing` ->
 `compiletest_rs` / `git2` / `libgit2-sys` layer, plus `dylint`'s own build
-script, so those compiles do not happen inside the Dylint UI-test branch while
-Fresh Nextest is running. PR #3038 failed three different ways in exactly that
-window: a fixture timeout, a 14 GiB compiler shed, and an `ETXTBSY` exec race
+script, ahead of the Dylint UI-test branch. Without this step those ~137
+units compiled inside that branch while Fresh Nextest execution ran
+concurrently -- the exact window that made PR #3038 fail three different
+ways: a fixture timeout, a 14 GiB compiler shed, and an `ETXTBSY` exec race
 on `dylint` v6.0.3's just-linked build script.
 
-This persists NOTHING across runs. It fills an in-run target tree; the
-cross-run saving comes from the Tier-2 object store (soldr#3041).
+This persists NOTHING across runs. It fills an in-run target tree
+(`target/dylint/tests`), which stays banned from every cross-run store
+(`ci/cache-ownership.json`); the cross-run saving comes from the Tier-2
+object store (soldr#3041), not from anything this script writes.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ def lint_roots(repo_root: Path, lints_dir: str = "dylints") -> list[Path]:
 
 
 def cook_command(soldr: Path, target_root: Path) -> list[str]:
-    """The `soldr dylint cook` invocation for one lint crate's tests tree.
+    """The `soldr dylint cook` invocation for the tests-tree dependency layer.
 
     `--target-root` is required because cwd is `dylints/<lint>`, whose own
     `target/` must stay empty (`.github/scripts/verify_dylint_target_dirs.py`
@@ -61,83 +64,71 @@ def cook_command(soldr: Path, target_root: Path) -> list[str]:
 
 
 def cook_env(base: Mapping[str, str], soldr: Path) -> dict[str, str]:
-    """The environment the cook runs under, mirroring a real Dylint stage.
+    """The environment `soldr dylint cook --tree tests` must run under.
 
     Mirrors what `crates/soldr-cli/src/ci_test/execute.rs` (`spawn`, the
     `stage.domain.starts_with("dylint-")` branch) gives every Dylint stage.
     `SOLDR_LINKER=default` is load-bearing because soldr's linker injection
     rewrites RUSTFLAGS and RUSTFLAGS are in every unit's fingerprint, so a
-    cook without it produces artifacts cargo rejects as stale. `CARGO_TARGET_DIR`
-    is dropped so it cannot fight `--target-root`.
+    cook without it produces artifacts cargo rejects as stale.
+    `CARGO_TARGET_DIR` is dropped so it cannot fight `--target-root`.
     """
     env = dict(base)
     env["SOLDR_RUSTC_WRAPPER"] = str(soldr)
     env["SOLDR_LINKER"] = "default"
     env["SOLDR_NO_GC_TARGET"] = "1"
-    for key in ("CARGO_BUILD_JOBS", "SOLDR_JOBS", "CARGO_TARGET_DIR"):
-        env.pop(key, None)
+    for removed in ("CARGO_BUILD_JOBS", "SOLDR_JOBS", "CARGO_TARGET_DIR"):
+        env.pop(removed, None)
     return env
 
 
 def parse_outcome(stdout: str) -> str:
-    """The `"outcome"` field of the last JSON object line of `stdout`.
-
-    Scans backwards rather than reading only the final line: `soldr dylint
-    cook --json` prints its payload last, but the child Cargo it drives is
-    relayed through the same stream, so a stray trailing line must not turn
-    a real result into `unknown`. A run with no JSON object at all yields
-    `unknown`, which is reported but never fails the step -- the child's
-    exit status is what decides that.
-    """
+    """The `"outcome"` field of the last non-empty JSON line, or `"unknown"`."""
     for line in reversed(stdout.splitlines()):
-        line = line.strip()
-        if not line:
+        stripped = line.strip()
+        if not stripped:
             continue
         try:
-            payload = json.loads(line)
+            payload = json.loads(stripped)
         except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and "outcome" in payload:
-            return str(payload["outcome"])
+            return "unknown"
+        return str(payload.get("outcome", "unknown"))
     return "unknown"
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Cook the tests tree for every lint crate, stopping at the first failure."""
+    """Cook the tests-tree dependency layer once per lint crate, sequentially."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--soldr", required=True, type=Path)
     parser.add_argument("--target-root", required=True, type=Path)
     parser.add_argument(
-        "--repo-root", type=Path, default=Path(__file__).resolve().parents[2]
+        "--repo-root", default=Path(__file__).resolve().parents[2], type=Path
     )
     parser.add_argument("--lints-dir", default="dylints")
     args = parser.parse_args(argv)
 
-    roots = lint_roots(args.repo_root, args.lints_dir)
-    if not roots:
-        # Fail rather than succeed at nothing. A wrong `--repo-root` (or a
-        # renamed `dylints/`) would otherwise make this step a silent no-op,
-        # and the only symptom would be the contention it exists to remove
-        # quietly returning to the Dylint UI-test / Fresh Nextest window --
-        # a green step and a slower, flakier `ci-test`.
-        print(
-            "cook_dylint_tests_tree: no lint crates under "
-            f"{args.repo_root / args.lints_dir}",
-            file=sys.stderr,
-        )
-        return 1
-    env = cook_env(os.environ, args.soldr)
-
-    # Run sequentially: every lint crate shares one target directory and
-    # `dylint_cook` takes an exclusive lock on it, so parallelism here buys
-    # nothing and reintroduces the contention this script exists to remove.
+    # Iterate lint roots sequentially: they share one target directory and
+    # `dylint_cook` takes an exclusive lock on it, so parallelism buys
+    # nothing and reintroduces the contention this step exists to remove.
     #
-    # Only stdout is captured, and only because the `--json` payload has to be
-    # parsed out of it. stderr is deliberately inherited so Cargo's progress
-    # streams live: these are multi-minute compiles, and a step that prints
-    # nothing until it finishes tells you nothing at all if the runner kills
-    # it first.
+    # Every crate reports `miss` rather than `skip`, and that is expected
+    # rather than a broken cook. All six write into the SAME tree, so they
+    # share one `.soldr-dylint-cook-v1.json` marker, while each one's cook
+    # key hashes its own manifest+lockfile -- so crate N always finds crate
+    # N-1's marker and re-runs. The re-run is what fills the tree; cargo's
+    # own fingerprints make crates 2..6 near-no-ops once the shared
+    # third-party layer is built by the first. Do not "fix" the repeated
+    # miss by collapsing the key: the two trees and the six crates must keep
+    # distinct keys or one cook would satisfy another's marker with the
+    # wrong artifacts on disk.
+    roots = lint_roots(args.repo_root, args.lints_dir)
+    env = cook_env(os.environ, args.soldr)
     for lint_root in roots:
+        # stderr is deliberately NOT captured: cargo's progress and its
+        # error text go there, and a step that buffers a multi-minute
+        # compile shows nothing at all while it runs and nothing useful if
+        # the job is cancelled. Only stdout is captured, because the
+        # `--json` outcome line has to be parsed out of it.
         result = subprocess.run(
             cook_command(args.soldr, args.target_root),
             cwd=lint_root,
@@ -146,14 +137,14 @@ def main(argv: list[str] | None = None) -> int:
             stdout=subprocess.PIPE,
             check=False,
         )
+        sys.stdout.write(result.stdout)
         outcome = parse_outcome(result.stdout)
-        print(f"dylint tests-tree cook: {lint_root.name} -> {outcome}", flush=True)
+        print(f"dylint tests-tree cook: {lint_root.name} -> {outcome}")
         if result.returncode != 0:
-            sys.stdout.write(result.stdout)
             print(
-                f"cook_dylint_tests_tree: {lint_root.name} exited "
-                f"{result.returncode}",
-                flush=True,
+                f"cook_dylint_tests_tree: {lint_root.name} failed with "
+                f"exit code {result.returncode}",
+                file=sys.stderr,
             )
             return 1
 

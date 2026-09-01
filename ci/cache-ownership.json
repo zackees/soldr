@@ -119,7 +119,7 @@
       "step": "Restore Dylint libraries and analysis trees",
       "mechanism": "actions/cache",
       "tier": "dylint-foundation",
-      "rationale": "The Dylint libraries and analysis target trees, keyed on the exact nightly every lint manifest declares plus the lint sources. 638s/run of byte-identical cold work that no other layer can serve: Swatinem/rust-cache deletes target/dylint/** at save, and dylint_cook_acceptance.py shows a per-unit object cache alone still misses. target/dylint/tests is DELIBERATELY excluded -- soldr#3012 measured it at 1.9 GiB of UI-test products, which is tier 3 and may not enter any cross-run store; the UI-test stages stay cold by design (soldr#3017)."
+      "rationale": "The Dylint libraries and analysis target trees, keyed on the exact nightly every lint manifest declares plus the lint sources. 638s/run of byte-identical cold work that no other layer can serve: Swatinem/rust-cache deletes target/dylint/** at save, and dylint_cook_acceptance.py shows a per-unit object cache alone still misses. target/dylint/tests is DELIBERATELY excluded -- soldr#3012 measured it at 1.9 GiB of UI-test products, which is tier 3 and may not enter any cross-run store (soldr#3017). As of soldr#3042 the third-party dependency layer inside that directory is prepared in-run by the `build-and-test-dylint-tests-cook` entry below, so 'the UI-test stages stay cold by design' now applies only to the linked UI-test products themselves; the directory exclusion is unchanged."
     },
     {
       "id": "build-and-test-dylint-tests-cook",

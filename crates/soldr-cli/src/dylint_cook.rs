@@ -1,4 +1,8 @@
-//! Exact-nightly, check-shaped dependency preparation for Dylint.
+//! Exact-nightly dependency preparation for Dylint.
+//!
+//! The pass is check-shaped for the default `--tree analysis` and
+//! build-shaped for `--tree tests` (soldr#3042); see
+//! [`crate::dylint_cook_tree::CookTree::operation`].
 
 use crate::cargo_front_door::{self, DYLINT_DEPENDENCY_COOK_FLAG};
 use crate::core::{read_rust_toolchain_manifest, SoldrError};
@@ -343,7 +347,8 @@ pub(crate) async fn run(args: &[String], cache_enabled: bool) -> Result<i32, Sol
 
 fn print_help() {
     println!(
-        "Prepare Dylint dependencies with an exact nightly check-shaped pass.\n\n\
+        "Prepare Dylint dependencies with an exact nightly pass \
+(check-shaped for --tree analysis, build-shaped for --tree tests).\n\n\
 Usage: soldr dylint cook [OPTIONS]\n\n\
 Options:\n  --plan-only --json\n  --toolchain <NIGHTLY>\n  --target <TRIPLE>\n  \
 --tree <analysis|tests>\n  --target-root <DIR>\n  \

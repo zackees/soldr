@@ -145,7 +145,7 @@ def test_setup_soldr_job_caps_are_cleared_before_source_work() -> None:
         assert body.index(clear_caps) < body.index(source_command)
 
 
-def test_dylint_tests_tree_is_cooked_between_broker_handoff_and_validation() -> None:
+def test_the_dylint_tests_tree_is_cooked_between_the_broker_handoff_and_validation() -> None:
     """The tests-tree cook (soldr#3042) has a load-bearing position.
 
     It must run AFTER the broker handoff, not before: `--tree` exists only on

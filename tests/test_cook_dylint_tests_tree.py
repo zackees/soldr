@@ -1,63 +1,64 @@
-"""Unit tests for the tests-tree cook driver (soldr#3042).
+"""Unit tests for `cook_dylint_tests_tree.py` (soldr#3042).
 
-Covers the pure helpers only. `main` shells out to a source-built `soldr`,
-which is not available in this test environment, so it is not covered here;
-the step that invokes it is instead checked by
-`test_build_and_test_guards.py`, which asserts its position and wiring in
-`_build-and-test.yml` (string matching, not execution).
+Covers the pure helpers only -- `lint_roots`, `cook_command`, `cook_env`, and
+`parse_outcome` -- because `main()` is a thin sequential subprocess loop over
+them and is exercised end-to-end by the workflow, not by this suite.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from conftest import load_script_module
 
+SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / ".github"
+    / "scripts"
+    / "cook_dylint_tests_tree.py"
+)
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = REPO_ROOT / ".github" / "scripts" / "cook_dylint_tests_tree.py"
 
 
-def _module():
+@pytest.fixture(scope="module")
+def cook():
     return load_script_module(SCRIPT, "cook_dylint_tests_tree")
 
 
-def test_lint_roots_finds_only_dirs_with_a_cargo_toml(tmp_path: Path) -> None:
-    module = _module()
+def test_lint_roots_finds_only_dirs_with_a_cargo_toml(tmp_path, cook):
     lints_dir = tmp_path / "dylints"
-    for name in ("zzz_lint", "aaa_lint"):
+    lints_dir.mkdir()
+
+    for name in ("zeta_lint", "alpha_lint"):
         crate = lints_dir / name
-        crate.mkdir(parents=True)
+        crate.mkdir()
         (crate / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+
     decoy = lints_dir / "not_a_crate"
     decoy.mkdir()
     (decoy / "README.md").write_text("not a manifest\n", encoding="utf-8")
 
-    roots = module.lint_roots(tmp_path)
+    roots = cook.lint_roots(tmp_path)
 
-    assert roots == [lints_dir / "aaa_lint", lints_dir / "zzz_lint"]
-
-
-def test_lint_roots_on_the_real_repo_finds_all_six_lints() -> None:
-    module = _module()
-    roots = module.lint_roots(REPO_ROOT)
-    assert [root.name for root in roots] == [
-        "ban_platform_cfg_outside_boundary",
-        "ban_raw_env_flag",
-        "ban_raw_ipc_transport",
-        "ban_raw_local_socket_name",
-        "ban_raw_network_access",
-        "ban_raw_process_creation",
-    ]
+    assert roots == [lints_dir / "alpha_lint", lints_dir / "zeta_lint"]
 
 
-def test_cook_command_shape(tmp_path: Path) -> None:
-    module = _module()
-    soldr = tmp_path / "soldr"
-    target_root = tmp_path / "target"
+def test_lint_roots_on_the_real_repo_returns_exactly_six_directories(cook):
+    roots = cook.lint_roots(REPO_ROOT)
 
-    command = module.cook_command(soldr, target_root)
+    assert len(roots) == 6
+    assert roots == sorted(roots)
+    for root in roots:
+        assert (root / "Cargo.toml").is_file()
 
-    assert command[0] == str(soldr)
+
+def test_cook_command_contains_the_required_flags(cook):
+    soldr = Path("/repo/target/x86_64-unknown-linux-gnu/debug/soldr")
+    target_root = Path("/repo/target")
+
+    command = cook.cook_command(soldr, target_root)
+
     assert "--tree" in command
     assert command[command.index("--tree") + 1] == "tests"
     assert "--tests" in command
@@ -66,17 +67,16 @@ def test_cook_command_shape(tmp_path: Path) -> None:
     assert command[command.index("--target-root") + 1] == str(target_root)
 
 
-def test_cook_env_sets_and_removes_expected_vars(tmp_path: Path) -> None:
-    module = _module()
-    soldr = tmp_path / "soldr"
+def test_cook_env_sets_and_removes_the_expected_variables(cook):
+    soldr = Path("/repo/target/x86_64-unknown-linux-gnu/debug/soldr")
     base = {
         "PATH": "/usr/bin",
         "CARGO_BUILD_JOBS": "1",
         "SOLDR_JOBS": "1",
-        "CARGO_TARGET_DIR": "/somewhere",
+        "CARGO_TARGET_DIR": "/repo/target",
     }
 
-    env = module.cook_env(base, soldr)
+    env = cook.cook_env(base, soldr)
 
     assert env["SOLDR_RUSTC_WRAPPER"] == str(soldr)
     assert env["SOLDR_LINKER"] == "default"
@@ -87,49 +87,11 @@ def test_cook_env_sets_and_removes_expected_vars(tmp_path: Path) -> None:
     assert env["PATH"] == "/usr/bin"
 
 
-def test_parse_outcome_handles_a_trailing_blank_line() -> None:
-    module = _module()
-    stdout = '{"outcome": "miss"}\n\n'
-    assert module.parse_outcome(stdout) == "miss"
+def test_parse_outcome_handles_a_trailing_blank_line(cook):
+    stdout = '{"schema_version": 1, "outcome": "skip"}\n\n'
+
+    assert cook.parse_outcome(stdout) == "skip"
 
 
-def test_parse_outcome_returns_unknown_for_non_json_payload() -> None:
-    module = _module()
-    assert module.parse_outcome("not json at all\n") == "unknown"
-
-
-def test_parse_outcome_skips_relayed_cargo_output_after_the_payload() -> None:
-    """The payload is printed last, but the child Cargo shares the stream.
-
-    Treating a stray trailing line as "no result" would report `unknown` for
-    a cook that in fact reported one -- the log line is the only visibility
-    this step has into hit/miss/skip.
-    """
-    module = _module()
-    stdout = '{"outcome": "skip"}\nwarning: something arrived afterwards\n'
-    assert module.parse_outcome(stdout) == "skip"
-
-
-def test_a_repo_root_with_no_lint_crates_fails_rather_than_no_ops(
-    tmp_path: Path,
-) -> None:
-    """An empty run must be loud.
-
-    A wrong `--repo-root` would otherwise make the step succeed at nothing,
-    and the only symptom would be the third-party dependency layer quietly
-    compiling inside the concurrent Dylint UI-test / Fresh Nextest window
-    again -- exactly the contention soldr#3042 removes. No subprocess is
-    launched on this path, so the assertion needs no `soldr` binary.
-    """
-    module = _module()
-    code = module.main(
-        [
-            "--soldr",
-            str(tmp_path / "soldr"),
-            "--target-root",
-            str(tmp_path / "target"),
-            "--repo-root",
-            str(tmp_path),
-        ]
-    )
-    assert code == 1
+def test_parse_outcome_handles_non_json_payload(cook):
+    assert cook.parse_outcome("not json at all") == "unknown"

@@ -726,14 +726,18 @@ soldr dylint cook --tree tests --tests --target-root /path/to/repo/target
 The command resolves one exact Dylint nightly from the verified
 soldr-toolchain catalogue (or an explicit `--toolchain nightly-YYYY-MM-DD`),
 then verifies the installed compiler's full release and commit identity. It
-reconstructs a dependency skeleton and runs a check-shaped pass through
+reconstructs a dependency skeleton and runs a dependency-only pass through
 Soldr's normal compilation cache. `RUSTC_WORKSPACE_WRAPPER` and every
 `DYLINT_*` library variable are removed for this phase, so custom lint
 libraries are loaded only by the later real Dylint invocation.
 
-Outputs live under `target/dylint/target/<nightly>/`, matching Dylint 6's own
-workspace-check directory. The warm marker includes the observed compiler
-commit, manifests, lockfile, selected target/profile/features/packages,
+Outputs live under `target/dylint/target/<nightly>/` by default, matching
+Dylint 6's own workspace-check directory; `--tree tests` selects the second
+tree and changes the shape of the pass — see "Which tree" below. The pass is
+check-shaped for the default `analysis` tree and build-shaped for `tests`.
+
+The warm marker includes the observed compiler commit, manifests, lockfile,
+selected target/profile/features/packages,
 configuration, and wrapper identity. Workspace source contents are excluded,
 so editing only a local source file preserves the external-dependency layer.
 Conflicting nightly requirements from configured lint-library paths fail
@@ -747,11 +751,15 @@ payload all match. A normal invocation verifies the compiler again after any
 restore/install and reports `miss` after cooking or `skip` when the complete
 layer is already warm.
 
-Shape options are `--target`, `--release` / `--profile`, `--workspace`,
-repeatable `--package`, `--features`, `--all-features`,
-`--no-default-features`, `--all-targets`, `--tests`, `--benches`,
-`--examples`, repeatable `--config`, `--locked`, `--frozen`, and `--offline`.
-Ordinary `soldr cook` behavior is unchanged.
+Shape options are `--tree <analysis|tests>`, `--target-root <DIR>`,
+`--target`, `--release` / `--profile`, `--workspace`, repeatable `--package`,
+`--features`, `--all-features`, `--no-default-features`, `--all-targets`,
+`--tests`, `--benches`, `--examples`, repeatable `--config`, `--locked`,
+`--frozen`, and `--offline`. `--tree` and `--target-root` are the only two
+that are not forwarded to cargo: they select the target directory instead.
+`--tree` enters the cook key directly; `--target-root` is checked through the
+target directory the marker records. Ordinary `soldr cook` behavior is
+unchanged.
 
 #### Which tree: `--tree <analysis|tests>` (soldr#3042)
 
