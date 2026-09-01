@@ -26,6 +26,7 @@ a dependency here, and a guard that skips when a module is missing is the
 failure mode these very steps exist to prevent.
 """
 
+import json
 import re
 import tomllib
 from pathlib import Path
@@ -44,6 +45,14 @@ SOURCE_DRIVER_DOWNLOAD = "Reuse shared source driver if already available"
 SOURCE_DRIVER_VERIFY = "Verify shared source driver provenance"
 CANONICAL_CACHE = "Select canonical host CI cache domain"
 FINAL_CACHE_STOP = "Stop canonical host CI cache"
+INDEX_BUILD_LOGS = "Index build logs"
+UPLOAD_BUILD_LOGS = "Upload build log artifacts"
+JOURNAL_REPORT = "Report compile journal analysis (soldr#3040)"
+THIRD_PARTY_RATCHET = "Ratchet third-party compiles (soldr#3040, report-only)"
+FINGERPRINT_LOG = "$SOLDR_CACHE_DIR/logs/cargo-fingerprint.log"
+COMPILE_JOURNAL_BASELINE = (
+    REPO_ROOT / ".github" / "scripts" / "baselines" / "compile_journal_baseline_33536940076.json"
+)
 CACHE_ENV_VARS = ("SOLDR_CACHE_DIR", "ZCCACHE_CACHE_DIR")
 CACHE_SHELL_ASSIGNMENT = re.compile(
     r"^(?:(?:export|env)\s+)?(?:SOLDR_CACHE_DIR|ZCCACHE_CACHE_DIR)\s*="
@@ -274,3 +283,94 @@ def test_no_later_host_step_switches_the_canonical_cache_domain() -> None:
         for line in later_lines
     )
     assert 'check_toolchain_homes.py "$SOLDR_CACHE_DIR/logs/builds"' in workflow
+
+
+def test_cargo_fingerprint_logging_is_enabled_in_the_canonical_domain_step() -> None:
+    # Prevents the CARGO_LOG echo from drifting onto a single step's `env:`
+    # (where it would only affect that one step's process, not the lane) or
+    # being duplicated/removed silently -- $GITHUB_ENV is the only mechanism
+    # that makes it visible to every later host build and test step.
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    domain = _step_body(workflow, CANONICAL_CACHE)
+    cargo_log_line = 'echo "CARGO_LOG=cargo::core::compiler::fingerprint=info" >> "$GITHUB_ENV"'
+    assert cargo_log_line in domain
+    assert workflow.count(cargo_log_line) == 1
+    assert "CARGO_LOG:" not in workflow
+
+
+def test_the_ci_test_run_persists_cargos_fingerprint_stderr() -> None:
+    # Without persistence the fingerprint lines exist only in the GHA
+    # console, because soldr does not write cargo stderr to logs/builds --
+    # the redirection has to survive alongside the CARGO trap wiring and
+    # still forward to the console, or a rebase could quietly drop it.
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    body = _step_body(workflow, CI_TEST_RUN)
+    assert 'mkdir -p "$SOLDR_CACHE_DIR/logs"' in body
+    assert f'2> >(tee -a "{FINGERPRINT_LOG}" >&2)' in body
+    assert 'SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr"' in body
+    assert 'ci-test --target "${{ inputs.target }}"' in body
+
+
+def test_the_journal_report_runs_between_the_index_and_the_upload() -> None:
+    # The report must precede the upload so its JSON is inside the artifact,
+    # and the ratchet must follow the upload so evidence survives a failing
+    # gate.
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert workflow.count(f"- name: {JOURNAL_REPORT}") == 1
+    assert workflow.count(f"- name: {THIRD_PARTY_RATCHET}") == 1
+    assert (
+        workflow.index(f"- name: {INDEX_BUILD_LOGS}")
+        < workflow.index(f"- name: {JOURNAL_REPORT}")
+        < workflow.index(f"- name: {UPLOAD_BUILD_LOGS}")
+        < workflow.index(f"- name: {THIRD_PARTY_RATCHET}")
+    )
+
+
+def test_the_journal_report_is_advisory() -> None:
+    # Dropping `if: always()` would hide the analysis on exactly the failing
+    # runs where it matters most; dropping `continue-on-error: true` would
+    # let a reporting-script bug redden the whole lane -- same advisory
+    # pattern as the "Report Dylint tree sizes" step above it in the
+    # workflow.
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    body = _step_body(workflow, JOURNAL_REPORT)
+    assert "if: always()" in body
+    assert "continue-on-error: true" in body
+    assert "analyze_compile_journal.py" in body
+    assert (
+        "--compare-baseline .github/scripts/baselines/"
+        "compile_journal_baseline_33536940076.json"
+    ) in body
+    assert '--json-out "$SOLDR_CACHE_DIR/logs/compile-journal-analysis.json"' in body
+
+
+def test_the_third_party_ratchet_is_wired_report_only_and_can_fail() -> None:
+    # Each #3039 phase lowers its own threshold in its own PR and updates
+    # this assertion -- the numbers are pinned so a change is visible in
+    # review, exactly like the `NEXTEST_TEST_THREADS` assertion above.
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    body = _step_body(workflow, THIRD_PARTY_RATCHET)
+    assert "check_third_party_compiles.py" in body
+    assert "if: always()" in body
+    assert "continue-on-error" not in body
+    assert "--max-misses 100000" in body
+    assert "--max-dirty-third-party 100000" in body
+
+
+def test_the_analysis_scripts_and_baseline_exist() -> None:
+    # The workflow names these paths as strings, so nothing else would
+    # notice a rename.
+    analyze_script = REPO_ROOT / ".github" / "scripts" / "analyze_compile_journal.py"
+    ratchet_script = REPO_ROOT / ".github" / "scripts" / "check_third_party_compiles.py"
+    assert analyze_script.is_file()
+    assert ratchet_script.is_file()
+    assert COMPILE_JOURNAL_BASELINE.is_file()
+
+    baseline = json.loads(COMPILE_JOURNAL_BASELINE.read_text(encoding="utf-8"))
+    assert baseline["run_id"] == "33536940076"
+    metrics = baseline["metrics"]
+    assert metrics["total_units"] == 1569
+    assert metrics["third_party"] == 1326
+    assert metrics["hits"] == 0
+    assert metrics["context_not_found"] == 1447
+    assert metrics["uncacheable_input"] == 120

@@ -157,6 +157,14 @@ jobs:
       # builder; exporting this before the first workspace build makes the
       # build, warm checks, status, cleanup, nextest, and final shutdown use
       # one wrapper path and one compiler cache.
+      #
+      # soldr#3040 needs cargo's own freshness signal because the zccache
+      # journal cannot see a unit cargo never sent to rustc. This level logs
+      # one line per DIRTY unit (cargo's `Fresh` status lines need `-v`,
+      # which ci-test does not pass, so Fresh is inferred from the
+      # lockfile, not from this log). Nested cargo fixtures under nextest
+      # inherit the variable, so their dirty lines land in the same capture
+      # — report-only contamination, named deliberately.
       - name: Select canonical host CI cache domain
         shell: bash
         run: |
@@ -164,6 +172,7 @@ jobs:
           echo "ZCCACHE_CACHE_DIR=${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache" >> "$GITHUB_ENV"
           echo "SOLDR_CACHE_LIFECYCLE=command" >> "$GITHUB_ENV"
           echo "SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS=30" >> "$GITHUB_ENV"
+          echo "CARGO_LOG=cargo::core::compiler::fingerprint=info" >> "$GITHUB_ENV"
 
       # soldr#1241 — cache ~/.cargo/{registry,git} + target/ so the source
       # driver and its ci-test plan do not recompile ~700 dependencies from
@@ -320,8 +329,13 @@ jobs:
           export CARGO="$(<"$cargo_guard/allowed-cargo-path")"
           export SOLDR_CI_TEST_CARGO_RUNNER="$(<"$cargo_guard/test-runner-path")"
           export PATH="$cargo_guard/trap:$PATH"
+          # soldr#3040: keep cargo's fingerprint log where the artifact upload
+          # already looks. Only stderr is duplicated; the console stream is
+          # unchanged because tee writes back to fd 2.
+          mkdir -p "$SOLDR_CACHE_DIR/logs"
           SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr" \
-            ci-test --target "${{ inputs.target }}"
+            ci-test --target "${{ inputs.target }}" \
+            2> >(tee -a "$SOLDR_CACHE_DIR/logs/cargo-fingerprint.log" >&2)
 
       # soldr#1838 Phase 4: inspect the complete source-owned validation run,
       # not merely the optional local driver build. `always()` keeps the cache
@@ -394,6 +408,25 @@ jobs:
             --root "$SOLDR_CACHE_DIR" \
             --artifact-name "build-logs-${{ inputs.target }}"
 
+      # soldr#3040: this is the measuring stick every #3039 phase's
+      # acceptance is judged with. The baseline it compares against is run
+      # 33536940076.
+      - name: Report compile journal analysis (soldr#3040)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          # Report-only. Prints the #3039 baseline table into the job log and
+          # writes the machine-readable summary next to the journals so the
+          # upload below carries it. It never fails the lane.
+          python3 .github/scripts/analyze_compile_journal.py \
+            "$SOLDR_CACHE_DIR/cache/zccache" \
+            --cargo-logs "$SOLDR_CACHE_DIR/logs/cargo-fingerprint.log" \
+            --lockfiles-from-repo \
+            --compare-baseline .github/scripts/baselines/compile_journal_baseline_33536940076.json \
+            --json-out "$SOLDR_CACHE_DIR/logs/compile-journal-analysis.json" \
+            --verbose
+
       - name: Upload build log artifacts
         if: always()
         continue-on-error: true
@@ -415,3 +448,19 @@ jobs:
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/*-spawn.log
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/broker/*.log
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/broker/*.jsonl
+
+      - name: Ratchet third-party compiles (soldr#3040, report-only)
+        if: always()
+        shell: bash
+        run: |
+          # Thresholds are deliberately unreachable today: this phase ships the
+          # gate, not the reduction. Each #3039 phase lowers its own threshold
+          # in its own PR -- that is how a phase proves it holds and how a
+          # later regression is caught. No continue-on-error on purpose: once a
+          # threshold is real, it must be able to fail the lane.
+          python3 .github/scripts/check_third_party_compiles.py \
+            "$SOLDR_CACHE_DIR/cache/zccache" \
+            --cargo-logs "$SOLDR_CACHE_DIR/logs/cargo-fingerprint.log" \
+            --summary-json "$SOLDR_CACHE_DIR/logs/compile-journal-analysis.json" \
+            --max-misses 100000 \
+            --max-dirty-third-party 100000

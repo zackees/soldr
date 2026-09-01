@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "run_id": "33536940076",
+  "repo": "zackees/soldr",
+  "artifact": "build-logs-x86_64-unknown-linux-gnu",
+  "lane": "build-linux-x64",
+  "source": "zackees/soldr#3039 baseline table (warm ci-test run on PR #3038)",
+  "download": "gh run download 33536940076 --repo zackees/soldr --name build-logs-x86_64-unknown-linux-gnu --dir baseline/",
+  "tolerance": 5,
+  "metrics": {
+    "total_units": 1569,
+    "third_party": 1326,
+    "first_party": 241,
+    "hits": 0,
+    "context_not_found": 1447,
+    "uncacheable_input": 120,
+    "duplicate_records_concurrent": 579,
+    "duplicate_records_sequential": 0,
+    "tree_stable": 1231,
+    "tree_dylint_target": 201,
+    "tree_dylint_tests": 137
+  }
+}
