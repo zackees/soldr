@@ -361,6 +361,41 @@ async fn serve_loop(
         Arc::clone(&state.registry),
         Arc::clone(&shutdown),
     ));
+    // soldr#3057: the broker watches its own RSS against the same
+    // SOLDR_DAEMON_RSS_CEILING_BYTES ceiling the daemon uses, rather than
+    // cross-checking a specific daemon's breach.
+    //
+    // A host audit alongside the daemon-side leak found 180 `soldr-broker`
+    // processes independently holding 3.61 GiB -- the broker is a
+    // long-lived process in its own right and can balloon with no daemon
+    // ever breaching at all, so watching only "did my daemon breach" would
+    // miss the finding that motivated this in the first place. Reacting to
+    // a specific daemon's breach instead (or in addition) would need the
+    // broker to map a `BackendRegistry` route back to that route's
+    // `SoldrPaths` and poll its `rss-ceiling-v1.json` -- solvable, but it
+    // would lean on exactly the Child-handle/zombie-reaping plumbing the
+    // companion investigation (soldr#3057's second finding) found broken:
+    // the broker never retains a waitable handle on a daemon it spawned
+    // past `launch()` returning, so there is no clean "this daemon just
+    // exited because of a breach" signal to hang a reaction off yet. Self-
+    // monitoring needs none of that: it reuses this exact, already-tested
+    // sample/dump/die primitive unmodified, with no new cross-process
+    // plumbing. This is a real gap -- a broker serving several healthy
+    // routes will not exit just because one of their daemons breaches --
+    // and is left as follow-up once the broker-population/zombie-reaping
+    // design question (not in scope here) is settled.
+    let rss_ceiling_bytes = crate::daemon::rss_ceiling::ceiling_bytes_from_env();
+    crate::daemon::rss_ceiling::start_sampled_profiler_if_configured(rss_ceiling_bytes);
+    let rss_watchdog = rss_ceiling_bytes.map(|ceiling_bytes| {
+        let watchdog_paths = crate::daemon::service_definition::broker_owned_paths();
+        let watchdog_shutdown = Arc::clone(&shutdown);
+        tokio::spawn(crate::daemon::rss_ceiling::run_watchdog_notify(
+            watchdog_paths,
+            watchdog_shutdown,
+            ceiling_bytes,
+            crate::daemon::rss_ceiling::ProcessRole::Broker,
+        ))
+    });
     let mut connections = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
@@ -405,6 +440,11 @@ async fn serve_loop(
     // it may be mid-sleep, and a retiring broker must not wait a sweep
     // interval to finish.
     reaper.abort();
+    // Same reasoning as the reaper: a retiring broker must not wait out an
+    // RSS_SAMPLE_INTERVAL sleep to finish shutting down.
+    if let Some(handle) = rss_watchdog {
+        handle.abort();
+    }
     crate::platform::ipc::broker::retire_endpoint(&endpoint);
     while let Some(joined) = connections.join_next().await {
         if let Err(error) = joined {

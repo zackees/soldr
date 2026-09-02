@@ -90,6 +90,15 @@ test-group = 'soldr-runtime'
 filter = 'test(=daemon_rss_ceiling::daemon_stays_under_the_512mib_target_while_serving_a_chained_build)'
 slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
 
+# soldr#3059: the rate-gate reproduction runs the same shape of workload as
+# the ceiling test above (one cold build + three rebuild passes through a
+# broker-owned daemon), so it needs the same budget. `#[ignore]`d by default
+# (see the test's own doc comment), but still needs a real budget for the
+# explicit `--ignored` runs this test exists to be run with.
+[[profile.default.overrides]]
+filter = 'test(=daemon_rss_ceiling::daemon_rss_retention_rate_per_compile_stays_within_budget)'
+slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
+
 # Note the `daemon` binary carries two more modules -- `cli_debug_trace_observer`,
 # `inherited_stdio_spawns_mark_spoke` -- and the
 # `broker` binary three more -- `broker_identity_pipe`, `broker_identity_unix`,

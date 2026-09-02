@@ -1,4 +1,6 @@
-//! SIGTERM wait for the daemon's graceful-drain hook.
+//! SIGTERM wait for the daemon's fast-exit hook (soldr#3059; formerly a
+//! graceful-drain hook under issue #1286 — see `platform/process/signal.rs`
+//! for the history).
 
 /// Wait for SIGTERM, returning `true` once a terminate signal arrived.
 /// `false` when the handler cannot be registered (the caller then runs
