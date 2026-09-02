@@ -1,7 +1,8 @@
-name: Dylint Cook Acceptance
+name: Stable Cook Acceptance
 
 
-# Not a per-PR job (soldr#1900 follow-up, requested by the owner).
+# Not a per-PR job (soldr#3043 Phase 2, same rationale as
+# dylint-cook-acceptance.yml's soldr#1900 follow-up).
 #
 # This acceptance runs its scenarios inside a Docker container via
 # `ci/perf_local.py`. That container earns its keep *locally*: it is a
@@ -10,25 +11,33 @@ name: Dylint Cook Acceptance
 #
 # On GitHub Actions there is nothing to reuse. The runner is already an
 # ephemeral, isolated VM, so the container adds no isolation the job did
-# not already have — it only adds a full image build to every run. The
-# last successful cache-acceptance run took 45 minutes; the cook one
-# runs 13-26. The cache workflow also triggered on `crates/**`, so every
-# Rust PR paid for it.
+# not already have -- it only adds a full image build to every run. Three
+# cold/warm/object-cache-only cooks of the real workspace, each watchdog-
+# capped at 1800s, is real wall time that has no business sitting between
+# a one-line change and a merge.
 #
-# So it moves to manual dispatch plus a weekly schedule: the coverage
-# stays, and it stops sitting between a one-line change and a merge.
-# Run it on demand before touching dylint caching:
+# So it moves to manual dispatch plus a weekly schedule, on a different
+# hour than `dylint-cook-acceptance.yml` so the two do not contend for a
+# runner slot: the coverage stays, and it stops sitting in the critical
+# path. Run it on demand before touching stable-tree cook caching:
 #
-#     gh workflow run "Dylint Cook Acceptance"
+#     gh workflow run "Stable Cook Acceptance"
+#
+# This workflow's whole subject is what `actions/cache` controls in
+# `_build-and-test.yml`'s stable lane -- which `$SOLDR_CACHE_DIR` subpaths
+# survive between runs -- so `check_cache_ownership.py` exempts it as a
+# `cache-experiment`: constraining what it persists would destroy the
+# measurement it exists to make (see that guard's `EXPERIMENT_WORKFLOWS`
+# and `ci/cache-ownership.json`).
 #
 # Note the deliberate distinction: Docker stays where it provides an
-# environment the runner genuinely is not — `baseline-zero-deps.yml`
+# environment the runner genuinely is not -- `baseline-zero-deps.yml`
 # builds an old-glibc image to prove the binary runs there. That is
 # testing a different platform, not re-isolating an isolated one.
 
 on:
   schedule:
-    - cron: "0 5 * * 1"
+    - cron: "0 9 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -36,17 +45,14 @@ permissions:
 
 # soldr#1985 - stop superseded runs from holding runner slots.
 concurrency:
-  group: dylint-cook-acceptance-${{ github.ref }}
+  group: stable-cook-acceptance-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  dylint-cook:
-    name: check-shaped dependency cook matrix
+  stable-cook:
+    name: stable-tree cook matrix (cold / warm / object-cache-only)
     runs-on: ubuntu-24.04
-    # soldr#3042 added a second three-mode matrix that builds the
-    # dylint_testing dependency layer (compiletest_rs, git2, libgit2-sys),
-    # roughly doubling the run.
-    timeout-minutes: 140
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -63,13 +69,13 @@ jobs:
       - name: Run Docker acceptance and benchmarks
         env:
           SOLDR_PERF_LOCAL_PTRACE: "1"
-        run: uv run --no-project --python 3.13 python .github/scripts/dylint_cook_acceptance.py
+        run: uv run --no-project --python 3.13 python .github/scripts/stable_cook_acceptance.py
 
       - name: Upload watchdog stacks and Tokio recording
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: dylint-cook-watchdog-${{ github.run_id }}
-          path: ${{ runner.temp }}/dylint-cook-diagnostics
+          name: stable-cook-watchdog-${{ github.run_id }}
+          path: ${{ runner.temp }}/stable-cook-diagnostics
           if-no-files-found: ignore
           retention-days: 7

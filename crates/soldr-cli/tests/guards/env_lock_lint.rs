@@ -192,6 +192,21 @@ const PRODUCTION_ENV_WRITERS: &[(&str, &str)] = &[
          cli_args_tests.rs left the production write correctly bare",
     ),
     (
+        "crates/soldr-cli/src/dylint_cook_tree.rs",
+        "soldr#3042: a `--tree tests` cook must compile under the same environment the \
+         later Dylint UI-test stage reuses the artifacts under. `ci_test/execute.rs` sets \
+         that environment per stage with `Command::env`, but `soldr dylint cook` spawns its \
+         child cargo from the current process, so the equivalent is `set_var` here. \
+         Production child-process setup, not a test mutating ambient state",
+    ),
+    (
+        "crates/soldr-cli/src/cook.rs",
+        "soldr#3043: `run_cook` publishes the cook's `--target` scope before phase 1, because \
+         `cargo chef prepare`'s argv cannot carry `--target` yet still triggers the front \
+         door's cook-index hydrate. The variable is read back in cook_hydrate.rs, whose own \
+         mutex guards its tests; this write is production behaviour on the cook path",
+    ),
+    (
         "crates/soldr-cli/src/target_lifecycle.rs",
         "apply_to_process installs the blessed target's resolved environment and mutually \
          exclusive Rust flags before dispatching the production build; this is child-process \

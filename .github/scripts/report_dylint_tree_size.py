@@ -14,9 +14,11 @@ cook`, against a 5 GB budget, so a carve-out has to be costed before it is
 granted -- not after.
 
 This reports the three trees separately, because they are not
-interchangeable. `soldr dylint cook` prewarms only the analysis tree
-(`plan.rs:53`); `libraries/` and `tests/` account for 386s of the 638s and can
-only come back from an archive.
+interchangeable. `soldr dylint cook` prewarms the analysis tree
+(`--tree analysis`, the default) and, since soldr#3042, the third-party
+dependency layer of the UI-test tree (`--tree tests`). It does not prewarm
+`libraries/`, nor the linked UI-test products inside `tests/` -- those are
+tier 3 and stay cold by design.
 
 Reports, never fails: a missing tree is information (the stage did not run),
 not an error, and this must never be the reason a lane goes red.
@@ -106,7 +108,9 @@ def main(argv: list[str] | None = None) -> int:
             with pathlib.Path(summary).open("a", encoding="utf-8") as handle:
                 handle.write(body + "\n")
         except OSError as error:
-            print(f"report_dylint_tree_size: summary unwritable: {error}", file=sys.stderr)
+            print(
+                f"report_dylint_tree_size: summary unwritable: {error}", file=sys.stderr
+            )
     return 0
 
 

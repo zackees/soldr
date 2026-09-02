@@ -26,6 +26,7 @@ a dependency here, and a guard that skips when a module is missing is the
 failure mode these very steps exist to prevent.
 """
 
+import json
 import re
 import tomllib
 from pathlib import Path
@@ -40,10 +41,30 @@ GUARD_1838 = "Assert the build did not silently run uncached (soldr#1838)"
 CI_TEST_DRIVER = "Build ci-test driver"
 CI_TEST_RUN = "Run prescribed host validation"
 BROKER_HANDOFF = "Hand off bootstrap broker to source revision"
+DYLINT_TESTS_COOK = "Cook the Dylint UI-test dependency layer (soldr#3042)"
 SOURCE_DRIVER_DOWNLOAD = "Reuse shared source driver if already available"
 SOURCE_DRIVER_VERIFY = "Verify shared source driver provenance"
 CANONICAL_CACHE = "Select canonical host CI cache domain"
 FINAL_CACHE_STOP = "Stop canonical host CI cache"
+INDEX_BUILD_LOGS = "Index build logs"
+UPLOAD_BUILD_LOGS = "Upload build log artifacts"
+JOURNAL_REPORT = "Report compile journal analysis (soldr#3040)"
+THIRD_PARTY_RATCHET = "Ratchet third-party compiles (soldr#3040, report-only)"
+FINGERPRINT_LOG = "$SOLDR_CACHE_DIR/logs/cargo-fingerprint.log"
+COMPILE_JOURNAL_BASELINE = (
+    REPO_ROOT
+    / ".github"
+    / "scripts"
+    / "baselines"
+    / "compile_journal_baseline_33536940076.json"
+)
+BUILD_LOGS_UPLOAD = "Upload build log artifacts"
+ZCCACHE_STORE = "Restore Tier-2 zccache object store (soldr#3039)"
+ZCCACHE_SCRUB = "Scrub runtime coordination state from the object store (soldr#3039)"
+ZCCACHE_STORE_PATH = (
+    "${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}"
+    "/cache/zccache/daemon-state"
+)
 CACHE_ENV_VARS = ("SOLDR_CACHE_DIR", "ZCCACHE_CACHE_DIR")
 CACHE_SHELL_ASSIGNMENT = re.compile(
     r"^(?:(?:export|env)\s+)?(?:SOLDR_CACHE_DIR|ZCCACHE_CACHE_DIR)\s*="
@@ -119,12 +140,42 @@ def test_setup_soldr_job_caps_are_cleared_before_source_work() -> None:
     command_by_step = {
         CI_TEST_DRIVER: "soldr cargo build",
         BROKER_HANDOFF: '"$source_soldr" daemon start',
+        DYLINT_TESTS_COOK: "cook_dylint_tests_tree.py",
         CI_TEST_RUN: "ci-test --target",
     }
     for step_name, source_command in command_by_step.items():
         body = _step_body(workflow, step_name)
         assert clear_caps in body
         assert body.index(clear_caps) < body.index(source_command)
+
+
+def test_the_dylint_tests_tree_is_cooked_between_the_broker_handoff_and_validation() -> (
+    None
+):
+    """The tests-tree cook (soldr#3042) has a load-bearing position.
+
+    It must run AFTER the broker handoff, not before: `--tree` exists only on
+    the source binary (the pinned setup-soldr 0.9.10 builder has no such
+    flag), and the compiles must route through the same source-owned daemon
+    `ci-test` uses -- the handoff step is what makes that daemon current. It
+    must run BEFORE prescribed host validation, or the whole point (keeping
+    these compiles out of the concurrent Dylint UI-test / Fresh Nextest
+    window) is lost. A future re-order that moves this step either direction
+    silently reintroduces the contention soldr#3042 removed.
+    """
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert workflow.count(f"- name: {DYLINT_TESTS_COOK}") == 1
+    assert (
+        workflow.index(f"- name: {BROKER_HANDOFF}")
+        < workflow.index(f"- name: {DYLINT_TESTS_COOK}")
+        < workflow.index(f"- name: {CI_TEST_RUN}")
+    )
+
+    body = _step_body(workflow, DYLINT_TESTS_COOK)
+    assert "--target-root" in body
+    assert "cook_dylint_tests_tree.py" in body
+    assert "continue-on-error: true" not in body
 
 
 def test_source_driver_reuse_is_exact_sha_opportunistic_and_fails_closed() -> None:
@@ -274,3 +325,212 @@ def test_no_later_host_step_switches_the_canonical_cache_domain() -> None:
         for line in later_lines
     )
     assert 'check_toolchain_homes.py "$SOLDR_CACHE_DIR/logs/builds"' in workflow
+
+
+def test_cargo_fingerprint_logging_is_enabled_in_the_canonical_domain_step() -> None:
+    # Prevents the CARGO_LOG echo from drifting onto a single step's `env:`
+    # (where it would only affect that one step's process, not the lane) or
+    # being duplicated/removed silently -- $GITHUB_ENV is the only mechanism
+    # that makes it visible to every later host build and test step.
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    domain = _step_body(workflow, CANONICAL_CACHE)
+    cargo_log_line = (
+        'echo "CARGO_LOG=cargo::core::compiler::fingerprint=info" >> "$GITHUB_ENV"'
+    )
+    assert cargo_log_line in domain
+    assert workflow.count(cargo_log_line) == 1
+    assert "CARGO_LOG:" not in workflow
+
+
+def test_the_ci_test_run_persists_cargos_fingerprint_stderr() -> None:
+    # Without persistence the fingerprint lines exist only in the GHA
+    # console, because soldr does not write cargo stderr to logs/builds --
+    # the redirection has to survive alongside the CARGO trap wiring and
+    # still forward to the console, or a rebase could quietly drop it.
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    body = _step_body(workflow, CI_TEST_RUN)
+    assert 'mkdir -p "$SOLDR_CACHE_DIR/logs"' in body
+    assert f'2> >(tee -a "{FINGERPRINT_LOG}" >&2)' in body
+    assert 'SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr"' in body
+    assert 'ci-test --target "${{ inputs.target }}"' in body
+
+
+def test_the_journal_report_runs_between_the_index_and_the_upload() -> None:
+    # The report must precede the upload so its JSON is inside the artifact,
+    # and the ratchet must follow the upload so evidence survives a failing
+    # gate.
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert workflow.count(f"- name: {JOURNAL_REPORT}") == 1
+    assert workflow.count(f"- name: {THIRD_PARTY_RATCHET}") == 1
+    assert (
+        workflow.index(f"- name: {INDEX_BUILD_LOGS}")
+        < workflow.index(f"- name: {JOURNAL_REPORT}")
+        < workflow.index(f"- name: {UPLOAD_BUILD_LOGS}")
+        < workflow.index(f"- name: {THIRD_PARTY_RATCHET}")
+    )
+
+
+def test_the_journal_report_is_advisory() -> None:
+    # Dropping `if: always()` would hide the analysis on exactly the failing
+    # runs where it matters most; dropping `continue-on-error: true` would
+    # let a reporting-script bug redden the whole lane -- same advisory
+    # pattern as the "Report Dylint tree sizes" step above it in the
+    # workflow.
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    body = _step_body(workflow, JOURNAL_REPORT)
+    assert "if: always()" in body
+    assert "continue-on-error: true" in body
+    assert "analyze_compile_journal.py" in body
+    assert (
+        "--compare-baseline .github/scripts/baselines/"
+        "compile_journal_baseline_33536940076.json"
+    ) in body
+    assert '--json-out "$SOLDR_CACHE_DIR/logs/compile-journal-analysis.json"' in body
+
+
+def test_the_third_party_ratchet_is_wired_report_only_and_can_fail() -> None:
+    # Each #3039 phase lowers its own threshold in its own PR and updates
+    # this assertion -- the numbers are pinned so a change is visible in
+    # review, exactly like the `NEXTEST_TEST_THREADS` assertion above.
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    body = _step_body(workflow, THIRD_PARTY_RATCHET)
+    assert "check_third_party_compiles.py" in body
+    assert "if: always()" in body
+    assert "continue-on-error" not in body
+    assert "--max-misses 100000" in body
+    assert "--max-dirty-third-party 100000" in body
+
+
+def test_the_analysis_scripts_and_baseline_exist() -> None:
+    # The workflow names these paths as strings, so nothing else would
+    # notice a rename.
+    analyze_script = REPO_ROOT / ".github" / "scripts" / "analyze_compile_journal.py"
+    ratchet_script = REPO_ROOT / ".github" / "scripts" / "check_third_party_compiles.py"
+    assert analyze_script.is_file()
+    assert ratchet_script.is_file()
+    assert COMPILE_JOURNAL_BASELINE.is_file()
+
+    baseline = json.loads(COMPILE_JOURNAL_BASELINE.read_text(encoding="utf-8"))
+    assert baseline["run_id"] == "33536940076"
+    metrics = baseline["metrics"]
+    assert metrics["total_units"] == 1569
+    assert metrics["third_party"] == 1326
+    assert metrics["hits"] == 0
+    assert metrics["context_not_found"] == 1447
+    assert metrics["uncacheable_input"] == 120
+
+
+def test_the_tier2_object_store_is_restored_before_any_compile() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert workflow.count(f"- name: {ZCCACHE_STORE}") == 1
+    # The store has to be on disk before the first cacheable compile, and it
+    # must not be restored before the canonical domain step chooses where
+    # that store lives.
+    assert (
+        workflow.index(CANONICAL_CACHE)
+        < workflow.index(ZCCACHE_STORE)
+        < workflow.index(CI_TEST_DRIVER)
+    )
+
+
+def test_the_object_store_entry_excludes_the_compile_journals() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    body = _step_body(workflow, ZCCACHE_STORE)
+    assert f"path: {ZCCACHE_STORE_PATH}" in body
+    assert "/cache/zccache/history" not in body
+    assert "/cache/zccache/logs" not in body
+    # actions/cache globs `path` with implicitDescendants=false and then tars
+    # the matched directory recursively, so a `!subdir` negation is a silent
+    # no-op -- the journals stay out by POSITIVE selection of `daemon-state`,
+    # and a future edit that swaps to a negation must fail here.
+    path_line = next(
+        line for line in body.splitlines() if line.strip().startswith("path:")
+    )
+    assert "!" not in path_line
+
+    # The artifact step still ships the journals and session logs, and it does
+    # so from OUTSIDE the cached tree -- if `daemon-state` ever appears in that
+    # step, the two stores have started to overlap and the run-scoped artifact
+    # would be carrying cross-run cache content.
+    artifact = _step_body(workflow, BUILD_LOGS_UPLOAD)
+    assert "/cache/zccache/history/**/*.jsonl" in artifact
+    assert "/cache/zccache/logs/" in artifact
+    assert "daemon-state" not in artifact
+
+
+def test_the_object_store_key_rotates_and_falls_back() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    body = _step_body(workflow, ZCCACHE_STORE)
+    # actions/cache never re-saves on an exact-key hit, so the run_id suffix
+    # is what keeps the store from freezing after the first save; the two
+    # restore-keys are the same-graph and any-graph fallbacks.
+    key_line = next(
+        line for line in body.splitlines() if line.strip().startswith("key:")
+    )
+    assert key_line.rstrip().endswith("-${{ github.run_id }}")
+    assert "restore-keys: |" in body
+    restore_lines = [line.strip() for line in body.splitlines()]
+    assert "zccache-unit-v1-${{ inputs.target }}-" in restore_lines
+    assert any(
+        line.startswith("zccache-unit-v1-${{ inputs.target }}-")
+        and line.endswith("}}-")
+        and line != "zccache-unit-v1-${{ inputs.target }}-"
+        for line in restore_lines
+    )
+    assert (
+        "hashFiles('Cargo.lock', 'dylints/**/Cargo.lock', 'rust-toolchain.toml', "
+        "'dylints/**/rust-toolchain.toml')"
+    ) in key_line
+
+
+def test_runtime_coordination_state_is_scrubbed_before_the_cache_save() -> None:
+    """The post-step tars the same tree `soldr save` refuses to collect.
+
+    `archive_always_excludes_cache_path` (soldr-cache/src/cache_lib/
+    save_inventory.rs) drops any path with a `staging` component plus every
+    lock/socket/pid file *in every save profile*, because the daemon deletes
+    its own `.active.lock` between the walk and the stat and killed a real
+    `soldr save`. `tar` has that race too, and a failed cache save is only a
+    warning -- the entry would silently never be written while the lane stayed
+    green. Restoring a stale lock or socket into a later run's root is the
+    other half: that is documented as preventing the compile daemon from
+    starting.
+    """
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert workflow.count(f"- name: {ZCCACHE_SCRUB}") == 1
+    body = _step_body(workflow, ZCCACHE_SCRUB)
+
+    assert "if: always()" in body
+    assert "continue-on-error: true" in body
+    assert ZCCACHE_STORE_PATH in body
+    assert "-name staging -prune" in body
+    for pattern in ("'*.lock'", "'*.sock'", "'*.socket'", "'*.pid'"):
+        assert pattern in body, pattern
+
+    # Order is the point: scrubbing under a live daemon would not close the
+    # race, so this must follow the shutdown, and both must precede the
+    # `actions/cache` post-step (which runs after every main step).
+    assert workflow.index(f"- name: {FINAL_CACHE_STOP}\n") < workflow.index(
+        f"- name: {ZCCACHE_SCRUB}"
+    )
+
+
+def test_the_object_store_is_registered_in_the_ownership_manifest() -> None:
+    manifest = json.loads(
+        (REPO_ROOT / "ci" / "cache-ownership.json").read_text(encoding="utf-8")
+    )
+    entry = next(
+        (
+            item
+            for item in manifest["entries"]
+            if item.get("id") == "build-and-test-zccache-unit"
+        ),
+        None,
+    )
+    # The manifest is how a reviewer finds every cross-run store, and a step
+    # name that drifts from its entry makes it unfindable.
+    assert entry is not None
+    assert entry["tier"] == "zccache-unit"
+    assert entry["workflow"] == "_build-and-test.yml"
+    assert entry["mechanism"] == "actions/cache"
+    assert entry["step"] == ZCCACHE_STORE

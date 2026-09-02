@@ -187,9 +187,13 @@ def test_windows_gnu_target_run_is_bounded_and_disk_safe() -> None:
     assert "nextest list" in target_run
     assert "nextest run" in target_run
     assert "matrix.replay.label }}-diagnostics" in target_run
+    # soldr#3047 retired the pep517 Swatinem/rust-cache restore from this
+    # lane, so the guard now appears on exactly three steps -- wheel build,
+    # daemon smoke, and the always()-guarded log upload -- not four.
     assert (
-        target_run.count("inputs.run_pep517_smoke && matrix.replay.run_followup") == 4
+        target_run.count("inputs.run_pep517_smoke && matrix.replay.run_followup") == 3
     )
+    assert "uses: Swatinem/rust-cache" not in target_run
 
 
 def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
@@ -760,7 +764,13 @@ def test_normal_gnu_lifecycle_has_no_zig_fallback() -> None:
 
 
 def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
-    """#2453: cache-disabled hosted lanes must retain memory headroom."""
+    """#2453: cache-disabled hosted lanes must retain memory headroom.
+
+    #3047 (following #2996): Swatinem/rust-cache was retired from this lane --
+    `soldr cook` is the only durable dependency cache left here, so the old
+    `shared-key: cross-build-<target>-v7` assertion is inverted below into a
+    regression guard against reintroducing rust-cache.
+    """
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
 
@@ -772,7 +782,13 @@ def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
     assert "CARGO_BUILD_JOBS: ${{ matrix.jobs }}" in wheel_job
     assert "SOLDR_JOBS: ${{ matrix.jobs }}" in wheel_job
     assert 'CARGO_PROFILE_CI_NEXTEST_CODEGEN_UNITS: "4"' in cross_job
-    assert "shared-key: cross-build-${{ inputs.target }}-v7" in cross_job
+    # soldr#3047 / soldr#2996: cook is the only durable dependency cache in
+    # this lane now -- Swatinem/rust-cache (and its shared-key) must not
+    # reappear as a step. The retirement is explained in a prose comment
+    # that names the action for context, so check for the `uses:` line
+    # specifically rather than the bare word.
+    assert "uses: Swatinem/rust-cache" not in cross_job
+    assert "shared-key:" not in cross_job
 
 
 def test_external_zccache_bootstraps_get_exclusive_service_access() -> None:

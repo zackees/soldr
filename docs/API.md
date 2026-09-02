@@ -720,19 +720,24 @@ nightly artifacts into the repository's ordinary stable build tree:
 ```bash
 soldr dylint cook --workspace --all-targets
 soldr dylint cook --plan-only --json
+soldr dylint cook --tree tests --tests --target-root /path/to/repo/target
 ```
 
 The command resolves one exact Dylint nightly from the verified
 soldr-toolchain catalogue (or an explicit `--toolchain nightly-YYYY-MM-DD`),
 then verifies the installed compiler's full release and commit identity. It
-reconstructs a dependency skeleton and runs a check-shaped pass through
+reconstructs a dependency skeleton and runs a dependency-only pass through
 Soldr's normal compilation cache. `RUSTC_WORKSPACE_WRAPPER` and every
 `DYLINT_*` library variable are removed for this phase, so custom lint
 libraries are loaded only by the later real Dylint invocation.
 
-Outputs live under `target/dylint/target/<nightly>/`, matching Dylint 6's own
-workspace-check directory. The warm marker includes the observed compiler
-commit, manifests, lockfile, selected target/profile/features/packages,
+Outputs live under `target/dylint/target/<nightly>/` by default, matching
+Dylint 6's own workspace-check directory; `--tree tests` selects the second
+tree and changes the shape of the pass — see "Which tree" below. The pass is
+check-shaped for the default `analysis` tree and build-shaped for `tests`.
+
+The warm marker includes the observed compiler commit, manifests, lockfile,
+selected target/profile/features/packages,
 configuration, and wrapper identity. Workspace source contents are excluded,
 so editing only a local source file preserves the external-dependency layer.
 Conflicting nightly requirements from configured lint-library paths fail
@@ -746,11 +751,65 @@ payload all match. A normal invocation verifies the compiler again after any
 restore/install and reports `miss` after cooking or `skip` when the complete
 layer is already warm.
 
-Shape options are `--target`, `--release` / `--profile`, `--workspace`,
-repeatable `--package`, `--features`, `--all-features`,
-`--no-default-features`, `--all-targets`, `--tests`, `--benches`,
-`--examples`, repeatable `--config`, `--locked`, `--frozen`, and `--offline`.
-Ordinary `soldr cook` behavior is unchanged.
+Shape options are `--tree <analysis|tests>`, `--target-root <DIR>`,
+`--target`, `--release` / `--profile`, `--workspace`, repeatable `--package`,
+`--features`, `--all-features`, `--no-default-features`, `--all-targets`,
+`--tests`, `--benches`, `--examples`, repeatable `--config`, `--locked`,
+`--frozen`, and `--offline`. `--tree` and `--target-root` are the only two
+that are not forwarded to cargo: they select the target directory instead.
+`--tree` enters the cook key directly; `--target-root` is checked through the
+target directory the marker records. Ordinary `soldr cook` behavior is
+unchanged.
+
+#### Which tree: `--tree <analysis|tests>` (soldr#3042)
+
+There are two Dylint target trees and they are not interchangeable.
+`--tree analysis` (the default, and the only historical behavior) prepares
+`target/dylint/target/<nightly>/`, the tree `cargo dylint` analyses the
+workspace in. `--tree tests` prepares
+`target/dylint/tests/<nightly>-<host-triple>/`, the dependency layer the
+Dylint UI-test stages of `soldr ci-test` compile their `trybuild`/UI
+harnesses against (`dylint_testing` -> `compiletest_rs`, `git2`,
+`libgit2-sys`, plus `dylint`'s own build script).
+
+Three things change with `--tree tests`, and each is required for the cooked
+artifacts to be *reused* rather than merely present:
+
+* **Shape.** The pass is build-shaped (`cargo build`) rather than
+  check-shaped. `cargo check` emits `.rmeta` under a different fingerprint
+  mode than the `cargo test` the UI-test stage runs, so a check-shaped cook
+  of this tree would be recompiled wholesale on first use.
+* **Directory naming.** The channel segment carries the host triple, because
+  that is how `soldr ci-test` names the tree it passes to `--target-dir`.
+  The analysis tree keeps its bare `<nightly>` segment, because that is what
+  `cargo dylint` picks for itself. The two rules genuinely disagree, and the
+  cook deliberately follows each tree's own consumer.
+* **Environment.** The cook applies the same `dylint`/`dylint-link`
+  bootstrap `PATH`, `SOLDR_LINKER=default`, and `SOLDR_NO_GC_TARGET=1` that
+  `soldr ci-test` gives every Dylint stage. `SOLDR_LINKER` is load-bearing:
+  Soldr's linker injection rewrites `RUSTFLAGS`, and `RUSTFLAGS` is in every
+  unit's fingerprint.
+
+`--target <TRIPLE>` is rejected together with `--tree tests`: the UI-test
+stages compile for the host only, so a cross-target cook would land its
+artifacts one directory deeper than Cargo will look.
+
+`--target-root <DIR>` overrides where `target/dylint/...` is rooted. Each
+lint crate under `dylints/` is its own Cargo workspace, so a tests-tree cook
+runs with the working directory inside `dylints/<lint>` while the tree it
+must fill belongs to the *repository*. A relative path resolves against the
+current directory. Without the flag, the tree would be created at
+`dylints/<lint>/target/...`, which
+`.github/scripts/verify_dylint_target_dirs.py` rejects.
+
+The two trees never share a cook key: the tree name is folded into the cache
+digest, so one tree's marker can never satisfy the other's.
+
+`.github/scripts/cook_dylint_tests_tree.py` is the CI driver — it runs one
+`--tree tests` cook per `dylints/*` crate before `soldr ci-test` starts.
+Neither tree is uploaded anywhere: the cook fills an in-run target tree, and
+cross-run reuse comes from the per-unit object store
+(see `ci/cache-ownership.json`).
 
 ### `soldr cook`
 

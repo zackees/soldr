@@ -101,11 +101,11 @@ run_with_watchdog() {
 }
 
 run_case() {
-  local name="$1"
+  local name="$1"; shift
   local started ended output outcome hits=0 misses=0
   started="$(date +%s%3N)"
   run_with_watchdog "$name" \
-    "$SOLDR" dylint cook --workspace --all-targets --json
+    "$SOLDR" dylint cook "$@" --json
   ended="$(date +%s%3N)"
   output="$(tail -n 1 "$DIAGNOSTICS/${name}.log")"
   outcome="$(jq -r .outcome <<<"$output")"
@@ -124,23 +124,38 @@ run_case() {
 
 test ! -e target/debug
 test ! -e target/release
-run_case cold
+run_case cold --workspace --all-targets
 test -d target/dylint/target
 test ! -e target/debug
 test ! -e target/release
 
-run_case warm_same_target
+run_case warm_same_target --workspace --all-targets
 
 tar -cf /tmp/dylint-cook/restored.tar target/dylint
 rm -rf target
 mkdir target
 tar -xf /tmp/dylint-cook/restored.tar
-run_case warm_restored_target
+run_case warm_restored_target --workspace --all-targets
 
 rm -rf target
-run_case object_cache_only
+run_case object_cache_only --workspace --all-targets
 test ! -e target/debug
 test ! -e target/release
+
+run_case tests_cold --workspace --tests --tree tests
+test -d target/dylint/tests
+
+tar -cf /tmp/dylint-cook/restored-tests.tar target/dylint
+rm -rf target
+mkdir target
+tar -xf /tmp/dylint-cook/restored-tests.tar
+run_case tests_warm_restored_target --workspace --tests --tree tests
+
+# tests_object_cache_only MUST miss - a warm per-unit object store is not
+# allowed to make this pass, because the whole point of the cook tier is
+# that it avoids the work rather than making the work cheap.
+rm -rf target
+run_case tests_object_cache_only --workspace --tests --tree tests
 
 printf '\npub fn dylint_fixture_violation() {}\n' >>src/lib.rs
 run_with_watchdog real_dylint "$SOLDR" "car""go" dylint --all
@@ -237,6 +252,9 @@ def main() -> int:
         "warm_same_target",
         "warm_restored_target",
         "object_cache_only",
+        "tests_cold",
+        "tests_warm_restored_target",
+        "tests_object_cache_only",
     ]
     if [row["name"] for row in rows] != expected:
         print(f"incomplete Dylint cook rows: {rows}", file=sys.stderr)
@@ -247,6 +265,9 @@ def main() -> int:
         "warm_same_target": "skip",
         "warm_restored_target": "skip",
         "object_cache_only": "miss",
+        "tests_cold": "miss",
+        "tests_warm_restored_target": "skip",
+        "tests_object_cache_only": "miss",
     }:
         print(f"unexpected outcomes: {rows}", file=sys.stderr)
         return 3

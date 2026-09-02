@@ -186,6 +186,8 @@ jobs:
         with:
           shared-key: bootstrap-e2e-${{ inputs.target }}
           workspaces: soldr
+          # soldr#3047: PRs restore from main; per-PR saves were producing one entry per open PR per family.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # soldr#1252 — removed the "Reset stale cache fallback artifacts"
       # step. It guarded on `setup_soldr.outputs.*-cache-restore-status
