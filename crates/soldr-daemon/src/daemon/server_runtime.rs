@@ -366,20 +366,30 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         crate::daemon::maintenance::run_loop(maintenance_context).await;
     });
 
-    // soldr#3038: opt-in RSS ceiling watchdog. Spawned only when
-    // `SOLDR_DAEMON_RSS_CEILING_BYTES` parses to a positive byte count, so
-    // an ordinary daemon start (the overwhelming common case) pays no extra
-    // timer, file write, or mimalloc stats call at all -- see
-    // `rss_ceiling`'s module docs for the full design rationale.
-    let rss_ceiling_handle =
-        crate::daemon::rss_ceiling::ceiling_bytes_from_env().map(|ceiling_bytes| {
-            let rss_paths = paths.clone();
-            let rss_shutdown = Arc::clone(&state.shutdown);
-            tokio::spawn(async move {
-                crate::daemon::rss_ceiling::run_watchdog(rss_paths, rss_shutdown, ceiling_bytes)
-                    .await;
-            })
-        });
+    // soldr#3038 / soldr#3057: opt-in, fail-fast RSS ceiling watchdog.
+    // Spawned only when `SOLDR_DAEMON_RSS_CEILING_BYTES` parses to a
+    // positive byte count, so an ordinary daemon start (the overwhelming
+    // common case) pays no extra timer, file write, or mimalloc stats call
+    // at all -- see `rss_ceiling`'s module docs for the full design
+    // rationale, including why a breach now dumps memory and exits rather
+    // than recording and continuing. The sampled profiler must be started
+    // before the watchdog can produce a useful heap.pprof on breach, and
+    // only when a ceiling is actually configured -- same gate, same call.
+    let rss_ceiling_bytes = crate::daemon::rss_ceiling::ceiling_bytes_from_env();
+    crate::daemon::rss_ceiling::start_sampled_profiler_if_configured(rss_ceiling_bytes);
+    let rss_ceiling_handle = rss_ceiling_bytes.map(|ceiling_bytes| {
+        let rss_paths = paths.clone();
+        let rss_shutdown = Arc::clone(&state.shutdown);
+        tokio::spawn(async move {
+            crate::daemon::rss_ceiling::run_watchdog(
+                rss_paths,
+                rss_shutdown,
+                ceiling_bytes,
+                crate::daemon::rss_ceiling::ProcessRole::Daemon,
+            )
+            .await;
+        })
+    });
 
     let signal_state = state.clone();
     tokio::spawn(async move {
