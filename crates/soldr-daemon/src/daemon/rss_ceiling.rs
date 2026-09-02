@@ -367,19 +367,19 @@ fn exact_counters_json() -> serde_json::Value {
 
 /// Copy one `/proc/self/*` file into the dump directory verbatim. `None` on
 /// any failure (missing file, no `/proc`, permission) -- never fatal to the
-/// rest of the dump. Linux-only: macOS and Windows have no `/proc`, and
-/// there is no single-file equivalent worth special-casing here (Activity
-/// Monitor-style sampling would need its own platform module, tracked as a
-/// gap in the breach summary itself via `proc_status_path: None` rather
-/// than silently pretended away).
-#[cfg(target_os = "linux")]
+/// rest of the dump. Effectively Linux-only: macOS and Windows have no
+/// `/proc`, so the copy fails there and yields `None`. This is a runtime
+/// probe rather than a `#[cfg(target_os)]` on purpose -- host-platform
+/// selection belongs to soldr-platform (soldr#2493), and there is no
+/// single-file equivalent worth a platform module here (Activity
+/// Monitor-style sampling would need its own, tracked as a gap in the
+/// breach summary itself via `proc_status_path: None` rather than silently
+/// pretended away).
 fn copy_proc_snapshot(src: &str, dest: &Path) -> Option<PathBuf> {
+    if !Path::new(src).is_file() {
+        return None;
+    }
     std::fs::copy(src, dest).ok().map(|_| dest.to_path_buf())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn copy_proc_snapshot(_src: &str, _dest: &Path) -> Option<PathBuf> {
-    None
 }
 
 /// The message a human (or a test's panic!) should show for a breach: names
@@ -768,20 +768,22 @@ mod tests {
         assert_eq!(round_tripped.ceiling_bytes, 512 << 20);
         assert_eq!(round_tripped.peak_rss_bytes, 700 << 20);
 
-        // /proc is Linux-only; assert the field is populated there and
-        // explicitly absent (not merely unwritten) everywhere else.
-        #[cfg(target_os = "linux")]
-        {
+        // /proc is Linux-only; assert the field is populated where the
+        // source exists and explicitly absent (not merely unwritten)
+        // everywhere else. Probed at runtime, not via `#[cfg(target_os)]`,
+        // for the same soldr#2493 boundary reason as `copy_proc_snapshot`.
+        if Path::new("/proc/self/status").is_file() {
             let status_path = summary.proc_status_path.expect("/proc/self/status copy");
             assert!(status_path.is_file());
+        } else {
+            assert!(summary.proc_status_path.is_none());
+        }
+        if Path::new("/proc/self/smaps_rollup").is_file() {
             let smaps_path = summary
                 .proc_smaps_rollup_path
                 .expect("/proc/self/smaps_rollup copy");
             assert!(smaps_path.is_file());
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            assert!(summary.proc_status_path.is_none());
+        } else {
             assert!(summary.proc_smaps_rollup_path.is_none());
         }
     }
