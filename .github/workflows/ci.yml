@@ -1190,3 +1190,162 @@ jobs:
           path: dist/*.whl
           if-no-files-found: warn
           retention-days: 7
+
+  # ---------- Cancel-on-first-failure sentinels (soldr#3037 follow-up) ----------
+  #
+  # GHA has no built-in "cancel the whole run on first failure". This is
+  # deliberately NOT that. `strategy.fail-fast` (see `pep517-daemon-smoke`
+  # above and `wheel-cross-verify` below, both `fail-fast: false`) only
+  # governs legs WITHIN one matrix and those two settings stay untouched —
+  # each wants every platform leg reported. `concurrency.cancel-in-progress`
+  # at the top of this file cancels a PREVIOUS run of the same ref; it says
+  # nothing about sibling jobs of the SAME run.
+  #
+  # `needs:` is an AND-wait: a job that needs [A, B, C] does not become
+  # eligible until ALL THREE reach a terminal state, even when one of them
+  # failed in minute 2 and the others are still running at minute 30. A
+  # single sentinel needing every early-decider therefore fires no sooner
+  # than the SLOWEST of them — which on this workflow is build-linux-x64,
+  # observed 17-33 minutes end to end, so a Lint or bootstrap failure would
+  # buy zero savings. GHA has no `needs: A OR B OR C`, so this is one small
+  # job PER early-decider rather than one job listing several in `needs:`.
+  #
+  # Candidates considered, with wall-clock observed via `gh run view` across
+  # runs 33494736385 (clean, 2026-09-01) and 33606311683 (a real
+  # build-linux-x64 failure, 2026-09-02):
+  #
+  #   lint                       ~2-10 min   cheapest, broadest static/lint
+  #                                           gate (formatting, dependency
+  #                                           inventory, proto drift, six
+  #                                           Python lint tools)
+  #   e2e-cross-bootstrap-soldr   ~1-3 min    builds the dev-profile soldr
+  #                                           binary that 8 of 9 cross-build
+  #                                           lanes + wheel-cross-verify
+  #                                           consume as an artifact; a
+  #                                           compile break here is real and
+  #                                           is caught before any of them
+  #                                           start
+  #   e2e-linux-x64               ~3-4 min    "proof of life" build + target-
+  #                                           run bootstrap; unconditional,
+  #                                           finishes fastest of the four,
+  #                                           and nothing else `needs:` it so
+  #                                           a sentinel is the only thing
+  #                                           that turns its failure into a
+  #                                           saved run rather than a report
+  #   build-linux-x64            ~17-33 min   the prescribed host-validation
+  #                                           DAG (`soldr ci-test`: Clippy,
+  #                                           Nextest, Dylint x6, doctests,
+  #                                           dependency policy) — the
+  #                                           deepest correctness gate,
+  #                                           expensive but decisive; this is
+  #                                           the lane the problem statement
+  #                                           names, confirmed by run
+  #                                           33606311683 where it failed at
+  #                                           08:20:30, ~9 minutes before the
+  #                                           darwin/linux-arm/windows-msvc
+  #                                           cross-builds even started
+  #
+  # Left out on purpose:
+  #   - windows-e2e-policy, wheel-cross-policy: matrix-selection jobs, not
+  #     correctness gates. A failure in either already leaves its output
+  #     empty/unset, so every job gated on
+  #     `needs.<policy>.outputs.* == 'true'` evaluates false and skips on
+  #     its own — no sentinel needed to get that cancellation. Sentinel-
+  #     gating them would only catch a bug in the policy script itself.
+  #   - pep517-daemon-smoke, wheel-cross-verify, every e2e-*-build and
+  #     target-run-* job: these are downstream leaves that finish around
+  #     the same time as, or later than, the four jobs above (pep517 runs
+  #     19-24 min, roughly the same order as build-linux-x64), so gating a
+  #     sentinel on one would not fire meaningfully earlier than the run
+  #     finishing on its own — there would be nothing left to save.
+  #
+  # PR-only (github.event_name == 'pull_request'): cancelling a `main` push
+  # destroys the post-merge validation record — this repo has already lost
+  # a comparison baseline that way. release-auto.yml also triggers off
+  # push-to-main (Cargo.toml / package.json version bumps), so every commit
+  # that lands on main must run CI to completion regardless of PR-time
+  # drama.
+  #
+  # Branch protection (checked 2026-09-02):
+  #   gh api repos/zackees/soldr/branches/main/protection -> 404 "Branch not
+  #     protected" (a definitive answer — a permissions problem would 403).
+  #   gh api repos/zackees/soldr/rulesets -> []
+  # main carries NO required status checks today, so a job these sentinels
+  # cancel cannot leave a PR permanently unmergeable right now. That is a
+  # live gap in this file's own comments, not a guarantee going forward:
+  # the Lint job header above and the build-linux-x64 header both already
+  # claim Lint "remains a required status check via branch protection",
+  # which is false as of this check — flagged here, not fixed in this
+  # change. If a required check is ever configured on a job one of these
+  # sentinels can cancel (any e2e-*/target-run-* leaf — lint,
+  # e2e-cross-bootstrap-soldr, e2e-linux-x64, and build-linux-x64 themselves
+  # finish as `failure`, never `cancelled`, since a sentinel only fires
+  # after its one dependency is already terminal), a cancelled run becomes
+  # a permanently red PR instead of a red-then-fixable one. That risk is
+  # real from that point on and is not mitigated here.
+  #
+  # `gh run cancel` needs `actions: write`. Scoped to each sentinel job
+  # rather than widening the workflow-level `permissions: contents: read`
+  # block, matching `e2e-macos-x64-queue-watchdog`'s job-scoped
+  # `permissions:` above.
+  #
+  # On a fork PR, GITHUB_TOKEN is force-read-only regardless of this
+  # `permissions:` block, so `gh run cancel` returns 403 and the sentinel
+  # step itself goes red. Harmless — the run was already failing — but
+  # noted as a known limitation rather than left to look like a bug later.
+  #
+  # No `.github/scripts/*.py` here: each step is one `gh run cancel` call
+  # with no branching, looping, or parsing, so extracting it would add a
+  # file for something the one-liner already states plainly (see
+  # CLAUDE.md's "GitHub Actions workflow conventions").
+  cancel-on-lint-failure:
+    name: Cancel run (Lint failed)
+    needs: lint
+    if: failure() && github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - run: gh run cancel ${{ github.run_id }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  cancel-on-bootstrap-failure:
+    name: Cancel run (bootstrap soldr failed)
+    needs: e2e-cross-bootstrap-soldr
+    if: failure() && github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - run: gh run cancel ${{ github.run_id }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  cancel-on-e2e-linux-x64-failure:
+    name: Cancel run (e2e-linux-x64 build failed)
+    needs: e2e-linux-x64
+    if: failure() && github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - run: gh run cancel ${{ github.run_id }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  cancel-on-host-validation-failure:
+    name: Cancel run (Linux x64 host validation failed)
+    needs: build-linux-x64
+    if: failure() && github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - run: gh run cancel ${{ github.run_id }}
+        env:
+          GH_TOKEN: ${{ github.token }}
