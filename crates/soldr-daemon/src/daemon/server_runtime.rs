@@ -412,7 +412,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     });
 
     state.shutdown.wait().await;
-    arm_shutdown_watchdog();
+    arm_shutdown_watchdog(paths.clone());
     accept_handle.abort();
     session_handle.abort();
     handoff_handle.abort();
@@ -516,7 +516,26 @@ pub(crate) fn parse_watchdog_grace(raw: Option<&str>) -> Option<Duration> {
 /// A detached OS thread, NOT a tokio task: it has to fire even when the
 /// runtime is stalled or its blocking pool is fully occupied, which is
 /// exactly the situation it exists for.
-fn arm_shutdown_watchdog() {
+///
+/// soldr#3059: this used to call `std::process::exit(0)` on expiry, telling
+/// a supervisor, a test, or a CI lane that watched the exit status that a
+/// daemon which blew its entire [`SHUTDOWN_WATCHDOG_GRACE`] exited cleanly.
+/// It now exits [`SHUTDOWN_WATCHDOG_EXIT_CODE`] instead — a clean drain
+/// (the normal `Ok(())` return from the caller) still reaches the process's
+/// ordinary `main` exit path and still exits 0; only this expiry arm
+/// changes. Nothing in this repo waits on the daemon's raw OS exit status
+/// today, so this is a pure legibility improvement (a log line and a
+/// distinctive code for whoever *does* start checking) rather than a
+/// behavior change for any existing caller. Checked directly:
+/// `soldr_main_helpers.rs`'s `DaemonSubcommand::Stop` calls
+/// `lifecycle::wait_for_shutdown_responder`, which polls `pid_is_alive` plus
+/// an IPC status probe and never inspects an exit code;
+/// `tests/common/isolated_daemon.rs`'s `Drop` impl only checks
+/// `try_wait().is_some()` (exited vs. not); and
+/// `cli_daemon_single_instance.rs`'s loser-daemon assertion matches on
+/// stderr text ("already running"), explicitly noting the exit code is not
+/// the contract there.
+fn arm_shutdown_watchdog(paths: SoldrPaths) {
     let Some(grace) = shutdown_watchdog_grace() else {
         return;
     };
@@ -526,13 +545,34 @@ fn arm_shutdown_watchdog() {
             std::thread::sleep(grace);
             tracing::error!(
                 grace_secs = grace.as_secs(),
+                exit_code = SHUTDOWN_WATCHDOG_EXIT_CODE,
                 "graceful shutdown did not complete within the watchdog grace; \
                  exiting now. Cache state may not be fully flushed."
             );
-            std::process::exit(0);
+            // Record the expiry in the lifecycle JSONL before exiting: the
+            // ordinary `died-idle`/`died-shutdown` event at the end of the
+            // graceful path may never run if teardown is genuinely wedged,
+            // so without this line a watchdog-forced exit and a clean one
+            // are indistinguishable in the log.
+            crate::daemon::lifecycle::append_lifecycle_event(
+                &paths,
+                "shutdown-watchdog-expired",
+            );
+            std::process::exit(SHUTDOWN_WATCHDOG_EXIT_CODE);
         })
         .ok();
 }
+
+/// Distinctive non-zero exit code for a watchdog-forced exit (soldr#3059).
+///
+/// 124 is the conventional "command timed out" exit code (GNU coreutils
+/// `timeout(1)`), so a log or CI lane that already recognizes that
+/// convention reads this correctly without needing a soldr-specific
+/// lookup. Deliberately not `1`: `rss_ceiling::die_on_breach` already uses
+/// plain `1` for a memory-ceiling breach, and the two failure modes
+/// (over-budget memory vs. a stuck graceful drain) should not collapse to
+/// the same code.
+const SHUTDOWN_WATCHDOG_EXIT_CODE: i32 = 124;
 
 fn existing_daemon_pid(paths: &SoldrPaths) -> Option<u32> {
     select_existing_daemon_pid(

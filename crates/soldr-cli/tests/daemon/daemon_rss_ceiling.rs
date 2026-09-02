@@ -563,6 +563,271 @@ fn daemon_stays_under_the_512mib_target_while_serving_a_chained_build() {
     drop(cleanup);
 }
 
+/// Budget for [`daemon_rss_retention_rate_per_compile_stays_within_budget`],
+/// in bytes retained per compile served.
+///
+/// soldr#3059 measured the daemon retaining ~407 KiB/compile in the field
+/// (10.09 GiB -> 12.43 GiB across 6,034 compiles in the compile journal,
+/// RSS flat across a subsequent 55s idle sample -- growth tracks compile
+/// volume, not wall clock). This test's own measured window (27 compiles,
+/// see [`daemon_rss_retention_rate_per_compile_stays_within_budget`])
+/// corroborates that field number directly on this defect: four repeated
+/// runs on the development host that wrote this test landed at 438.5,
+/// 467.3, 472.6, and 914.7 KiB/compile -- same order of magnitude as the
+/// field figure (within ~2.2x on the high end), on a completely different,
+/// much smaller workload. The spread across runs (438-915 KiB/compile) is
+/// wide enough that this is a noisy signal, not a precise one -- expected
+/// at 27 compiles on a shared, contended dev host -- but every run is
+/// roughly an order of magnitude over the budget below, which is the
+/// property this test actually needs. (One caveat: this test forwards a
+/// ceiling env var to arm the watchdog for `pid` discovery, and that also
+/// starts `mimalloc-pprof`'s sampled profiler -- a source of extra
+/// retention the field measurement did not carry. Distinguishing "the same
+/// leak" from "the same leak plus a profiler tax" needs a heap profile,
+/// which is exactly the follow-up soldr#3059 asks for.)
+///
+/// 32 KiB is chosen from the DEFECT side only, deliberately: it sits about
+/// 14-15x below every measured rate above (so this gate trips immediately on
+/// the real leak and keeps tripping on a partial fix that only shaves the
+/// rate down). What it is explicitly NOT chosen from is a measured
+/// healthy-daemon noise floor: no fixed daemon exists yet to measure one
+/// against, so "a healthy daemon should retain close to zero bytes per
+/// compile" is a working assumption, not a verified baseline -- and 32 KiB
+/// multiplied out over this test's 27-compile window is only a ~864 KiB
+/// total allowance, which is not obviously above mimalloc's own segment
+/// granularity (segments are multi-MiB), so a fixed daemon could plausibly
+/// still trip this budget on legitimate allocator noise rather than a real
+/// per-compile leak. If that happens, raise the budget using that fixed
+/// daemon's own measured rate as the new floor -- do not lower it
+/// pre-emptively for a leak that has not been fixed yet.
+const RETENTION_RATE_BUDGET_BYTES_PER_COMPILE: u64 = 32 * 1024;
+
+/// Count records in the daemon's own compile journal
+/// (`compile_journal.jsonl` under `embedded_compile_journal_path`) rather
+/// than assuming a compile count from the workload shape (e.g.
+/// "CRATE_COUNT compiles"). The journal is the daemon's own accounting of
+/// what it actually served -- exactly the population soldr#3059 attributes
+/// the RSS growth to -- so it is the honest denominator; a hand-counted
+/// "N crates were touched" figure would silently drift from reality the
+/// moment a cache-hit/miss/link split stops being 1:1 with "one crate".
+///
+/// Confirmed empirically (`ts`, `outcome`, `compiler`, `args`, `cwd`,
+/// `exit_code`, ... fields present) and against the zccache source: exactly
+/// one `CompileJournal::log()` call per `handle_compile_ephemeral`
+/// invocation in the embedded backend (`daemon/server/embedded.rs`) --  the
+/// only backend soldr uses (the IPC `connection.rs` journal block is a
+/// separate, unused-by-soldr path) -- so one line is one compile-or-link
+/// unit dispatched to the wrapper, never a sub-phase record. `outcome` does
+/// include dedicated `link_hit`/`link_miss` values, so a link step that
+/// actually goes through the wrapper gets its own line rather than folding
+/// into its compile's -- this workload's `write_workload_crate` produces
+/// lib crates only, with no separate link step to record, which is why its
+/// journal count (27) matches "one line per rustc invocation" exactly; a
+/// workload with binaries would legitimately see more journal lines than
+/// crates.
+fn count_compile_journal_lines(cache_root: &Path) -> u64 {
+    let paths = SoldrPaths::with_root(cache_root.to_path_buf());
+    let journal_path = soldr_cli::zccache_embedded::embedded_compile_journal_path(&paths);
+    match fs::read_to_string(&journal_path) {
+        Ok(body) => body.lines().filter(|line| !line.trim().is_empty()).count() as u64,
+        Err(_) => 0,
+    }
+}
+
+/// soldr#3059: the daemon retains memory *linearly in compiles served*, not
+/// on a timer. [`daemon_stays_under_the_512mib_target_while_serving_a_chained_build`]
+/// above is an absolute-ceiling instrument: at the measured ~407 KiB/compile
+/// rate it needs ~1,289 compiles to trip the 512 MiB ceiling. The ceiling
+/// test's own workload (one cold 12-crate build plus three rebuild passes)
+/// serves only 27 compiles by the daemon's own journal count -- NOT the ~45
+/// the originating issue assumed from the workload's shape; hand-counting
+/// crates touched is exactly the kind of assumption
+/// [`count_compile_journal_lines`]'s doc comment explains this test avoids
+/// -- so that reproduction was always going to pass, not because the
+/// workload is the wrong shape, but because the ceiling is the wrong
+/// instrument for a linear leak (roughly 48x too small to reach it at 27
+/// compiles). This test asserts the RATE instead: bytes retained per
+/// compile served, sampled directly via
+/// `soldr_platform::host::resources::process_rss_bytes` -- the same
+/// function the daemon's own watchdog samples itself with (see
+/// `rss_ceiling::sample_tick`) -- rather than through the ceiling
+/// watchdog's own 2s-cadence peak tracking, and bracketing that same
+/// 27-compile workload with the cold build folded into the measured window
+/// instead of spent on warm-up (warm-up here is a single trivial crate
+/// instead -- see the test body for why that matters for a per-compile
+/// rate). See [`RETENTION_RATE_BUDGET_BYTES_PER_COMPILE`] for the budget
+/// and [`count_compile_journal_lines`] for the denominator.
+///
+/// # Known-red by design (soldr#3059)
+///
+/// This test currently FAILS against the unfixed daemon: that is the point,
+/// not a bug in the test. It is marked `#[ignore]` -- this repo's existing
+/// convention for a documented, known-red regression test kept in-tree
+/// rather than deleted or silently commented out (see
+/// `cli_cargo_basic.rs`'s
+/// `cargo_front_door_defaults_non_msvc_dev_debug_off_and_warns_once_per_repo`
+/// for the same pattern) -- so it does not block CI. Run it explicitly with
+/// `soldr cargo nextest run -p soldr-cli --test daemon -- --run-ignored all
+/// -E 'test(daemon_rss_retention_rate_per_compile_stays_within_budget)'` (or
+/// plain `--ignored`) to observe the measured rate. Un-ignore only once the
+/// daemon's actual per-compile retention has been fixed, not once this test
+/// has been made to pass by loosening the budget.
+#[test]
+#[ignore = "soldr#3059: RED by design -- the daemon retains hundreds of \
+    KiB of RSS per compile served, measured by this test itself across its \
+    27-compile window (four runs: 438.5, 467.3, 472.6, 914.7 KiB/compile; \
+    ~407 KiB/compile in the field), far over this test's 32 KiB/compile \
+    budget. This is the honest instrument for a real, unfixed leak, not a \
+    demonstration of a fix. Run explicitly with `--ignored` (or \
+    `--run-ignored all`) to see the measured rate; do not un-ignore until \
+    the retention itself is fixed."]
+fn daemon_rss_retention_rate_per_compile_stays_within_budget() {
+    let cache_root = unique_temp_dir("rss-rate-cache");
+    let home_root = unique_temp_dir("rss-rate-home");
+    let cleanup = DaemonCleanup {
+        cache_root: cache_root.clone(),
+        home_root: home_root.clone(),
+    };
+
+    // Warm-up: a single trivial crate, deliberately NOT the chained
+    // workload -- this is what spawns the daemon and settles one-time
+    // startup costs (async runtime + allocator arena growth, dep-graph
+    // bootstrap) that would otherwise be misattributed to compile-driven
+    // retention if they landed inside the measured window. Kept to exactly
+    // one compile (rather than reusing the 12-crate cold build the ceiling
+    // test warms up with) so the whole chained build -- the bulk of the
+    // compiles this test can afford -- counts toward the measured window
+    // instead of being spent on warm-up. See
+    // [`daemon_dies_and_dumps_memory_when_the_ceiling_is_breached`] for the
+    // same one-trivial-crate priming pattern used for the same reason.
+    let trivial = write_trivial_crate(&cache_root);
+    run_soldr_build(
+        &["cargo", "build", "--quiet"],
+        &cache_root,
+        &home_root,
+        &trivial,
+        CEILING_BYTES,
+        Duration::from_secs(120),
+    );
+
+    let paths = SoldrPaths::with_root(cache_root.clone());
+    let warm_status = wait_for_status(&paths, Instant::now() + Duration::from_secs(15));
+    // Let RSS settle past the warm-up build before taking the "before"
+    // sample -- same reasoning as the ceiling test's trailing sample wait.
+    std::thread::sleep(rss_ceiling::RSS_SAMPLE_INTERVAL * 2);
+
+    let rss_before = soldr_platform::host::resources::process_rss_bytes(warm_status.pid)
+        .expect("daemon RSS must be readable before the measured window");
+    let compiles_before = count_compile_journal_lines(&cache_root);
+
+    // Measured window: the cold 12-crate chained build (CRATE_COUNT
+    // distinct rustc invocations, sequential because each crate depends on
+    // the last) plus the same three touch-and-rebuild passes the ceiling
+    // test above runs -- a genuine content-hash change (new functions
+    // appended) forces a real cache miss + recompile of the touched crate
+    // and everything downstream of it each pass, not a warm no-op that
+    // skips the wrapper. Folding the cold build in here (rather than
+    // spending it on warm-up, as the ceiling test does) maximizes the
+    // compile count this test can afford within its nextest budget, which
+    // matters because [`RETENTION_RATE_BUDGET_BYTES_PER_COMPILE`] is a
+    // per-compile rate: too few compiles in the window lets allocator-level
+    // rounding noise dominate the measurement.
+    let project = write_workload_workspace(&cache_root);
+    run_soldr_build(
+        &["cargo", "build", "--quiet"],
+        &cache_root,
+        &home_root,
+        &project,
+        CEILING_BYTES,
+        Duration::from_secs(180),
+    );
+    for (pass, touch_index) in [
+        (1, CRATE_COUNT / 3),
+        (2, CRATE_COUNT / 2),
+        (3, CRATE_COUNT - 1),
+    ] {
+        write_workload_crate(&project, touch_index, pass * 5);
+        run_soldr_build(
+            &["cargo", "build", "--quiet"],
+            &cache_root,
+            &home_root,
+            &project,
+            CEILING_BYTES,
+            Duration::from_secs(120),
+        );
+    }
+
+    // Settle once more before the "after" sample, for the same reason as
+    // above -- a peak reached in the last build's final moments should not
+    // be raced against the read.
+    std::thread::sleep(rss_ceiling::RSS_SAMPLE_INTERVAL * 2);
+
+    // Guard against a silent-garbage measurement: if the daemon were
+    // displaced mid-window (a fresh daemon winning the route, an old one
+    // exiting), `process_rss_bytes(warm_status.pid)` would read whatever
+    // process the OS has since recycled that pid to -- succeeding with a
+    // number that means nothing, not failing loudly. The watchdog status
+    // file's `pid` is the daemon's own report of who it currently is;
+    // requiring it to still match the pid sampled at the start of the
+    // window is a direct, cheap check that both RSS samples came from the
+    // same process.
+    let final_status = rss_ceiling::read_status(&paths)
+        .expect("watchdog status file must still exist after the measured window");
+    assert_eq!(
+        final_status.pid, warm_status.pid,
+        "the daemon serving cache_root was displaced mid-window (pid {} -> {}); the RSS \
+         delta below would span two different processes and is meaningless",
+        warm_status.pid, final_status.pid
+    );
+
+    let rss_after = soldr_platform::host::resources::process_rss_bytes(warm_status.pid)
+        .expect("daemon RSS must be readable after the measured window");
+    let compiles_after = count_compile_journal_lines(&cache_root);
+
+    let compiles_served = compiles_after.saturating_sub(compiles_before);
+    assert!(
+        compiles_served > 0,
+        "measured window served zero compiles per the daemon's own compile journal \
+         ({compiles_before} -> {compiles_after}); the retention rate cannot be computed"
+    );
+
+    let retained_bytes = rss_after.saturating_sub(rss_before);
+    let rate_bytes_per_compile = retained_bytes / compiles_served;
+
+    // Report the measured rate regardless of pass/fail -- soldr#3059 asks
+    // for this explicitly, and it is the number this whole test exists to
+    // surface.
+    println!(
+        "soldr#3059 daemon RSS retention rate: pid={pid} rss_before={rss_before_kib:.1}KiB \
+         rss_after={rss_after_kib:.1}KiB compiles_served={compiles_served} \
+         retained={retained_kib:.1}KiB rate={rate_kib:.2}KiB/compile \
+         budget={budget_kib:.1}KiB/compile",
+        pid = warm_status.pid,
+        rss_before_kib = rss_before as f64 / 1024.0,
+        rss_after_kib = rss_after as f64 / 1024.0,
+        retained_kib = retained_bytes as f64 / 1024.0,
+        rate_kib = rate_bytes_per_compile as f64 / 1024.0,
+        budget_kib = RETENTION_RATE_BUDGET_BYTES_PER_COMPILE as f64 / 1024.0,
+    );
+
+    assert!(
+        rate_bytes_per_compile <= RETENTION_RATE_BUDGET_BYTES_PER_COMPILE,
+        "soldr-daemon (pid {}) retained {:.1} KiB/compile across {} compiles -- over the \
+         {:.1} KiB/compile budget (soldr#3059): {:.1} KiB total retained ({:.1} KiB -> {:.1} \
+         KiB); see compile_journal.jsonl under {}",
+        warm_status.pid,
+        rate_bytes_per_compile as f64 / 1024.0,
+        compiles_served,
+        RETENTION_RATE_BUDGET_BYTES_PER_COMPILE as f64 / 1024.0,
+        retained_bytes as f64 / 1024.0,
+        rss_before as f64 / 1024.0,
+        rss_after as f64 / 1024.0,
+        paths.cache.join("soldr-daemon").display(),
+    );
+
+    drop(cleanup);
+}
+
 /// Deliberately below the daemon's own real compile-driven peak while
 /// serving [`write_workload_workspace`]'s 12-crate chained build (~78-93
 /// MiB, measured directly while building this reproduction on a real host)
