@@ -54,24 +54,45 @@ def soldr_cli_version(metadata: str) -> str:
     return str(versions[0])
 
 
-def release_build_environment(base: Mapping[str, str]) -> dict[str, str]:
+def release_build_environment(
+    base: Mapping[str, str], *, target: str
+) -> dict[str, str]:
     env = dict(base)
     env.pop("RUSTC_WRAPPER", None)
     env.update(
         {
             "SOLDR_RELEASE_CI": "1",
-            "CARGO_PROFILE_RELEASE_DEBUG": "0",
+            # soldr#786 linux+macOS follow-up: debug info generation is
+            # controlled by `[profile.release] debug` in the workspace
+            # Cargo.toml (`line-tables-only`). This used to force it back off
+            # with CARGO_PROFILE_RELEASE_DEBUG=0 -- a profile env var
+            # outranks the Cargo.toml setting, so that override would have
+            # silently made the Cargo.toml change a no-op for the native
+            # ARM64-musl and macOS release binaries built through this path.
             "CARGO_PROFILE_RELEASE_LTO": "thin",
             "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
             "CARGO_BUILD_JOBS": "2",
             "SOLDR_JOBS": "2",
         }
     )
+    if target.endswith("-apple-darwin"):
+        # soldr#3038: [profile.release] defaults `split-debuginfo` to "off"
+        # -- a post-link objcopy carve-out (stage_release_binaries.py::
+        # stage_debug_symbols) replaced rustc's packed split on Linux,
+        # because "packed" only sees the DWARF rustc itself compiles for
+        # this build and left the precompiled std's and every `cc`-built C
+        # dependency's DWARF embedded in the shipped binary AND duplicated
+        # into the `.dwp`. macOS does not have that duplication problem:
+        # `dsymutil` gathers debug info from the intermediate `.o` files via
+        # N_OSO stabs, not from what ends up embedded in the linked binary,
+        # so "packed" (which runs dsymutil) stays the native answer here.
+        # See docs/DEBUG_SIDECARS.md.
+        env["CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO"] = "packed"
     return env
 
 
 def build_binary(driver: Path, target: str) -> None:
-    env = release_build_environment(os.environ)
+    env = release_build_environment(os.environ, target=target)
     clean = cargo_command(
         driver, "clean", "-p", "soldr-cli", "--target", target, "--release"
     )
@@ -312,23 +333,37 @@ def build_musl_wheel(driver: Path, target: str, expected_version: str) -> None:
         env=host_env,
     )
     env = wheel_environment(os.environ, driver=driver, cargo_bridge=cargo_bridge)
-    run(
-        [
-            str(venv / "bin" / "maturin"),
-            "build",
-            "--release",
-            "--locked",
-            "--target",
-            target,
-            "--target-dir",
-            "target",
-            "--out",
-            "dist",
-            "--compatibility",
-            "musllinux_1_2",
-        ],
-        env=env,
-    )
+    run(musl_wheel_maturin_command(venv / "bin" / "maturin", target), env=env)
+
+
+def musl_wheel_maturin_command(maturin: Path, target: str) -> list[str]:
+    """Return the locked direct build command for a musl release wheel.
+
+    soldr#3038: `--strip` is load-bearing for wheel size here for the same
+    reason as `build_release_wheel.py::maturin_build_command` (which this
+    mirrors) -- `[profile.release]` deliberately keeps `strip = "none"` so
+    the release archive's own packaging step gets an unstripped binary to
+    carve debug symbols out of via `objcopy`. Left unstripped, this wheel
+    would bundle that same unstripped binary; `--strip` tells maturin to
+    strip its own copy at packaging time without touching the archive's
+    separately-built one.
+    """
+
+    return [
+        str(maturin),
+        "build",
+        "--release",
+        "--locked",
+        "--strip",
+        "--target",
+        target,
+        "--target-dir",
+        "target",
+        "--out",
+        "dist",
+        "--compatibility",
+        "musllinux_1_2",
+    ]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
