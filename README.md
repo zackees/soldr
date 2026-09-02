@@ -302,7 +302,10 @@ Official builds keep everything under `~/.soldr/`; development builds use
 bounded while idle: the daemon checks pressure every five minutes, expires old
 state daily, defaults to 5% of the filesystem clamped to 40–200 GiB, becomes
 aggressive for entries older than four days near full, and expires artifacts
-after 30 days. Separate roots never sweep one another.
+after 30 days. Separate roots never sweep one another. The daemon itself
+exits after 30 minutes idle; maintenance markers persist under the root, so a
+restarted daemon runs any overdue pass immediately and none of these schedules
+depend on a daemon staying resident.
 
 `soldr status`, `soldr cache`, and `soldr clean` report and manage the store.
 `soldr purge` removes every soldr-managed artifact for bug clearing and
