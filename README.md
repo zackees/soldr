@@ -46,16 +46,76 @@ Current release line:
 - the supported external integration boundary remains the `soldr` executable, not the internal Rust crates; see [docs/API_BOUNDARY.md](./docs/API_BOUNDARY.md)
 - practical integration examples for local builds and GitHub Actions live in [INTEGRATION.md](./INTEGRATION.md)
 
-## Install from npm
+## Quick start
 
 ```bash
-npm install -g @zackees/soldr
-soldr --version
+# 1. Install or upgrade (same command)
+uv tool install --upgrade soldr
+
+# 2. Put `soldr` in front of every Rust command
+soldr cargo build --release
+soldr cargo test
+soldr cargo clippy --workspace
+
+# 3. See what the cache is doing
+soldr status
 ```
 
-The npm package is a small launcher that downloads the matching `soldr` GitHub
-Release binary for your OS and architecture during install, verifies it against
-the published `SHA256SUMS` file, and exposes the `soldr` command.
+That is the whole integration. The first cacheable compile starts the
+`soldr-daemon` sidecar, pins the toolchain from `rust-toolchain.toml`, and
+every later build on any branch or worktree hits the shared cache.
+
+<details>
+<summary><b>Command reference</b></summary>
+
+### Everyday
+
+| Command | What it does |
+|---|---|
+| `soldr cargo <args>` | Run cargo through the cache with the pinned toolchain |
+| `soldr build --target <triple\|alias>` | Blessed cross-compile with a managed SDK (`win-x64`, `mac-arm64`, `linux-x64-musl`, ...) |
+| `soldr cc` / `soldr c++` | Compile C / C++ with a catalogue-backed toolchain |
+| `soldr lint` | Unified Rust and dependency lint suites |
+| `soldr ci-test` | The prescribed host-validation DAG used in CI |
+| `soldr <tool>` | Fetch and run a pre-built ecosystem tool: `nextest`, `deny`, `audit`, `mdbook`, `just`, ... |
+
+### Toolchain
+
+| Command | What it does |
+|---|---|
+| `soldr rustc`, `rustfmt`, `clippy-driver`, `rustdoc` | Pinned-toolchain passthroughs |
+| `soldr rustup <args>` | Passthrough to rustup, toolchain-aware |
+| `soldr toolchain ensure` | Bootstrap rustup, install the pinned channel, components, and targets |
+| `soldr toolchain link --shim-dir <dir>` | Write PATH shims that re-enter soldr |
+| `soldr doctor` | Report drift between `rust-toolchain.toml` and rustup |
+| `soldr rust-analyzer`, `rust-gdb`, `rust-lldb` | Language server and debuggers |
+
+### Cache
+
+| Command | What it does |
+|---|---|
+| `soldr status` | Cache status and active toolchain |
+| `soldr cache` | Inspect compilation cache entries |
+| `soldr cook` | Prebuild dependencies via bundled cargo-chef |
+| `soldr save` / `soldr load` | Bundle a build cache to `.tar.zst` and restore it on a fresh checkout |
+| `soldr gc` | Review reclaimable cargo `target/` directories |
+| `soldr clean` / `soldr purge` | Clear the build cache / purge every soldr-managed artifact |
+| `soldr config` | Show or set configuration in `~/.soldr/config.toml` |
+
+### Ops
+
+| Command | What it does |
+|---|---|
+| `soldr daemon start\|stop` | Manage the long-lived `soldr-daemon` process |
+| `soldr optimize` | Platform-specific hot-cache tuning |
+| `soldr defender-exclusions` | Manage Windows Defender exclusions for soldr caches |
+| `soldr help <command>` | Full help for any command |
+
+</details>
+
+Also on npm as `@zackees/soldr`: a small launcher that downloads the matching
+GitHub Release binary during install and verifies it against the published
+`SHA256SUMS` file.
 
 Published npm archives and PyPI wheels support both Intel (`x86_64`) and Apple
 Silicon (`arm64`) macOS. Intel artifacts are cross-built through soldr's
