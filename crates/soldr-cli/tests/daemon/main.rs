@@ -16,6 +16,7 @@ mod cli_daemon_single_instance;
 mod cli_daemon_target_touch;
 mod cli_debug_trace_observer;
 mod daemon_cache_maintenance;
+mod daemon_fast_sigterm;
 mod daemon_restart_warmth;
 mod daemon_rss_ceiling;
 mod daemon_stall_harness;
