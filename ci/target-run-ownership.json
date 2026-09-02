@@ -141,13 +141,14 @@
         "cli_daemon_target_touch",
         "cli_debug_trace_observer",
         "daemon_cache_maintenance",
+        "daemon_fast_sigterm",
         "daemon_restart_warmth",
         "daemon_rss_ceiling",
         "daemon_stall_harness",
         "inherited_stdio_spawns_mark_spoke"
       ],
       "disposition": "target-replay",
-      "reason": "Daemon stop/flush, singleton, IPC, process observation, pipe leases, restart, stall, RSS-ceiling watchdog sampling, and inherited-stdio behavior depend on native runtime primitives."
+      "reason": "Daemon stop/flush, singleton, IPC, process observation, pipe leases, restart, stall, RSS-ceiling watchdog sampling, fast SIGTERM exit, and inherited-stdio behavior depend on native runtime primitives."
     },
     {
       "id": "fetch-tools-linux-once",
@@ -525,6 +526,12 @@
       "source_id": "daemon-target-replay",
       "test_prefix": "daemon_restart_warmth::",
       "reason": "Replay graceful and hard-kill restart continuity on every target."
+    },
+    {
+      "id": "daemon-fast-sigterm",
+      "source_id": "daemon-target-replay",
+      "test_prefix": "daemon_fast_sigterm::",
+      "reason": "The fast SIGTERM exit path is delivered through per-OS signal primitives, so the bounded exit and its lifecycle marker must be proven on every target."
     },
     {
       "id": "daemon-rss-ceiling",
