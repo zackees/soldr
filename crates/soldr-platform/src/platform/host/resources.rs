@@ -2,8 +2,16 @@
 
 use std::path::Path;
 
+/// `process_rss_bytes(pid)` reads one process's resident set size in bytes.
+/// It is the per-process counterpart to [`HostResourceSnapshot`]'s
+/// cgroup-wide fields — added for the daemon RSS ceiling (`SOLDR_DAEMON_RSS_
+/// CEILING_BYTES`, see `soldr-daemon`'s maintenance module): a cgroup may
+/// not exist at all (no `cgroup_v2_dir()`) or may be shared by more than one
+/// process, so `cgroup_current_bytes` cannot answer "how much does *this*
+/// daemon actually hold". `None` on a platform/host combination that cannot
+/// answer (process gone, unreadable procfs, `ps`/API call failed).
 pub use crate::platform_imp::host::resources::{
-    cgroup_v2_dir, commit_charge_mb, physical_cores, process_table,
+    cgroup_v2_dir, commit_charge_mb, physical_cores, process_rss_bytes, process_table,
 };
 
 const PROC_MEMINFO: &str = "/proc/meminfo";

@@ -77,8 +77,18 @@ slow-timeout = { period = "60s", terminate-after = 2, grace-period = "30s" }
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_stall_harness)::/))'
+filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_rss_ceiling|daemon_stall_harness)::/))'
 test-group = 'soldr-runtime'
+
+# soldr#3038: `daemon_rss_ceiling` spawns its own broker-owned daemon and
+# drives a real (if small) chained-workspace build through it, so it needs
+# the 300s budget for the same reason as the `session_*` real-rustc entry
+# below: a cold embedded-zccache daemon start plus several sequential
+# `cargo build` passes routinely exceeds the 120s default on a contended
+# runner, and this is real work, not a hang.
+[[profile.default.overrides]]
+filter = 'test(=daemon_rss_ceiling::daemon_stays_under_the_512mib_target_while_serving_a_chained_build)'
+slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
 
 # Note the `daemon` binary carries two more modules -- `cli_debug_trace_observer`,
 # `inherited_stdio_spawns_mark_spoke` -- and the

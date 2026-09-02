@@ -14,6 +14,41 @@
 
 #![allow(dead_code, unused_imports)]
 
+/// Global allocator for the whole `soldr` multicall binary (soldr#3038).
+///
+/// soldr previously declared no `#[global_allocator]`, so every surface —
+/// including the long-lived `soldr-daemon` — ran on the Rust default
+/// (glibc's ptmalloc on Linux). A canonical daemon on production hardware
+/// reached 11.7 GiB of private anonymous memory, growing in step with
+/// compile volume and never giving any of it back; 116 anonymous mappings
+/// pinned at exactly 64 MiB (glibc's per-thread `HEAP_MAX_SIZE` across the
+/// daemon's 37 threads) were consistent with either live data or allocator
+/// arena retention, and there was no instrumentation to tell which.
+///
+/// mimalloc is far more aggressive about returning freed pages to the OS
+/// than a per-thread ptmalloc arena, and — unlike the previous default —
+/// exposes exact allocator counters (`mimalloc_pprof::prof::stats()`,
+/// notably `heap.committed`/`heap.detailed`) that let a future
+/// investigation tell "the daemon is holding live data" from "the allocator
+/// is holding freed pages" instead of guessing from `/proc/<pid>/maps`.
+///
+/// Declared exactly once, here in the facade crate that both `src/main.rs`
+/// (the `soldr` `[[bin]]`) and every multicall alias link — including
+/// `soldr-daemon`, reached via `argv[0]` dispatch in
+/// [`daemon_entry`] — so one declaration covers every surface. A binary may
+/// have at most one `#[global_allocator]`; a second declaration anywhere
+/// else in the dependency graph would be a compile error, which is the
+/// enforcement that keeps this the only one.
+///
+/// This wires in the allocator and its always-on exact counters
+/// unconditionally (see `Cargo.toml`'s `mimalloc-pprof` entry for why
+/// default features — `pprof`, which compiles mimalloc's C build with
+/// `MI_PPROF=1` — stay on). It does **not** start the crate's *sampled*
+/// heap profiler: nothing here calls `mimalloc_pprof::prof::start`, so that
+/// stays opt-in at runtime, off by default.
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc_pprof::MiMalloc = mimalloc_pprof::MiMalloc;
+
 /// Neutral host-platform facade (#2493): the single selection site lives
 /// in `soldr-platform`; this crate calls only `crate::platform::…`.
 pub(crate) use soldr_platform as platform;

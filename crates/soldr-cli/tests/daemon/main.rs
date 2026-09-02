@@ -17,5 +17,6 @@ mod cli_daemon_target_touch;
 mod cli_debug_trace_observer;
 mod daemon_cache_maintenance;
 mod daemon_restart_warmth;
+mod daemon_rss_ceiling;
 mod daemon_stall_harness;
 mod inherited_stdio_spawns_mark_spoke;

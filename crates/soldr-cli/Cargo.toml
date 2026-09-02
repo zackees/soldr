@@ -9,6 +9,32 @@ description = "CLI for soldr — instant tools, instant builds"
 publish = false
 
 [dependencies]
+# Global allocator (soldr#3038): the canonical daemon on this host reached
+# 11.7 GiB of private anonymous memory with no way to tell whether that was
+# live data or allocator retention, because soldr shipped no
+# `#[global_allocator]` at all and got the Rust default (glibc's ptmalloc on
+# Linux), which keeps one ~64 MiB arena per thread that essentially never
+# shrinks. mimalloc returns freed pages to the OS far more aggressively, and
+# exposes exact allocator counters (`mimalloc_pprof::prof::stats()`) that
+# finally distinguish "live data" from "allocator retention" instead of
+# guessing from a mapping histogram.
+#
+# zccache's own (optional, `heap-profile`/`*-bin`-gated) dependency on this
+# crate resolves `"0.9.3"` (a caret requirement, so >=0.9.3, <0.10.0); soldr
+# does not enable any zccache feature that activates it, so nothing pulls it
+# in transitively today (`grep -c mimalloc Cargo.lock` was 0 before this
+# change). Pinned here to `=0.9.5` — the newest release satisfying zccache's
+# own requirement — so that if a future zccache feature *does* turn its
+# optional dependency on, Cargo unifies both requirements onto this one
+# `=0.9.5` copy rather than linking two mimalloc allocators into one binary.
+#
+# Default features stay ON (not `default-features = false`): the crate's
+# `pprof` feature compiles mimalloc's C build with `MI_PPROF=1`, which is
+# what makes `mimalloc_pprof::prof::stats()` return real numbers instead of
+# an always-`false` stub — see `crates/soldr-cli/src/lib.rs` for the
+# `#[global_allocator]` declaration and why exact counters must be
+# unconditional while the *sampled* profiler stays opt-in at runtime.
+mimalloc-pprof = { version = "=0.9.5" }
 running-process = { version = "=4.10.9", default-features = false, features = ["client", "client-async"] }
 soldr-cache = { path = "../soldr-cache" }
 soldr-daemon = { path = "../soldr-daemon" }
