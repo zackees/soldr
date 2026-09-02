@@ -61,6 +61,13 @@ soldr cargo clippy --workspace
 soldr status
 ```
 
+Already installed? Upgrade to the latest release:
+
+```bash
+uv tool upgrade soldr
+soldr --version
+```
+
 That is the whole integration. The first cacheable compile starts the
 `soldr-daemon` sidecar, pins the toolchain from `rust-toolchain.toml`, and
 every later build on any branch or worktree hits the shared cache.
