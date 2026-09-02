@@ -22,6 +22,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::broker_deadlines::BrokerDeadlines;
+
 pub(crate) const BROKER_INSTANCE_ID_ENV: &str = "SOLDR_INTERNAL_BROKER_INSTANCE_ID";
 
 pub(crate) fn broker_image_instance_id() -> io::Result<String> {
@@ -74,10 +76,6 @@ pub(crate) const ROUTE_PROGRESS_PAYLOAD_PROTOCOL: u32 = 0x5250;
 /// claim, but it never launches a missing backend.
 pub(crate) const DAEMON_CONTROL_PAYLOAD_PROTOCOL: u32 = 0x5343;
 const BROKER_LISTEN_BACKLOG: i32 = 1024;
-const DEFAULT_FIRST_RESPONSE_MS: u64 = 2_000;
-const DEFAULT_PROGRESS_SILENCE_MS: u64 = 5_000;
-const DEFAULT_ROUTE_CEILING_MS: u64 = 120_000;
-const DEFAULT_BUSY_BUDGET_MS: u64 = 1_000;
 
 #[derive(Clone, PartialEq, Message)]
 pub(crate) struct RouteProgress {
@@ -133,105 +131,6 @@ pub(crate) fn client_host_attestation() -> Vec<u8> {
     .encode_to_vec()
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct BrokerDeadlines {
-    pub(crate) busy_budget: Duration,
-    pub(crate) first_response: Duration,
-    pub(crate) progress_silence: Duration,
-    pub(crate) route_ceiling: Duration,
-}
-
-impl BrokerDeadlines {
-    pub(crate) fn from_env() -> Self {
-        Self {
-            busy_budget: env_duration("SOLDR_BROKER_BUSY_BUDGET_MS", DEFAULT_BUSY_BUDGET_MS),
-            first_response: env_duration(
-                "SOLDR_BROKER_FIRST_RESPONSE_MS",
-                DEFAULT_FIRST_RESPONSE_MS,
-            ),
-            progress_silence: env_duration(
-                "SOLDR_BROKER_PROGRESS_SILENCE_MS",
-                DEFAULT_PROGRESS_SILENCE_MS,
-            ),
-            route_ceiling: env_duration("SOLDR_ROUTE_ACQUIRE_CEILING_MS", DEFAULT_ROUTE_CEILING_MS),
-        }
-    }
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub(crate) struct DoctorBrokerDeadline {
-    pub(crate) name: &'static str,
-    pub(crate) env_var: &'static str,
-    pub(crate) default_ms: u64,
-    pub(crate) effective_ms: u64,
-    pub(crate) source: &'static str,
-}
-
-pub(crate) fn doctor_deadlines() -> Vec<DoctorBrokerDeadline> {
-    let effective = BrokerDeadlines::from_env();
-    [
-        (
-            "broker busy retry",
-            "SOLDR_BROKER_BUSY_BUDGET_MS",
-            DEFAULT_BUSY_BUDGET_MS,
-            effective.busy_budget,
-        ),
-        (
-            "broker first response",
-            "SOLDR_BROKER_FIRST_RESPONSE_MS",
-            DEFAULT_FIRST_RESPONSE_MS,
-            effective.first_response,
-        ),
-        (
-            "broker progress silence",
-            "SOLDR_BROKER_PROGRESS_SILENCE_MS",
-            DEFAULT_PROGRESS_SILENCE_MS,
-            effective.progress_silence,
-        ),
-        (
-            "broker route ceiling",
-            "SOLDR_ROUTE_ACQUIRE_CEILING_MS",
-            DEFAULT_ROUTE_CEILING_MS,
-            effective.route_ceiling,
-        ),
-    ]
-    .into_iter()
-    .map(
-        |(name, env_var, default_ms, duration)| DoctorBrokerDeadline {
-            name,
-            env_var,
-            default_ms,
-            effective_ms: duration.as_millis() as u64,
-            source: match std::env::var(env_var) {
-                Ok(value) if value.trim().parse::<u64>().is_ok_and(|value| value > 0) => "override",
-                Ok(_) => "default (override ignored: expected positive milliseconds)",
-                Err(_) => "default",
-            },
-        },
-    )
-    .collect()
-}
-
-pub(crate) fn print_doctor_deadlines() {
-    println!("\nbroker route deadlines:");
-    for row in doctor_deadlines() {
-        println!(
-            "  {:<24} {:>7} ms  [{} via {}]",
-            row.name, row.effective_ms, row.source, row.env_var
-        );
-    }
-}
-
-fn env_duration(name: &str, default_ms: u64) -> Duration {
-    Duration::from_millis(
-        std::env::var(name)
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(default_ms),
-    )
-}
-
 fn route_progress_heartbeat_interval(progress_silence: Duration) -> Duration {
     (progress_silence / 3)
         .max(Duration::from_millis(1))
@@ -241,7 +140,8 @@ fn route_progress_heartbeat_interval(progress_silence: Duration) -> Duration {
 struct BrokerState {
     instance_id: String,
     loader: CombinedServiceDefinitionLoader,
-    registry: Mutex<BackendRegistry>,
+    // `Arc`-wrapped so the reaper's spawned task can hold its own clone.
+    registry: Arc<Mutex<BackendRegistry>>,
     spawn_coordinator: Mutex<SpawnCoordinator>,
     launcher: crate::broker_launcher::SoldrBackendLauncher,
     started_at: Instant,
@@ -250,7 +150,7 @@ struct BrokerState {
     /// Which processes asked for each route, so a route whose requesters are
     /// all gone can be torn down (soldr#3054). Populated from kernel-supplied
     /// peer credentials, never from anything the caller declares.
-    route_owners: Mutex<crate::broker_reaper::RouteOwnership>,
+    route_owners: Arc<Mutex<crate::broker_reaper::RouteOwnership>>,
 }
 
 impl BrokerState {
@@ -279,81 +179,6 @@ impl BrokerState {
             &[],
         )
         .with_fd_pressure_demoted(self.fd_guard.is_demoted())
-    }
-
-    /// Note that `pid` asked for `service_name`.
-    ///
-    /// The pid comes from `PeerIdentity`, which the accept loop reads from
-    /// platform IPC credentials, so it identifies the process on the other
-    /// end of this socket and cannot be spoofed by its payload.
-    fn record_route_request(&self, service_name: &str, pid: u32) {
-        self.route_owners
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .record_request(service_name, pid, Instant::now());
-    }
-
-    /// Stop the daemons of routes whose requesters have all exited.
-    ///
-    /// Returns the service names reaped, for the log line and for tests.
-    /// Termination is graceful first: a daemon asked to stop flushes its
-    /// caches, and a force-kill that skipped that step would trade a leaked
-    /// process for a corrupted one.
-    fn reap_orphaned_routes(&self, grace: std::time::Duration) -> Vec<String> {
-        use crate::broker_reaper::RouteVerdict;
-        use running_process::broker::backend_lifecycle::verify_pid::signal_terminate;
-
-        let verdicts = {
-            let mut owners = self
-                .route_owners
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            owners.sweep(
-                Instant::now(),
-                grace,
-                crate::broker_reaper::requester_is_alive,
-            )
-        };
-
-        let mut reaped = Vec::new();
-        for (service_name, verdict) in verdicts {
-            if verdict != RouteVerdict::Reap {
-                continue;
-            }
-            // Read the daemon pid under the registry lock, then release it
-            // before signalling: the signal is a syscall on another process
-            // and must not be holding the lock every route request needs.
-            let daemon_pid: Option<u32> = {
-                let registry = self
-                    .registry
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let found = registry.iter().find_map(|(key, handle)| {
-                    (key.service_name == service_name).then_some(handle.daemon_process.pid)
-                });
-                found
-            };
-            if let Some(pid) = daemon_pid {
-                let _ = signal_terminate(pid);
-            }
-            // Forget the route either way. With no live requester and no
-            // registry entry there is nothing left to tear down, and keeping
-            // the row would make a long-lived broker accumulate one entry per
-            // fixture that ever ran.
-            self.route_owners
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .forget(&service_name);
-            {
-                let mut registry = self
-                    .registry
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                registry.prune_stale();
-            }
-            reaped.push(service_name);
-        }
-        reaped
     }
 
     fn instance_for_route(
@@ -499,13 +324,13 @@ fn serve_on_runtime_thread(
         loader: CombinedServiceDefinitionLoader::new(
             running_process::broker::server::service_definition_dir(),
         ),
-        registry: Mutex::new(BackendRegistry::new()),
+        registry: Arc::new(Mutex::new(BackendRegistry::new())),
         spawn_coordinator: Mutex::new(SpawnCoordinator::new()),
         launcher: crate::broker_launcher::SoldrBackendLauncher::new(),
         started_at: Instant::now(),
         connections_open: AtomicU64::new(0),
         fd_guard: FdPressureGuard::default(),
-        route_owners: Mutex::new(crate::broker_reaper::RouteOwnership::new()),
+        route_owners: Arc::new(Mutex::new(crate::broker_reaper::RouteOwnership::new())),
     });
     bringup.phase(phase::BROKER_STATE);
     let runtime_context = runtime.enter();
@@ -524,38 +349,6 @@ fn serve_on_runtime_thread(
     ))
 }
 
-/// How often the broker looks for routes whose requesters have all exited.
-///
-/// Well below the grace window, so the reap lands within one interval of the
-/// window elapsing rather than one interval after it.
-pub(crate) const REAP_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// Periodically stop the daemons of routes nobody is left to use.
-///
-/// Runs in the broker rather than in each daemon because the broker is the
-/// only process that knows every route, holds kernel-supplied identities for
-/// the callers that asked for them, and is the parent that can act. See
-/// `broker_reaper` for why no Unix mechanism can do this without a watcher.
-async fn run_route_reaper(state: Arc<BrokerState>, shutdown: Arc<tokio::sync::Notify>) {
-    let grace = crate::broker_reaper::DEFAULT_GRACE;
-    loop {
-        tokio::select! {
-            _ = shutdown.notified() => return,
-            _ = tokio::time::sleep(REAP_SWEEP_INTERVAL) => {}
-        }
-        // The sweep signals other processes, so keep it off the async worker.
-        let sweep_state = Arc::clone(&state);
-        let reaped = tokio::task::spawn_blocking(move || sweep_state.reap_orphaned_routes(grace))
-            .await
-            .unwrap_or_default();
-        for service_name in reaped {
-            println!(
-                "soldr broker: reaped route {service_name}; every process that asked for it has exited"
-            );
-        }
-    }
-}
-
 async fn serve_loop(
     listener: interprocess::local_socket::tokio::Listener,
     state: Arc<BrokerState>,
@@ -563,7 +356,11 @@ async fn serve_loop(
     endpoint: String,
 ) -> io::Result<()> {
     let shutdown = Arc::new(tokio::sync::Notify::new());
-    let reaper = tokio::spawn(run_route_reaper(Arc::clone(&state), Arc::clone(&shutdown)));
+    let reaper = tokio::spawn(crate::broker_reaper::run_route_reaper(
+        Arc::clone(&state.route_owners),
+        Arc::clone(&state.registry),
+        Arc::clone(&shutdown),
+    ));
     let mut connections = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
@@ -697,7 +494,7 @@ async fn handle_connection(
     // soldr#3054: record who asked, before the route is acquired rather than
     // after, so a caller that dies mid-acquisition still leaves the route
     // attributable and therefore reapable.
-    state.record_route_request(&hello.service_name, peer.pid);
+    crate::broker_reaper::record_route_request(&state.route_owners, &hello.service_name, peer.pid);
 
     let mut attempt = 0_u32;
     let reply = 'acquire: loop {

@@ -175,6 +175,10 @@ pub mod bootstrap;
 pub(crate) mod broker_bringup;
 pub mod broker_cmd;
 mod broker_control_transport;
+/// soldr#2493: broker route-acquisition deadlines and their `soldr doctor`
+/// surface, split out of `broker_server` to keep it under the 1,000-line
+/// production-source ceiling.
+pub(crate) mod broker_deadlines;
 /// soldr#2388: container-safe broker/session socket identity (graceful fallback
 /// when the OS provides no `/etc/machine-id`).
 pub mod broker_identity;

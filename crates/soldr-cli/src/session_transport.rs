@@ -270,7 +270,7 @@ async fn run_session_compile_async(
     cwd: String,
     env: Vec<SessionEnvVar>,
 ) -> Result<SessionCompileOutcome, SessionError> {
-    let setup_timeout = crate::broker_server::BrokerDeadlines::from_env().route_ceiling;
+    let setup_timeout = crate::broker_deadlines::BrokerDeadlines::from_env().route_ceiling;
     let mut stream = match tokio::time::timeout(
         setup_timeout,
         establish_session(service_name, rustc_argv, cwd, env),
@@ -389,7 +389,7 @@ async fn connect_broker_with_busy_retry(
     name: interprocess::local_socket::Name<'_>,
 ) -> io::Result<Stream> {
     let started = tokio::time::Instant::now();
-    let deadline = started + crate::broker_server::BrokerDeadlines::from_env().busy_budget;
+    let deadline = started + crate::broker_deadlines::BrokerDeadlines::from_env().busy_budget;
     loop {
         match crate::platform::ipc::connect::connect_local_socket(name.clone()).await {
             Ok(stream) => return Ok(stream),
@@ -451,7 +451,7 @@ where
     read_negotiated_with_deadlines(
         stream,
         expected_request_id,
-        crate::broker_server::BrokerDeadlines::from_env(),
+        crate::broker_deadlines::BrokerDeadlines::from_env(),
     )
     .await
 }
@@ -459,7 +459,7 @@ where
 async fn read_negotiated_with_deadlines<S>(
     stream: &mut S,
     expected_request_id: u64,
-    deadlines: crate::broker_server::BrokerDeadlines,
+    deadlines: crate::broker_deadlines::BrokerDeadlines,
 ) -> io::Result<ReadyRoute>
 where
     S: tokio::io::AsyncRead + Unpin,
@@ -832,7 +832,7 @@ mod tests {
             let error = read_negotiated_with_deadlines(
                 &mut client,
                 1,
-                crate::broker_server::BrokerDeadlines {
+                crate::broker_deadlines::BrokerDeadlines {
                     busy_budget: Duration::from_millis(10),
                     first_response: Duration::from_millis(20),
                     progress_silence: Duration::from_millis(20),
@@ -886,7 +886,7 @@ mod tests {
             let error = read_negotiated_with_deadlines(
                 &mut client,
                 2476,
-                crate::broker_server::BrokerDeadlines {
+                crate::broker_deadlines::BrokerDeadlines {
                     busy_budget: Duration::from_millis(100),
                     first_response: Duration::from_millis(200),
                     // 40x the 5ms progress cadence: a contended runner's late

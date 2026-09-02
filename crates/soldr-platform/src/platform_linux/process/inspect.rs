@@ -93,6 +93,33 @@ pub fn holders_under(_dir: &Path) -> Vec<ProcessHolder> {
     Vec::new()
 }
 
+/// A PID-reuse-safe identity token for `pid`: its creation time.
+///
+/// Field 22 of `/proc/<pid>/stat` (`starttime`) is clock ticks since boot,
+/// which is stable for the life of the process and changes whenever the
+/// kernel reuses the pid onto something else -- exactly the pairing
+/// soldr#3054's broker route reaper needs so a recycled requester pid cannot
+/// be mistaken for the process that originally asked for a route.
+///
+/// The comm field is parenthesized and may itself contain spaces or `)`, so
+/// this reuses `is_zombie`'s parse: split on the LAST `") "` rather than the
+/// first, and never hand-roll a second parser for the same line that could
+/// silently disagree with it.
+///
+/// `None` on any failure -- an exited or unreadable process, or a line this
+/// host's kernel does not shape as expected. `None` must never be treated as
+/// a match by a caller comparing tokens.
+pub fn process_start_token(pid: u32) -> Option<u64> {
+    // Same out-of-range guard as `is_alive`/`signal_pid`: a `u32` this large
+    // cannot name a real Linux pid, and treating it as one risks reading the
+    // wrong `/proc` entry if the kernel is ever coaxed into recycling near
+    // that boundary.
+    let pid = libc::pid_t::try_from(pid).ok().filter(|pid| *pid > 0)?;
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, tail) = stat.rsplit_once(") ")?;
+    tail.split_whitespace().nth(19)?.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +134,28 @@ mod tests {
     fn linux_image_path_resolves_for_current_process() {
         let path = executable_path(std::process::id());
         assert!(path.is_some(), "current process image must be readable");
+    }
+
+    #[test]
+    fn linux_start_token_is_stable_and_present_for_this_process() {
+        let first = process_start_token(std::process::id());
+        assert!(first.is_some(), "a live process must have a readable starttime");
+        let second = process_start_token(std::process::id());
+        assert_eq!(first, second, "starttime does not change across reads");
+        assert_ne!(first, Some(0), "a real process never boots at tick zero");
+    }
+
+    #[test]
+    fn linux_start_token_parses_a_comm_field_containing_parens_and_spaces() {
+        // Regression pin for the ") " parse this function shares with
+        // `is_zombie`: a comm field like "a) (b" must not fool a naive
+        // first-") " split into truncating the record. Field counts here are
+        // lifted directly from a real `/proc/self/stat` line: 19 fields
+        // (state through itrealvalue) separate the comm close-paren from
+        // starttime at tail index 19.
+        let stat =
+            "123 (a) (b) S 1 123 123 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 999 0 0 0 0 0 0 0 0";
+        let (_, tail) = stat.rsplit_once(") ").unwrap();
+        assert_eq!(tail.split_whitespace().nth(19), Some("999"));
     }
 }

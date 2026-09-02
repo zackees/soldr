@@ -132,3 +132,47 @@ pub fn executable_path_matches(pid: u32, expected_path: &Path) -> bool {
 pub fn holders_under(_dir: &Path) -> Vec<ProcessHolder> {
     Vec::new()
 }
+
+/// A PID-reuse-safe identity token for `pid`: its creation time.
+///
+/// `proc_pidinfo(PROC_PIDTBSDINFO)` -- the same call `is_zombie` above uses
+/// for `pbi_status` -- also reports `pbi_start_tvsec`/`pbi_start_tvusec`, the
+/// process's creation time to microsecond resolution. That pairing is stable
+/// for the life of the process and changes whenever the kernel reuses the pid
+/// onto something else, which is exactly the identity soldr#3054's broker
+/// route reaper needs so a recycled requester pid cannot be mistaken for the
+/// process that originally asked for a route.
+///
+/// `None` on any failure -- an exited or unreadable process. `None` must
+/// never be treated as a match by a caller comparing tokens.
+pub fn process_start_token(pid: u32) -> Option<u64> {
+    // Same out-of-range guard as `is_alive`/`signal_pid`.
+    let pid = libc::pid_t::try_from(pid).ok().filter(|pid| *pid > 0)?;
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    const FIND_ZOMBIE: u64 = 1;
+    // SAFETY: `proc_pidinfo` writes at most `size` bytes into the buffer and
+    // reports how many it wrote. The struct is plain-old-data and is only
+    // read after a full-size write is confirmed.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            FIND_ZOMBIE,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if written != size {
+        return None;
+    }
+    // SAFETY: the call above filled the whole struct.
+    let info = unsafe { info.assume_init() };
+    // Microseconds since the epoch fit comfortably in a u64 (the seconds
+    // component alone will not overflow it until year 584942), and combining
+    // both fields gives sub-second resolution -- unlike `broker_lease`'s
+    // whole-seconds `sysinfo` token, which is too coarse to tell apart two
+    // processes started in the same second, a routine occurrence when a
+    // recycled pid is handed straight back out.
+    Some(info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+}

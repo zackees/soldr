@@ -713,7 +713,7 @@ fn broker_snapshot_at(runtime: &tokio::runtime::Runtime, endpoint: &str) -> Opti
             Ok((instance, pid))
         };
         match tokio::time::timeout(
-            crate::broker_server::BrokerDeadlines::from_env().first_response,
+            crate::broker_deadlines::BrokerDeadlines::from_env().first_response,
             probe,
         )
         .await
