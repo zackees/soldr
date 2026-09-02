@@ -57,6 +57,34 @@ def uv_pip_install_command(venv: Path, *packages: str) -> list[str]:
     return ["uv", "pip", "install", "--python", str(venv), *packages]
 
 
+def maturin_release_build_command(
+    maturin: str, target: str, compatibility: str
+) -> list[str]:
+    """The exact release-locked maturin argv two release scripts must agree on.
+
+    `build_release_wheel.maturin_build_command` and
+    `native_release_build.musl_wheel_maturin_command` both produce this shape;
+    their tests share the expectation here so the two cannot drift apart (and
+    so pylint's `duplicate-code` check does not report the copy).
+    """
+
+    return [
+        maturin,
+        "build",
+        "--release",
+        "--locked",
+        "--strip",
+        "--target",
+        target,
+        "--target-dir",
+        "target",
+        "--out",
+        "dist",
+        "--compatibility",
+        compatibility,
+    ]
+
+
 # Release scripts are standalone modules, but several share this module. Load it
 # once during test collection so their direct sibling import resolves under the
 # importlib-based test loader too.

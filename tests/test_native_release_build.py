@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from conftest import maturin_release_build_command
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "native_release_build.py"
@@ -35,21 +36,9 @@ def test_musl_wheel_maturin_command_strips_for_wheel_size(
     """
     maturin = tmp_path / "maturin"
     command = MODULE.musl_wheel_maturin_command(maturin, "x86_64-unknown-linux-musl")
-    assert command == [
-        str(maturin),
-        "build",
-        "--release",
-        "--locked",
-        "--strip",
-        "--target",
-        "x86_64-unknown-linux-musl",
-        "--target-dir",
-        "target",
-        "--out",
-        "dist",
-        "--compatibility",
-        "musllinux_1_2",
-    ]
+    assert command == maturin_release_build_command(
+        str(maturin), "x86_64-unknown-linux-musl", "musllinux_1_2"
+    )
 
 
 def test_cargo_command_routes_through_pinned_soldr_rustup() -> None:
