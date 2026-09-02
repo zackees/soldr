@@ -181,6 +181,7 @@ pub mod broker_identity;
 mod broker_launcher;
 pub(crate) mod broker_lease;
 pub(crate) mod broker_policy;
+pub(crate) mod broker_reaper;
 pub(crate) mod broker_server;
 pub mod broker_spawn;
 pub mod build_from_source_cmd;
