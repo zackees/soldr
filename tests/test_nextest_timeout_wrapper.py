@@ -411,15 +411,16 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
             'grace-period = "30s"' in block
         ), f"a raised budget with no explicit grace period:\n{block}"
     # Kept beside it: the count still makes an addition deliberate rather than
-    # incidental. 12 = the default profile + nine measured per-test override
-    # blocks (soldr#3038 added `daemon_rss_ceiling`'s 300s budget, the ninth)
+    # incidental. 13 = the default profile + ten measured per-test override
+    # blocks (soldr#3038 added `daemon_rss_ceiling`'s 300s budget, the ninth;
+    # soldr#3059 added the retention-rate gate's 300s budget, the tenth)
     # + two on `[profile.target-run]`. Both target-run blocks are
     # scoped Rosetta exceptions, preserving the 120s deadline on native lanes.
     #
     # The block above walks `[[profile.default.overrides]]` only, so the
     # grace-period-with-every-raised-budget rule is not enforced for
     # `target-run` blocks; this count is what makes one visible.
-    assert config.count('grace-period = "30s"') == 12
+    assert config.count('grace-period = "30s"') == 13
     assert "test(=cli_cargo_native_cc::no_cache_global_disables_native_too)" in config
 
 
