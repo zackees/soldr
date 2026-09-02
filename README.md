@@ -49,8 +49,8 @@ Current release line:
 ## Quick start
 
 ```bash
-# 1. Install
-uv tool install soldr
+# 1. Install or upgrade (same command)
+uv tool install --upgrade soldr
 
 # 2. Put `soldr` in front of every Rust command
 soldr cargo build --release
@@ -59,13 +59,6 @@ soldr cargo clippy --workspace
 
 # 3. See what the cache is doing
 soldr status
-```
-
-Already installed? Upgrade to the latest release:
-
-```bash
-uv tool upgrade soldr
-soldr --version
 ```
 
 That is the whole integration. The first cacheable compile starts the
