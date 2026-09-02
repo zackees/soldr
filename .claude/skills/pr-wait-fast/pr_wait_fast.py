@@ -45,6 +45,10 @@ def fetch_checks(pr: str, repo: str | None) -> list[Check]:
         cmd += ["--repo", repo]
     proc = run_gh(cmd)
     if proc.returncode != 0 and not proc.stdout.strip():
+        # Right after a push gh prints "no checks reported on the '<branch>'
+        # branch" with no JSON: that is "pending", bounded by --grace.
+        if "no checks reported" in proc.stderr:
+            return []
         sys.stderr.write(proc.stderr)
         raise SystemExit(3)
     # `gh pr checks` exits 8 when checks are pending and 1 when any failed,
