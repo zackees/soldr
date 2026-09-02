@@ -39,7 +39,9 @@ class TestPinnedVersions:
             value = manifest_mod.read_pinned_version(REPO_ROOT, spec)
             assert value and value.strip() == value, (spec, value)
 
-    def test_a_missing_pin_is_an_error_not_an_empty_string(self, tmp_path: Path) -> None:
+    def test_a_missing_pin_is_an_error_not_an_empty_string(
+        self, tmp_path: Path
+    ) -> None:
         target = tmp_path / "some.rs"
         target.write_text("nothing here\n", encoding="utf-8")
         with pytest.raises(manifest_mod.ManifestError, match="WIDGET"):
@@ -64,10 +66,30 @@ class TestDebugSidecars:
         package = stage(tmp_path / "pkg")
         assert manifest_mod.collect_debug_info(package, "") == []
 
-    def test_a_dwp_is_recorded_when_present(self, tmp_path: Path) -> None:
+    def test_a_dwp_staged_in_package_dir_is_never_recorded(
+        self, tmp_path: Path
+    ) -> None:
+        """soldr#3038 regression guard.
+
+        `soldr.debug_info` is read by every `setup-soldr` consumer via
+        `zccache_contract.py::validate_release_manifest`, which hard-rejects
+        any entry whose `format` is not `"pdb"`. Even if something upstream
+        ever stages a `.dwp` back into `package_dir` (it should not --
+        `stage_release_binaries.py` keeps it in a separate directory), this
+        function must still never report it, or every Linux/macOS
+        `setup-soldr` consumer breaks on the next release.
+        """
         package = stage(tmp_path / "pkg", extra={"soldr.dwp": b"d"})
-        entries = manifest_mod.collect_debug_info(package, "")
-        assert [e["format"] for e in entries] == ["dwp"]
+        assert manifest_mod.collect_debug_info(package, "") == []
+
+    def test_a_dsym_staged_in_package_dir_is_never_recorded(
+        self, tmp_path: Path
+    ) -> None:
+        dsym = tmp_path / "pkg" / "soldr.dSYM" / "Contents" / "Resources"
+        dsym.mkdir(parents=True)
+        package = stage(tmp_path / "pkg")
+        (dsym / "DWARF").write_bytes(b"symbols")
+        assert manifest_mod.collect_debug_info(package, "") == []
 
 
 class TestManifestShape:
@@ -77,7 +99,9 @@ class TestManifestShape:
             "commit_sha": "deadbeef",
             "target": "x86_64-unknown-linux-gnu",
             "suffix": "",
-            "digests": dict.fromkeys(("soldr", "soldr-daemon", "crgx", "cargo-chef"), "a" * 64),
+            "digests": dict.fromkeys(
+                ("soldr", "soldr-daemon", "crgx", "cargo-chef"), "a" * 64
+            ),
             "debug_info": [],
             "versions": {"zccache": "1.13.5", "crgx": "0.1.0", "cargo_chef": "0.1.73"},
             "commits": {"crgx": "abc", "cargo_chef": "def"},
@@ -110,7 +134,9 @@ class TestManifestShape:
         and `cargo_chef.source_commit` came out `"unknown"`. `json.dumps`
         escapes the newline instead of letting it end a field.
         """
-        leaked = "soldr-toolchain:v0.1.0\nCARGO_CHEF_SOURCE_COMMIT=soldr-toolchain:v0.1.73"
+        leaked = (
+            "soldr-toolchain:v0.1.0\nCARGO_CHEF_SOURCE_COMMIT=soldr-toolchain:v0.1.73"
+        )
         manifest = self.build(commits={"crgx": leaked, "cargo_chef": "clean"})
         reparsed = json.loads(json.dumps(manifest))
         assert reparsed["crgx"]["source_commit"] == leaked
@@ -124,7 +150,7 @@ def test_end_to_end_writes_a_manifest_the_verifier_accepts(tmp_path: Path) -> No
     fails the release lane — so pinning them together is worth more than
     either in isolation.
     """
-    package = stage(tmp_path / "pkg", extra={"soldr.dwp": b"dwp-bytes"})
+    package = stage(tmp_path / "pkg")
     exit_code = manifest_mod.main(
         [
             "--version",
@@ -145,7 +171,10 @@ def test_end_to_end_writes_a_manifest_the_verifier_accepts(tmp_path: Path) -> No
     assert written["soldr"]["commit_sha"] == "c0ffee"
     assert written["crgx"]["source_commit"] == "soldr-toolchain:v0.1.0"
     assert written["cargo_chef"]["source_commit"] == "unknown"
-    assert [e["format"] for e in written["soldr"]["debug_info"]] == ["dwp"]
+    # soldr#3038: a Linux/macOS release ships no debug_info at all -- the
+    # dwp/dsym sidecar goes out as a separate, unmanifested asset instead.
+    # See TestDebugSidecars.test_a_dwp_staged_in_package_dir_is_never_recorded.
+    assert written["soldr"]["debug_info"] == []
 
     verify = subprocess.run(
         [

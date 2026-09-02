@@ -195,9 +195,15 @@ publication; a pass holds the exclusive side from its first decision through
 its last deletion. Daemon startup and explicit orphan-root maintenance also
 share a version-blind root-owner lock. Shutdown waits for a pass that already
 started before publishing the root as unowned.
-Default daemon lifetime is unbounded so age retention continues without new
-CLI invocations; a nonzero explicit idle timeout opts back into auto-exit. No
-operating-system scheduler is installed.
+Default daemon lifetime is bounded at 30 minutes of inactivity. Retention does
+not depend on residency: the maintenance loop runs its first tick immediately
+and treats an absent or overdue full marker as a catch-up, and the markers are
+persisted under the root, so a restarted daemon resumes the schedule. An
+unbounded default was tried (soldr#1782) and reverted, because a broker route
+is keyed on the soldr root and so every throwaway root earned a daemon that
+never exited. A caller may still pass an explicit idle timeout, and a caller
+that owns a throwaway root may name itself with `--owner-pid` so its daemon
+exits when it does. No operating-system scheduler is installed.
 
 `soldr doctor` reports leftovers from pre-embedded installs or direct
 zccache CLI use: running `zccache-daemon*` processes and stale per-launch

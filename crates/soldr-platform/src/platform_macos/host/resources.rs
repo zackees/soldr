@@ -39,3 +39,27 @@ pub fn process_table() -> Option<Vec<(u32, String)>> {
 pub fn commit_charge_mb() -> Option<(u64, u64)> {
     None
 }
+
+/// Resident set size for `pid`, in bytes.
+///
+/// Shells out to `ps` rather than the `mach_task_self`/`task_info` FFI
+/// pair: this file's `detect_cores` already establishes that a one-shot
+/// subprocess probe is an accepted pattern here, and `ps -o rss=` needs no
+/// new FFI surface or `libc` struct layout to keep in sync with the SDK.
+/// `ps` reports `rss` in kB. `None` if the process has exited or the
+/// subprocess could not be run.
+pub fn process_rss_bytes(pid: u32) -> Option<u64> {
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(1024)
+}

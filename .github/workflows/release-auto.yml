@@ -218,7 +218,14 @@ jobs:
         shell: bash
         env:
           SOLDR_RELEASE_CI: "1"
-          CARGO_PROFILE_RELEASE_DEBUG: "0"
+          # soldr#786 linux+macOS follow-up: debug info generation is now
+          # controlled by `[profile.release] debug` in the workspace
+          # Cargo.toml (`line-tables-only`). This step used to force it back
+          # off with CARGO_PROFILE_RELEASE_DEBUG=0 -- a profile env var
+          # outranks the Cargo.toml setting, so leaving that override in
+          # place would have silently made the Cargo.toml change a no-op for
+          # every release binary built through this step (all of Windows and
+          # every Linux target except aarch64-unknown-linux-musl).
           CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'pc-windows-msvc') && 'false' || 'thin' }}
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ contains(matrix.target, 'pc-windows-msvc') && '16' || '1' }}
           # soldr#2453: bound Cargo's producer queue and zccache's admission
@@ -226,6 +233,29 @@ jobs:
           # defense. These lanes previously ran unbounded on a 4-vCPU runner.
           CARGO_BUILD_JOBS: "2"
           SOLDR_JOBS: "2"
+          # GNU build-id (soldr#786 linux+macOS follow-up): a separately
+          # shipped `.debug` symbol file (soldr#3038: a post-link objcopy
+          # carve-out, not rustc's split-debuginfo) is useless without a
+          # stable id to match it back to the exact binary that produced it,
+          # and Rust does not emit a GNU build-id on Linux by default.
+          # `--strip-debug` (stage_release_binaries.py::stage_debug_symbols)
+          # removes `.debug_*` sections only, so this note survives the
+          # strip untouched -- a symbolizer can cross-check binary and
+          # `.debug` file by build-id, not only by the `.gnu_debuglink` CRC
+          # the carve-out also embeds. Scoped to the Linux release triples via
+          # CARGO_TARGET_<TRIPLE>_RUSTFLAGS (inert for the Windows targets
+          # this same step also builds) rather than repo-wide
+          # `.cargo/config.toml`, because a `.cargo/config.toml` rustflags
+          # change invalidates every contributor's zccache/Cargo fingerprint
+          # on every Linux build, not just the release lane. `--cfg
+          # tokio_unstable` is repeated here (not just relied on from
+          # `.cargo/config.toml`'s `[build] rustflags`) because
+          # CARGO_TARGET_*_RUSTFLAGS does not merge with `[build] rustflags`
+          # -- the same non-merge hazard the macOS cross lane already works
+          # around in `build-soldr-for-darwin.sh`.
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "--cfg tokio_unstable -C link-arg=-Wl,--build-id"
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "--cfg tokio_unstable -C link-arg=-Wl,--build-id"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: "--cfg tokio_unstable -C link-arg=-Wl,--build-id"
         run: >-
           uv run --no-project --python 3.13 .github/scripts/native_release_build.py matrix-binary
           --target '${{ matrix.target }}'
@@ -239,6 +269,13 @@ jobs:
           AR_aarch64_unknown_linux_musl: ar
           RANLIB_aarch64_unknown_linux_musl: ranlib
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          # GNU build-id (soldr#786 linux+macOS follow-up), same rationale as
+          # the "Build release binary (soldr-driven)" step above: this is a
+          # plain `cargo build` invocation (not soldr's blessed rustflags
+          # merge), so CARGO_TARGET_*_RUSTFLAGS fully replaces
+          # `.cargo/config.toml`'s `[build] rustflags` for this target and
+          # must repeat `--cfg tokio_unstable` itself.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: "--cfg tokio_unstable -C link-arg=-Wl,--build-id"
         run: |
           set -euo pipefail
           # The catalogue ARM64-musl compiler is an
@@ -300,8 +337,18 @@ jobs:
             "target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
       - name: Stage soldr release binaries
+        # soldr#3038: --symbols-dir carves Linux debug info out of the
+        # staged binaries (objcopy --only-keep-debug / strip --strip-debug /
+        # objcopy --add-gnu-debuglink -- NOT rustc's split-debuginfo, which
+        # cannot see std/C-dependency DWARF and only duplicated it) into
+        # soldr.debug, and stages the macOS .dSYM, SEPARATELY from
+        # --package-dir. They must never share a directory: --package-dir
+        # feeds both the main archive and manifest.json's soldr.debug_info,
+        # and every setup-soldr consumer hard-rejects a debug_info entry
+        # whose format isn't "pdb" (zccache_contract.py::validate_release_manifest).
+        # See docs/DEBUG_SIDECARS.md.
         shell: bash
-        run: uv run --no-project --python 3.13 .github/scripts/stage_release_binaries.py --target "${{ matrix.target }}" --package-dir dist/package
+        run: uv run --no-project --python 3.13 .github/scripts/stage_release_binaries.py --target "${{ matrix.target }}" --package-dir dist/package --symbols-dir dist/symbols
 
       - name: Fetch support binaries from soldr-toolchain
         shell: bash
@@ -439,6 +486,19 @@ jobs:
         # and all available cores.
         shell: bash
         run: uv run --no-project --python 3.13 .github/scripts/package_release_archive.py --version "${{ needs.prepare.outputs.version }}" --target "${{ matrix.target }}" --runner-os "$RUNNER_OS"
+
+      # soldr#3038: the debug-symbols asset. --allow-empty because most
+      # targets legitimately have nothing in dist/symbols (Windows always --
+      # its PDB already ships inline in the main archive). When something
+      # was staged, this produces soldr-<version>-<target>-symbols.tar.zst,
+      # which lands in dist/ beside the main archive and rides along through
+      # the existing `dist/soldr-*.tar.zst` upload-artifact glob below and
+      # the publish job's `dist/*` release-asset upload -- no separate upload
+      # step needed. Never referenced by manifest.json; setup-soldr never
+      # downloads or parses it. See docs/DEBUG_SIDECARS.md.
+      - name: Package debug-symbols archive (tar.zst level 19)
+        shell: bash
+        run: uv run --no-project --python 3.13 .github/scripts/package_release_archive.py --version "${{ needs.prepare.outputs.version }}" --target "${{ matrix.target }}" --runner-os "$RUNNER_OS" --package-dir dist/symbols --label symbols --allow-empty
 
       # ── Wheel build (soldr-driven, Linux) ──
       - name: Build wheel through setup-soldr target environment

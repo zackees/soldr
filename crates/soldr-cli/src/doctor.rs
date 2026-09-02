@@ -50,7 +50,7 @@ struct DoctorOutput {
     timeouts: Vec<crate::timeout_registry::DoctorTimeout>,
     /// Stable-broker route acquisition deadlines and their environment
     /// provenance (soldr#2476).
-    broker_deadlines: Vec<crate::broker_server::DoctorBrokerDeadline>,
+    broker_deadlines: Vec<crate::broker_deadlines::DoctorBrokerDeadline>,
     /// Authoritative broker installation identity and physical bind endpoint.
     broker_endpoint: crate::broker_identity::DoctorBrokerEndpoint,
     /// Rollup of compile-daemon fallback events -- builds that ran
@@ -195,7 +195,7 @@ pub(crate) fn run_doctor(
                 missing_components: Vec::new(),
                 missing_targets: Vec::new(),
                 timeouts: crate::timeout_registry::doctor_rows(),
-                broker_deadlines: crate::broker_server::doctor_deadlines(),
+                broker_deadlines: crate::broker_deadlines::doctor_deadlines(),
                 broker_endpoint: crate::broker_identity::doctor_endpoint(),
                 fallbacks: fallbacks.clone(),
                 zccache: bundle.clone(),
@@ -212,7 +212,7 @@ pub(crate) fn run_doctor(
             );
             print_zccache_sections(&bundle);
             crate::cache_health::print_human(&cache_health);
-            crate::broker_server::print_doctor_deadlines();
+            crate::broker_deadlines::print_doctor_deadlines();
             crate::broker_identity::print_doctor_endpoint();
             print_soldr_debug_info_human(&soldr_debug_info);
             print_defender_probe_human(defender.as_ref());
@@ -228,7 +228,7 @@ pub(crate) fn run_doctor(
             );
             print_zccache_sections(&bundle);
             crate::cache_health::print_human(&cache_health);
-            crate::broker_server::print_doctor_deadlines();
+            crate::broker_deadlines::print_doctor_deadlines();
             crate::broker_identity::print_doctor_endpoint();
             print_soldr_debug_info_human(&soldr_debug_info);
             print_defender_probe_human(defender.as_ref());
@@ -301,7 +301,7 @@ pub(crate) fn run_doctor(
             missing_components,
             missing_targets,
             timeouts: crate::timeout_registry::doctor_rows(),
-            broker_deadlines: crate::broker_server::doctor_deadlines(),
+            broker_deadlines: crate::broker_deadlines::doctor_deadlines(),
             broker_endpoint: crate::broker_identity::doctor_endpoint(),
             fallbacks: fallbacks.clone(),
             zccache: bundle.clone(),
@@ -328,7 +328,7 @@ pub(crate) fn run_doctor(
             &cache_health,
         );
         crate::timeout_registry::print_doctor_section();
-        crate::broker_server::print_doctor_deadlines();
+        crate::broker_deadlines::print_doctor_deadlines();
         crate::broker_identity::print_doctor_endpoint();
         crate::compile_fallback_rollup::print_section(&fallbacks);
     }

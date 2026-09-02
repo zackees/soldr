@@ -117,9 +117,7 @@ def test_source_build_environment_removes_cross_target_state() -> None:
 
 
 def test_source_build_environment_preserves_stricter_concurrency_limits() -> None:
-    env = wheel.source_build_environment(
-        {"CARGO_BUILD_JOBS": "1", "SOLDR_JOBS": "1"}
-    )
+    env = wheel.source_build_environment({"CARGO_BUILD_JOBS": "1", "SOLDR_JOBS": "1"})
     assert env["CARGO_BUILD_JOBS"] == "1"
     assert env["SOLDR_JOBS"] == "1"
 
@@ -141,6 +139,7 @@ def test_direct_maturin_command_is_release_locked(
         "build",
         "--release",
         "--locked",
+        "--strip",
         "--target",
         target,
         "--target-dir",

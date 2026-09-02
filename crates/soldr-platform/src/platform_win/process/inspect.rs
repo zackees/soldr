@@ -198,6 +198,27 @@ pub fn holders_under(dir: &Path) -> Vec<ProcessHolder> {
     found
 }
 
+/// A PID-reuse-safe identity token for `pid`: its creation time.
+///
+/// Windows reuses pids freely, so a bare pid is not an identity on its own --
+/// `(pid, creation time)` is, the same pairing `terminate::is_same_process`
+/// already relies on to avoid signalling a stranger once a tree-kill's
+/// remembered descendant pid gets recycled. This delegates to
+/// `terminate::process_creation_token` rather than opening a second
+/// `GetProcessTimes` call site that could silently disagree with it.
+///
+/// `None` on any failure. `None` must never be treated as a match by a
+/// caller comparing tokens.
+pub fn process_start_token(pid: u32) -> Option<u64> {
+    // Same out-of-range guard in spirit as the Unix `pid_t::try_from`
+    // checks: 0 (the System Idle Process) is never a real, ownable process
+    // and `OpenProcess` on it should not be trusted to answer honestly.
+    if pid == 0 {
+        return None;
+    }
+    super::terminate::process_creation_token(pid)
+}
+
 /// Raw (uncanonicalized) image path for a pid.
 fn image_path(pid: u32) -> Option<PathBuf> {
     use std::os::windows::ffi::OsStringExt as _;

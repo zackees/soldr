@@ -97,6 +97,27 @@ pub fn commit_charge_mb() -> Option<(u64, u64)> {
     None
 }
 
+/// Resident set size for `pid`, in bytes, read from `/proc/<pid>/status`.
+///
+/// `VmRSS` (not `/proc/<pid>/statm`'s resident page count) is used because
+/// it is already in kB and self-documenting in the source file, at the
+/// trivial cost of one more `str::parse`. `None` if the process has exited
+/// or `/proc` is unreadable (e.g. a sandboxed host with no procfs mount) —
+/// never confuse "unreadable" with a live "0 bytes" answer.
+pub fn process_rss_bytes(pid: u32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    parse_vm_rss_kb(&status)?.checked_mul(1024)
+}
+
+/// Pure parser split out of [`process_rss_bytes`] so the `VmRSS:` line
+/// format can be unit-tested without a real `/proc/<pid>/status` file.
+fn parse_vm_rss_kb(status: &str) -> Option<u64> {
+    status.lines().find_map(|line| {
+        let value = line.strip_prefix("VmRSS:")?;
+        value.split_whitespace().next()?.parse::<u64>().ok()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +130,20 @@ mod tests {
             cgroup_v2_dir_from("0::/actions_job/step\n", mount),
             Some(mount.join("actions_job/step"))
         );
+    }
+
+    #[test]
+    fn vm_rss_kb_parses_the_status_line_and_ignores_neighbors() {
+        let status = "Name:\tsoldr-daemon\nVmSize:\t  999999 kB\nVmRSS:\t   524288 kB\nThreads:\t37\n";
+        assert_eq!(parse_vm_rss_kb(status), Some(524288));
+    }
+
+    #[test]
+    fn process_rss_bytes_reads_this_process_own_status() {
+        // The one thing this can assert without a fixture: the current
+        // process is definitely alive and definitely holds > 0 bytes.
+        let rss = process_rss_bytes(std::process::id()).expect("read own /proc/<pid>/status");
+        assert!(rss > 0, "own RSS must be nonzero, got {rss}");
     }
 
     #[test]

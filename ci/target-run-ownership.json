@@ -142,11 +142,12 @@
         "cli_debug_trace_observer",
         "daemon_cache_maintenance",
         "daemon_restart_warmth",
+        "daemon_rss_ceiling",
         "daemon_stall_harness",
         "inherited_stdio_spawns_mark_spoke"
       ],
       "disposition": "target-replay",
-      "reason": "Daemon stop/flush, singleton, IPC, process observation, pipe leases, restart, stall, and inherited-stdio behavior depend on native runtime primitives."
+      "reason": "Daemon stop/flush, singleton, IPC, process observation, pipe leases, restart, stall, RSS-ceiling watchdog sampling, and inherited-stdio behavior depend on native runtime primitives."
     },
     {
       "id": "fetch-tools-linux-once",
@@ -524,6 +525,12 @@
       "source_id": "daemon-target-replay",
       "test_prefix": "daemon_restart_warmth::",
       "reason": "Replay graceful and hard-kill restart continuity on every target."
+    },
+    {
+      "id": "daemon-rss-ceiling",
+      "source_id": "daemon-target-replay",
+      "test_prefix": "daemon_rss_ceiling::",
+      "reason": "Resident-set sampling reads /proc, ps, or Win32 process-memory APIs, so the reader must be proven correct per target OS, not just on Linux."
     },
     {
       "id": "daemon-stall-ipc",

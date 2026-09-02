@@ -272,6 +272,24 @@ fn filetime_value(time: windows_sys::Win32::Foundation::FILETIME) -> u64 {
     (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
 }
 
+/// Creation FILETIME for `pid`, as a PID-reuse-safe identity token.
+///
+/// `pub(crate)` so `process::inspect::process_start_token` -- the portable
+/// facade soldr-cli's broker route reaper calls -- can reuse this exact
+/// query instead of a second, independently-written `OpenProcess` +
+/// `GetProcessTimes` call site that could drift from the one this module's
+/// own `is_same_process` identity check already depends on.
+///
+/// `None` on any failure. `None` must never be treated as a match by a
+/// caller comparing tokens.
+pub(crate) fn process_creation_token(pid: u32) -> Option<u64> {
+    let handle = open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION).ok()?;
+    let times = process_times(handle);
+    // SAFETY: `handle` came from `open_process` above and is not used again.
+    unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+    times.ok().map(|times| times.created)
+}
+
 /// Retain a query handle for each fresh snapshot identity. Pids which cannot
 /// be opened or queried are returned for best-effort termination; they still
 /// make the final result `ProcessKilled`, because no retained handle can prove

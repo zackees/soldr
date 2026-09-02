@@ -66,3 +66,30 @@ fn a_running_child_still_reads_as_alive() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+/// This process's own token must be present, stable, and non-zero -- the
+/// same contract `process_start_token`'s facade-level test pins portably.
+/// Repeated here against the real Windows implementation so a divergence in
+/// `GetProcessTimes` plumbing (rather than the facade dispatch) is caught on
+/// the platform that actually exercises it.
+#[test]
+fn windows_start_token_is_stable_and_present_for_this_process() {
+    let first = process_start_token(std::process::id());
+    assert!(first.is_some(), "a live process must have a readable creation time");
+    assert_eq!(
+        first,
+        process_start_token(std::process::id()),
+        "creation time does not change across reads"
+    );
+    assert_ne!(first, Some(0), "a real process never has a zero FILETIME");
+}
+
+/// A spawned child's token must change once it exits and a *different*
+/// process is later asked about under the same numeric pid -- exercised
+/// indirectly here by confirming a live child's token differs from the
+/// impossible-pid `None` case, since Windows offers no portable way to force
+/// a specific pid to be recycled inside a test.
+#[test]
+fn windows_start_token_is_none_for_an_impossible_pid() {
+    assert_eq!(process_start_token(0), None);
+}

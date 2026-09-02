@@ -349,6 +349,13 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         })
     });
 
+    let owner_handle = opts.owner_pid.map(|owner_pid| {
+        let owner_state = state.clone();
+        tokio::spawn(async move {
+            run_owner_watchdog(owner_state, owner_pid).await;
+        })
+    });
+
     let maintenance_context = crate::daemon::maintenance::MaintenanceContext {
         paths: paths.clone(),
         db_path: state.db_path.clone(),
@@ -358,6 +365,21 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     let maintenance_handle = tokio::spawn(async move {
         crate::daemon::maintenance::run_loop(maintenance_context).await;
     });
+
+    // soldr#3038: opt-in RSS ceiling watchdog. Spawned only when
+    // `SOLDR_DAEMON_RSS_CEILING_BYTES` parses to a positive byte count, so
+    // an ordinary daemon start (the overwhelming common case) pays no extra
+    // timer, file write, or mimalloc stats call at all -- see
+    // `rss_ceiling`'s module docs for the full design rationale.
+    let rss_ceiling_handle =
+        crate::daemon::rss_ceiling::ceiling_bytes_from_env().map(|ceiling_bytes| {
+            let rss_paths = paths.clone();
+            let rss_shutdown = Arc::clone(&state.shutdown);
+            tokio::spawn(async move {
+                crate::daemon::rss_ceiling::run_watchdog(rss_paths, rss_shutdown, ceiling_bytes)
+                    .await;
+            })
+        });
 
     let signal_state = state.clone();
     tokio::spawn(async move {
@@ -387,6 +409,9 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     if let Some(handle) = idle_handle {
         handle.abort();
     }
+    if let Some(handle) = owner_handle {
+        handle.abort();
+    }
     let shutdown_phase = |name| {
         crate::daemon::lifecycle::append_lifecycle_event_with(
             &paths,
@@ -403,6 +428,13 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // allowed to finish. In particular, await its spawn_blocking deletion
     // worker before releasing root ownership.
     let _ = maintenance_handle.await;
+    // Same shutdown-aware loop shape as maintenance_handle (it selects on
+    // `shutdown.wait()` internally and returns promptly), so it is awaited
+    // rather than aborted -- an abort mid-write could leave a torn
+    // `rss-ceiling-v1.json` behind.
+    if let Some(handle) = rss_ceiling_handle {
+        let _ = handle.await;
+    }
 
     // L4 (issue soldr#980): drain whatever the background event flusher
     // has staged in memory before the daemon process exits. Must run
