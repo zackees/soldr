@@ -35,6 +35,11 @@ on:
 
 permissions:
   contents: read
+  # soldr#3071: _ci-target-run.yml requests `packages: read` at its top level
+  # (GHCR pull of the baked dockur/macos guest image). A called workflow may
+  # not request more than its caller grants, and every target-run job in this
+  # file calls it, so the grant has to live here rather than per job.
+  packages: read
 
 # soldr#1985 — superseded PR runs used to keep holding runner slots while a
 # fresh 21-job sweep queued behind them; five concurrent CI runs were observed
@@ -863,14 +868,8 @@ jobs:
     if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
     # soldr#3071: _ci-target-run.yml reads secrets.SOLDR_MACOS_GUEST_SSH_KEY
-    # (the baked guest's ssh identity) to reach the dockur guest, and pulls
-    # the baked guest image from GHCR, which needs `packages: read`. A called
-    # workflow may not request more than its caller grants, and this
-    # workflow's top-level grant is `contents: read` only.
+    # (the baked guest's ssh identity) to reach the dockur guest.
     secrets: inherit
-    permissions:
-      contents: read
-      packages: read
     with:
       runs_on: ubuntu-24.04
       target: x86_64-apple-darwin
