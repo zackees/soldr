@@ -89,11 +89,7 @@ jobs:
     # larger bounded replay budget when native archive execution proves
     # slower, and x86_64-dockur gets the largest budget of all: guest boot
     # time on top of an extended_replay-class archive replay (soldr#3071).
-    timeout-minutes: >-
-      ${{ inputs.target_execution == 'x86_64-dockur' && 90
-      || inputs.run_pep517_smoke && 65
-      || inputs.extended_replay && 55
-      || 30 }}
+    timeout-minutes: ${{ inputs.target_execution == 'x86_64-dockur' && 90 || inputs.run_pep517_smoke && 65 || inputs.extended_replay && 55 || 30 }}
     env:
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
       # soldr#3071: only meaningful in x86_64-dockur mode, where
