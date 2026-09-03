@@ -72,9 +72,13 @@ Current release assets follow this shape:
 
 The Intel macOS archive and wheel are cross-built on Linux through the blessed
 Apple SDK path. Publication is gated on a `smoke_macos_x64` job (running on an
-`ubuntu-24.04` runner, executing inside a dockur/macos x86_64 guest -- soldr#3071,
-no GitHub Actions job runs on a native macOS runner) that verifies the archive
-is Mach-O x86_64 and executes both the archive and wheel binaries.
+`ubuntu-24.04` runner, executing inside a
+[zackees/docker-mac-x64](https://github.com/zackees/docker-mac-x64) macOS
+Recovery guest -- soldr#3076, no GitHub Actions job runs on a native macOS
+runner) that verifies the archive is Mach-O x86_64 and executes the archive's
+binaries (`soldr`, `soldr-daemon`, `crgx`, `cargo-chef`) inside the guest. The
+wheel is never executed anywhere -- Recovery has no Python -- so it keeps a
+Linux-side METADATA-version check instead.
 
 ## Step 1: Verify The Checksum
 

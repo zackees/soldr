@@ -170,10 +170,11 @@ def test_windows_gnu_target_run_is_bounded_and_disk_safe() -> None:
 
     assert "extended_replay:" in target_run
     assert "default: false" in target_run
-    # soldr#3071: x86_64-dockur outranks every other budget (guest boot plus
-    # an extended-replay-class archive replay), then the pre-existing
-    # run_pep517_smoke / extended_replay / default chain is unchanged.
-    assert "inputs.target_execution == 'x86_64-dockur' && 90" in target_run
+    # soldr#3076: x86_64-recovery skips the general archive replay entirely
+    # and only pays Recovery boot+drive time, which fits the reusable
+    # 30-minute default; the pre-existing run_pep517_smoke / extended_replay
+    # / default chain is unchanged.
+    assert "inputs.target_execution == 'x86_64-recovery' && 30" in target_run
     assert "inputs.run_pep517_smoke && 65" in target_run
     assert "inputs.extended_replay && 55" in target_run
     assert "|| 30 }}" in target_run
@@ -602,10 +603,11 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     block = _job_block(ci, "pep517-daemon-smoke", "e2e-linux-x64")
 
-    # soldr#3071: no macos-* runner exists anywhere, so there is no macOS
-    # PEP 517 smoke leg at all -- the dockur guest that replaced it has no
-    # Python/maturin (e2e-macos-x64 sets run_pep517_smoke: false explicitly).
-    # windows-x64 keeps its dedicated smoke leg here, unchanged.
+    # soldr#3076: no macos-* runner exists anywhere, so there is no macOS
+    # PEP 517 smoke leg at all -- the Recovery guest that replaced the
+    # dockur/macos plan (soldr#3071) has no Python/maturin (e2e-macos-x64
+    # sets run_pep517_smoke: false explicitly). windows-x64 keeps its
+    # dedicated smoke leg here, unchanged.
     assert '"name":"macos-arm64"' not in block
     assert '"name":"windows-x64"' in block
     assert "github.event.pull_request.labels" in block
@@ -617,9 +619,9 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
 
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
     assert "run_pep517_smoke:" in target_run
-    # soldr#3071: the dockur guest has no Python/maturin, so this step group
-    # is also excluded by execution mode as a second, workflow-level line of
-    # defense (not just the false input above).
+    # soldr#3076: the Recovery guest has no Python/maturin, so this step
+    # group is also excluded by execution mode as a second, workflow-level
+    # line of defense (not just the false input above).
     for step_name in [
         "Build soldr wheel under test",
         "Run downstream PEP 517 daemon smoke",
@@ -627,7 +629,7 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
         step = _step_block(target_run, step_name)
         assert (
             "if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup "
-            "&& inputs.target_execution != 'x86_64-dockur' }}" in step
+            "&& inputs.target_execution != 'x86_64-recovery' }}" in step
         )
     # The smoke must run after (and never gate) the archive replay.
     assert target_run.index(
@@ -909,7 +911,7 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_and_the_blessed_build() ->
     assert '"darwin-x64": { triple: "x86_64-apple-darwin"' in install
     assert "intentionally not published" not in install
     assert "x86_64-apple-darwin" in npm_docs
-    assert "dockur/macos" in npm_docs
+    assert "docker-mac-x64" in npm_docs
     assert "macos-15-intel" not in npm_docs
     assert "x86_64-apple-darwin" in verification_docs
     assert "Mach-O x86_64" in verification_docs

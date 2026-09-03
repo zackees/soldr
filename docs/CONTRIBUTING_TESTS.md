@@ -167,14 +167,22 @@ checked in the build lane instead (`verify_static_link.py`,
 
 Owner mandate (2026-09-02, soldr#3071): no GitHub Actions job may run on a
 `macos-*` runner. `x86_64-apple-darwin` keeps its target-run, but "native to
-that target" now means a dockur/macos x86_64 guest (KVM) hosted on an
-`ubuntu-24.04` runner rather than a native macOS runner — see
-`ci/macos_x64_guest.py` and the `target_execution: x86_64-dockur` contract in
-`.github/workflows/_ci-target-run.yml`. `aarch64-apple-darwin` is a third
-build-only lane alongside the two above: it is still cross-built and
-release-included, but has no execution environment (real or virtualized)
-anywhere in CI until soldr#3071 re-enables it before release, so "every
-cross-arch target keeps its target-run" no longer holds for it specifically.
+that target" now means a
+[zackees/docker-mac-x64](https://github.com/zackees/docker-mac-x64) macOS
+**Recovery** guest (KVM) hosted on an `ubuntu-24.04` runner rather than a
+native macOS runner — see `ci/macos_recovery_run.py` and the
+`target_execution: x86_64-recovery` contract in
+`.github/workflows/_ci-target-run.yml` (soldr#3076; this replaced soldr#3071's
+hand-baked dockur/macos guest, whose image was never published and whose ssh
+secret was never set, so it failed at preflight on every run). Recovery boots
+fresh per script with no toolchain and no room for the full decompressed
+nextest archive, so this target-run does *not* replay the general archive:
+it ships in only the packaged `soldr` binary and runs a small fixed set of
+binary-only CLI smoke checks. `aarch64-apple-darwin` is a third build-only
+lane alongside the two above: it is still cross-built and release-included,
+but has no execution environment (real or virtualized) anywhere in CI until
+soldr#3071 re-enables it before release, so "every cross-arch target keeps
+its target-run" no longer holds for it specifically.
 
 Linux-runnable contract tests in `tests/test_cross_compile_workflows.py` protect
 that route from silently dropping native tests. Add a new runner only when the

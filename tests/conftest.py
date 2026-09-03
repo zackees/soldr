@@ -40,6 +40,62 @@ def load_script_module(path: str | Path, name: str | None = None) -> ModuleType:
     return module
 
 
+def write_collected_recovery_summary(base: Path, lines: list[str]) -> Path:
+    """Build a `<base>/summary.txt` fixture for a Recovery guest smoke test.
+
+    `ci/smoke_release_artifacts.py` and `ci/macos_recovery_run.py` each parse
+    this exact flat `key=value` shape out of a zackees/docker-mac-x64
+    `collect` tarball (soldr#3076); their tests share the fixture-builder
+    here rather than each hand-rolling the same `mkdir` + `write_text`.
+    """
+
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "summary.txt").write_text("\n".join(lines), encoding="utf-8")
+    return base
+
+
+def assert_recovery_verify_collected_contract(
+    module: ModuleType, tmp_path: Path, *, passing_lines: list[str]
+) -> None:
+    """Shared soldr#3076 `verify_collected` behavior contract.
+
+    `ci/smoke_release_artifacts.py` and `ci/macos_recovery_run.py` each
+    implement the same four-case contract (pass, one named per-check
+    failure, one check that never ran, a missing results file, and a
+    nonzero guest exit code) against different check sets. Both modules'
+    tests call this once rather than each repeating the four cases, which is
+    also what keeps pylint's `duplicate-code` check quiet across the pair
+    (see `load_script_module`'s docstring above for the same rationale
+    applied to the importlib dance, soldr#2113).
+    """
+
+    first_check = passing_lines[0].split("=", 1)[0]
+
+    passing = write_collected_recovery_summary(tmp_path / "pass", passing_lines)
+    assert module.verify_collected(passing, guest_exit_code="0") == 0
+
+    failing = write_collected_recovery_summary(
+        tmp_path / "fail", [f"{first_check}=fail:boom"]
+    )
+    with pytest.raises(SystemExit, match=f"{first_check}: boom"):
+        module.verify_collected(failing, guest_exit_code="0")
+
+    incomplete = write_collected_recovery_summary(
+        tmp_path / "incomplete", passing_lines[1:]
+    )
+    with pytest.raises(SystemExit, match=f"{first_check}: no result recorded"):
+        module.verify_collected(incomplete, guest_exit_code="0")
+
+    missing = write_collected_recovery_summary(tmp_path / "missing", [])
+    (missing / "summary.txt").unlink()
+    with pytest.raises(SystemExit, match="never wrote results"):
+        module.verify_collected(missing, guest_exit_code="0")
+
+    nonzero = write_collected_recovery_summary(tmp_path / "nonzero", passing_lines)
+    with pytest.raises(SystemExit, match="guest script exit code"):
+        module.verify_collected(nonzero, guest_exit_code="1")
+
+
 def write_fake_soldr_console(venv: Path, *, windows: bool) -> Path:
     """Materialize the platform's virtualenv console-script location."""
 

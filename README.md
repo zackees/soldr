@@ -120,10 +120,11 @@ GitHub Release binary during install and verifies it against the published
 Published npm archives and PyPI wheels support both Intel (`x86_64`) and Apple
 Silicon (`arm64`) macOS. Both are cross-built through soldr's blessed Apple
 SDK path on Linux; Intel artifacts are then smoke-tested inside a
-dockur/macos x86_64 guest hosted on an ordinary Linux runner before release
-(no GitHub Actions job runs on a native macOS runner). Apple Silicon
-artifacts are cross-built the same way but are not executed anywhere in CI
-until a follow-up issue re-enables that before release.
+[zackees/docker-mac-x64](https://github.com/zackees/docker-mac-x64) macOS
+Recovery guest hosted on an ordinary Linux runner before release (no GitHub
+Actions job runs on a native macOS runner). Apple Silicon artifacts are
+cross-built the same way but are not executed anywhere in CI until a
+follow-up issue re-enables that before release.
 
 ## GitHub Actions setup
 
