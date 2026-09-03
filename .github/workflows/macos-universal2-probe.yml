@@ -1,0 +1,208 @@
+# STAGE 1 PROBE -- deliberately standalone and not wired into ci.yml.
+#
+# Question it answers: can soldr ship ONE universal2 macOS binary instead of
+# separate x86_64 and aarch64 artifacts, and do the mac unit tests still run?
+#
+# Only x86_64 is executed. There is no arm64 macOS that boots under QEMU on
+# Linux and no macos-* runner is permitted here (owner mandate 2026-09-02), so
+# the arm64 slice is verified structurally (it is present, it is a real arm64
+# Mach-O, and lipo can extract it byte-identically) and its *execution* is
+# assumed. That assumption is the explicit trade this probe is testing.
+name: macOS universal2 probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['probe/macos-universal2']
+
+concurrency:
+  group: macos-universal2-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-slice:
+    name: cross-build ${{ matrix.triple }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        triple: [x86_64-apple-darwin, aarch64-apple-darwin]
+    env:
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: zackees/setup-soldr@v0
+        with:
+          toolchain-file: rust-toolchain.toml
+          lockfile: Cargo.lock
+          target-dir: target
+
+      # One triple per job on purpose. `soldr prepare` exports SDKROOT, CC_*,
+      # CFLAGS_* and PATH for ONE target shape; preparing both in a single job
+      # would have the second overwrite the first. (Verified the hard way
+      # locally: with the wrong env live, ring's .S files go to host gcc and
+      # die on -arch / -mmacosx-version-min.)
+      - name: Prepare the Darwin toolchain
+        run: soldr prepare --target "${{ matrix.triple }}" --github-env "$GITHUB_ENV"
+
+      - name: Build the thin slice
+        run: |
+          set -euo pipefail
+          soldr cargo build --release --target "${{ matrix.triple }}" -p soldr-cli --bin soldr
+          ls -l "target/${{ matrix.triple }}/release/soldr"
+
+      # The unit tests executed in the guest stay thin x86_64: making every test
+      # binary universal2 would double archive size to prove nothing extra,
+      # since only the x86_64 slice can be executed anywhere in this repo's CI.
+      - name: Build the unit-test archive (x86_64 only)
+        if: matrix.triple == 'x86_64-apple-darwin'
+        run: |
+          set -euo pipefail
+          soldr cargo nextest archive \
+            --target x86_64-apple-darwin \
+            --archive-file soldr-tests-x86_64.tar.zst
+          ls -lh soldr-tests-x86_64.tar.zst
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slice-${{ matrix.triple }}
+          path: |
+            target/${{ matrix.triple }}/release/soldr
+            soldr-tests-x86_64.tar.zst
+          if-no-files-found: error
+          retention-days: 3
+
+  build-universal2:
+    name: combine into universal2
+    needs: build-slice
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: slice-*
+          path: slices
+
+      - name: Combine
+        run: |
+          set -euo pipefail
+          find slices -type f | sort
+          mkdir -p share
+          python3 ci/make_universal2.py -o share/soldr-universal2 \
+            slices/slice-x86_64-apple-darwin/soldr \
+            slices/slice-aarch64-apple-darwin/soldr
+          cp slices/slice-x86_64-apple-darwin/soldr-tests-x86_64.tar.zst share/
+
+      - name: The fat binary must really contain both slices
+        # Structural proof for arm64, which nothing in this repo's CI can
+        # execute. Verifies the header independently of the script that wrote
+        # it, and that each embedded slice is byte-identical to its thin input.
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import struct, pathlib
+          d = pathlib.Path("share/soldr-universal2").read_bytes()
+          magic, n = struct.unpack_from(">II", d, 0)
+          assert magic == 0xCAFEBABE, hex(magic)
+          assert n == 2, n
+          want = {0x01000007: ("x86_64", "slices/slice-x86_64-apple-darwin/soldr"),
+                  0x0100000C: ("arm64",  "slices/slice-aarch64-apple-darwin/soldr")}
+          seen = set()
+          for i in range(n):
+              cpu, sub, off, size, align = struct.unpack_from(">iiIII", d, 8 + 20*i)
+              name, src = want[cpu & 0xFFFFFFFF]
+              thin = d[off:off+size]
+              assert struct.unpack_from("<I", thin, 0)[0] == 0xFEEDFACF, f"{name}: not Mach-O"
+              assert struct.unpack_from("<i", thin, 4)[0] == cpu, f"{name}: cputype mismatch"
+              assert thin == pathlib.Path(src).read_bytes(), f"{name}: differs from {src}"
+              print(f"{name}: offset={off} size={size} align=2^{align} identical to {src}")
+              seen.add(name)
+          assert seen == {"x86_64", "arm64"}, seen
+          print("universal2 OK: both slices present, byte-identical, correct cputypes")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: universal2-payload
+          path: share/
+          if-no-files-found: error
+          retention-days: 3
+
+  run-on-macos-x64:
+    name: run universal2 + unit tests (macOS x86_64 guest)
+    needs: build-universal2
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: universal2-payload
+          path: share
+      - name: Stage payload
+        run: |
+          set -euo pipefail
+          chmod +x share/soldr-universal2
+          # cargo-nextest ships as a universal Mach-O, so the same file runs on
+          # either slice; the guest is x86_64.
+          curl -fsSL -o nextest.tar.gz \
+            https://get.nexte.st/latest/mac
+          tar -xzf nextest.tar.gz -C share cargo-nextest
+          chmod +x share/cargo-nextest
+          ls -lh share/
+
+      - name: Boot macOS x86_64 and exercise the universal2 binary
+        id: macos
+        uses: zackees/docker-mac-x64@main
+        with:
+          share-dir: share
+          collect: /tmp/w/out
+          ram: '8'
+          run-timeout: '3600'
+          run: |
+            set -x
+            mkdir -p /tmp/w/out && cd /tmp/w
+            uname -m | tee /tmp/w/out/arch.txt
+
+            curl -s -o soldr http://10.0.2.2:8000/soldr-universal2
+            chmod +x soldr
+            # THE point of the probe: a fat binary, executed on the x86_64 slice.
+            ./soldr --version | tee /tmp/w/out/version.txt
+            echo "universal2-runs-rc=$?" | tee -a /tmp/w/out/version.txt
+
+            curl -s -o cargo-nextest http://10.0.2.2:8000/cargo-nextest
+            chmod +x cargo-nextest
+            curl -s -o tests.tar.zst http://10.0.2.2:8000/soldr-tests-x86_64.tar.zst
+            ls -l tests.tar.zst
+
+            # Bounded on purpose: this probe is asking "do mac unit tests run in
+            # this guest at all", not "does the whole suite pass".
+            ./cargo-nextest run \
+              --archive-file tests.tar.zst \
+              --workspace-remap /tmp/w/src \
+              --no-fail-fast \
+              -E 'test(/^soldr_core::/)' \
+              > /tmp/w/out/nextest.log 2>&1
+            echo "nextest-rc=$?" | tee /tmp/w/out/nextest.rc
+            tail -60 /tmp/w/out/nextest.log
+
+      - name: Report
+        if: always()
+        run: |
+          set -uo pipefail
+          C="${{ steps.macos.outputs.workdir }}/collected"
+          echo "guest exit code: ${{ steps.macos.outputs.exit-code }}"
+          for f in arch.txt version.txt nextest.rc; do
+            [ -f "$C/$f" ] && { echo "--- $f ---"; cat "$C/$f"; }
+          done
+          [ -f "$C/nextest.log" ] && { echo "--- nextest.log (tail) ---"; tail -80 "$C/nextest.log"; }
+          true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: universal2-guest-results
+          path: ${{ steps.macos.outputs.workdir }}/
+          if-no-files-found: warn
