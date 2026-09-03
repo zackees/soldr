@@ -139,8 +139,8 @@ jobs:
           find slices -type f | sort
           mkdir -p share
           python3 ci/make_universal2.py -o share/soldr-universal2 \
-            slices/slice-x86_64-apple-darwin/soldr \
-            slices/slice-aarch64-apple-darwin/soldr
+            slices/slice-x86_64-apple-darwin/target/x86_64-apple-darwin/release/soldr \
+            slices/slice-aarch64-apple-darwin/target/aarch64-apple-darwin/release/soldr
           cp slices/slice-x86_64-apple-darwin/soldr-tests-x86_64.tar.zst share/
 
       - name: The fat binary must really contain both slices
@@ -155,8 +155,12 @@ jobs:
           magic, n = struct.unpack_from(">II", d, 0)
           assert magic == 0xCAFEBABE, hex(magic)
           assert n == 2, n
-          want = {0x01000007: ("x86_64", "slices/slice-x86_64-apple-darwin/soldr"),
-                  0x0100000C: ("arm64",  "slices/slice-aarch64-apple-darwin/soldr")}
+          want = {
+              0x01000007: ("x86_64",
+                           "slices/slice-x86_64-apple-darwin/target/x86_64-apple-darwin/release/soldr"),
+              0x0100000C: ("arm64",
+                           "slices/slice-aarch64-apple-darwin/target/aarch64-apple-darwin/release/soldr"),
+          }
           seen = set()
           for i in range(n):
               cpu, sub, off, size, align = struct.unpack_from(">iiIII", d, 8 + 20*i)
