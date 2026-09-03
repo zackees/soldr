@@ -15,6 +15,15 @@ on:
   push:
     branches: ['probe/macos-universal2']
 
+# setup-soldr's yank-audit aborts the run when the restored cargo-registry
+# cache contains a yanked crate, and it can only evict the offending entry with
+# `actions: write`. Without it the run dies with "automatic deletion incomplete
+# (deleted=0/1, failures=1)" -- which is what killed the first real attempt here
+# (chacha20 0.10.1). Read-only everywhere else.
+permissions:
+  contents: read
+  actions: write
+
 concurrency:
   group: macos-universal2-probe-${{ github.ref }}
   cancel-in-progress: true
