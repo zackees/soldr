@@ -163,7 +163,18 @@ build-only lanes (`kind: cross-build` in `ci/canonical-targets.json`) — a
 replay there would re-run the suite on the image it was built on, which is the
 degenerate split soldr#1978 item 3 removed. Their artifact-level invariants are
 checked in the build lane instead (`verify_static_link.py`,
-`verify_glibc_baseline.py`). Every cross-arch target keeps its target-run.
+`verify_glibc_baseline.py`).
+
+Owner mandate (2026-09-02, soldr#3071): no GitHub Actions job may run on a
+`macos-*` runner. `x86_64-apple-darwin` keeps its target-run, but "native to
+that target" now means a dockur/macos x86_64 guest (KVM) hosted on an
+`ubuntu-24.04` runner rather than a native macOS runner — see
+`ci/macos_x64_guest.py` and the `target_execution: x86_64-dockur` contract in
+`.github/workflows/_ci-target-run.yml`. `aarch64-apple-darwin` is a third
+build-only lane alongside the two above: it is still cross-built and
+release-included, but has no execution environment (real or virtualized)
+anywhere in CI until soldr#3071 re-enables it before release, so "every
+cross-arch target keeps its target-run" no longer holds for it specifically.
 
 Linux-runnable contract tests in `tests/test_cross_compile_workflows.py` protect
 that route from silently dropping native tests. Add a new runner only when the

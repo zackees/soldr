@@ -48,7 +48,9 @@ def bundled_binaries(package_dir: Path, target: str) -> list[Path]:
     )
 
 
-def checker_command(check: str, target: str, binaries: list[Path], max_glibc: str) -> list[str]:
+def checker_command(
+    check: str, target: str, binaries: list[Path], max_glibc: str
+) -> list[str]:
     """Build the exact established verifier command for one portability gate."""
     scripts = {
         "windows-imports": "verify_windows_imports.py",

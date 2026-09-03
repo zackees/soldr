@@ -200,7 +200,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.wipe:
         return run(["docker", "volume", "rm", "--force", *volume_names().values()])
 
-    before = {path.name for path in OUT_DIR.glob("*.whl")} if OUT_DIR.is_dir() else set()
+    before = (
+        {path.name for path in OUT_DIR.glob("*.whl")} if OUT_DIR.is_dir() else set()
+    )
 
     code = build_image(rebuild=args.rebuild_image)
     if code != 0:

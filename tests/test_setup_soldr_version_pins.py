@@ -32,7 +32,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-WORKFLOWS = sorted((Path(__file__).resolve().parents[1] / ".github" / "workflows").glob("*.y*ml"))
+WORKFLOWS = sorted(
+    (Path(__file__).resolve().parents[1] / ".github" / "workflows").glob("*.y*ml")
+)
 
 # A `uses:` KEY. A comment merely mentioning the action is not a call site --
 # getting this wrong is how the first version of this audit invented call sites
@@ -121,17 +123,21 @@ def test_the_pin_is_new_enough_for_catalogue_v2() -> None:
 def test_non_action_bootstraps_are_catalogue_v2_capable() -> None:
     root = Path(__file__).resolve().parents[1]
     expected = "0.9.6"
-    assert f'"soldr=={expected}"' in (root / "pyproject.toml").read_text(encoding="utf-8")
-    assert f'SOLDR_VERSION = "{expected}"' in (root / "ci/win_wheel_local.py").read_text(
+    assert f'"soldr=={expected}"' in (root / "pyproject.toml").read_text(
         encoding="utf-8"
     )
+    assert f'SOLDR_VERSION = "{expected}"' in (
+        root / "ci/win_wheel_local.py"
+    ).read_text(encoding="utf-8")
     assert f"ENV SOLDR_VERSION={expected}" in (
         root / "ci/docker-aarch64-windows-msvc-cross/Dockerfile"
     ).read_text(encoding="utf-8")
     assert f"soldr=={expected}" in (
         root / ".github/workflows/docker-linux-cross-smoke.yml"
     ).read_text(encoding="utf-8")
-    build_all = (root / ".github/workflows/build-all-from-linux.yml").read_text(encoding="utf-8")
+    build_all = (root / ".github/workflows/build-all-from-linux.yml").read_text(
+        encoding="utf-8"
+    )
     assert f'default: "{expected}"' in build_all
     assert f"inputs.soldr_version || '{expected}'" in build_all
 

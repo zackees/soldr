@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from conftest import load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +22,9 @@ def write_cgroup(root: Path, **files: str) -> Path:
     return root
 
 
-def test_snapshot_reads_transient_resource_inputs_and_process_census(tmp_path: Path) -> None:
+def test_snapshot_reads_transient_resource_inputs_and_process_census(
+    tmp_path: Path,
+) -> None:
     cgroup = write_cgroup(
         tmp_path / "cgroup",
         memory_current="1073741824\n",
@@ -95,7 +96,9 @@ def test_missing_v2_membership_does_not_fall_back_to_a_parent_cgroup() -> None:
     )
 
 
-def test_matrix_requires_an_explicit_opt_in_before_running_raised_count(tmp_path: Path) -> None:
+def test_matrix_requires_an_explicit_opt_in_before_running_raised_count(
+    tmp_path: Path,
+) -> None:
     with pytest.raises(SystemExit):
         telemetry.parse_args(["--raised-jobs", "8", "--", "soldr", "cargo", "check"])
 
@@ -183,7 +186,9 @@ def test_case_isolates_session_cache_and_stops_its_daemon(tmp_path: Path) -> Non
     ]
 
 
-def test_prepared_toolchain_preflight_requires_cargo_proxy_or_rustup(tmp_path: Path) -> None:
+def test_prepared_toolchain_preflight_requires_cargo_proxy_or_rustup(
+    tmp_path: Path,
+) -> None:
     environment = {"CARGO_HOME": str(tmp_path / "cargo-home"), "PATH": ""}
 
     assert not telemetry.prepared_cargo_or_rustup_available(environment)

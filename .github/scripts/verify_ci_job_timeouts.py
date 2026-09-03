@@ -26,8 +26,7 @@ INTEGER = re.compile(r"^[0-9]+$")
 # budgets (#2701), so every outcome remains fully verifiable while arbitrary
 # expressions stay rejected.
 CONDITIONAL = re.compile(
-    r"^\$\{\{\s*(?:inputs\.[A-Za-z0-9_-]+\s*&&\s*[0-9]+\s*\|\|\s*)+"
-    + r"[0-9]+\s*\}\}$"
+    r"^\$\{\{\s*(?:inputs\.[A-Za-z0-9_-]+\s*&&\s*[0-9]+\s*\|\|\s*)+" + r"[0-9]+\s*\}\}$"
 )
 
 

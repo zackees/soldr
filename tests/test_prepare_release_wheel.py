@@ -13,7 +13,9 @@ REPO_ROOT = Path(__file__).parents[1]
 SCRIPTS = REPO_ROOT / ".github" / "scripts"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-auto.yml"
 
-wheel = load_script_module(SCRIPTS / "prepare_release_wheel.py", "prepare_release_wheel")
+wheel = load_script_module(
+    SCRIPTS / "prepare_release_wheel.py", "prepare_release_wheel"
+)
 
 
 def test_driver_path_tracks_runner_os_not_cross_target(tmp_path: Path) -> None:
@@ -51,7 +53,10 @@ def test_installed_package_version_reads_the_soldr_cli_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     metadata = {
-        "packages": [{"name": "other", "version": "0"}, {"name": "soldr-cli", "version": "0.9.2"}]
+        "packages": [
+            {"name": "other", "version": "0"},
+            {"name": "soldr-cli", "version": "0.9.2"},
+        ]
     }
 
     def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
@@ -72,9 +77,15 @@ def test_installed_package_version_reads_the_soldr_cli_metadata(
     ],
 )
 def test_validate_workspace_version_rejects_missing_or_drifted_metadata(
-    observed: str, expected: str, message: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    observed: str,
+    expected: str,
+    message: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(wheel, "installed_package_version", lambda *_args, **_kwargs: observed)
+    monkeypatch.setattr(
+        wheel, "installed_package_version", lambda *_args, **_kwargs: observed
+    )
 
     with pytest.raises(wheel.WheelPreparationError, match=message):
         wheel.validate_workspace_version(Path("soldr"), expected, cwd=tmp_path)
@@ -91,7 +102,9 @@ def test_prepare_runs_cleanup_validation_and_builder(
 ) -> None:
     calls: list[tuple[list[str], bool]] = []
     monkeypatch.setattr(wheel, "clean_wheel_outputs", lambda _root: None)
-    monkeypatch.setattr(wheel, "validate_workspace_version", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        wheel, "validate_workspace_version", lambda *_args, **_kwargs: None
+    )
 
     def fake_run(
         command: list[str], *, cwd: Path, check: bool, **_kwargs: object
@@ -125,7 +138,14 @@ def test_prepare_runs_cleanup_validation_and_builder(
         False,
     )
     assert calls[1] == (
-        ["git", "restore", "--", "Cargo.toml", "Cargo.lock", "crates/soldr-cli/Cargo.toml"],
+        [
+            "git",
+            "restore",
+            "--",
+            "Cargo.toml",
+            "Cargo.lock",
+            "crates/soldr-cli/Cargo.toml",
+        ],
         False,
     )
     assert calls[2] == (["uv", "python", "install", "3.13"], True)

@@ -1,13 +1,15 @@
-"""Unit coverage for ci/smoke_release_artifacts.py (soldr#2294).
+"""Unit coverage for ci/smoke_release_artifacts.py (soldr#2294, soldr#3071).
 
-The native release smokes (smoke_macos_arm64, smoke_windows in
-release-auto.yml) execute this script on scarce native runners; the
-target-dependent decisions are pure functions so they are pinned here
-instead of being discovered on a release run.
+The native release smokes (smoke_macos_x64, smoke_windows in
+release-auto.yml) execute this script; the target-dependent decisions are
+pure functions so they are pinned here instead of being discovered on a
+release run.
 """
 
+import zipfile
 from pathlib import Path
 
+import pytest
 from conftest import load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -51,5 +53,129 @@ def test_workflow_smoke_jobs_invoke_the_script() -> None:
         encoding="utf-8"
     )
     assert release.count("ci/smoke_release_artifacts.py") >= 2
-    assert "smoke_macos_arm64:" in release
+    assert "smoke_macos_x64:" in release
     assert "smoke_windows:" in release
+
+
+# ---------- soldr#3071: host-side checks that need no target execution ----------
+
+
+def _write_wheel(tmp_path: Path, *, version: str) -> Path:
+    wheel = tmp_path / f"soldr-{version}-cp313-abi3-macosx_11_0_arm64.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "soldr-0.dist-info/METADATA",
+            f"Metadata-Version: 2.1\nName: soldr\nVersion: {version}\n",
+        )
+    return wheel
+
+
+def test_wheel_version_reads_metadata_without_executing_anything(
+    tmp_path: Path,
+) -> None:
+    wheel = _write_wheel(tmp_path, version="0.9.10")
+    assert MODULE.wheel_version(wheel) == "0.9.10"
+
+
+def test_wheel_version_requires_exactly_one_metadata_entry(tmp_path: Path) -> None:
+    wheel = tmp_path / "empty.whl"
+    with zipfile.ZipFile(wheel, "w"):
+        pass
+    with pytest.raises(RuntimeError, match="exactly one"):
+        MODULE.wheel_version(wheel)
+
+
+def test_check_macho_architecture_accepts_a_matching_cputype(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "soldr"
+    # MH_MAGIC_64 + CPU_TYPE_ARM64, both little-endian, padded to 16 bytes.
+    binary.write_bytes(MODULE.MACHO_MAGIC_64 + b"\x0c\x00\x00\x01" + b"\x00" * 8)
+    MODULE.check_macho_architecture(binary, "arm64")  # must not raise/exit
+
+
+def test_check_macho_architecture_rejects_a_mismatched_cputype(
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "soldr"
+    binary.write_bytes(MODULE.MACHO_MAGIC_64 + b"\x0c\x00\x00\x01" + b"\x00" * 8)
+    with pytest.raises(SystemExit, match="expected Mach-O cputype for x86_64"):
+        MODULE.check_macho_architecture(binary, "x86_64")
+
+
+def test_check_macho_architecture_rejects_a_non_macho_file(tmp_path: Path) -> None:
+    binary = tmp_path / "soldr.exe"
+    binary.write_bytes(b"MZ\x90\x00" + b"\x00" * 12)
+    with pytest.raises(SystemExit, match="not a 64-bit Mach-O binary"):
+        MODULE.check_macho_architecture(binary, "x86_64")
+
+
+# ---------- soldr#3071: --exec-prefix routes execution through the guest ----------
+
+
+def test_build_argv_runs_directly_without_an_exec_prefix() -> None:
+    assert MODULE.build_argv(None, [Path("/extracted/soldr"), "--version"]) == [
+        "/extracted/soldr",
+        "--version",
+    ]
+
+
+def test_build_argv_prepends_and_shlex_splits_the_exec_prefix() -> None:
+    # A `Path` argument is reduced to its basename: the guest only ever has
+    # what `--guest-sync-dest` synced in at its `--cwd`, never the host's
+    # absolute extraction path.
+    argv = MODULE.build_argv(
+        "python3 ci/macos_x64_guest.py exec --cwd /Users/runner/work/ws --",
+        [Path("/host/extracted/soldr"), "--version"],
+    )
+    assert argv == [
+        "python3",
+        "ci/macos_x64_guest.py",
+        "exec",
+        "--cwd",
+        "/Users/runner/work/ws",
+        "--",
+        "soldr",
+        "--version",
+    ]
+
+
+def test_build_argv_keeps_full_paths_without_an_exec_prefix() -> None:
+    argv = MODULE.build_argv(None, [Path("/host/extracted/soldr"), "--version"])
+    assert argv == ["/host/extracted/soldr", "--version"]
+
+
+def test_run_passes_the_built_argv_to_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, list[str]] = {}
+
+    class _Result:  # pylint: disable=too-few-public-methods
+        stdout = "soldr 0.9.10\n"
+
+    def fake_run(argv: list[str], **_kwargs: object) -> _Result:
+        captured["argv"] = argv
+        return _Result()
+
+    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+    result = MODULE.run(
+        [Path("/extracted/soldr"), "--version"], exec_prefix="guest-runner --"
+    )
+    assert captured["argv"] == ["guest-runner", "--", "soldr", "--version"]
+    assert result.stdout == "soldr 0.9.10\n"
+
+
+def test_sync_extracted_into_guest_calls_the_guest_script(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(argv: list[str], **_kwargs: object) -> None:
+        captured["argv"] = argv
+
+    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+    MODULE.sync_extracted_into_guest(Path("extracted"), "/Users/runner/work/ws/dist")
+    argv = captured["argv"]
+    assert argv[1:4] == [str(MODULE.GUEST_SCRIPT), "sync-in", "--src"]
+    assert argv[4] == "extracted"
+    assert argv[-2:] == ["--dest", "/Users/runner/work/ws/dist"]

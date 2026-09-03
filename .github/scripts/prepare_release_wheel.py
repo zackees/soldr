@@ -92,7 +92,9 @@ def installed_package_version(driver: Path, *, cwd: Path) -> str:
     )
 
 
-def validate_workspace_version(driver: Path, expected_version: str, *, cwd: Path) -> None:
+def validate_workspace_version(
+    driver: Path, expected_version: str, *, cwd: Path
+) -> None:
     """Refuse to build a wheel from a manifest that disagrees with the release."""
     observed = installed_package_version(driver, cwd=cwd)
     if not observed:
@@ -152,7 +154,14 @@ def prepare_and_build(
         cwd=repo_root,
     )
     best_effort(
-        ["git", "restore", "--", "Cargo.toml", "Cargo.lock", "crates/soldr-cli/Cargo.toml"],
+        [
+            "git",
+            "restore",
+            "--",
+            "Cargo.toml",
+            "Cargo.lock",
+            "crates/soldr-cli/Cargo.toml",
+        ],
         cwd=repo_root,
     )
     validate_workspace_version(driver, expected_version, cwd=repo_root)
@@ -165,7 +174,9 @@ def prepare_and_build(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True)
-    parser.add_argument("--runner-os", required=True, choices=["Linux", "macOS", "Windows"])
+    parser.add_argument(
+        "--runner-os", required=True, choices=["Linux", "macOS", "Windows"]
+    )
     parser.add_argument("--expected-version", required=True)
     parser.add_argument("--wheel-hook", default="")
     parser.add_argument("--repo-root", type=Path, default=Path("."))

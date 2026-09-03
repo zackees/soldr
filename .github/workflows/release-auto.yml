@@ -176,11 +176,6 @@ jobs:
         shell: bash
         run: uv run --no-project --python 3.13 .github/scripts/prepare_release_target.py --target "${{ matrix.setup_target }}" --github-env "$GITHUB_ENV"
 
-      - name: Restore the native macOS SDK root
-        if: contains(matrix.target, 'apple-darwin')
-        shell: bash
-        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
-
       - name: Add cross-compile target
         shell: bash
         run: soldr rustup target add ${{ matrix.target }}
@@ -213,8 +208,13 @@ jobs:
           "$driver" --version
 
       # ── Build release binary ──
+      # soldr#3071: apple-darwin joined this blessed-build path (the same
+      # Linux cross path Windows uses) once native macOS runners were
+      # removed from CI. Only ARM64 musl remains native (its catalogue
+      # compiler is i386-hosted and cannot execute on the native ARM64
+      # runner it builds on).
       - name: Build release binary (soldr-driven)
-        if: matrix.target != 'aarch64-unknown-linux-musl' && !contains(matrix.target, 'apple-darwin')
+        if: matrix.target != 'aarch64-unknown-linux-musl'
         shell: bash
         env:
           SOLDR_RELEASE_CI: "1"
@@ -284,18 +284,6 @@ jobs:
           # through the pinned Soldr and rustup toolchain.
           uv run --no-project --python 3.13 .github/scripts/native_release_build.py binary \
             --driver target/release/soldr --target aarch64-unknown-linux-musl
-
-      - name: Build native macOS release binary through pinned Soldr
-        if: contains(matrix.target, 'apple-darwin')
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Native macOS already has the correct Xcode SDK and clang. Soldr
-          # The blessed build path adds its prepared SDK directory as a
-          # bare linker input, so invoke Cargo through pinned Soldr/rustup
-          # without repeating target preparation.
-          uv run --no-project --python 3.13 .github/scripts/native_release_build.py binary \
-            --driver target/release/soldr --target "${{ matrix.target }}"
 
       # soldr#1060 acceptance: the musl artifacts are the "runs anywhere"
       # build precisely because they carry no dynamic dependencies. A musl
@@ -572,11 +560,17 @@ jobs:
           --binary "${{ matrix.binary }}"
 
       - name: Smoke test wheel
-        # GNU ARM64 and Windows are cross-built on Linux. Musl wheels run
-        # under Alpine; Windows wheels run in the smoke_windows job below.
+        # GNU ARM64, Windows, and (soldr#3071) both apple-darwin targets are
+        # cross-built on Linux and cannot `pip install` their own wheel here
+        # (wrong platform). Musl wheels run under Alpine; Windows wheels run
+        # in the smoke_windows job below; apple-darwin wheels run in the
+        # smoke_macos_x64 job below (x86_64 only -- aarch64 has no execution
+        # environment in CI at all, see ci/canonical-targets.json
+        # compatibility_decisions).
         if: |
           !contains(matrix.target, 'musl') &&
           !contains(matrix.target, 'pc-windows-msvc') &&
+          !contains(matrix.target, 'apple-darwin') &&
           matrix.target != 'aarch64-unknown-linux-gnu'
         shell: bash
         env:
@@ -626,21 +620,38 @@ jobs:
           name: pypi-soldr-${{ matrix.target }}
           path: dist/*.whl
 
-  # soldr#2453: ARM macOS artifacts are built natively on macos-15; this
-  # smoke job downloads and re-verifies the uploaded build-job artifacts
-  # on a fresh runner rather than trusting the build lane's own smoke step.
-  smoke_macos_arm64:
-    name: Smoke ARM macOS release artifacts
+  # soldr#3071: no GitHub Actions job may run on a macos-* runner (owner
+  # mandate 2026-09-02). x86_64-apple-darwin is smoke-tested inside a
+  # dockur/macos x86_64 guest hosted on an ordinary ubuntu-24.04 runner --
+  # see ci/macos_x64_guest.py. This job downloads and re-verifies the
+  # uploaded build-job artifacts on a fresh runner rather than trusting the
+  # build lane's own smoke step, same as before. aarch64-apple-darwin has no
+  # smoke coverage at all: it is cross-built and release-included but not
+  # executed anywhere in CI (soldr#3071 tracks re-enabling that before
+  # release; see the compatibility_decisions entry in
+  # ci/canonical-targets.json).
+  smoke_macos_x64:
+    name: Smoke Intel macOS release artifacts
     needs:
       - prepare
       - build
     if: needs.prepare.outputs.should_release == 'true'
-    runs-on: macos-15
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # soldr#3071: docker/login-action against GHCR to pull the baked dockur
+    # guest image. The workflow-level `permissions:` block narrows every
+    # job's default token, so this must be granted explicitly here.
+    permissions:
+      contents: read
+      packages: read
+    env:
+      SOLDR_MACOS_GUEST_IMAGE: ghcr.io/zackees/soldr/macos-x64-guest:ventura
+      SOLDR_MACOS_GUEST_SSH_KEY: ${{ secrets.SOLDR_MACOS_GUEST_SSH_KEY }}
 
     steps:
-      # Checkout only for ci/smoke_release_artifacts.py — the smoke
-      # logic lives in a testable Python file, not inline YAML.
+      # Checkout only for ci/smoke_release_artifacts.py and
+      # ci/macos_x64_guest.py — the smoke and guest logic live in testable
+      # Python files, not inline YAML.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.commit_sha }}
@@ -650,14 +661,35 @@ jobs:
         with:
           enable-cache: false
 
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
+      - name: Enable KVM
+        run: uv run --no-project --python 3.13 ci/macos_x64_guest.py preflight --apply-udev
+
+      - name: Log in to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start the macOS guest
+        run: uv run --no-project --python 3.13 ci/macos_x64_guest.py start --image "$SOLDR_MACOS_GUEST_IMAGE"
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: release-soldr-aarch64-apple-darwin
+          name: release-soldr-x86_64-apple-darwin
           path: dist
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: pypi-soldr-aarch64-apple-darwin
+          name: pypi-soldr-x86_64-apple-darwin
           path: dist
 
       - name: Architecture-check and smoke archive and wheel
@@ -665,8 +697,21 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-project --python 3.13 ci/smoke_release_artifacts.py \
-            --target aarch64-apple-darwin \
-            --expected-version '${{ needs.prepare.outputs.version }}'
+            --target x86_64-apple-darwin \
+            --expected-version '${{ needs.prepare.outputs.version }}' \
+            --guest-sync-dest /Users/runner/work/ws/extracted \
+            --exec-prefix "uv run --no-project --python 3.13 ci/macos_x64_guest.py exec --cwd /Users/runner/work/ws/extracted --"
+
+      # Logs are printed only on failure -- they add nothing to a green run.
+      - name: Stop the macOS guest
+        if: always()
+        shell: bash
+        run: |
+          if [ '${{ job.status }}' = success ]; then
+            uv run --no-project --python 3.13 ci/macos_x64_guest.py stop
+          else
+            uv run --no-project --python 3.13 ci/macos_x64_guest.py stop --logs
+          fi
 
   # Windows artifacts are cross-built on Linux; execution still needs native
   # Windows on both architectures. Each smoke consumes uploaded artifacts.
@@ -724,9 +769,9 @@ jobs:
     needs:
       - prepare
       - build
-      - smoke_macos_arm64
+      - smoke_macos_x64
       - smoke_windows
-    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_arm64.result == 'success' && needs.smoke_windows.result == 'success'
+    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success' && needs.smoke_windows.result == 'success'
     runs-on: ubuntu-24.04
     # Artifact download + attestation; observed max 0.6 min.
     timeout-minutes: 30

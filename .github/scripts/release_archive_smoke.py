@@ -148,7 +148,9 @@ def smoke(args: argparse.Namespace) -> None:
         [args.driver, "archive", "--input", str(archive), "--extract-dir", str(extract)]
     )
     if extracted.returncode != 0:
-        raise SmokeError(f"archive extraction failed:\n{extracted.stdout}\n{extracted.stderr}")
+        raise SmokeError(
+            f"archive extraction failed:\n{extracted.stdout}\n{extracted.stderr}"
+        )
     print("--- extracted layout ---")
     for entry in sorted(extract.iterdir()):
         print(f"  {entry.name}")
@@ -175,7 +177,9 @@ def smoke(args: argparse.Namespace) -> None:
 
     runner_arch = platform.machine()
     if not native_arch_match(args.runner_os, runner_arch, args.target):
-        print(f"skipping --version (runner {args.runner_os}/{runner_arch} vs target {args.target})")
+        print(
+            f"skipping --version (runner {args.runner_os}/{runner_arch} vs target {args.target})"
+        )
         return
 
     version_flag = run([str(soldr), "--version"])
@@ -184,7 +188,9 @@ def smoke(args: argparse.Namespace) -> None:
     print(version_flag.stdout.strip())
 
     version_json = run([str(soldr), "version", "--json"])
-    problem = version_json_problem(version_json.stdout, normalized_release_version(args.version))
+    problem = version_json_problem(
+        version_json.stdout, normalized_release_version(args.version)
+    )
     if problem:
         raise SmokeError(problem)
     print(f"soldr version --json output: {version_json.stdout.strip()}")
@@ -208,7 +214,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--driver", default=None, help="host soldr used to extract")
     parser.add_argument("--dist", type=Path, default=Path("dist"))
     parser.add_argument("--driver-dir", type=Path, default=Path("target/release"))
-    parser.add_argument("--runner-os", required=True, choices=["Linux", "macOS", "Windows"])
+    parser.add_argument(
+        "--runner-os", required=True, choices=["Linux", "macOS", "Windows"]
+    )
     args = parser.parse_args(argv)
     if args.archive is None:
         args.archive = str(archive_path(args.version, args.target, args.dist))

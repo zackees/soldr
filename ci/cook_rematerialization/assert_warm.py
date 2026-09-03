@@ -70,14 +70,18 @@ def main() -> int:
         "workspace_dirty": sorted(workspace_dirty),
     }
     print(json.dumps(report, indent=2, sort_keys=True))
-    report_path = Path(sys.argv[6]) if len(sys.argv) > 6 else Path("/artifact/warm-report.json")
+    report_path = (
+        Path(sys.argv[6]) if len(sys.argv) > 6 else Path("/artifact/warm-report.json")
+    )
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
     if report["external_dirty"]:
-        raise SystemExit(f"external dependencies recompiled: {report['external_dirty']}")
+        raise SystemExit(
+            f"external dependencies recompiled: {report['external_dirty']}"
+        )
     if report["external_build_script_runs"]:
         raise SystemExit(
             f"external build scripts reran: {report['external_build_script_runs']}"
@@ -85,7 +89,9 @@ def main() -> int:
     if not external_fresh:
         raise SystemExit("Cargo reported no fresh external dependency artifacts")
     if not workspace_dirty:
-        raise SystemExit("expected the real workspace package to compile after hydration")
+        raise SystemExit(
+            "expected the real workspace package to compile after hydration"
+        )
     if warm_ms * 10 > seed_ms:
         raise SystemExit(
             f"warm dependency build missed 10x gate: seed={seed_ms}ms warm={warm_ms}ms"

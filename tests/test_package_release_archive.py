@@ -11,7 +11,9 @@ REPO_ROOT = Path(__file__).parents[1]
 SCRIPTS = REPO_ROOT / ".github" / "scripts"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-auto.yml"
 
-package = load_script_module(SCRIPTS / "package_release_archive.py", "package_release_archive")
+package = load_script_module(
+    SCRIPTS / "package_release_archive.py", "package_release_archive"
+)
 
 
 def test_driver_path_tracks_the_runner_not_the_archive_target(tmp_path: Path) -> None:

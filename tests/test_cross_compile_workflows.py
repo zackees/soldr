@@ -170,10 +170,13 @@ def test_windows_gnu_target_run_is_bounded_and_disk_safe() -> None:
 
     assert "extended_replay:" in target_run
     assert "default: false" in target_run
-    assert (
-        "inputs.run_pep517_smoke && 65 || inputs.extended_replay && 55 || 30"
-        in target_run
-    )
+    # soldr#3071: x86_64-dockur outranks every other budget (guest boot plus
+    # an extended-replay-class archive replay), then the pre-existing
+    # run_pep517_smoke / extended_replay / default chain is unchanged.
+    assert "inputs.target_execution == 'x86_64-dockur' && 90" in target_run
+    assert "inputs.run_pep517_smoke && 65" in target_run
+    assert "inputs.extended_replay && 55" in target_run
+    assert "|| 30 }}" in target_run
     assert _job_input(gnu_run, "extended_replay") == "true"
     partitions = json.loads(_job_input(gnu_run, "replay_partitions").strip("'"))
     assert partitions == [
@@ -405,12 +408,13 @@ def test_fast_build_only_skips_windows_e2e_for_low_risk_changes() -> None:
     assert "if:" not in linux_x64
 
     # 2. The broader gate exists, is driven by the same policy job, and the
-    #    macOS pairs -- where a skipped lane also avoids a 12-23 minute queue
-    #    -- are behind it.
+    #    macOS lanes -- where a skipped lane also avoids a queue -- are
+    #    behind it. aarch64-apple-darwin has no paired run job any more
+    #    (soldr#3071: no macos-* runner anywhere), so it is checked alone.
     assert "run_platform_e2e" in policy
     for job, nxt in [
         ("e2e-macos-x64-build", "e2e-macos-x64"),
-        ("e2e-macos-arm64-build", "e2e-macos-arm64"),
+        ("e2e-macos-arm64-build", None),
     ]:
         block = _job_block(ci, job, nxt)
         assert "needs.windows-e2e-policy.outputs.run_platform_e2e == 'true'" in block
@@ -598,29 +602,32 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     block = _job_block(ci, "pep517-daemon-smoke", "e2e-linux-x64")
 
-    # soldr#2615: the macos-arm64 smoke rides the e2e-macos-arm64 target-run
-    # allocation instead of a second macos-15 VM; only windows-x64 keeps a
-    # dedicated smoke leg here.
+    # soldr#3071: no macos-* runner exists anywhere, so there is no macOS
+    # PEP 517 smoke leg at all -- the dockur guest that replaced it has no
+    # Python/maturin (e2e-macos-x64 sets run_pep517_smoke: false explicitly).
+    # windows-x64 keeps its dedicated smoke leg here, unchanged.
     assert '"name":"macos-arm64"' not in block
     assert '"name":"windows-x64"' in block
     assert "github.event.pull_request.labels" in block
     assert "fromJSON('[" in block
 
-    run = _job_block(ci, "e2e-macos-arm64")
-    assert _job_input(run, "run_pep517_smoke") == (
-        "${{ github.ref_name == 'main' || "
-        "!contains(github.event.pull_request.labels.*.name, 'fast-build') }}"
-    )
+    x64_run = _job_block(ci, "e2e-macos-x64")
+    assert _job_input(x64_run, "run_pep517_smoke") == "false"
+    assert "no Python" in x64_run or "no Python/maturin" in x64_run
 
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
     assert "run_pep517_smoke:" in target_run
+    # soldr#3071: the dockur guest has no Python/maturin, so this step group
+    # is also excluded by execution mode as a second, workflow-level line of
+    # defense (not just the false input above).
     for step_name in [
         "Build soldr wheel under test",
         "Run downstream PEP 517 daemon smoke",
     ]:
         step = _step_block(target_run, step_name)
         assert (
-            "if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup }}" in step
+            "if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup "
+            "&& inputs.target_execution != 'x86_64-dockur' }}" in step
         )
     # The smoke must run after (and never gate) the archive replay.
     assert target_run.index(
@@ -851,7 +858,7 @@ def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:
         assert required in proof
 
 
-def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
+def test_mac_x64_distribution_uses_pinned_setup_soldr_and_the_blessed_build() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     support_fetch = (
@@ -867,10 +874,11 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     assert "if: false" not in mac_build
     assert "target: x86_64-apple-darwin" in mac_build
 
-    # Release lanes use the same pinned setup-soldr target environment;
-    # macOS x64 stays native on the Intel runner. The matrix itself is
-    # contract-generated (soldr#2469 step 2.1) and the intel-runner fact is
-    # pinned in test_canonical_target_contract.py against release.build.
+    # soldr#3071: macOS x64 release binaries now build through the same
+    # Linux-cross blessed path as Windows -- no native macos-* runner. The
+    # matrix itself is contract-generated (soldr#2469 step 2.1) and the
+    # ubuntu-24.04 build-runner fact is pinned in
+    # test_canonical_target_contract.py against release.build.
     assert "include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}" in release
     assert '"x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"}' in support_fetch
     # soldr#2469 step 2.2: the GNU-Linux `soldr prepare` hook moved into
@@ -889,20 +897,20 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     # prepare-side gate imports the same generator (release_detect.py).
     assert "verify_github_release_assets.py" in release
 
-    sdk_step = _step_block(release, "Restore the native macOS SDK root")
-    assert "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" in sdk_step
-    native_build = _step_block(
-        release, "Build native macOS release binary through pinned Soldr"
-    )
-    assert "if: contains(matrix.target, 'apple-darwin')" in native_build
-    assert ".github/scripts/native_release_build.py binary" in native_build
+    # soldr#3071: neither the native-SDKROOT step nor the native-binary
+    # build step exist any more -- apple-darwin builds through the same
+    # blessed step every other release target does.
+    assert "Restore the native macOS SDK root" not in release
+    assert "Build native macOS release binary through pinned Soldr" not in release
     blessed_build = _step_block(release, "Build release binary (soldr-driven)")
-    assert "!contains(matrix.target, 'apple-darwin')" in blessed_build
+    assert "apple-darwin" not in blessed_build
+    assert "matrix.target != 'aarch64-unknown-linux-musl'" in blessed_build
 
     assert '"darwin-x64": { triple: "x86_64-apple-darwin"' in install
     assert "intentionally not published" not in install
     assert "x86_64-apple-darwin" in npm_docs
-    assert "macos-15-intel" in npm_docs
+    assert "dockur/macos" in npm_docs
+    assert "macos-15-intel" not in npm_docs
     assert "x86_64-apple-darwin" in verification_docs
     assert "Mach-O x86_64" in verification_docs
 
@@ -1177,6 +1185,7 @@ def test_cross_compile_docs_match_current_blessed_surfaces() -> None:
     assert "_cross-build-windows-host.yml" not in docs
     assert "cross-build-from-windows-x64-linux" not in docs
     assert "build-macos-x64.yml" not in ci
-    assert "macos-15-intel" in ci
+    # soldr#3071: no GitHub Actions job runs on a macos-* runner any more.
+    assert "macos-15-intel" not in ci
     assert "soldr#1237" not in release
     assert "x86_64-apple-darwin: **intentionally omitted**" not in release

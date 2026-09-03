@@ -39,7 +39,9 @@ def test_duration_is_appended_to_the_job_step_summary(tmp_path) -> None:
     summary = tmp_path / "summary.md"
     os.environ["GITHUB_STEP_SUMMARY"] = str(summary)
     try:
-        module.main(["--label", "target / soldr ci-test", "--", sys.executable, "-c", "pass"])
+        module.main(
+            ["--label", "target / soldr ci-test", "--", sys.executable, "-c", "pass"]
+        )
     finally:
         del os.environ["GITHUB_STEP_SUMMARY"]
     body = summary.read_text(encoding="utf-8")
@@ -54,7 +56,14 @@ def test_summary_is_written_even_when_the_command_failed(tmp_path) -> None:
     os.environ["GITHUB_STEP_SUMMARY"] = str(summary)
     try:
         code = module.main(
-            ["--label", "failed step", "--", sys.executable, "-c", "raise SystemExit(3)"]
+            [
+                "--label",
+                "failed step",
+                "--",
+                sys.executable,
+                "-c",
+                "raise SystemExit(3)",
+            ]
         )
     finally:
         del os.environ["GITHUB_STEP_SUMMARY"]

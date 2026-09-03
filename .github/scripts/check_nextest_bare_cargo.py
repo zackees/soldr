@@ -45,7 +45,9 @@ def main() -> int:
     try:
         matches = ripgrep_bare_cargo()
     except (FileNotFoundError, RuntimeError) as error:
-        print(f"Nextest bare-Cargo guard could not run ripgrep: {error}", file=sys.stderr)
+        print(
+            f"Nextest bare-Cargo guard could not run ripgrep: {error}", file=sys.stderr
+        )
         return 2
     if matches:
         print("Nextest bare-Cargo guard failed:", file=sys.stderr)

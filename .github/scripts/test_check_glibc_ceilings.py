@@ -120,11 +120,15 @@ def test_release_own_binary_ceiling_drifting_fails(mod, tmp_path):
 
 
 @pytest.mark.parametrize("drop", ["own", "bundled"])
-def test_a_removed_release_ratchet_fails_rather_than_passing_vacuously(mod, tmp_path, drop):
+def test_a_removed_release_ratchet_fails_rather_than_passing_vacuously(
+    mod, tmp_path, drop
+):
     # Same reasoning as the per-PR case: a deleted step would otherwise be
     # indistinguishable from a satisfied one.
     release = _release_workflow("2.39", "2.39")
-    marker = mod.RELEASE_OWN_BINARY_MARKER if drop == "own" else mod.RELEASE_BUNDLED_MARKER
+    marker = (
+        mod.RELEASE_OWN_BINARY_MARKER if drop == "own" else mod.RELEASE_BUNDLED_MARKER
+    )
     release = "\n".join(line for line in release.splitlines() if marker not in line)
     _seed(tmp_path, _workflow("2.28"), _workflow("2.28", "2.28"), release=release)
     assert mod.main(["--repo-root", str(tmp_path)]) == 1

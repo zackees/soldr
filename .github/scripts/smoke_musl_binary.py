@@ -45,7 +45,9 @@ def version_problem(output: str) -> str | None:
 def version_json_problem(output: str, expected: str) -> str | None:
     status = version_json_status(output, expected)
     if status == "empty":
-        return "musl binary's 'soldr version --json' produced empty stdout (soldr#1202)."
+        return (
+            "musl binary's 'soldr version --json' produced empty stdout (soldr#1202)."
+        )
     if status in {"mismatch", "invalid"}:
         return (
             "musl binary's 'soldr version --json' output does not include "
@@ -56,7 +58,9 @@ def version_json_problem(output: str, expected: str) -> str | None:
 
 def run_cli(command: list[str], *, capture: bool) -> str:
     try:
-        completed = subprocess.run(command, check=True, capture_output=capture, text=capture)
+        completed = subprocess.run(
+            command, check=True, capture_output=capture, text=capture
+        )
     except subprocess.CalledProcessError as error:
         stderr = error.stderr.strip() if isinstance(error.stderr, str) else ""
         stdout = error.stdout.strip() if isinstance(error.stdout, str) else ""

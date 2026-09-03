@@ -37,7 +37,8 @@ def _runs_a_repo_script(job: dict) -> bool:
 
 def _checks_out(job: dict) -> bool:
     return any(
-        isinstance(step.get("uses"), str) and step["uses"].startswith("actions/checkout@")
+        isinstance(step.get("uses"), str)
+        and step["uses"].startswith("actions/checkout@")
         for step in job.get("steps", [])
     )
 
@@ -61,12 +62,16 @@ def test_the_guard_can_actually_see_a_missing_checkout() -> None:
     """A passing assertion is worthless if the detector matches nothing."""
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
-    scripted = [name for name, job in workflow["jobs"].items() if _runs_a_repo_script(job)]
+    scripted = [
+        name for name, job in workflow["jobs"].items() if _runs_a_repo_script(job)
+    ]
     assert "publish" in scripted, "publish must still be recognised as script-running"
 
     stripped = dict(workflow["jobs"]["publish"])
     stripped["steps"] = [
-        step for step in stripped["steps"] if not str(step.get("uses", "")).startswith("actions/checkout@")
+        step
+        for step in stripped["steps"]
+        if not str(step.get("uses", "")).startswith("actions/checkout@")
     ]
     assert _runs_a_repo_script(stripped)
     assert not _checks_out(stripped)

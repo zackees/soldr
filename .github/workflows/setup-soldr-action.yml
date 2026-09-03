@@ -57,8 +57,6 @@ jobs:
         include:
           - name: Linux
             runner: ubuntu-24.04
-          - name: macOS
-            runner: macos-15
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -73,14 +71,18 @@ jobs:
       # soldr#2131. install.sh was executed by nothing -- it appeared in the
       # workflows only inside `paths:` triggers -- so a bash 4.0 builtin sat in
       # the one script users are told to run and every check stayed green
-      # (soldr#2130). This job already allocates both a Linux and a macOS
-      # runner and already triggers on install.sh, so it is the cheapest place
-      # to actually run it.
+      # (soldr#2130). This job already triggers on install.sh, so it is the
+      # cheapest place to actually run it.
       #
-      # The macOS leg is the one that matters: it executes under the real
-      # /bin/bash 3.2, which is what the bug needed. The Linux leg has bash 5
-      # and could not have caught it -- kept anyway, since the CRLF handling
-      # this also covers is not macOS-specific.
+      # soldr#3071: this used to run on both a Linux and a macOS leg, and the
+      # macOS leg was the one that mattered -- it executed under the real
+      # /bin/bash 3.2, which is what the original bug needed; Linux's bash 5
+      # could not have caught it. No GitHub Actions job may run on a macos-*
+      # runner any more, so that live coverage is gone; the static regex scan
+      # in tests/test_macos_bash_portability.py is what is left guarding
+      # bash-4-only constructs in this and every other contributor-facing
+      # shell script. This step (Linux, bash 5) still covers the CRLF
+      # handling install.sh also fixed, which was never macOS-specific.
       # This workflow had no uv step; the same pinned action ci.yml uses.
       - name: Install uv
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
@@ -89,8 +91,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Printed because the bash version IS the thing under test on the
-          # macOS leg -- a green run means little if it silently used bash 5.
           bash --version | head -1
           uv run --no-project --python 3.13 --with pytest python -m pytest \
             tests/test_install_sh_smoke.py -q
@@ -106,9 +106,8 @@ jobs:
           set -uo pipefail
           # soldr#2763: the `command -v python3` fallback existed because this
           # workflow had no interpreter it could count on. The uv step above
-          # supplies one on every leg -- including the macOS runner, whose
-          # `python3` is whatever the image ships -- so the branch is gone
-          # rather than being converted twice.
+          # supplies one on every leg, so the branch is gone rather than being
+          # converted twice.
           uv run --no-project --python 3.13 python \
             .github/scripts/verify_setup_soldr_pin.py
           status=$?

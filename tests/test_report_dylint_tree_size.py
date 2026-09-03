@@ -15,7 +15,9 @@ SCRIPTS = REPO_ROOT / ".github" / "scripts"
 
 
 def _module():
-    return load_script_module(SCRIPTS / "report_dylint_tree_size.py", "report_dylint_tree_size")
+    return load_script_module(
+        SCRIPTS / "report_dylint_tree_size.py", "report_dylint_tree_size"
+    )
 
 
 def _tree(root: Path, name: str, payload: bytes) -> None:
