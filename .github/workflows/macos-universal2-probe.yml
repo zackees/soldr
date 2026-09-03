@@ -229,13 +229,28 @@ jobs:
             curl -s -o tests.tar.zst http://10.0.2.2:8000/soldr-tests-x86_64.tar.zst
             ls -l tests.tar.zst
 
-            # Bounded on purpose: this probe is asking "do mac unit tests run in
-            # this guest at all", not "does the whole suite pass".
-            ./cargo-nextest run \
+            # cargo-nextest is a cargo SUBCOMMAND shim: invoked as
+            # `./cargo-nextest run ...` it proxies to cargo, which answers
+            # "unrecognized subcommand 'run'". The nextest verb is required.
+            # --workspace-remap needs a directory that exists; tests that read
+            # real workspace files will fail individually, which is a result
+            # worth having rather than a reason not to try.
+            mkdir -p /tmp/w/src
+
+            ./cargo-nextest nextest list \
+              --archive-file tests.tar.zst \
+              --workspace-remap /tmp/w/src \
+              > /tmp/w/out/nextest-list.log 2>&1
+            echo "list-rc=$?" | tee /tmp/w/out/list.rc
+            head -20 /tmp/w/out/nextest-list.log
+
+            # Bounded on purpose: this probe asks "do mac unit tests run in this
+            # guest at all", not "does the whole suite pass".
+            ./cargo-nextest nextest run \
               --archive-file tests.tar.zst \
               --workspace-remap /tmp/w/src \
               --no-fail-fast \
-              -E 'test(/^soldr_core::/)' \
+              -E 'package(soldr-core)' \
               > /tmp/w/out/nextest.log 2>&1
             echo "nextest-rc=$?" | tee /tmp/w/out/nextest.rc
             tail -60 /tmp/w/out/nextest.log
@@ -246,11 +261,18 @@ jobs:
           set -uo pipefail
           C="${{ steps.macos.outputs.workdir }}/collected"
           echo "guest exit code: ${{ steps.macos.outputs.exit-code }}"
-          for f in arch.txt version.txt nextest.rc; do
+          for f in arch.txt version.txt list.rc nextest.rc; do
             [ -f "$C/$f" ] && { echo "--- $f ---"; cat "$C/$f"; }
           done
-          [ -f "$C/nextest.log" ] && { echo "--- nextest.log (tail) ---"; tail -80 "$C/nextest.log"; }
-          true
+          [ -f "$C/nextest-list.log" ] && { echo "--- nextest list (head) ---"; head -30 "$C/nextest-list.log"; }
+          [ -f "$C/nextest.log" ] && { echo "--- nextest run (tail) ---"; tail -80 "$C/nextest.log"; }
+
+          # A probe whose test step cannot report red is not testing anything.
+          fail=0
+          grep -q '^x86_64$' "$C/arch.txt" 2>/dev/null || { echo "::error::guest did not report x86_64"; fail=1; }
+          grep -q 'universal2-runs-rc=0' "$C/version.txt" 2>/dev/null || { echo "::error::the universal2 binary did not run on x86_64"; fail=1; }
+          grep -q 'nextest-rc=0' "$C/nextest.rc" 2>/dev/null || { echo "::error::mac unit tests did not pass: $(cat "$C/nextest.rc" 2>/dev/null || echo missing)"; fail=1; }
+          exit "$fail"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
