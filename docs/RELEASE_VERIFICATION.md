@@ -71,8 +71,10 @@ Current release assets follow this shape:
 - `soldr-vX.Y.Z-SHA256SUMS.txt`
 
 The Intel macOS archive and wheel are cross-built on Linux through the blessed
-Apple SDK path. Publication is gated on a `macos-15-intel` job that verifies
-the archive is Mach-O x86_64 and executes both the archive and wheel binaries.
+Apple SDK path. Publication is gated on a `smoke_macos_x64` job (running on an
+`ubuntu-24.04` runner, executing inside a dockur/macos x86_64 guest -- soldr#3071,
+no GitHub Actions job runs on a native macOS runner) that verifies the archive
+is Mach-O x86_64 and executes both the archive and wheel binaries.
 
 ## Step 1: Verify The Checksum
 

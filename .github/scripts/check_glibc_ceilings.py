@@ -142,7 +142,9 @@ def check_release_ceilings(repo_root: Path) -> int:
         return 1
 
     found = ceilings_by_marker(text)
-    missing = [m for m in (RELEASE_OWN_BINARY_MARKER, RELEASE_BUNDLED_MARKER) if m not in found]
+    missing = [
+        m for m in (RELEASE_OWN_BINARY_MARKER, RELEASE_BUNDLED_MARKER) if m not in found
+    ]
     if missing:
         print(
             f"check_glibc_ceilings: {RELEASE_WORKFLOW} no longer has a "

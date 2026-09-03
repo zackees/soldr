@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Protocol
 
 import pytest
-
 from conftest import load_script_module
 
 
@@ -29,10 +28,16 @@ def test_docker_context_is_small_because_image_copies_no_source() -> None:
 
 
 def test_docker_image_bootstraps_with_amalgamation_safe_published_soldr() -> None:
-    dockerfile = (Path(__file__).parents[1] / perf_local.DOCKERFILE).read_text(encoding="utf-8")
+    dockerfile = (Path(__file__).parents[1] / perf_local.DOCKERFILE).read_text(
+        encoding="utf-8"
+    )
 
-    bootstrap = re.search(r"^ARG SOLDR_BOOTSTRAP_VERSION=(\d+)\.(\d+)\.(\d+)$", dockerfile, re.M)
-    assert bootstrap, "Docker bootstrap version must remain an explicit published SemVer pin"
+    bootstrap = re.search(
+        r"^ARG SOLDR_BOOTSTRAP_VERSION=(\d+)\.(\d+)\.(\d+)$", dockerfile, re.M
+    )
+    assert (
+        bootstrap
+    ), "Docker bootstrap version must remain an explicit published SemVer pin"
     version = tuple(map(int, bootstrap.groups()))
     assert version >= (0, 9, 6), (
         "Soldr 0.9.6 is the minimum bootstrap carrying zccache's "
@@ -46,7 +51,8 @@ def test_docker_image_bootstraps_with_amalgamation_safe_published_soldr() -> Non
     assert '"soldr==${SOLDR_BOOTSTRAP_VERSION}"' in dockerfile
     assert "/opt/soldr-bootstrap/bin/soldr --version" in dockerfile
     assert (
-        'ENV SOLDR_CACHE_DIR="/root/.soldr/bootstrap-v${SOLDR_BOOTSTRAP_VERSION}"' in dockerfile
+        'ENV SOLDR_CACHE_DIR="/root/.soldr/bootstrap-v${SOLDR_BOOTSTRAP_VERSION}"'
+        in dockerfile
     ), (
         "The persistent bootstrap cache/runtime root must be scoped by the explicit "
         "published bootstrap version, so a retained older daemon cannot service it."
@@ -79,12 +85,32 @@ def test_bosn_workspace_test_hands_off_from_bootstrap_to_source() -> None:
     )
 
     assert [step.argv for step in plan] == [
-        ["/opt/soldr-bootstrap/bin/soldr", "cargo", "build", "-p", "soldr-cli", "--bin", "soldr"],
-        ["/opt/soldr-bootstrap/bin/soldr", "cache", "shutdown", "--shutdown-timeout-seconds", "30"],
+        [
+            "/opt/soldr-bootstrap/bin/soldr",
+            "cargo",
+            "build",
+            "-p",
+            "soldr-cli",
+            "--bin",
+            "soldr",
+        ],
+        [
+            "/opt/soldr-bootstrap/bin/soldr",
+            "cache",
+            "shutdown",
+            "--shutdown-timeout-seconds",
+            "30",
+        ],
         ["/opt/soldr-bootstrap/bin/soldr", "broker", "remove"],
         ["/target/debug/soldr", "daemon", "start"],
         ["/target/debug/soldr", "cargo", "test", "--workspace"],
-        ["/target/debug/soldr", "cache", "shutdown", "--shutdown-timeout-seconds", "30"],
+        [
+            "/target/debug/soldr",
+            "cache",
+            "shutdown",
+            "--shutdown-timeout-seconds",
+            "30",
+        ],
         ["/target/debug/soldr", "broker", "remove"],
     ]
     validation = plan[4]
@@ -308,7 +334,9 @@ def test_runner_storage_budget_is_a_hard_ceiling() -> None:
     assert perf_local.runner_over_budget(perf_local.RUNNER_VOLUME_BUDGET_BYTES + 1)
 
 
-def test_activity_marker_lives_in_soldr_state_not_the_checkout(tmp_path: Path, monkeypatch) -> None:
+def test_activity_marker_lives_in_soldr_state_not_the_checkout(
+    tmp_path: Path, monkeypatch
+) -> None:
     state = tmp_path / "state"
     checkout = tmp_path / "checkout"
     monkeypatch.setattr(perf_local, "GC_STATE_DIR", state)
@@ -353,7 +381,9 @@ def test_create_command_uses_one_named_runner_and_persistent_volumes(
     assert command[-3:] == ["tail", "-f", "/dev/null"]
 
 
-def test_create_command_enables_ptrace_only_when_requested(tmp_path: Path, monkeypatch) -> None:
+def test_create_command_enables_ptrace_only_when_requested(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv(perf_local.PTRACE_ENV, "1")
     runner = perf_local.runner_for(tmp_path)
     command = perf_local.create_command(runner, "sha256:image")
@@ -424,7 +454,9 @@ def test_runner_match_requires_schema_image_and_source_root(tmp_path: Path) -> N
     info = {"Config": {"Labels": dict(labels)}}
     assert perf_local.runner_matches(info, labels)
 
-    stale = {"Config": {"Labels": {**labels, f"{perf_local.LABEL_PREFIX}.image-id": "old"}}}
+    stale = {
+        "Config": {"Labels": {**labels, f"{perf_local.LABEL_PREFIX}.image-id": "old"}}
+    }
     assert not perf_local.runner_matches(stale, labels)
     assert not perf_local.runner_matches({"Config": {"Labels": None}}, labels)
 
@@ -443,7 +475,9 @@ def test_exec_command_reuses_runner_and_changes_only_workdir(tmp_path: Path) -> 
         "test",
         "--workspace",
     ]
-    assert perf_local.exec_command(runner, ["cargo", "check"], "/repo", tty=True)[:3] == [
+    assert perf_local.exec_command(runner, ["cargo", "check"], "/repo", tty=True)[
+        :3
+    ] == [
         "docker",
         "exec",
         "-it",
@@ -461,17 +495,26 @@ def test_smoke_debug_traces_and_retains_timelines() -> None:
     assert callable(perf_local.retain_debug_trace)
 
 
-def test_debug_trace_is_the_only_checkout_relative_managed_output(tmp_path: Path) -> None:
+def test_debug_trace_is_the_only_checkout_relative_managed_output(
+    tmp_path: Path,
+) -> None:
     runner = perf_local.runner_for(tmp_path)
-    assert perf_local.debug_trace_output_dir(runner) == tmp_path / ".perf-local" / "debug-trace"
+    assert (
+        perf_local.debug_trace_output_dir(runner)
+        == tmp_path / ".perf-local" / "debug-trace"
+    )
 
 
-def test_debug_trace_retention_uses_explicit_host_copy(tmp_path: Path, monkeypatch) -> None:
+def test_debug_trace_retention_uses_explicit_host_copy(
+    tmp_path: Path, monkeypatch
+) -> None:
     runner = perf_local.runner_for(tmp_path)
     output_dir = perf_local.debug_trace_output_dir(runner)
     calls: list[list[str]] = []
 
-    def fake_run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        argv: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         calls.append(argv)
         if argv[:2] == ["docker", "cp"]:
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -488,7 +531,9 @@ def test_debug_trace_retention_uses_explicit_host_copy(tmp_path: Path, monkeypat
         f"{runner.container}:/root/.soldr-dev/logs/debug-trace/.",
         str(output_dir),
     ] in calls
-    assert all("/repo/.perf-local" not in argument for call in calls for argument in call)
+    assert all(
+        "/repo/.perf-local" not in argument for call in calls for argument in call
+    )
 
 
 def test_smoke_command_runs_the_complete_repository_pipeline() -> None:

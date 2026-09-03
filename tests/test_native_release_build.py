@@ -209,6 +209,31 @@ def test_matrix_build_uses_the_blessed_build_surface(monkeypatch) -> None:
     assert "--locked" not in build[0]
 
 
+def test_matrix_build_injects_packed_split_debuginfo_for_darwin(monkeypatch) -> None:
+    """soldr#3071: both apple-darwin triples now build through this lane
+    (Linux cross, same as Windows) rather than the native `build_binary`
+    path, so the macOS-only split-debuginfo override (soldr#3038) must move
+    here with them instead of silently disappearing.
+    """
+    captured_envs: list[dict[str, str] | None] = []
+
+    def fake_run(command, env=None):
+        captured_envs.append(env)
+
+    monkeypatch.setattr(MODULE, "run", fake_run)
+    monkeypatch.setattr(MODULE.subprocess, "run", lambda *_a, **_k: None)
+    monkeypatch.delenv("CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO", raising=False)
+
+    MODULE.build_matrix_binary(Path("target/release/soldr"), "aarch64-apple-darwin")
+    assert captured_envs[0] is not None
+    assert captured_envs[0]["CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO"] == "packed"
+
+    captured_envs.clear()
+    MODULE.build_matrix_binary(Path("target/release/soldr"), "x86_64-pc-windows-msvc")
+    assert captured_envs[0] is not None
+    assert "CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO" not in captured_envs[0]
+
+
 def test_matrix_build_restores_manifests_before_building(monkeypatch) -> None:
     commands = _record_matrix_build(
         monkeypatch, "x86_64-unknown-linux-musl", github_env=None

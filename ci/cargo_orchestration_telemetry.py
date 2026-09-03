@@ -47,7 +47,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-
 PROC_SELF_CGROUP = Path("/proc/self/cgroup")
 PROC_SELF_MOUNTINFO = Path("/proc/self/mountinfo")
 DEFAULT_INTERVAL_SECONDS = 0.2
@@ -129,7 +128,12 @@ def _read_memory_events(cgroup_root: Path) -> dict[str, int]:
 
 def _unescape_mountinfo(raw: str) -> str:
     """Decode the octal escapes Linux uses in mountinfo path columns."""
-    for encoded, decoded in ((r"\040", " "), (r"\011", "\t"), (r"\012", "\n"), (r"\134", "\\")):
+    for encoded, decoded in (
+        (r"\040", " "),
+        (r"\011", "\t"),
+        (r"\012", "\n"),
+        (r"\134", "\\"),
+    ):
         raw = raw.replace(encoded, decoded)
     return raw
 
@@ -144,7 +148,9 @@ def cgroup_v2_mount_from(mountinfo: str) -> tuple[Path, Path] | None:
         # mountinfo: id parent major:minor root mountpoint options ...
         if len(fields) < 5:
             continue
-        return Path(_unescape_mountinfo(fields[4])), Path(_unescape_mountinfo(fields[3]))
+        return Path(_unescape_mountinfo(fields[4])), Path(
+            _unescape_mountinfo(fields[3])
+        )
     return None
 
 
@@ -270,7 +276,9 @@ def summarize_samples(samples: list[Snapshot]) -> dict[str, int | None]:
         "max_memory_current_bytes": _max_or_none(
             sample.memory_current_bytes for sample in samples
         ),
-        "max_memory_peak_bytes": _max_or_none(sample.memory_peak_bytes for sample in samples),
+        "max_memory_peak_bytes": _max_or_none(
+            sample.memory_peak_bytes for sample in samples
+        ),
         "max_memory_swap_current_bytes": _max_or_none(
             sample.memory_swap_current_bytes for sample in samples
         ),
@@ -278,11 +286,15 @@ def summarize_samples(samples: list[Snapshot]) -> dict[str, int | None]:
         "max_cargo_processes": max(sample.processes.cargo for sample in samples),
         "max_compiler_processes": max(sample.processes.compiler for sample in samples),
         "max_soldr_processes": max(sample.processes.soldr for sample in samples),
-        "max_toolchain_processes": max(sample.processes.toolchain for sample in samples),
+        "max_toolchain_processes": max(
+            sample.processes.toolchain for sample in samples
+        ),
     }
 
 
-def prepared_cargo_or_rustup_available(environment: dict[str, str] | None = None) -> bool:
+def prepared_cargo_or_rustup_available(
+    environment: dict[str, str] | None = None,
+) -> bool:
     """Whether Soldr can resolve a pre-existing Cargo/rustup toolchain."""
     resolved_environment = dict(os.environ) if environment is None else environment
     cargo_home = Path(resolved_environment.get("CARGO_HOME", Path.home() / ".cargo"))
@@ -309,7 +321,9 @@ def run_case(
         raise ValueError("jobs must be positive")
     cgroup_root = cgroup_root or controlling_cgroup_v2_dir()
     if cgroup_root is None:
-        raise RuntimeError("could not resolve this process's controlling cgroup v2 directory")
+        raise RuntimeError(
+            "could not resolve this process's controlling cgroup v2 directory"
+        )
     if case_root.exists():
         raise RuntimeError(
             f"telemetry case directory already exists; choose a fresh --case-root: {case_root}"
@@ -338,7 +352,9 @@ def run_case(
     samples = [started]
     began = clock()
     with command_log.open("wb") as log_file:
-        process = run(command, env=environment, stdout=log_file, stderr=subprocess.STDOUT)
+        process = run(
+            command, env=environment, stdout=log_file, stderr=subprocess.STDOUT
+        )
         timed_out = False
         while process.poll() is None:
             if clock() - began >= timeout_seconds:
@@ -362,10 +378,14 @@ def run_case(
         "command_log": str(command_log),
         "returncode": process.returncode,
         "timed_out": timed_out,
-        "wall_time_ms": round((finished.monotonic_seconds - started.monotonic_seconds) * 1000),
+        "wall_time_ms": round(
+            (finished.monotonic_seconds - started.monotonic_seconds) * 1000
+        ),
         "start": asdict(started),
         "end": asdict(finished),
-        "memory_events_delta": _event_deltas(started.memory_events, finished.memory_events),
+        "memory_events_delta": _event_deltas(
+            started.memory_events, finished.memory_events
+        ),
         "maxima": summarize_samples(samples),
         "samples": len(samples),
     }
@@ -427,8 +447,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="acknowledge that the raised count may exhaust the constrained host",
     )
-    parser.add_argument("--interval-seconds", type=float, default=DEFAULT_INTERVAL_SECONDS)
-    parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--interval-seconds", type=float, default=DEFAULT_INTERVAL_SECONDS
+    )
+    parser.add_argument(
+        "--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS
+    )
     parser.add_argument(
         "--case-root",
         type=Path,
@@ -438,7 +462,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--output", type=Path, help="write JSON evidence to this path")
-    parser.add_argument("command", nargs=argparse.REMAINDER, help="command prefixed by --")
+    parser.add_argument(
+        "command", nargs=argparse.REMAINDER, help="command prefixed by --"
+    )
     parsed = parser.parse_args(argv)
     if parsed.raised_jobs is not None:
         if parsed.raised_jobs < 1:
@@ -458,7 +484,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     if parsed.case_root is None:
         parsed.case_root = Path(tempfile.mkdtemp(prefix="soldr-2878-telemetry-"))
     elif parsed.case_root.exists():
-        parser.error("--case-root must not already exist; each matrix needs fresh trees")
+        parser.error(
+            "--case-root must not already exist; each matrix needs fresh trees"
+        )
     return parsed
 
 
@@ -511,7 +539,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(rendered)
     print(format_markdown(results), file=sys.stderr)
-    return 0 if all(result["returncode"] == 0 and not result["timed_out"] for result in results) else 1
+    return (
+        0
+        if all(
+            result["returncode"] == 0 and not result["timed_out"] for result in results
+        )
+        else 1
+    )
 
 
 if __name__ == "__main__":

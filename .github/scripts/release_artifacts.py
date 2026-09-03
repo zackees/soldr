@@ -33,6 +33,9 @@ def version_json_status(output: str, expected_version: str) -> str | None:
         payload = json.loads(output)
     except json.JSONDecodeError:
         return "invalid"
-    if not isinstance(payload, dict) or payload.get("soldr_version") != expected_version:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("soldr_version") != expected_version
+    ):
         return "mismatch"
     return None

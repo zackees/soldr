@@ -51,7 +51,9 @@ def version_failures(wheels: list[Path], expected: str) -> list[tuple[str, str]]
             continue
         wheel_version = parts[1]
         if wheel_version != expected:
-            bad.append((wheel.name, f"version {wheel_version!r} != expected {expected!r}"))
+            bad.append(
+                (wheel.name, f"version {wheel_version!r} != expected {expected!r}")
+            )
     return bad
 
 

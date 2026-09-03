@@ -34,11 +34,25 @@ def workspace_test_plan(*, target: Path, bootstrap: Path) -> list[Step]:
     base_env = {"CARGO_TARGET_DIR": container_path(target)}
     return [
         Step(
-            [container_path(bootstrap), "cargo", "build", "-p", "soldr-cli", "--bin", "soldr"],
+            [
+                container_path(bootstrap),
+                "cargo",
+                "build",
+                "-p",
+                "soldr-cli",
+                "--bin",
+                "soldr",
+            ],
             base_env,
         ),
         Step(
-            [container_path(bootstrap), "cache", "shutdown", "--shutdown-timeout-seconds", "30"],
+            [
+                container_path(bootstrap),
+                "cache",
+                "shutdown",
+                "--shutdown-timeout-seconds",
+                "30",
+            ],
             {},
         ),
         Step([container_path(bootstrap), "broker", "remove"], {}),
@@ -78,7 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path("/repo"))
     parser.add_argument("--target", type=Path, default=Path("/target"))
-    parser.add_argument("--bootstrap", type=Path, default=Path("/opt/soldr-bootstrap/bin/soldr"))
+    parser.add_argument(
+        "--bootstrap", type=Path, default=Path("/opt/soldr-bootstrap/bin/soldr")
+    )
     args = parser.parse_args(argv)
 
     plan = workspace_test_plan(target=args.target, bootstrap=args.bootstrap)

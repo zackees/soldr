@@ -142,7 +142,9 @@ one blessed build surface:
 
 `x86_64-apple-darwin` is supported for local, CI, and release cross-builds.
 Official Intel macOS archives and PyPI wheels are built on Linux through this
-blessed path and smoke-tested on `macos-15-intel` before publication.
+blessed path and smoke-tested inside a dockur/macos x86_64 guest hosted on an
+`ubuntu-24.04` runner before publication (soldr#3071: no GitHub Actions job
+runs on a native macOS runner).
 
 ### Recipe
 

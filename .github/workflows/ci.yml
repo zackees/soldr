@@ -35,6 +35,11 @@ on:
 
 permissions:
   contents: read
+  # soldr#3071: _ci-target-run.yml requests `packages: read` at its top level
+  # (GHCR pull of the baked dockur/macos guest image). A called workflow may
+  # not request more than its caller grants, and every target-run job in this
+  # file calls it, so the grant has to live here rather than per job.
+  packages: read
 
 # soldr#1985 — superseded PR runs used to keep holding runner slots while a
 # fresh 21-job sweep queued behind them; five concurrent CI runs were observed
@@ -466,11 +471,13 @@ jobs:
     strategy:
       fail-fast: false
       # PEP 517 is a public wheel boundary, so the native platform smokes run
-      # on pull requests as well as main. The macos-arm64 leg moved into the
-      # e2e-macos-arm64 target-run (soldr#2615, `run_pep517_smoke: true`) so a
-      # PR allocates macos-15 once instead of twice; only windows-x64 remains
-      # here. The matrix stays selected rather than filtered per-leg so a
-      # `fast-build` PR allocates no runner.
+      # on pull requests as well as main. No GitHub Actions job may run on a
+      # macos-* runner (owner mandate 2026-09-02), so there is no native
+      # macOS leg here at all — macOS execution happens only inside the
+      # dockur/macos x86_64 guest, which has no Python/maturin and so cannot
+      # host this smoke (see `run_pep517_smoke: false` on `e2e-macos-x64`).
+      # windows-x64 is the sole leg. The matrix stays selected rather than
+      # filtered per-leg so a `fast-build` PR allocates no runner.
       matrix:
         include: ${{ fromJSON('[{"name":"windows-x64","runner":"windows-2025","python":"3.13t"}]') }}
     env:
@@ -561,7 +568,8 @@ jobs:
   # There is no standalone macOS x64 build workflow. The native Linux
   # integration sweep covers target-independent logic, while the
   # `e2e-macos-x64` lane below cross-builds on Linux and runs the produced
-  # archive on `macos-15-intel`.
+  # archive inside a dockur/macos x86_64 guest hosted on an ubuntu-24.04
+  # runner (soldr#3071: no GitHub Actions job runs on a macos-* runner).
 
   # build-windows-{x64,arm64} removed. The unit-test sweep for
   # windows runs on linux x86 via `build-linux-x64` (target-
@@ -836,10 +844,13 @@ jobs:
       artifact_name: soldr-ci-e2e-linux-arm64-musl
 
   # ---------- macOS x64 ----------
-  # Re-enabled now that zccache no longer pulls tikv-jemalloc-sys —
-  # mimalloc is the sole allocator (zccache PR #948). Previously
-  # disabled because the darwin cross-compile died on jemalloc's
-  # autoconf sys/syscall.h probe (#1071).
+  # Owner mandate (2026-09-02): no GitHub Actions job may run on a macos-*
+  # runner for building or testing. x86_64-apple-darwin is cross-built on
+  # Linux, same as Windows, and *executed* only inside a dockur/macos x86_64
+  # guest (KVM) hosted on an ordinary ubuntu-24.04 runner — see
+  # ci/macos_x64_guest.py and .github/workflows/_ci-target-run.yml. The guest
+  # has no Xcode CLT/Homebrew and needs none: the archive under test is
+  # entirely prebuilt on Linux.
   e2e-macos-x64-build:
     name: cross-build x86_64-apple-darwin (linux host)
     needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
@@ -856,76 +867,30 @@ jobs:
     needs: [e2e-macos-x64-build, windows-e2e-policy]
     if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
+    # soldr#3071: _ci-target-run.yml reads secrets.SOLDR_MACOS_GUEST_SSH_KEY
+    # (the baked guest's ssh identity) to reach the dockur guest.
+    secrets: inherit
     with:
-      # macos-15 is ARM64; target-run verifies this archive through Rosetta,
-      # never by substituting ARM execution (soldr#2968).
-      runs_on: macos-15
+      runs_on: ubuntu-24.04
       target: x86_64-apple-darwin
       artifact_name: soldr-ci-e2e-macos-x64
-      target_execution: x86_64-rosetta
-      # Rosetta's translated complete archive replay exceeded the reusable
-      # 30-minute default; keep the 55-minute allowance local to this lane.
+      target_execution: x86_64-dockur
+      # Guest boot plus a translated complete archive replay exceeded the
+      # reusable 30-minute default; keep the larger allowance local to this
+      # lane (_ci-target-run.yml raises it further to 90 for dockur mode).
       extended_replay: true
-
-  # This cannot depend on e2e-macos-x64: the observed failure is precisely a
-  # target-run that never receives a runner. It starts after the artifact
-  # producer and reports bounded queue starvation from an ordinary Ubuntu VM.
-  e2e-macos-x64-queue-watchdog:
-    name: observe x86_64-apple-darwin target-run queue
-    needs: e2e-macos-x64-build
-    if: ${{ needs.e2e-macos-x64-build.result == 'success' }}
-    runs-on: ubuntu-24.04
-    # 15m queue bound, plus interpreter setup and polling/diagnostic headroom.
-    timeout-minutes: 20
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          fetch-depth: 1
-      - name: Set up diagnostics interpreter
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.13"
-      # soldr#2968 moved the x86_64 replay onto `macos-15`, where the aarch64
-      # target-run already lives. The two now contend for one runner pool
-      # instead of `macos-15` + the retired `macos-15-intel`, so the x86 lane
-      # routinely queues behind its ARM sibling -- which takes 19-25 minutes
-      # (19m16s on #3006, 24m35s on #2971).
-      #
-      # A 900s grace was calibrated when x86_64 had a pool to itself. It now
-      # fires whenever the sibling is running, reporting starvation for a lane
-      # that is merely waiting its turn. That inverts the point of #2968: the
-      # watchdog exists to tell a stuck lane from a slow one, and at 15 minutes
-      # it could no longer tell the difference.
-      #
-      # 2700s sits clear of a full sibling occupancy plus scheduling slack, and
-      # still far below the failure this guards -- #2968's Intel lane sat
-      # queued for 80+ minutes and was never going to start at all.
-      #
-      # These are YAML comments, deliberately ABOVE the step. They used to sit
-      # inside the `run: >-` folded scalar, where `#` is not a comment: YAML
-      # folded them onto one line and the shell then treated the first `#` as
-      # the start of a shell comment, discarding everything after it --
-      # including `--grace-seconds 2700`. The watchdog silently ran at its
-      # 900s argparse default, so the recalibration this text describes had
-      # never once taken effect (soldr#3018 validation).
-      - name: Observe bounded macOS x86 queue admission (soldr#2968)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          python .github/scripts/target_run_queue_watchdog.py
-          --repo "$GITHUB_REPOSITORY"
-          --run-id "$GITHUB_RUN_ID"
-          --token "$GH_TOKEN"
-          --job-prefix "target-run x86_64-apple-darwin"
-          --runner "macos-15"
-          --grace-seconds 2700
-          --poll-seconds 30
-          --github-summary "$GITHUB_STEP_SUMMARY"
+      # The dockur guest ships no Python/maturin; the PEP 517 wheel smoke
+      # already runs natively on windows-x64 (see `pep517-daemon-smoke`), so
+      # it is not duplicated here.
+      run_pep517_smoke: false
 
   # ---------- macOS ARM64 ----------
+  # aarch64-apple-darwin is cross-built on Linux (release-included) but not
+  # executed anywhere in CI: dockur/macos has no supported ARM guest, and the
+  # owner mandate above rules out a native macos-* runner. Re-enabling
+  # execution is tracked by soldr#3071 (see the compatibility_decisions entry
+  # in ci/canonical-targets.json). Only the build lane remains, and — like
+  # x86_64-unknown-linux-musl — it has no paired target-run.
   e2e-macos-arm64-build:
     name: cross-build aarch64-apple-darwin (linux host)
     needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
@@ -936,20 +901,7 @@ jobs:
       artifact_name: soldr-ci-e2e-macos-arm64
       source_ref: ${{ github.sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
-
-  e2e-macos-arm64:
-    name: target-run aarch64-apple-darwin
-    needs: [e2e-macos-arm64-build, windows-e2e-policy]
-    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
-    uses: ./.github/workflows/_ci-target-run.yml
-    with:
-      runs_on: macos-15
-      target: aarch64-apple-darwin
-      artifact_name: soldr-ci-e2e-macos-arm64
-      # soldr#2615: run the PEP 517 wheel smoke on this same macos-15
-      # allocation instead of a dedicated pep517-daemon-smoke leg. Mirrors
-      # that job's gate: main always runs it, `fast-build` PRs skip it.
-      run_pep517_smoke: ${{ github.ref_name == 'main' || !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
+      upload_test_archive: false
 
   # ---------- Windows x64 ----------
   e2e-windows-x64-build:

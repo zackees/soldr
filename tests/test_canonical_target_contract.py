@@ -181,12 +181,13 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
         assert (
             row["triple"] in run and ci["runner"] in run
         ), f"{ci['run_job']} target/runner drifted"
-        if ci.get("execution") == "x86_64-rosetta":
-            assert ci["runner"] == "macos-15", (
-                f"{row['triple']} Rosetta replay must use the macos-15 ARM runner"
+        if ci.get("execution") == "x86_64-dockur":
+            assert ci["runner"] == "ubuntu-24.04", (
+                f"{row['triple']} dockur replay must run on an ubuntu-24.04 host "
+                "(no macos-* GitHub Actions runner, owner mandate 2026-09-02)"
             )
-            assert "target_execution: x86_64-rosetta" in run, (
-                f"{ci['run_job']} can silently substitute ARM execution"
+            assert "target_execution: x86_64-dockur" in run, (
+                f"{ci['run_job']} can silently substitute a different execution " "mode"
             )
 
     blessed = (ROOT / ".github" / "workflows" / "build-all-from-linux.yml").read_text(

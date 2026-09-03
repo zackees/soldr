@@ -281,9 +281,9 @@ def test_the_evidence_path_explains_both_reports() -> None:
     cold_at = source.index("explain_report cold /tmp/cold-report.json")
     warm_at = source.index("explain_report warm /tmp/warm-report.json")
     between = source[min(cold_at, warm_at) : max(cold_at, warm_at)]
-    assert "\nif " not in between and "\nfi" not in between, (
-        "the cold and warm explanations drifted onto different branches"
-    )
+    assert (
+        "\nif " not in between and "\nfi" not in between
+    ), "the cold and warm explanations drifted onto different branches"
 
     # And that block must still fire on both conditions the old pair covered:
     # a warm miss, and a warm run that recorded no hits at all.

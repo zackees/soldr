@@ -1,0 +1,20 @@
+# A dockur/macos image with an already-installed macOS baked in.
+#
+# Built once by ci/macos-x64/bake.sh from a guest that has been through the
+# one-time manual install (see README.md), then pushed to GHCR. CI pulls this
+# and boots straight to a login-capable system, which is what lets the job run
+# on an ephemeral GitHub-hosted runner: there is no persistent state to keep.
+FROM dockurr/macos:latest
+
+# The prepared disk, OpenCore EFI vars, and the serial/SMBIOS identity that
+# macOS ties its activation state to. Baking all of /storage keeps the guest
+# byte-identical to the one that was validated locally.
+COPY storage/ /storage/
+
+# Single core is not a preference: dockur/macos#268 (PCID mismatch) makes
+# multi-core unstable on AMD hosts, and hosted runner CPU vendor is not
+# guaranteed. Correctness gate, not a speed run.
+ENV VERSION=ventura \
+    RAM_SIZE=8G \
+    CPU_CORES=1 \
+    DISK_SIZE=128G

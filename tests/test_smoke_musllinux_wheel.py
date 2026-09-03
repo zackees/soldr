@@ -11,7 +11,9 @@ REPO_ROOT = Path(__file__).parents[1]
 SCRIPTS = REPO_ROOT / ".github" / "scripts"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-auto.yml"
 
-smoke = load_script_module(SCRIPTS / "smoke_musllinux_wheel.py", "smoke_musllinux_wheel")
+smoke = load_script_module(
+    SCRIPTS / "smoke_musllinux_wheel.py", "smoke_musllinux_wheel"
+)
 
 
 def test_expected_version_strips_only_the_release_prefix() -> None:

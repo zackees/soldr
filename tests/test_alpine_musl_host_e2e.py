@@ -3,7 +3,6 @@
 import importlib.util
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).parents[1] / "ci" / "alpine_musl_host_e2e.py"
 _spec = importlib.util.spec_from_file_location("alpine_musl_host_e2e", SCRIPT)
 assert _spec and _spec.loader

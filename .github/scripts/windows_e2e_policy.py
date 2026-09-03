@@ -137,7 +137,9 @@ def main() -> int:
         changed_paths=paths,
     )
     verdict = "run" if decision.run else "skip"
-    print(f"Platform E2E (Windows + macOS + non-x64 Linux): {verdict} ({decision.reason})")
+    print(
+        f"Platform E2E (Windows + macOS + non-x64 Linux): {verdict} ({decision.reason})"
+    )
     if not args.github_output:
         raise SystemExit("--github-output (or GITHUB_OUTPUT) is required")
     with Path(args.github_output).open("a", encoding="utf-8") as output:

@@ -38,10 +38,18 @@ def test_release_version_normalization_removes_only_the_prefix() -> None:
 
 
 def test_version_json_status_requires_a_parseable_exact_payload() -> None:
-    assert artifacts.version_json_status('{ "soldr_version" : "0.9.2" }', "0.9.2") is None
+    assert (
+        artifacts.version_json_status('{ "soldr_version" : "0.9.2" }', "0.9.2") is None
+    )
     assert artifacts.version_json_status("", "0.9.2") == "empty"
-    assert artifacts.version_json_status('{"soldr_version":"0.0.1"}', "0.9.2") == "mismatch"
-    assert artifacts.version_json_status('warning\n{"soldr_version":"0.9.2"}', "0.9.2") == "invalid"
+    assert (
+        artifacts.version_json_status('{"soldr_version":"0.0.1"}', "0.9.2")
+        == "mismatch"
+    )
+    assert (
+        artifacts.version_json_status('warning\n{"soldr_version":"0.9.2"}', "0.9.2")
+        == "invalid"
+    )
 
 
 def test_release_scripts_share_the_same_suffix_policy() -> None:
@@ -53,13 +61,17 @@ def test_release_scripts_share_the_same_suffix_policy() -> None:
         "verify_release_bundle",
     ]
     for consumer in consumers:
-        shared = load_script_module(SCRIPTS / "release_artifacts.py", "release_artifacts")
+        shared = load_script_module(
+            SCRIPTS / "release_artifacts.py", "release_artifacts"
+        )
         module = load_script_module(SCRIPTS / f"{consumer}.py", consumer)
         assert module.binary_suffix is shared.binary_suffix
 
 
 def test_runner_scripts_share_the_same_host_suffix_policy() -> None:
     for consumer in ("package_release_archive", "prepare_release_wheel"):
-        shared = load_script_module(SCRIPTS / "release_artifacts.py", "release_artifacts")
+        shared = load_script_module(
+            SCRIPTS / "release_artifacts.py", "release_artifacts"
+        )
         module = load_script_module(SCRIPTS / f"{consumer}.py", consumer)
         assert module.runner_binary_suffix is shared.runner_binary_suffix

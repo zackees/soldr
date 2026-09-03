@@ -16,7 +16,9 @@ SCRIPTS = REPO_ROOT / ".github" / "scripts"
 
 
 def _module():
-    return load_script_module(SCRIPTS / "check_run_block_comments.py", "check_run_block_comments")
+    return load_script_module(
+        SCRIPTS / "check_run_block_comments.py", "check_run_block_comments"
+    )
 
 
 FOLDED_WITH_COMMENT = """\
