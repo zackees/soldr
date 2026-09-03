@@ -39,6 +39,15 @@ jobs:
         triple: [x86_64-apple-darwin, aarch64-apple-darwin]
     env:
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
+      # soldr#2781. `soldr-daemon` at -C opt-level=3 -C codegen-units=1 is the
+      # memory high-water mark of this build, and at default parallelism on a
+      # 4-core/16 GB hosted runner it gets OOM-killed: rustc exits 255 and soldr
+      # prints "compiler process was terminated by a Unix signal ... Reduce
+      # CARGO_BUILD_JOBS and SOLDR_JOBS". Seen on the aarch64 lane while x86_64
+      # passed in the same run, so it is a resource race rather than anything
+      # architecture-specific. Same fix worked locally.
+      CARGO_BUILD_JOBS: '2'
+      SOLDR_JOBS: '2'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771 # v0
