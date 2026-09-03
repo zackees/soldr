@@ -55,6 +55,20 @@ jobs:
           toolchain-file: rust-toolchain.toml
           lockfile: Cargo.lock
           target-dir: target
+          # Uncached on purpose, for two reasons that turned out to be the same
+          # blocker. (1) yank-audit aborts the run when the RESTORED dependency
+          # closure contains a yanked crate, and Cargo.lock currently resolves
+          # chacha20 0.10.1 (yanked) via rand 0.10.2 -- so every run that
+          # restored a cache died before compiling anything, and deleting the
+          # poisoned entries only bought one run. With no cache restored there
+          # is no restored closure to audit. (2) `cache: false` also exports
+          # SOLDR_BUILD_CACHE_MODE=off, so the soldr daemon is never invoked --
+          # which removes the most likely real source of the "compiler process
+          # was terminated by a Unix signal" kills that soldr's own diagnostic
+          # attributes to OOM (a 4-core/16GB runner does not OOM compiling
+          # running-process in 20 seconds).
+          # The cost is a cold build. This is a probe; correctness first.
+          cache: false
 
       # One triple per job on purpose. `soldr prepare` exports SDKROOT, CC_*,
       # CFLAGS_* and PATH for ONE target shape; preparing both in a single job
