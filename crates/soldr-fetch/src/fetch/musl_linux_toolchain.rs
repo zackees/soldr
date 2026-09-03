@@ -350,11 +350,20 @@ mod tests {
 
         // Control: with PKG_CONFIG_SYSROOT_DIR set -- what soldr used to
         // export -- pkg-config concatenates the two absolute paths.
+        //
+        // `PKG_CONFIG_FDO_SYSROOT_RULES` asks pkgconf (1.9+ narrowed the
+        // default to `.pc` files that live *inside* the sysroot) for the
+        // freedesktop rules this control case is about; freedesktop
+        // pkg-config ignores the variable. An implementation that still
+        // declines to prefix has nothing to demonstrate, so the control half
+        // reports and returns rather than failing a lane over a third-party
+        // default -- the assertion that guards the fix is the one above.
         let mut sysrooted = std::process::Command::new(&pkg_config);
         sysrooted.env_clear();
         sysrooted.env("PATH", std::env::var_os("PATH").unwrap_or_default());
         sysrooted.env("PKG_CONFIG_PATH", &pkgconfig_dir);
         sysrooted.env("PKG_CONFIG_SYSROOT_DIR", &sysroot);
+        sysrooted.env("PKG_CONFIG_FDO_SYSROOT_RULES", "1");
         let control = sysrooted
             .args(["--libs", "soldrfixture"])
             .output()
@@ -362,10 +371,13 @@ mod tests {
         assert!(control.status.success());
         let control_libs = String::from_utf8(control.stdout).expect("utf-8 pkg-config output");
         let control_dir = link_search_dir(&control_libs).expect("pkg-config emitted no -L");
-        assert!(
-            control_dir.starts_with(&sysroot),
-            "control case did not reproduce the sysroot prefixing: {control_libs}"
-        );
+        if !control_dir.starts_with(&sysroot) {
+            eprintln!(
+                "note: this pkg-config does not apply freedesktop sysroot rules to a .pc \
+                 outside the sysroot; control half skipped"
+            );
+            return;
+        }
         assert!(
             !control_dir.exists(),
             "the sysroot-prefixed -L is the nonexistent directory from soldr#3081"
