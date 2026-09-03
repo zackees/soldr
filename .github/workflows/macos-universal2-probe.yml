@@ -46,9 +46,25 @@ jobs:
       # CARGO_BUILD_JOBS and SOLDR_JOBS". Seen on the aarch64 lane while x86_64
       # passed in the same run, so it is a resource race rather than anything
       # architecture-specific. Same fix worked locally.
-      CARGO_BUILD_JOBS: '2'
-      SOLDR_JOBS: '2'
+      CARGO_BUILD_JOBS: '1'
+      SOLDR_JOBS: '1'
     steps:
+      # soldr-daemon compiles at -C opt-level=3 -C codegen-units=1, which is the
+      # memory peak of this build, and a hosted runner OOM-kills it: rustc dies
+      # on a signal and soldr reports "terminated by a Unix signal". It is
+      # genuinely marginal rather than systematic -- with JOBS=2 the aarch64
+      # lane passed while x86_64 lost, in the same run. JOBS=1 plus real swap
+      # headroom removes the coin flip. /mnt is the runner's big scratch disk.
+      - name: Add swap headroom for the codegen-units=1 peak
+        run: |
+          set -euo pipefail
+          free -h
+          sudo fallocate -l 8G /mnt/probe-swap
+          sudo chmod 600 /mnt/probe-swap
+          sudo mkswap /mnt/probe-swap >/dev/null
+          sudo swapon /mnt/probe-swap
+          free -h
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771 # v0
         with:
