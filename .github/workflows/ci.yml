@@ -863,8 +863,14 @@ jobs:
     if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
     # soldr#3071: _ci-target-run.yml reads secrets.SOLDR_MACOS_GUEST_SSH_KEY
-    # (the baked guest's ssh identity) to reach the dockur guest.
+    # (the baked guest's ssh identity) to reach the dockur guest, and pulls
+    # the baked guest image from GHCR, which needs `packages: read`. A called
+    # workflow may not request more than its caller grants, and this
+    # workflow's top-level grant is `contents: read` only.
     secrets: inherit
+    permissions:
+      contents: read
+      packages: read
     with:
       runs_on: ubuntu-24.04
       target: x86_64-apple-darwin
