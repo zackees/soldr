@@ -126,7 +126,7 @@ pub fn env_keys_for_target(target_triple: &str) -> Vec<String> {
         "CMAKE_RANLIB".to_string(),
         "CMAKE_LINKER".to_string(),
         "CMAKE_SYSROOT".to_string(),
-        "PKG_CONFIG_SYSROOT_DIR".to_string(),
+        format!("PKG_CONFIG_ALLOW_CROSS_{target_triple}"),
         "PKG_CONFIG_LIBDIR".to_string(),
         "SOLDR_GNU_LINUX_SYSROOT".to_string(),
         "SOLDR_GNU_LINUX_TOOLCHAIN_ROOT".to_string(),
@@ -278,7 +278,19 @@ pub fn env_for_target(toolchain: &GnuLinuxToolchain, target_triple: &str) -> Vec
         ),
         ("SOLDR_GNU_LINUX_SYSROOT".to_string(), sysroot.clone()),
         ("CMAKE_SYSROOT".to_string(), sysroot.clone()),
-        ("PKG_CONFIG_SYSROOT_DIR".to_string(), sysroot.clone()),
+        // soldr#3081: same reasoning as the musl bundle -- see the long
+        // comment in `musl_linux_toolchain::env_for_target`. pkg-config
+        // prepends `PKG_CONFIG_SYSROOT_DIR` to every absolute `-L`/`-I`,
+        // which corrupts the already-absolute paths that soldr's managed
+        // syslib `.pc` files emit, and the catalogue GNU sysroot ships no
+        // `.pc` files for it to rewrite. On GNU the damage was masked --
+        // the host's own `/usr/lib/libbz2.so` rescued the bad `-L` -- but
+        // it is the same bug, and it silently defeats the syslib
+        // substitution it was meant to enable.
+        (
+            format!("PKG_CONFIG_ALLOW_CROSS_{target_triple}"),
+            "1".to_string(),
+        ),
         ("PKG_CONFIG_LIBDIR".to_string(), pkg_config_libdir),
         (format!("CC_{target_u}"), tool("gcc")),
         (format!("CXX_{target_u}"), tool("g++")),
@@ -479,7 +491,17 @@ mod tests {
         assert!(lookup("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER")
             .ends_with("aarch64-conda-linux-gnu-gcc"));
         assert!(lookup("CFLAGS_aarch64_unknown_linux_gnu").contains("--sysroot="));
-        assert!(lookup("PKG_CONFIG_SYSROOT_DIR").ends_with("/sysroot"));
+        // soldr#3081: the managed sysroot must NOT be handed to pkg-config as
+        // a path-rewriting prefix; cross probing is unlocked with the
+        // target-scoped ALLOW_CROSS instead.
+        assert!(
+            !env.iter().any(|(key, _)| key == "PKG_CONFIG_SYSROOT_DIR"),
+            "PKG_CONFIG_SYSROOT_DIR corrupts absolute syslib -L paths (soldr#3081)"
+        );
+        assert_eq!(
+            lookup("PKG_CONFIG_ALLOW_CROSS_aarch64-unknown-linux-gnu"),
+            "1"
+        );
         assert!(lookup("PKG_CONFIG_LIBDIR").contains("/usr/lib/pkgconfig"));
         assert!(lookup("CMAKE_C_COMPILER").ends_with("aarch64-conda-linux-gnu-gcc"));
         assert!(lookup("CMAKE_CXX_COMPILER").ends_with("aarch64-conda-linux-gnu-g++"));

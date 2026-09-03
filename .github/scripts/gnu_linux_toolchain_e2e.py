@@ -219,9 +219,18 @@ def assert_managed_environment(
             raise RuntimeError(
                 f"cross-target alias {alias} leaked the managed target compiler"
             )
-    for key in ("CMAKE_SYSROOT", "PKG_CONFIG_SYSROOT_DIR"):
+    for key in ("CMAKE_SYSROOT",):
         if Path(env[key]) != sysroot:
             raise RuntimeError(f"{key} does not select the managed sysroot: {env[key]}")
+    # soldr#3081: PKG_CONFIG_SYSROOT_DIR is deliberately not exported -- it
+    # prefixes the already-absolute -L/-I paths that soldr's managed syslib
+    # .pc files emit. Cross probing is unlocked with ALLOW_CROSS instead.
+    if "PKG_CONFIG_SYSROOT_DIR" in managed:
+        raise RuntimeError("PKG_CONFIG_SYSROOT_DIR must not be exported (soldr#3081)")
+    if managed.get(f"PKG_CONFIG_ALLOW_CROSS_{target}") != "1":
+        raise RuntimeError(
+            "pkg-config cross probing was not enabled for the managed target"
+        )
     if str(sysroot) not in env["PKG_CONFIG_LIBDIR"]:
         raise RuntimeError("pkg-config did not receive the managed sysroot")
     if "--sysroot=" + str(sysroot) not in env[f"CFLAGS_{suffix}"]:
