@@ -1,4 +1,4 @@
-"""Unit coverage for ci/smoke_release_artifacts.py (soldr#2294, soldr#3071).
+"""Unit coverage for ci/smoke_release_artifacts.py (soldr#2294, soldr#3076).
 
 The native release smokes (smoke_macos_x64, smoke_windows in
 release-auto.yml) execute this script; the target-dependent decisions are
@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from conftest import load_script_module
+from conftest import assert_recovery_verify_collected_contract, load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE = load_script_module(
@@ -57,7 +57,7 @@ def test_workflow_smoke_jobs_invoke_the_script() -> None:
     assert "smoke_windows:" in release
 
 
-# ---------- soldr#3071: host-side checks that need no target execution ----------
+# ---------- host-side checks that need no target execution ----------
 
 
 def _write_wheel(tmp_path: Path, *, version: str) -> Path:
@@ -110,44 +110,7 @@ def test_check_macho_architecture_rejects_a_non_macho_file(tmp_path: Path) -> No
         MODULE.check_macho_architecture(binary, "x86_64")
 
 
-# ---------- soldr#3071: --exec-prefix routes execution through the guest ----------
-
-
-def test_build_argv_runs_directly_without_an_exec_prefix() -> None:
-    assert MODULE.build_argv(None, [Path("/extracted/soldr"), "--version"]) == [
-        "/extracted/soldr",
-        "--version",
-    ]
-
-
-def test_build_argv_prepends_and_shlex_splits_the_exec_prefix() -> None:
-    # A `Path` argument is reduced to its basename: the guest only ever has
-    # what `--guest-sync-dest` synced in at its `--cwd`, never the host's
-    # absolute extraction path.
-    argv = MODULE.build_argv(
-        "python3 ci/macos_x64_guest.py exec --cwd /Users/runner/work/ws --",
-        [Path("/host/extracted/soldr"), "--version"],
-    )
-    assert argv == [
-        "python3",
-        "ci/macos_x64_guest.py",
-        "exec",
-        "--cwd",
-        "/Users/runner/work/ws",
-        "--",
-        "soldr",
-        "--version",
-    ]
-
-
-def test_build_argv_keeps_full_paths_without_an_exec_prefix() -> None:
-    argv = MODULE.build_argv(None, [Path("/host/extracted/soldr"), "--version"])
-    assert argv == ["/host/extracted/soldr", "--version"]
-
-
-def test_run_passes_the_built_argv_to_subprocess(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_run_passes_the_argv_to_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, list[str]] = {}
 
     class _Result:  # pylint: disable=too-few-public-methods
@@ -158,24 +121,78 @@ def test_run_passes_the_built_argv_to_subprocess(
         return _Result()
 
     monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
-    result = MODULE.run(
-        [Path("/extracted/soldr"), "--version"], exec_prefix="guest-runner --"
-    )
-    assert captured["argv"] == ["guest-runner", "--", "soldr", "--version"]
+    result = MODULE.run([Path("/extracted/soldr"), "--version"])
+    assert captured["argv"] == ["/extracted/soldr", "--version"]
     assert result.stdout == "soldr 0.9.10\n"
 
 
-def test_sync_extracted_into_guest_calls_the_guest_script(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, list[str]] = {}
+# ---------- soldr#3076: Recovery guest-script generation ----------
 
-    def fake_run(argv: list[str], **_kwargs: object) -> None:
-        captured["argv"] = argv
 
-    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
-    MODULE.sync_extracted_into_guest(Path("extracted"), "/Users/runner/work/ws/dist")
-    argv = captured["argv"]
-    assert argv[1:4] == [str(MODULE.GUEST_SCRIPT), "sync-in", "--src"]
-    assert argv[4] == "extracted"
-    assert argv[-2:] == ["--dest", "/Users/runner/work/ws/dist"]
+def test_copy_into_share_dir_stages_every_guest_binary(tmp_path: Path) -> None:
+    extract = tmp_path / "extracted"
+    extract.mkdir()
+    for name, _check in MODULE.GUEST_BINARY_CHECKS:
+        (extract / name).write_bytes(b"fake binary")
+    share = tmp_path / "share"
+    MODULE.copy_into_share_dir(extract, share, "")
+    for name, _check in MODULE.GUEST_BINARY_CHECKS:
+        assert (share / name).read_bytes() == b"fake binary"
+
+
+def test_copy_into_share_dir_fails_when_a_binary_is_missing(tmp_path: Path) -> None:
+    extract = tmp_path / "extracted"
+    extract.mkdir()
+    share = tmp_path / "share"
+    with pytest.raises(SystemExit, match="missing"):
+        MODULE.copy_into_share_dir(extract, share, "")
+
+
+def test_build_release_guest_script_fetches_every_binary_by_basename() -> None:
+    script = MODULE.build_release_guest_script("0.9.11")
+    assert script.startswith("#!/bin/sh")
+    for name, _check in MODULE.GUEST_BINARY_CHECKS:
+        assert f"curl -fsS -o /tmp/{name} {MODULE.GUEST_HTTP_BASE}/{name}" in script
+    assert 'exit "$FAIL"' in script
+
+
+def test_build_release_guest_script_checks_the_expected_version() -> None:
+    script = MODULE.build_release_guest_script("0.9.11")
+    assert '"soldr_version": "0.9.11"' in script
+
+
+def test_build_release_guest_script_help_check_for_daemon() -> None:
+    script = MODULE.build_release_guest_script("0.9.11")
+    assert "/tmp/soldr-daemon --help" in script
+    assert 'echo "soldr-daemon_help=pass"' in script
+
+
+def test_parse_summary_splits_status_and_detail() -> None:
+    text = "arch=pass:x86_64\nversion=fail:not soldr\nempty=\n\n"
+    results = MODULE.parse_summary(text)
+    assert results["arch"] == (True, "x86_64")
+    assert results["version"] == (False, "not soldr")
+    assert results["empty"] == (False, "")
+
+
+def test_parse_summary_flags_malformed_lines() -> None:
+    results = MODULE.parse_summary("not a key value line\n")
+    assert results["summary_line_1"] == (
+        False,
+        "malformed line: 'not a key value line'",
+    )
+
+
+def _passing_summary_lines() -> list[str]:
+    lines = ["arch=pass:x86_64"]
+    for name, check in MODULE.GUEST_BINARY_CHECKS:
+        lines.append(f"fetch_{name}=pass")
+        lines.append(f"{name}_{check}=pass:ok")
+    lines.append('soldr_version_json=pass:{"soldr_version": "0.9.11"}')
+    return lines
+
+
+def test_verify_collected_matches_the_shared_recovery_contract(tmp_path: Path) -> None:
+    assert_recovery_verify_collected_contract(
+        MODULE, tmp_path, passing_lines=_passing_summary_lines()
+    )

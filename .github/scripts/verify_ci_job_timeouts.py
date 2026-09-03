@@ -26,7 +26,7 @@ INTEGER = re.compile(r"^[0-9]+$")
 # budgets (#2701), so every outcome remains fully verifiable while arbitrary
 # expressions stay rejected.
 # Each gate is either a boolean input (`inputs.flag && 65`) or an input compared
-# against a quoted literal (`inputs.mode == 'x86_64-dockur' && 90`, soldr#3071);
+# against a quoted literal (`inputs.mode == 'x86_64-recovery' && 30`, soldr#3076);
 # both are static and every branch is still an integer that gets range-checked.
 CONDITIONAL = re.compile(
     r"^\$\{\{\s*(?:inputs\.[A-Za-z0-9_-]+(?:\s*==\s*'[^']*')?\s*&&\s*[0-9]+\s*\|\|\s*)+"

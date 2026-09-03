@@ -620,16 +620,19 @@ jobs:
           name: pypi-soldr-${{ matrix.target }}
           path: dist/*.whl
 
-  # soldr#3071: no GitHub Actions job may run on a macos-* runner (owner
+  # soldr#3076: no GitHub Actions job may run on a macos-* runner (owner
   # mandate 2026-09-02). x86_64-apple-darwin is smoke-tested inside a
-  # dockur/macos x86_64 guest hosted on an ordinary ubuntu-24.04 runner --
-  # see ci/macos_x64_guest.py. This job downloads and re-verifies the
-  # uploaded build-job artifacts on a fresh runner rather than trusting the
-  # build lane's own smoke step, same as before. aarch64-apple-darwin has no
-  # smoke coverage at all: it is cross-built and release-included but not
-  # executed anywhere in CI (soldr#3071 tracks re-enabling that before
-  # release; see the compatibility_decisions entry in
-  # ci/canonical-targets.json).
+  # zackees/docker-mac-x64 Recovery guest hosted on an ordinary ubuntu-24.04
+  # runner -- see ci/smoke_release_artifacts.py's --emit-guest-script /
+  # --verify-collected modes. soldr#3071's hand-baked dockur/macos guest
+  # image was never published and its ssh secret was never set, so that
+  # lane failed at preflight on every run; this replaces it wholesale. This
+  # job downloads and re-verifies the uploaded build-job artifacts on a
+  # fresh runner rather than trusting the build lane's own smoke step, same
+  # as before. aarch64-apple-darwin has no smoke coverage at all: it is
+  # cross-built and release-included but not executed anywhere in CI
+  # (soldr#3071 tracks re-enabling that before release; see the
+  # compatibility_decisions entry in ci/canonical-targets.json).
   smoke_macos_x64:
     name: Smoke Intel macOS release artifacts
     needs:
@@ -637,21 +640,10 @@ jobs:
       - build
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    # soldr#3071: docker/login-action against GHCR to pull the baked dockur
-    # guest image. The workflow-level `permissions:` block narrows every
-    # job's default token, so this must be granted explicitly here.
-    permissions:
-      contents: read
-      packages: read
-    env:
-      SOLDR_MACOS_GUEST_IMAGE: ghcr.io/zackees/soldr/macos-x64-guest:ventura
-      SOLDR_MACOS_GUEST_SSH_KEY: ${{ secrets.SOLDR_MACOS_GUEST_SSH_KEY }}
-
+    timeout-minutes: 30
     steps:
-      # Checkout only for ci/smoke_release_artifacts.py and
-      # ci/macos_x64_guest.py — the smoke and guest logic live in testable
-      # Python files, not inline YAML.
+      # Checkout only for ci/smoke_release_artifacts.py — the smoke logic
+      # lives in a testable Python file, not inline YAML.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.commit_sha }}
@@ -660,27 +652,6 @@ jobs:
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: false
-
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          tool-cache: true
-          large-packages: true
-          docker-images: false
-          swap-storage: true
-
-      - name: Enable KVM
-        run: uv run --no-project --python 3.13 ci/macos_x64_guest.py preflight --apply-udev
-
-      - name: Log in to GHCR
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Start the macOS guest
-        run: uv run --no-project --python 3.13 ci/macos_x64_guest.py start --image "$SOLDR_MACOS_GUEST_IMAGE"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -692,26 +663,53 @@ jobs:
           name: pypi-soldr-x86_64-apple-darwin
           path: dist
 
-      - name: Architecture-check and smoke archive and wheel
+      # Linux-side only: wheel METADATA version, archive extraction, required
+      # members, and the Mach-O magic-byte check. Also stages the archive
+      # binaries into share/, writes the bash-3.2 script the Recovery guest
+      # below fetches and runs, and (via --github-output) hands that script
+      # straight to this step's own `script` output -- no separate heredoc
+      # step needed (soldr#3076; keeps release-auto.yml's inline `run:`
+      # footprint under tests/test_release_yaml_ratchet.py's ceiling).
+      - name: Architecture-check archive/wheel and build the Recovery guest script
+        id: guest_script
         shell: bash
         run: |
           set -euo pipefail
           uv run --no-project --python 3.13 ci/smoke_release_artifacts.py \
-            --target x86_64-apple-darwin \
-            --expected-version '${{ needs.prepare.outputs.version }}' \
-            --guest-sync-dest /Users/runner/work/ws/extracted \
-            --exec-prefix "uv run --no-project --python 3.13 ci/macos_x64_guest.py exec --cwd /Users/runner/work/ws/extracted --"
+            --target x86_64-apple-darwin --expected-version '${{ needs.prepare.outputs.version }}' \
+            --emit-guest-script "$RUNNER_TEMP/recovery-run.sh" \
+            --share-dir share \
+            --github-output "$GITHUB_OUTPUT"
 
-      # Logs are printed only on failure -- they add nothing to a green run.
-      - name: Stop the macOS guest
-        if: always()
+      # zackees/docker-mac-x64: boots a real x86_64 macOS Recovery guest
+      # under KVM on this stock ubuntu-24.04 runner and runs the script
+      # above as root. No baked image, no registry auth, no ssh secret --
+      # see https://github.com/zackees/docker-mac-x64 (soldr#3076).
+      - name: Run the smoke script inside a macOS Recovery guest
+        id: macos
+        uses: zackees/docker-mac-x64@605ae73bca3bf03feb5f70a45dec7da048de137b # main
+        with:
+          share-dir: share
+          collect: /tmp/results
+          run: ${{ steps.guest_script.outputs.script }}
+
+      - name: Verify the collected Recovery guest results
         shell: bash
         run: |
-          if [ '${{ job.status }}' = success ]; then
-            uv run --no-project --python 3.13 ci/macos_x64_guest.py stop
-          else
-            uv run --no-project --python 3.13 ci/macos_x64_guest.py stop --logs
-          fi
+          set -euo pipefail
+          uv run --no-project --python 3.13 ci/smoke_release_artifacts.py \
+            --target x86_64-apple-darwin --expected-version '${{ needs.prepare.outputs.version }}' \
+            --verify-collected '${{ steps.macos.outputs.workdir }}/collected' \
+            --guest-exit-code '${{ steps.macos.outputs.exit-code }}'
+
+      - name: Upload guest screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-x64-recovery-smoke-screens
+          path: ${{ steps.macos.outputs.workdir }}/results/
+          if-no-files-found: warn
+          retention-days: 7
 
   # Windows artifacts are cross-built on Linux; execution still needs native
   # Windows on both architectures. Each smoke consumes uploaded artifacts.
