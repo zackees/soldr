@@ -211,3 +211,32 @@ def test_live_mode_skips_when_gh_is_unavailable(
     code = guard.main(["--manifest", str(MANIFEST)])
     assert code == 0
     assert "skipped" in capsys.readouterr().out
+
+
+def test_numeric_cache_ids_from_gh_survive_normalization() -> None:
+    # `gh cache list --json id` returns numbers; a str-only check dropped
+    # every id and made `--prune --apply` a no-op (2026-09-04).
+    raw = [
+        {**entry("v0-rust-x", 1, ref="refs/pull/1/merge"), "id": 7258560456},
+        {**entry("v0-rust-y", 1, ref="refs/pull/1/merge"), "id": "42"},
+        {**entry("v0-rust-z", 1, ref="refs/pull/1/merge"), "id": True},
+    ]
+    ids = [e.id for e in guard.normalize_entries(raw)]
+    assert ids == ["7258560456", "42", None]
+
+
+def test_apply_prune_deletes_every_candidate_by_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def record(args: list[str]) -> str:
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr(guard, "run_gh", record)
+    candidates = guard.normalize_entries(
+        [{**entry("v0-rust-x", 1, ref="refs/pull/1/merge"), "id": 7258560456}]
+    )
+    assert guard.apply_prune(candidates, "zackees/soldr") == []
+    assert calls == [["cache", "delete", "7258560456", "--repo", "zackees/soldr"]]
