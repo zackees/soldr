@@ -197,6 +197,15 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x share/soldr-universal2
+          # nextest replay needs the project source: the archive records the
+          # workspace root and refuses without it ("workspace root manifest at
+          # ... does not exist"). The blessed lane satisfies this with
+          # --workspace-remap "$GITHUB_WORKSPACE"; the guest has no checkout, so
+          # ship one. .git and target/ are the bulk and neither is read by tests.
+          tar -czf share/workspace.tar.gz \
+            --exclude=./.git --exclude=./target --exclude=./share \
+            --exclude='*.tar.zst' --exclude='*.tar.gz' .
+          du -h share/workspace.tar.gz
           # cargo-nextest ships as a universal Mach-O, so the same file runs on
           # either slice; the guest is x86_64.
           curl -fsSL -o nextest.tar.gz \
@@ -235,7 +244,15 @@ jobs:
             # --workspace-remap needs a directory that exists; tests that read
             # real workspace files will fail individually, which is a result
             # worth having rather than a reason not to try.
-            mkdir -p /tmp/w/src
+            curl -s -o workspace.tar.gz http://10.0.2.2:8000/workspace.tar.gz
+            mkdir -p /tmp/w/src && tar -xzf workspace.tar.gz -C /tmp/w/src
+            test -f /tmp/w/src/Cargo.toml || { echo "no workspace manifest"; exit 97; }
+
+            # Point soldr's own test helpers at the shipped tree and at the
+            # universal2 binary itself, so the thing under test is the fat
+            # binary rather than some other build.
+            export SOLDR_TEST_WORKSPACE_ROOT=/tmp/w/src
+            export SOLDR_BIN=/tmp/w/soldr
 
             ./cargo-nextest nextest list \
               --archive-file tests.tar.zst \
