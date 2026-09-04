@@ -272,6 +272,19 @@ jobs:
             echo "nextest-rc=$?" | tee /tmp/w/out/nextest.rc
             tail -60 /tmp/w/out/nextest.log
 
+            # Every test failing in ~0.15s is a startup failure, not test logic,
+            # and the per-test stderr nextest prints after the summary is what
+            # says why. Re-run ONE of them with --no-capture so that reason
+            # reaches the log instead of being summarised away.
+            ./cargo-nextest nextest run \
+              --archive-file tests.tar.zst \
+              --workspace-remap /tmp/w/src \
+              --no-capture \
+              -E 'test(suggest_returns_none_on_exact_match)' \
+              > /tmp/w/out/one-test.log 2>&1
+            echo "one-rc=$?" | tee /tmp/w/out/one.rc
+            cat /tmp/w/out/one-test.log
+
       - name: Report
         if: always()
         run: |
@@ -282,7 +295,8 @@ jobs:
             [ -f "$C/$f" ] && { echo "--- $f ---"; cat "$C/$f"; }
           done
           [ -f "$C/nextest-list.log" ] && { echo "--- nextest list (head) ---"; head -30 "$C/nextest-list.log"; }
-          [ -f "$C/nextest.log" ] && { echo "--- nextest run (tail) ---"; tail -80 "$C/nextest.log"; }
+          [ -f "$C/nextest.log" ] && { echo "--- nextest run (summary) ---"; grep -E "Summary|tests run|^ *FAIL" "$C/nextest.log" | tail -8; }
+          [ -f "$C/one-test.log" ] && { echo "--- single test, uncaptured (why they fail) ---"; cat "$C/one-test.log"; }
 
           # A probe whose test step cannot report red is not testing anything.
           fail=0
