@@ -324,6 +324,29 @@ jobs:
             --max-glibc 2.39 \
             "target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
+      # soldr#3085: every lane below cross-builds on an x86_64 Linux runner
+      # (macOS since soldr#3073, aarch64-gnu since long before), and the
+      # symbol carve-out in the next step has to read the artifact it just
+      # built. The runner's own GNU binutils cannot: it rejects a foreign-arch
+      # ELF ("Unable to recognise the format of the input file") and cannot
+      # read Mach-O at any architecture ("file format not recognized"). Both
+      # took down release run 33820395040 (v0.9.12).
+      #
+      # `llvm-objcopy`/`llvm-strip` are target-agnostic and GNU-option
+      # compatible, so they handle every triple this matrix produces. The
+      # darwin lanes already carry them via soldr's managed LLVM on PATH; the
+      # aarch64-gnu lane carries only its conda cross GCC, so install rustup's
+      # llvm-tools component to give stage_release_binaries.py a deterministic
+      # source instead of relying on what a runner image happens to ship.
+      # Best-effort: if this fails, the script still falls back to the managed
+      # cross toolchain's target-prefixed binutils, and fails loudly naming
+      # every location it searched rather than shipping an uncarved binary.
+      - name: Provision cross-capable binutils for symbol staging (soldr#3085)
+        if: ${{ !contains(matrix.target, 'pc-windows-msvc') }}
+        continue-on-error: true
+        shell: bash
+        run: soldr rustup component add llvm-tools-preview
+
       - name: Stage soldr release binaries
         # soldr#3038: --symbols-dir carves Linux debug info out of the
         # staged binaries (objcopy --only-keep-debug / strip --strip-debug /

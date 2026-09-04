@@ -89,12 +89,38 @@ stays `"none"` because the carve-out needs the fully linked, undisturbed
 binary as its input. The three-step sequence itself lives in
 `stage_release_binaries.py::stage_debug_symbols`, run after the binaries are
 already staged in `package_dir` (so it strips the exact bytes that ship, not
-a separate copy). "The runner" below means GitHub's `ubuntu-24.04` image,
-which ships GNU binutils (`objcopy`/`strip`) as part of its base toolchain —
-this was verified against GNU objcopy/strip 2.46 locally, not `llvm-objcopy`
-(also available, and would work identically via `--objcopy llvm-objcopy
---strip-tool llvm-strip`, but the release lane does not install LLVM tools
-today, so GNU binutils is what is actually there without adding a step).
+a separate copy). "The runner" below means GitHub's `ubuntu-24.04` image.
+
+**Which binutils runs is per-target, not per-runner (soldr#3085).** The first
+pass at this hard-coded bare `objcopy`/`strip`, which resolve to the *host's*
+GNU binutils. That is only correct when the lane builds for the host it runs
+on, and most of the release matrix does not: `aarch64-unknown-linux-gnu` has
+always been an x86_64-hosted cross lane, and the `*-apple-darwin` lanes moved
+to Linux hosts in soldr#3073. Ubuntu's stock binutils is single-target, so it
+rejects a foreign-arch ELF (`objcopy: Unable to recognise the format of the
+input file`), and GNU binutils cannot read Mach-O at any architecture
+(`strip: file format not recognized`). Both failures took down release run
+33820395040 (v0.9.12).
+
+`stage_debug_symbols` now asks `select_binutils()` for tools that can read
+the *target*: host GNU `objcopy`/`strip` when the target is native to the
+host (unchanged for the x64-gnu, x64-musl and native arm64-musl lanes), and
+otherwise `llvm-objcopy`/`llvm-strip`, which are target-agnostic by
+construction and GNU-option compatible — `--only-keep-debug`,
+`--strip-debug`, `--add-gnu-debuglink` and Mach-O `-x` all behave identically.
+They are found on `PATH` (soldr's managed LLVM is already first on PATH in
+the darwin lanes), then in soldr's managed layouts, then in rustup's
+`llvm-tools` component, which `release-auto.yml` installs on every non-Windows
+lane so the aarch64-gnu lane has a deterministic source. A secondary fallback
+derives the managed cross toolchain's target-prefixed GNU binutils (e.g.
+`aarch64-conda-linux-gnu-objcopy`) from the `AR_<triple>` the bundle exports.
+If none of that resolves, staging fails loudly naming every location it
+searched — a release never silently ships an uncarved binary. `--objcopy`,
+`--strip-tool` and `--darwin-strip` remain as explicit overrides.
+
+The measurements below were taken with GNU objcopy/strip 2.46 on a native
+x86_64 host, which is still exactly what the `x86_64-unknown-linux-gnu` lane
+runs.
 
 `soldr-daemon` is staged as a hardlink to `soldr` (`copy_or_link`), and the
 strip above mutates `soldr`'s inode in place — so on the common path,
@@ -189,8 +215,9 @@ fix" is the objcopy carve-out described above: `debug = "line-tables-only"`,
 Numbers measured locally with `soldr archive --stage-dir … --output …` (the
 same native command `package_release_archive.py` drives), GNU
 `objcopy`/`strip` 2.46 (`binutils`, matching what an unmodified
-`ubuntu-24.04` GitHub Actions runner has preinstalled — not `llvm-objcopy`,
-also available here but not installed by the release lane today), and a
+`ubuntu-24.04` GitHub Actions runner has preinstalled, and what the
+host-native `x86_64-unknown-linux-gnu` lane still selects — the cross lanes
+now select `llvm-objcopy`/`llvm-strip` instead, per soldr#3085 above), and a
 `maturin build --release` matching `build_release_wheel.py`'s invocation —
 not downloaded from a published release, so treat as representative rather
 than exact byte-for-byte CI output.
