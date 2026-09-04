@@ -499,6 +499,30 @@
       "mechanism": "*",
       "tier": "cache-experiment",
       "rationale": "Acceptance for cook behaviour on the ci-test stable tree (soldr#3043)."
+    },
+    {
+      "id": "macos-universal2-probe-slice-upload",
+      "workflow": "macos-universal2-probe.yml",
+      "step": "actions/upload-artifact (slice-<triple>)",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Per-triple release binary plus the x86_64 nextest archive, handed to the combine job of the SAME dispatch-only run (3-day retention); never restored into a later build."
+    },
+    {
+      "id": "macos-universal2-probe-payload-upload",
+      "workflow": "macos-universal2-probe.yml",
+      "step": "actions/upload-artifact (universal2-payload)",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "The lipo'd universal2 binary and test payload for the macOS guest job of the same run; inspection only, nothing downloads it into a compile."
+    },
+    {
+      "id": "macos-universal2-probe-guest-results-upload",
+      "workflow": "macos-universal2-probe.yml",
+      "step": "actions/upload-artifact (universal2-guest-results)",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Guest logs and test results retained for humans."
     }
   ]
 }
