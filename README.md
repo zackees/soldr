@@ -76,8 +76,51 @@ every later build on any branch or worktree hits the shared cache.
 | `soldr build --target <triple\|alias>` | Blessed cross-compile with a managed SDK (`win-x64`, `mac-arm64`, `linux-x64-musl`, ...) |
 | `soldr cc` / `soldr c++` | Compile C / C++ with a catalogue-backed toolchain |
 | `soldr lint` | Unified Rust and dependency lint suites |
-| `soldr ci-test` | The prescribed host-validation DAG used in CI |
+| `soldr ci-test` | **The supported way to test soldr-built projects.** The prescribed host-validation DAG used in CI — see [Testing strategy](#testing-strategy) |
 | `soldr <tool>` | Fetch and run a pre-built ecosystem tool: `nextest`, `deny`, `audit`, `mdbook`, `just`, ... |
+
+### Testing strategy
+
+**Use `soldr ci-test`.** It is the supported long-term testing path and the
+fastest one available: a frozen DAG that maximizes sharing by compile domain, so
+stable host Clippy subsumes `cargo check`, nextest test-profile compilation
+completes before execution overlaps the Dylint branch, and doctests join both.
+Hand-rolled sequences of `cargo fmt` + `cargo clippy` + `cargo nextest` + doctests
+recompile the same crates several times over and drift apart from what CI runs.
+
+```bash
+soldr ci-test                                # the whole host-validation DAG
+soldr ci-test --explain-plan --format json   # inspect the plan, no compiler work
+soldr ci-test --package soldr-core           # host-scope narrowing
+```
+
+**Know the one boundary.** `ci-test` validates on the *host* and deliberately
+**rejects** `--target`, `--toolchain` and `--profile` rather than silently
+creating a different compile domain. So it is not the tool for *executing*
+binaries built for another platform. For that, build a nextest archive on the
+cross-build lane and replay it on the target:
+
+```bash
+soldr cargo nextest archive --target <triple> --archive-file tests.tar.zst
+# then, on (or emulating) the target:
+cargo-nextest nextest run --archive-file tests.tar.zst --workspace-remap <checkout>
+```
+
+Two things bite consumers here, both observed rather than hypothesised:
+
+* `cargo-nextest` is a **cargo subcommand shim**. Invoked as `cargo-nextest run`
+  it proxies to cargo, which replies `unrecognized subcommand 'run'` — an error
+  that reads like a broken archive. The `nextest` verb is required.
+* A replay needs the **project source**, because the archive records its
+  workspace root. Without it: `error: workspace root manifest at ... does not
+  exist`. `--workspace-remap` must point at a real checkout.
+
+A blessed `--execution container` mode that does all of this for you is proposed
+in soldr#3084.
+
+And a caution soldr learned the hard way (soldr#2945): **a green CI lane only
+proves the verb CI runs.** When a tool has more than one entry point, check that
+they resolve their inputs through one implementation, or expect them to drift.
 
 ### Toolchain
 
