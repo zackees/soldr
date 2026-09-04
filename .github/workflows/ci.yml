@@ -466,7 +466,11 @@ jobs:
     with:
       runner: ubuntu-24.04
       target: x86_64-unknown-linux-gnu
-      source_driver_artifact_name: soldr-ci-bootstrap-linux-gnu
+      # No `source_driver_artifact_name`: under the serial gate the bootstrap
+      # producer (e2e-cross-bootstrap-soldr) runs AFTER this job, so its
+      # artifact can never exist yet and the opportunistic download only
+      # ever logged "Artifact not found". The host builds its driver from
+      # source, which is what the fallback did anyway.
 
   pep517-daemon-smoke:
     name: PEP 517 daemon smoke (${{ matrix.name }})

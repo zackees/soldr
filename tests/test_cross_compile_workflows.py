@@ -573,7 +573,10 @@ def test_host_validation_opportunistically_reuses_exact_sha_bootstrap() -> None:
     assert "\n    needs: build-linux-x64\n" in producer_header
     assert re.search(r"(?m)^    needs: lint$", host)
     assert not re.search(r"(?m)^    needs: e2e-cross-bootstrap-soldr", host)
-    assert "source_driver_artifact_name: soldr-ci-bootstrap-linux-gnu" in host
+    # The producer's artifact cannot exist when the host starts, so the host
+    # no longer asks for it; the template skips the download on an empty name.
+    assert "source_driver_artifact_name:" not in host
+    assert "if: inputs.source_driver_artifact_name != ''" in host_template
 
     assert "bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ github.sha }}" in producer
     assert "key: rustup-1.95.0-linux-x64-v1" in producer
