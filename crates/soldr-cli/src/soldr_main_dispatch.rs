@@ -664,7 +664,13 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 eprintln!("soldr: did you mean: {suggestion}?");
             }
 
-            eprintln!("soldr: fetching {crate_name}...");
+            // Progress chatter for a human at a terminal. Into a pipe (CI,
+            // an orchestrator's nested call) a cached tool says nothing; a
+            // real download still reports itself below.
+            let chatty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+            if chatty {
+                eprintln!("soldr: fetching {crate_name}...");
+            }
             // soldr#1264 follow-on: maturin gets a provisioning ladder
             // instead of the bare fetch — prebuilt binary from GitHub
             // Releases first, manual uv-provisioned isolated env as
@@ -677,7 +683,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             };
 
             if result.cached {
-                eprintln!("soldr: using cached {crate_name} v{}", result.version);
+                if chatty {
+                    eprintln!("soldr: using cached {crate_name} v{}", result.version);
+                }
             } else {
                 eprintln!("soldr: downloaded {crate_name} v{}", result.version);
             }
