@@ -51,7 +51,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  # RUST_LIB_BACKTRACE=0 keeps panic backtraces (RUST_BACKTRACE=1) but
+  # stops cargo's anyhow errors from dumping a 30-frame stack for every
+  # cold-tree "failed to read .fingerprint/..." INFO line that
+  # CARGO_LOG=cargo::core::compiler::fingerprint=info emits on purpose.
+  # Those lines are expected on a fresh target dir and are not failures.
   RUST_BACKTRACE: "1"
+  RUST_LIB_BACKTRACE: "0"
   # Direct CI jobs may resolve managed zccache from zackees/zccache.
   # Use soldr's explicit opt-in token env for authenticated release
   # metadata requests without weakening generic cross-repo GITHUB_TOKEN use.
@@ -483,7 +489,13 @@ jobs:
       matrix:
         include: ${{ fromJSON('[{"name":"windows-x64","runner":"windows-2025","python":"3.13t"}]') }}
     env:
+      # RUST_LIB_BACKTRACE=0 keeps panic backtraces (RUST_BACKTRACE=1) but
+      # stops cargo's anyhow errors from dumping a 30-frame stack for every
+      # cold-tree "failed to read .fingerprint/..." INFO line that
+      # CARGO_LOG=cargo::core::compiler::fingerprint=info emits on purpose.
+      # Those lines are expected on a fresh target dir and are not failures.
       RUST_BACKTRACE: "1"
+      RUST_LIB_BACKTRACE: "0"
       CARGO_TERM_COLOR: always
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
     steps:

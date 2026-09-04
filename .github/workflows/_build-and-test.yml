@@ -60,7 +60,13 @@ jobs:
       # Use soldr's explicit opt-in token env so release metadata requests
       # are authenticated without weakening the generic GITHUB_TOKEN guard.
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
+      # RUST_LIB_BACKTRACE=0 keeps panic backtraces (RUST_BACKTRACE=1) but
+      # stops cargo's anyhow errors from dumping a 30-frame stack for every
+      # cold-tree "failed to read .fingerprint/..." INFO line that
+      # CARGO_LOG=cargo::core::compiler::fingerprint=info emits on purpose.
+      # Those lines are expected on a fresh target dir and are not failures.
       RUST_BACKTRACE: "1"
+      RUST_LIB_BACKTRACE: "0"
       CARGO_TERM_COLOR: always
       # zccache 1.13.17+ gives registered Rust amalgamations and large native
       # C/C++ units exclusive compiler admission. Keep Cargo/Soldr job counts
