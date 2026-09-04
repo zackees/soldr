@@ -691,9 +691,27 @@ fn verify_dylint_test_targets(plan: &CiTestPlan) -> Result<(), SoldrError> {
     })?;
     for entry in entries {
         let local_target = entry?.path().join("target");
-        if contains_material_artifact(&local_target)? {
+        let offenders = material_artifacts(&local_target, MATERIAL_ARTIFACT_LIST_LIMIT)?;
+        if !offenders.is_empty() {
+            // Name what was found, not just where: the writer is whichever
+            // nested tool produced these paths, and that is the only lead a
+            // reader of a CI log has (the tree is gone with the runner).
+            let listing = offenders
+                .iter()
+                .map(|(path, bytes)| {
+                    format!(
+                        "\n    {} ({bytes} bytes)",
+                        path.strip_prefix(&local_target).unwrap_or(path).display()
+                    )
+                })
+                .collect::<String>();
+            let more = if offenders.len() >= MATERIAL_ARTIFACT_LIST_LIMIT {
+                format!("\n    ... (first {MATERIAL_ARTIFACT_LIST_LIMIT} shown)")
+            } else {
+                String::new()
+            };
             return Err(SoldrError::Other(format!(
-                "soldr ci-test: Dylint UI tests created compiler artifacts in {}; all six tests must share {}",
+                "soldr ci-test: Dylint UI tests created compiler artifacts in {}; all six tests must share {}. Found:{listing}{more}",
                 local_target.display(),
                 shared.display()
             )));
@@ -702,19 +720,41 @@ fn verify_dylint_test_targets(plan: &CiTestPlan) -> Result<(), SoldrError> {
     Ok(())
 }
 
-fn contains_material_artifact(path: &std::path::Path) -> Result<bool, SoldrError> {
+/// How many offending paths the shared-tree guard names before truncating.
+const MATERIAL_ARTIFACT_LIST_LIMIT: usize = 40;
+
+/// Every file under `path` that is not cargo bookkeeping, up to `limit`,
+/// with its size, in path order. Bookkeeping (`.rustc_info.json`,
+/// `CACHEDIR.TAG`, `.cargo-lock`) is what a cargo that merely *looked* at a
+/// target dir leaves behind; anything else means a compiler wrote here.
+pub(crate) fn material_artifacts(
+    path: &std::path::Path,
+    limit: usize,
+) -> Result<Vec<(std::path::PathBuf, u64)>, SoldrError> {
+    let mut found = Vec::new();
+    collect_material_artifacts(path, limit, &mut found)?;
+    Ok(found)
+}
+
+fn collect_material_artifacts(
+    path: &std::path::Path,
+    limit: usize,
+    found: &mut Vec<(std::path::PathBuf, u64)>,
+) -> Result<(), SoldrError> {
     let entries = match std::fs::read_dir(path) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
+    let mut entries: Vec<_> = entries.collect::<Result<_, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
     for entry in entries {
-        let entry = entry?;
+        if found.len() >= limit {
+            return Ok(());
+        }
         let child = entry.path();
         if child.is_dir() {
-            if contains_material_artifact(&child)? {
-                return Ok(true);
-            }
+            collect_material_artifacts(&child, limit, found)?;
             continue;
         }
         let name = child.file_name().and_then(|value| value.to_str());
@@ -722,10 +762,11 @@ fn contains_material_artifact(path: &std::path::Path) -> Result<bool, SoldrError
             name,
             Some(".rustc_info.json" | "CACHEDIR.TAG" | ".cargo-lock")
         ) {
-            return Ok(true);
+            let bytes = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+            found.push((child, bytes));
         }
     }
-    Ok(false)
+    Ok(())
 }
 
 struct StageCommandFactory {
