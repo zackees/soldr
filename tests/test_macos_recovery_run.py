@@ -54,7 +54,8 @@ def test_build_guest_script_replay_stages_are_present() -> None:
     assert "nextest run $REUSE_ARGS \\" in script
     assert '--extract-to "$WORK/extract"' in script
     assert "--partition hash:1/1" in script
-    assert "--max-fail 3:immediate" in script
+    assert "--no-fail-fast" in script
+    assert 'exec "$@"' in script
     assert "RUSTUP_TOOLCHAIN" in script
     assert "SOLDR_TEST_WORKSPACE_ROOT" in script
     assert "SOLDR_TEST_FIXTURES_DIR" in script
