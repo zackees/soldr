@@ -299,7 +299,9 @@ def select_binutils(target: str) -> tuple[str, str]:
         for name, found in ((LLVM_OBJCOPY, objcopy), (LLVM_STRIP, strip_tool))
         if not found
     ]
-    searched = "\n".join(f"  {path}" for path in _managed_llvm_search_dirs()) or "  (none)"
+    searched = (
+        "\n".join(f"  {path}" for path in _managed_llvm_search_dirs()) or "  (none)"
+    )
     raise StagingError(
         f"{target} is not native to this {sys.platform}/{platform.machine()} host, so "
         f"the host GNU binutils cannot read the artifact it just built; no "

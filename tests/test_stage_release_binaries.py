@@ -444,7 +444,14 @@ def test_foreign_target_finds_llvm_in_the_managed_soldr_cache(
     monkeypatch.setattr(stage.platform, "machine", lambda: "x86_64")
     cache = tmp_path / "setup-soldr-soldr"
     fake_tool_dir(
-        cache / "bin" / "syslib" / "llvm-tools" / "20.1.7" / "linux-x64-gnu" / "package" / "bin",
+        cache
+        / "bin"
+        / "syslib"
+        / "llvm-tools"
+        / "20.1.7"
+        / "linux-x64-gnu"
+        / "package"
+        / "bin",
         "llvm-objcopy",
         "llvm-strip",
     )
@@ -465,8 +472,13 @@ def test_foreign_target_finds_llvm_in_the_rustup_llvm_tools_component(
     monkeypatch.setattr(stage.platform, "machine", lambda: "x86_64")
     rustup = tmp_path / "rustup-home"
     fake_tool_dir(
-        rustup / "toolchains" / "1.95.0-x86_64-unknown-linux-gnu" / "lib" / "rustlib"
-        / "x86_64-unknown-linux-gnu" / "bin",
+        rustup
+        / "toolchains"
+        / "1.95.0-x86_64-unknown-linux-gnu"
+        / "lib"
+        / "rustlib"
+        / "x86_64-unknown-linux-gnu"
+        / "bin",
         "llvm-objcopy",
         "llvm-strip",
     )
@@ -622,7 +634,15 @@ def build_foreign_binary(tmp_path: Path, clang_target: str, name: str) -> Path |
     source.write_text("int probe(int x){return x*37+11;}\n", encoding="utf-8")
     artifact = tmp_path / name
     result = subprocess.run(
-        [clang, f"--target={clang_target}", "-g", "-c", str(source), "-o", str(artifact)],
+        [
+            clang,
+            f"--target={clang_target}",
+            "-g",
+            "-c",
+            str(source),
+            "-o",
+            str(artifact),
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -638,7 +658,11 @@ def build_foreign_binary(tmp_path: Path, clang_target: str, name: str) -> Path |
     ],
 )
 def test_selected_tool_reads_a_real_foreign_binary_the_host_one_rejects(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clang_target: str, name: str, target: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clang_target: str,
+    name: str,
+    target: str,
 ) -> None:
     """The end-to-end claim, against real tools and a real foreign object.
 
@@ -670,6 +694,8 @@ def test_selected_tool_reads_a_real_foreign_binary_the_host_one_rejects(
     except stage.StagingError:
         pytest.skip("no cross-capable binutils installed here")
 
-    stage.run_tool([objcopy, "--only-keep-debug", str(artifact), str(tmp_path / "out.debug")])
+    stage.run_tool(
+        [objcopy, "--only-keep-debug", str(artifact), str(tmp_path / "out.debug")]
+    )
     assert (tmp_path / "out.debug").is_file()
     stage.run_tool([strip_tool, "--strip-debug", str(artifact)])
