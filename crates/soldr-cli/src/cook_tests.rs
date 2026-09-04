@@ -210,20 +210,24 @@ fn build_chef_cook_args_release_workspace_target() {
 }
 
 #[test]
-fn build_chef_cook_args_appends_passthrough_after_double_dash() {
+fn build_chef_cook_args_appends_passthrough_as_chef_options() {
+    // cargo-chef 0.1.73 rejects anything after a literal `--` as an
+    // unexpected positional, so the passthrough must be appended bare, in
+    // cargo-chef's option region, after soldr's own recognised flags.
     let ctx = CookContext {
         manifest_dir: PathBuf::from("/proj"),
         recipe_path: PathBuf::from("/tmp/recipe.json"),
         recipe_owned_tempdir: false,
     };
     let args = CookArgs {
-        passthrough: vec!["--features".into(), "extra".into()],
+        workspace: true,
+        passthrough: vec!["--all-targets".into(), "--features".into(), "extra".into()],
         ..Default::default()
     };
     let argv = build_chef_cook_args(&ctx, &args);
-    let sep = argv.iter().position(|a| a == "--").unwrap();
-    assert_eq!(argv[sep + 1], "--features");
-    assert_eq!(argv[sep + 2], "extra");
+    assert!(!argv.iter().any(|a| a == "--"), "{argv:?}");
+    let ws = argv.iter().position(|a| a == "--workspace").unwrap();
+    assert_eq!(&argv[ws + 1..], ["--all-targets", "--features", "extra"]);
 }
 
 #[test]

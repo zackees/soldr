@@ -525,10 +525,12 @@ pub(crate) fn build_chef_cook_args(ctx: &CookContext, args: &CookArgs) -> Vec<St
         out.push("--package".to_string());
         out.push(pkg.clone());
     }
-    if !args.passthrough.is_empty() {
-        out.push("--".to_string());
-        out.extend(args.passthrough.iter().cloned());
-    }
+    // No `--` separator: cargo-chef's clap parser treats `--` as the end of
+    // options and rejects everything after it as an unexpected positional
+    // ("error: unexpected argument '--all-targets' found"). `soldr cook`'s
+    // own `--` only delimits its parser from cargo-chef's; the forwarded
+    // flags are cargo-chef options and must land in its option region.
+    out.extend(args.passthrough.iter().cloned());
     out
 }
 

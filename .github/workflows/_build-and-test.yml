@@ -512,14 +512,14 @@ jobs:
       # nobody reads. Exit 3 (COOK_SKIPPED_UNCOOKABLE_WORKSPACE) has a named
       # fix -- exclude the offending member with `-p`, soldr#3043 step 3 -- and
       # every other non-zero is propagated verbatim with cook's own stderr
-      # echoed above the annotation. The one to watch on the first runs is
-      # cargo-chef 0.1.73's handling of `-- --all-targets`: the `--`
-      # passthrough is documented (docs/API.md `soldr cook`) but is not covered
-      # by an end-to-end test, so if the annotation says cook exited non-zero,
-      # read the echoed cook stderr before assuming a workspace problem; the
-      # documented fallback is to drop `--all-targets` (losing dev-dependency
-      # coverage), not to add a downgrade flag. The one softness knob is
-      # `--require-warm`, left off for the reason given in the paragraph above.
+      # echoed above the annotation. This step was red from the day it landed
+      # (#3072) until the fix in the PR that carries this comment: soldr cook
+      # forwarded its `--` passthrough to cargo-chef *with* the literal `--`,
+      # which clap reads as end-of-options, so cargo-chef rejected
+      # `--all-targets` as a positional. If the annotation says cook exited
+      # non-zero, read the echoed cook stderr before assuming a workspace
+      # problem. The one softness knob is `--require-warm`, left off for the
+      # reason given in the paragraph above.
       - name: Cook stable dependency tree (soldr#3043)
         shell: bash
         run: |

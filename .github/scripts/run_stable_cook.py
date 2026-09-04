@@ -225,10 +225,11 @@ def main(argv: list[str] | None = None, runner: Runner = default_runner) -> int:
     if result.returncode != 0:
         print(
             f"::error title=soldr cook::cook[{args.target}] exited "
-            f"{result.returncode}. cargo-chef 0.1.73 may have rejected one of "
-            f"the --chef-arg values ({list(chef_args)!r}) passed after `--`; "
-            "the documented fallback is to drop --all-targets (losing "
-            "dev-dependency coverage), not to add a new flag to `soldr cook`."
+            f"{result.returncode}. Read cook's stderr echoed above. If it "
+            f"is cargo-chef rejecting one of the --chef-arg values "
+            f"({list(chef_args)!r}), the fix belongs in soldr's argv assembly "
+            "(build_chef_cook_args must forward them as bare cargo-chef "
+            "options, never after a literal `--`), not in a downgrade flag."
         )
         return result.returncode
 
