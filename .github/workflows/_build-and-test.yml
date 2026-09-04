@@ -402,6 +402,26 @@ jobs:
       # itself across Soldr images. The setup action started the released
       # bootstrap generation; retire it explicitly before the source wrapper
       # needs its own daemon service definition.
+      # Diagnostic only, never fails. Run 33909213118's host validation died
+      # because `"$source_soldr" rustup which cargo` printed NOTHING on either
+      # stream and exited 0, which no local reproduction has matched. Show the
+      # exact bytes and status here, ten minutes into the job, instead of
+      # learning it again thirty minutes in.
+      - name: Probe source driver rustup resolution
+        shell: bash
+        run: |
+          set -uo pipefail
+          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          set -x
+          "$source_soldr" --version
+          command -v rustup
+          rustup which cargo
+          "$source_soldr" rustup which cargo > "$RUNNER_TEMP/probe.out" 2> "$RUNNER_TEMP/probe.err"; echo "rc=$?"
+          od -c "$RUNNER_TEMP/probe.out" | head -20
+          cat "$RUNNER_TEMP/probe.err"
+          set +x
+          exit 0
+
       - name: Hand off bootstrap broker to source revision
         shell: bash
         run: |
