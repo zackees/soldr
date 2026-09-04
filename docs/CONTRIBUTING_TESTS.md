@@ -188,7 +188,9 @@ that would normally gate the filter runs afterward, against the guest's own
 `nextest list` output, in `ci/macos_recovery_run.py`'s `verify-collected`
 mode. `release-auto.yml` runs the same replay again at release time
 (`e2e_macos_x64_build` / `e2e_macos_x64_replay`), pinned to the release
-commit, and `publish` will not run unless it succeeds.
+commit. That release-time replay is advisory: soldr#3088 removed it from
+`publish`'s gate after it blocked v0.9.12 twice on harness bugs without
+ever having been green.
 `aarch64-apple-darwin` is a third build-only
 lane alongside the two above: it is still cross-built and release-included,
 but has no execution environment (real or virtualized) anywhere in CI until
