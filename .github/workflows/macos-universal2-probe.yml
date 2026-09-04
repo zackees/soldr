@@ -98,6 +98,7 @@ jobs:
       - name: Build the thin slice
         run: |
           set -euo pipefail
+          # allow-release: this probe lipo's the two slices into the universal2 binary that would ship and executes it in a macOS guest; a cheaper profile would prove a shape soldr never publishes.
           soldr cargo build --release --target "${{ matrix.triple }}" -p soldr-cli --bin soldr
           ls -l "target/${{ matrix.triple }}/release/soldr"
 
@@ -133,13 +134,16 @@ jobs:
         with:
           pattern: slice-*
           path: slices
+      # Pins the interpreter the repo scripts run under (soldr#2763): bare
+      # `python3` is whatever the runner image ships.
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
 
       - name: Combine
         run: |
           set -euo pipefail
           find slices -type f | sort
           mkdir -p share
-          python3 ci/make_universal2.py -o share/soldr-universal2 \
+          uv run --no-project --python 3.13 python ci/make_universal2.py -o share/soldr-universal2 \
             slices/slice-x86_64-apple-darwin/target/x86_64-apple-darwin/release/soldr \
             slices/slice-aarch64-apple-darwin/target/aarch64-apple-darwin/release/soldr
           cp slices/slice-x86_64-apple-darwin/soldr-tests-x86_64.tar.zst share/
@@ -150,7 +154,7 @@ jobs:
         # it, and that each embedded slice is byte-identical to its thin input.
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          uv run --no-project --python 3.13 python - <<'PY'
           import struct, pathlib
           d = pathlib.Path("share/soldr-universal2").read_bytes()
           magic, n = struct.unpack_from(">II", d, 0)
