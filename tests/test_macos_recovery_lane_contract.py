@@ -132,8 +132,12 @@ def test_recovery_lane_ships_the_tests_archive_to_the_guest() -> None:
 
 
 def test_release_workflow_has_the_macos_x64_replay_jobs() -> None:
-    """soldr#3078: publish is gated on the same archive replay `e2e-macos-x64`
-    runs on every PR, pinned to the release commit."""
+    """soldr#3078: the release runs the same archive replay `e2e-macos-x64`
+    runs on every PR, pinned to the release commit.
+
+    The jobs must keep existing and running. soldr#3088 removed only their
+    hold over `publish` -- see the test below.
+    """
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     assert re.search(r"(?m)^  e2e_macos_x64_build:\s*$", release) is not None
     assert re.search(r"(?m)^  e2e_macos_x64_replay:\s*$", release) is not None
@@ -141,10 +145,44 @@ def test_release_workflow_has_the_macos_x64_replay_jobs() -> None:
     assert "target_execution: x86_64-recovery" in release
 
 
-def test_release_publish_depends_on_the_macos_x64_replay() -> None:
+def _publish_job() -> str:
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     start = release.index("\n  publish:\n")
     end = release.index("\n  verify_github_release:\n", start)
-    publish_job = release[start:end]
-    assert "e2e_macos_x64_replay" in publish_job
-    assert "needs.e2e_macos_x64_replay.result == 'success'" in publish_job
+    return release[start:end]
+
+
+def test_release_publish_is_not_gated_on_the_macos_x64_replay() -> None:
+    """soldr#3088: inverted from soldr#3078's gate. The replay lane has never
+    been green, and both v0.9.12 release attempts (runs 33820395040 and
+    33824207338) were blocked by harness bugs -- a missing `mkdir -p` for
+    nextest's `--extract-to`, in a guest where that same binary reported
+    `arch=pass:x86_64` / `version=pass:soldr 0.9.12` / `help=pass`. A gate
+    that has produced only false positives must not make releases
+    unpublishable. Restore it under the criteria in soldr#3088.
+    """
+    publish_job = _publish_job()
+    assert "e2e_macos_x64_replay" not in _needs_and_if(publish_job), (
+        "publish must not depend on the Recovery replay lane (soldr#3088); a "
+        "failed `needs:` skips publish even when the `if:` would allow it"
+    )
+
+
+def test_release_publish_keeps_the_native_macos_and_windows_smokes() -> None:
+    """soldr#3088 dropped exactly one gate. The two native release smokes --
+    the real per-OS signal on the shipped binaries -- stay required."""
+    publish_job = _publish_job()
+    for job in ("smoke_macos_x64", "smoke_windows"):
+        assert f"      - {job}\n" in publish_job, job
+        assert f"needs.{job}.result == 'success'" in publish_job, job
+
+
+def _needs_and_if(publish_job: str) -> str:
+    """The dependency-bearing part of the job: `needs:` list plus the `if:`
+    expression, with comment lines stripped so soldr#3088's rationale (which
+    names the lane) is not mistaken for a live dependency."""
+    return "\n".join(
+        line
+        for line in publish_job.splitlines()
+        if not line.strip().startswith("#") and "steps:" not in line
+    ).split("runs-on:", maxsplit=1)[0]

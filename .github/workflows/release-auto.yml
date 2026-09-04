@@ -831,8 +831,34 @@ jobs:
       - build
       - smoke_macos_x64
       - smoke_windows
-      - e2e_macos_x64_replay
-    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success' && needs.smoke_windows.result == 'success' && needs.e2e_macos_x64_replay.result == 'success'
+    # soldr#3088: `e2e_macos_x64_replay` is deliberately NOT a dependency.
+    # 9a7ea958 added it as a publish gate; it has never once been green.
+    # v0.9.12 died on it twice (runs 33820395040 and 33824207338) and both
+    # times the guest summary.txt showed the harness failing, never the
+    # artifact:
+    #
+    #   nextest_list_all=fail:nextest list exited 96: error extracting
+    #   archive `/tmp/work/tests.tar.zst` ... error canonicalizing
+    #   destination directory `/tmp/work/extract` ... No such file or
+    #   directory (os error 2)
+    #
+    # -- i.e. a missing `mkdir -p`, in the same run where that very binary
+    # reported `arch=pass:x86_64`, `version=pass:soldr 0.9.12`, `help=pass`
+    # in the guest. PR #3087 has since found four more harness defects
+    # behind that one (scratch-disk selection, Recovery having no python3
+    # for the nextest timeout wrapper, tmpfs ENOSPC, a split shell
+    # continuation) and is still stabilizing the lane.
+    #
+    # The artifact's real macOS-x64 signal is the `smoke_macos_x64` job,
+    # which runs the *shipped* `release-soldr-x86_64-apple-darwin` archive
+    # (the replay lane builds its own separate `soldr-release-e2e-macos-x64`
+    # from the same commit) in the same docker-mac-x64 Recovery guest, and
+    # passed on both failed runs. Both builds are independently proven to
+    # boot there. Until the replay lane demonstrates it can be green,
+    # gating publish on it only converts harness bugs into unpublishable
+    # releases. The job still runs on every release and stays visible;
+    # soldr#3088 tracks restoring it to the `if:` below.
+    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success' && needs.smoke_windows.result == 'success'
     runs-on: ubuntu-24.04
     # Artifact download + attestation; observed max 0.6 min.
     timeout-minutes: 30
