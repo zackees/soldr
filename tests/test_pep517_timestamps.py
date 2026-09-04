@@ -137,9 +137,12 @@ def _relay_env(backend, tmp_path: Path, timestamps: str) -> "dict[str, str]":
     return env
 
 
-def test_relay_stamps_both_streams_and_anchors_stderr(backend, tmp_path):
+def test_relay_stamps_both_streams_and_anchors_stderr(backend, tmp_path, monkeypatch):
     # End-to-end: relayed stdout AND stderr carry prefixes and stderr gets the
-    # `# t0=` anchor once, when stamping is on.
+    # `# t0=` anchor once, when stamping is on. The anchor is skipped under
+    # GitHub Actions (the runner stamps lines itself), so pin the ambient
+    # environment: this test must pass identically on a runner and a laptop.
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     code = (
         "import sys\n"
         "sys.stderr.write('Compiling foo v1.2.3\\n'); sys.stderr.flush()\n"
@@ -224,3 +227,17 @@ def test_anchor_is_skipped_where_the_runner_already_stamps_lines(backend) -> Non
     assert backend._pep517_epoch_anchor_wanted(None)
     assert backend._pep517_epoch_anchor_wanted("")
     assert not backend._pep517_epoch_anchor_wanted("true")
+
+
+def test_relay_skips_the_anchor_under_github_actions(backend, tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    code = (
+        "import sys\nsys.stderr.write('Compiling foo v1.2.3\\n'); sys.stderr.flush()\n"
+    )
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        backend._run_pep517_streaming(
+            [sys.executable, "-u", "-c", code], env=_relay_env(backend, tmp_path, "1")
+        )
+    assert "# t0=" not in stderr.getvalue(), stderr.getvalue()
+    assert _PREFIX_RE.search(stderr.getvalue()), stderr.getvalue()
