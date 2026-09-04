@@ -31,6 +31,15 @@ behind. macOS keeps `split-debuginfo = "packed"` (dsymutil's `.dSYM` model
 does not have this duplication problem) with a `strip -x` pass afterward;
 Windows is unaffected (MSVC already emits a separate, required PDB).
 
+soldr#3085: the objcopy/strip pass above must use binutils that can read what
+the lane just BUILT, not what the lane happens to RUN ON. Most of the release
+matrix cross-builds on an x86_64 Linux runner, where the host's GNU binutils
+rejects a foreign-arch ELF and cannot read Mach-O at all -- that is what broke
+three lanes of release run 33820395040. `select_binutils` therefore keeps host
+GNU binutils only for a host-native target and reaches for target-agnostic
+`llvm-objcopy` / `llvm-strip` (or the managed cross toolchain's
+target-prefixed binutils) otherwise. See that function for the full rationale.
+
 It was extracted from release-auto.yml as part of soldr#2469 step 2.2 so the
 platform-specific staging policy can be unit-tested without running a release.
 
@@ -44,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -127,6 +137,177 @@ def mark_executable(path: Path) -> None:
         # carries the regular file.  Preserve the old workflow's best-effort
         # chmod behavior on hosts that reject the mode change.
         pass
+
+
+# --------------------------------------------------------------------------
+# Cross-target binutils selection (soldr#3085)
+#
+# soldr#3038 (landed as 6f5b0f1b, after v0.9.11 was cut) made this script run
+# `objcopy`/`strip` over the staged binary. Those bare names resolve to the
+# HOST's GNU binutils, and half the release matrix cross-builds on an x86_64
+# Linux runner:
+#
+#   * `aarch64-unknown-linux-gnu` has ALWAYS been an x86_64-hosted cross lane.
+#     Ubuntu's stock binutils is single-target, so it rejects the aarch64 ELF:
+#     "objcopy: Unable to recognise the format of the input file".
+#   * `*-apple-darwin` moved from macOS runners to Linux ones in soldr#3073.
+#     GNU binutils cannot read Mach-O at ALL, at any architecture:
+#     "strip: dist/package/soldr: file format not recognized".
+#
+# Both were observed in release run 33820395040 (v0.9.12) and both are
+# reproducible locally against a clang-built aarch64 ELF / arm64 Mach-O.
+#
+# The fix is to pick a tool that can read what this lane just BUILT rather
+# than what this lane happens to RUN ON. `llvm-objcopy` / `llvm-strip` are
+# target-agnostic by construction (one binary, every LLVM object format), so
+# they are the first choice for any foreign target; they implement the exact
+# GNU options this carve-out uses ("compatible with GNU objcopy"), including
+# `--add-gnu-debuglink` and Mach-O `-x`. Host GNU binutils is still used
+# verbatim when the target IS the host, so the lanes that work today keep
+# byte-for-byte the same tooling.
+
+GNU_OBJCOPY = "objcopy"
+GNU_STRIP = "strip"
+LLVM_OBJCOPY = "llvm-objcopy"
+LLVM_STRIP = "llvm-strip"
+
+_ARCH_ALIASES = {
+    "amd64": "x86_64",
+    "x86_64": "x86_64",
+    "arm64": "aarch64",
+    "aarch64": "aarch64",
+}
+
+
+def target_is_host_native(target: str) -> bool:
+    """Can the HOST's GNU binutils read an artifact built for ``target``?
+
+    Only when the host is Linux, the target is a Linux (ELF) triple, and the
+    architectures match. `x86_64-apple-darwin` on an x86_64 Linux runner is
+    the trap this guards: the architecture matches and the object format does
+    not, so an arch-only comparison would wrongly keep GNU `strip`.
+    """
+    if sys.platform != "linux" or "-linux-" not in target:
+        return False
+    host_arch = _ARCH_ALIASES.get(platform.machine().lower())
+    return host_arch is not None and target.split("-", 1)[0] == host_arch
+
+
+def _managed_llvm_search_dirs() -> list[Path]:
+    """Directories that may hold soldr's managed `llvm-*` tools.
+
+    Ordered cheapest/most-specific first. Every entry is a real place these
+    binaries are observed in a release lane, not a guess:
+
+      * ``SOLDR_LLVM_DIR`` -- the documented escape hatch soldr's own
+        `fetch::llvm` honors, pointing straight at a bin dir.
+      * ``$SOLDR_CACHE_DIR/bin`` (CI) and ``~/.soldr/bin`` (developer) hold
+        both managed layouts: the full LLVM toolchain
+        (``llvm-<version>/[hardlinked/]bin``) and the selective LLVM-tools
+        bundle (``syslib/llvm-tools/<ver>/<slug>/package/bin``). Both are
+        already first on PATH in the darwin release lanes.
+      * ``$RUSTUP_HOME/toolchains/*/lib/rustlib/*/bin`` is rustup's
+        `llvm-tools` component, which ships llvm-objcopy and llvm-strip. The
+        release workflow installs it so the Linux-cross lanes have a
+        deterministic source rather than relying on what a runner image
+        happens to preinstall. RUSTUP_HOME is read from the environment
+        because setup-soldr relocates it away from ``~/.rustup``.
+    """
+    dirs: list[Path] = []
+
+    explicit = os.environ.get("SOLDR_LLVM_DIR")
+    if explicit:
+        dirs.append(Path(explicit))
+
+    soldr_roots: list[Path] = []
+    cache_dir = os.environ.get("SOLDR_CACHE_DIR")
+    if cache_dir:
+        soldr_roots.append(Path(cache_dir) / "bin")
+    soldr_roots.append(Path.home() / ".soldr" / "bin")
+    for root in soldr_roots:
+        for pattern in (
+            "llvm-*/bin",
+            "llvm-*/hardlinked/bin",
+            "syslib/llvm-tools/*/*/package/bin",
+        ):
+            dirs.extend(sorted(root.glob(pattern)))
+
+    rustup_home = os.environ.get("RUSTUP_HOME")
+    rustup_roots = [Path(rustup_home)] if rustup_home else [Path.home() / ".rustup"]
+    for root in rustup_roots:
+        dirs.extend(sorted(root.glob("toolchains/*/lib/rustlib/*/bin")))
+
+    return dirs
+
+
+def find_llvm_tool(name: str) -> str | None:
+    """Locate one `llvm-*` tool on PATH, then in soldr's managed layouts."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for directory in _managed_llvm_search_dirs():
+        candidate = directory / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def find_cross_gnu_tool(target: str, name: str) -> str | None:
+    """Locate target-prefixed GNU binutils from the managed cross toolchain.
+
+    A secondary fallback for ELF targets only. soldr's GNU/Linux bundle
+    exports ``AR_<target_with_underscores>`` as an ABSOLUTE path to
+    ``<bundle>/bin/<prefix>-ar`` (e.g. ``aarch64-conda-linux-gnu-ar``), so the
+    sibling ``<prefix>-objcopy`` / ``<prefix>-strip`` are derivable from it
+    without hard-coding a vendor prefix that soldr may change.
+
+    Deliberately restricted to ``-linux-`` targets with an absolute AR path:
+    the darwin lanes export ``AR_aarch64_apple_darwin=llvm-ar`` and the native
+    musl lane exports a bare ``ar``, neither of which names a cross bundle.
+    """
+    if "-linux-" not in target:
+        return None
+    ar = os.environ.get(f"AR_{target.replace('-', '_')}")
+    if not ar:
+        return None
+    ar_path = Path(ar)
+    if not ar_path.is_absolute() or not ar_path.name.endswith("-ar"):
+        return None
+    candidate = ar_path.with_name(f"{ar_path.name[: -len('ar')]}{name}")
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    return None
+
+
+def select_binutils(target: str) -> tuple[str, str]:
+    """Choose ``(objcopy, strip)`` able to process artifacts built for ``target``.
+
+    Never returns a "skip" sentinel: a release that cannot carve symbols must
+    say which tools it looked for and stop, not silently ship an unstripped
+    binary with no sidecar.
+    """
+    if target_is_host_native(target):
+        return GNU_OBJCOPY, GNU_STRIP
+
+    objcopy = find_llvm_tool(LLVM_OBJCOPY) or find_cross_gnu_tool(target, "objcopy")
+    strip_tool = find_llvm_tool(LLVM_STRIP) or find_cross_gnu_tool(target, "strip")
+    if objcopy and strip_tool:
+        return objcopy, strip_tool
+
+    missing = [
+        name
+        for name, found in ((LLVM_OBJCOPY, objcopy), (LLVM_STRIP, strip_tool))
+        if not found
+    ]
+    searched = "\n".join(f"  {path}" for path in _managed_llvm_search_dirs()) or "  (none)"
+    raise StagingError(
+        f"{target} is not native to this {sys.platform}/{platform.machine()} host, so "
+        f"the host GNU binutils cannot read the artifact it just built; no "
+        f"cross-capable {' or '.join(missing)} was found.\n"
+        f"Install the rustup llvm-tools component, set SOLDR_LLVM_DIR, or pass "
+        f"--objcopy/--strip-tool/--darwin-strip explicitly.\n"
+        f"Searched PATH plus:\n{searched}"
+    )
 
 
 def run_tool(args: list[str]) -> None:
@@ -219,9 +400,9 @@ def stage_debug_symbols(
     package_dir: Path,
     symbols_dir: Path,
     *,
-    objcopy: str = "objcopy",
-    strip_tool: str = "strip",
-    darwin_strip: str = "strip",
+    objcopy: str | None = None,
+    strip_tool: str | None = None,
+    darwin_strip: str | None = None,
 ) -> list[Path]:
     """Carve debug symbols out of the ALREADY-STAGED binaries in
     ``package_dir`` into their own directory, SEPARATE from ``package_dir``
@@ -241,9 +422,44 @@ def stage_debug_symbols(
     Returns an empty list -- not an error -- when there is nothing to stage
     for this target (Windows always; a Unix build whose macOS dSYM never
     materialized).
+
+    ``objcopy`` / ``strip_tool`` / ``darwin_strip`` default to ``None``,
+    meaning "ask :func:`select_binutils` for tools that can read what this
+    lane built" -- host GNU binutils for a host-native target, LLVM (or the
+    managed cross toolchain's target-prefixed binutils) for a foreign one.
+    Pass explicit names to override; nothing is ever skipped silently.
     """
     staged: list[Path] = []
     suffix = binary_suffix(target)
+    overrides = {"objcopy": objcopy, "strip": strip_tool, "darwin_strip": darwin_strip}
+    resolved: dict[str, str] = {}
+
+    def tool(kind: str) -> str:
+        """Resolve one tool: explicit override wins, else auto-select once.
+
+        Lazy on purpose. A target with nothing to carve -- Windows, or a
+        darwin build whose dSYM never materialized -- must not fail on
+        discovering a tool it is never going to run. `strip -x` on macOS is
+        the same tool family as the ELF `--strip-debug` pass, so one
+        selection answers both.
+        """
+        explicit = overrides[kind]
+        if explicit is not None:
+            return explicit
+        if not resolved:
+            selected_objcopy, selected_strip = select_binutils(target)
+            resolved.update(
+                objcopy=selected_objcopy,
+                strip=selected_strip,
+                darwin_strip=selected_strip,
+            )
+            print(
+                f"selected binutils for {target} (host "
+                f"{sys.platform}/{platform.machine()}): "
+                f"objcopy={selected_objcopy!r} strip={selected_strip!r}"
+            )
+        return resolved[kind]
+
     if "-unknown-linux-" in target:
         binary = package_dir / f"soldr{suffix}"
         if not binary.is_file():
@@ -253,13 +469,15 @@ def stage_debug_symbols(
             )
         symbols_dir.mkdir(parents=True, exist_ok=True)
         debug_dest = symbols_dir / "soldr.debug"
+        elf_objcopy = tool("objcopy")
+        elf_strip = tool("strip")
         strip_elf_binary_with_debuglink(
-            binary, debug_dest, objcopy=objcopy, strip_tool=strip_tool
+            binary, debug_dest, objcopy=elf_objcopy, strip_tool=elf_strip
         )
         staged.append(debug_dest)
         print(
             f"carved debug info out of {binary.name} into {debug_dest.name} "
-            f"(objcopy={objcopy!r}, strip={strip_tool!r})"
+            f"(objcopy={elf_objcopy!r}, strip={elf_strip!r})"
         )
 
         daemon = package_dir / f"soldr-daemon{suffix}"
@@ -294,7 +512,7 @@ def stage_debug_symbols(
             binary = package_dir / "soldr"
             daemon = package_dir / "soldr-daemon"
             if binary.is_file():
-                run_tool([darwin_strip, "-x", str(binary)])
+                run_tool([tool("darwin_strip"), "-x", str(binary)])
                 if daemon.is_file() and not files_equal(binary, daemon):
                     copy_or_link(binary, daemon)
                     mark_executable(daemon)
@@ -322,18 +540,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--objcopy",
-        default="objcopy",
-        help="objcopy executable for the Linux symbol carve-out (default: GNU objcopy on PATH).",
+        default=None,
+        help=(
+            "objcopy executable for the Linux symbol carve-out. Default: "
+            "auto-selected per target -- host GNU objcopy when the target is "
+            "native to this host, llvm-objcopy (or the managed cross "
+            "toolchain's target-prefixed objcopy) when it is not."
+        ),
     )
     parser.add_argument(
         "--strip-tool",
-        default="strip",
-        help="strip executable for the Linux symbol carve-out (default: GNU strip on PATH).",
+        default=None,
+        help="strip executable for the Linux symbol carve-out. Default: auto-selected, as --objcopy.",
     )
     parser.add_argument(
         "--darwin-strip",
-        default="strip",
-        help="strip executable for the macOS post-dsymutil pass (default: strip on PATH).",
+        default=None,
+        help=(
+            "strip executable for the macOS post-dsymutil `strip -x` pass. "
+            "Default: auto-selected -- llvm-strip, since GNU strip cannot read "
+            "Mach-O at all and these lanes now cross-build on Linux."
+        ),
     )
     args = parser.parse_args(argv)
     release_dir = args.release_dir or Path("target") / args.target / "release"
