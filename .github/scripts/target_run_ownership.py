@@ -421,6 +421,34 @@ def _inventory_tests(payload: dict[str, object]) -> tuple[tuple[str, str, str], 
     return tuple(sorted(tests))
 
 
+def build_filter_expression(manifest: dict[str, object], target: str) -> str:
+    """The ownership filter expression, without a nextest inventory.
+
+    ``build_selection`` needs a real ``nextest list`` inventory only to
+    validate that every selector actually matches something (a selector
+    matching zero tests is stale). The expression it returns,
+    ``Selection.filter_expression``, is a pure function of the selectors
+    alone -- `` " | ".join(selector.filter_expression() for selector in
+    selectors)`` -- and can be computed before that inventory exists.
+
+    This is what lets a Recovery guest (soldr#3076/soldr#3078), which has no
+    Linux-side nextest to list against before it boots, still be handed the
+    positive filter it should replay. The inventory validation this skips is
+    not dropped: it still runs after the guest reports back, against the
+    ``nextest list`` JSON the guest itself produced, via ``build_selection``.
+    """
+    parsed = parse_manifest(manifest)
+    selectors = tuple(
+        selector for selector in parsed.selectors if selector.applies_to(target)
+    )
+    if not selectors:
+        raise ValueError(
+            f"target-run ownership selects no selectors for target {target}; "
+            "the filter would replay nothing"
+        )
+    return " | ".join(selector.filter_expression() for selector in selectors)
+
+
 def build_selection(
     manifest: dict[str, object], inventory: dict[str, object], target: str
 ) -> Selection:
@@ -833,7 +861,7 @@ def write_filter(path: Path, expression: str) -> None:
         stream.write("\n")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--repo-root", type=Path, required=True)
@@ -842,11 +870,29 @@ def main() -> int:
     parser.add_argument("--filter-output", type=Path)
     parser.add_argument("--github-summary", type=Path)
     parser.add_argument("--check-source-only", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--filter-only",
+        action="store_true",
+        help=(
+            "write the target-run filter expression without a nextest "
+            "inventory (soldr#3078: the Recovery guest needs the filter "
+            "before it can produce one). The inventory validation still "
+            "runs later via the normal --list-json selection mode, against "
+            "the inventory that guest run produces."
+        ),
+    )
+    args = parser.parse_args(argv)
 
     manifest = load_manifest(args.manifest)
     validate_source_ownership(manifest, args.repo_root)
     if args.check_source_only:
+        return 0
+    if args.filter_only:
+        if args.target is None or args.filter_output is None:
+            parser.error("--filter-only requires --target and --filter-output")
+        expression = build_filter_expression(manifest, args.target)
+        write_filter(args.filter_output, expression)
+        print(f"target-run ownership (filter-only): target={args.target}")
         return 0
     if args.list_json is None or args.target is None or args.filter_output is None:
         parser.error("selection requires --list-json, --target, and --filter-output")

@@ -170,11 +170,11 @@ def test_windows_gnu_target_run_is_bounded_and_disk_safe() -> None:
 
     assert "extended_replay:" in target_run
     assert "default: false" in target_run
-    # soldr#3076: x86_64-recovery skips the general archive replay entirely
-    # and only pays Recovery boot+drive time, which fits the reusable
-    # 30-minute default; the pre-existing run_pep517_smoke / extended_replay
-    # / default chain is unchanged.
-    assert "inputs.target_execution == 'x86_64-recovery' && 30" in target_run
+    # soldr#3078: x86_64-recovery now replays a real nextest partition
+    # (toolchain provisioning included) inside the guest, so it gets a
+    # 90-minute budget instead of the smoke-only 30; the pre-existing
+    # run_pep517_smoke / extended_replay / default chain is unchanged.
+    assert "inputs.target_execution == 'x86_64-recovery' && 90" in target_run
     assert "inputs.run_pep517_smoke && 65" in target_run
     assert "inputs.extended_replay && 55" in target_run
     assert "|| 30 }}" in target_run

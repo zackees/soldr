@@ -704,6 +704,101 @@ class TargetRunOwnershipTests(unittest.TestCase):
 
         ownership.validate_source_ownership(declared, repo_root)
 
+    def test_filter_only_matches_the_expression_build_selection_would_emit(
+        self,
+    ) -> None:
+        """soldr#3078: the Recovery guest needs a filter before it has an
+        inventory to validate one against. `--filter-only` must produce
+        byte-identical output to what the inventory-validated path would
+        write for the same manifest/target."""
+        declared = manifest(
+            classification(
+                "platform-native", "soldr-platform", "soldr_platform", "target-replay"
+            ),
+            selectors=[
+                selector(
+                    "windows-process-module",
+                    "platform-native",
+                    test_prefix="platform_win::process::",
+                )
+            ],
+        )
+        discovered = inventory(
+            suite(
+                "soldr-platform",
+                "soldr_platform",
+                "platform_win::process::kills_tree",
+            )
+        )
+
+        via_selection = ownership.build_selection(
+            declared, discovered, "x86_64-pc-windows-msvc"
+        ).filter_expression
+        via_filter_only = ownership.build_filter_expression(
+            declared, "x86_64-pc-windows-msvc"
+        )
+
+        self.assertEqual(via_selection, via_filter_only)
+
+    def test_filter_only_is_fatal_when_no_selector_applies_to_the_target(
+        self,
+    ) -> None:
+        declared = manifest(
+            classification(
+                "windows-native", "soldr-platform", "soldr_platform", "target-replay"
+            ),
+            selectors=[
+                selector(
+                    "windows-only",
+                    "windows-native",
+                    test_prefix="platform_win::",
+                    targets=["x86_64-pc-windows-msvc"],
+                )
+            ],
+        )
+
+        with self.assertRaisesRegex(ValueError, "selects no selectors"):
+            ownership.build_filter_expression(declared, "aarch64-unknown-linux-gnu")
+
+    def test_filter_only_against_the_repository_manifest_matches_darwin(self) -> None:
+        """Exercises the exact call the Recovery guest prep step makes."""
+        repo_root = Path(__file__).resolve().parents[2]
+        declared = ownership.load_manifest(
+            repo_root / "ci" / "target-run-ownership.json"
+        )
+
+        expression = ownership.build_filter_expression(declared, "x86_64-apple-darwin")
+
+        self.assertTrue(expression)
+        self.assertIn("package(", expression)
+
+    def test_main_filter_only_writes_the_expression_without_an_inventory(
+        self,
+    ) -> None:
+        """The exact CLI shape the Recovery guest prep step invokes (soldr#3078)."""
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as temporary:
+            filter_output = Path(temporary) / "filter.txt"
+
+            rc = ownership.main(
+                [
+                    "--manifest",
+                    str(repo_root / "ci" / "target-run-ownership.json"),
+                    "--repo-root",
+                    str(repo_root),
+                    "--filter-only",
+                    "--target",
+                    "x86_64-apple-darwin",
+                    "--filter-output",
+                    str(filter_output),
+                ]
+            )
+
+            self.assertEqual(rc, 0)
+            content = filter_output.read_text(encoding="utf-8")
+            self.assertTrue(content.strip())
+            self.assertIn("package(", content)
+
 
 if __name__ == "__main__":
     unittest.main()

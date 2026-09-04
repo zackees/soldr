@@ -119,3 +119,32 @@ def test_no_dockur_ssh_machinery_referenced_in_workflows() -> None:
         # soldr#3076: GHCR auth existed only to pull the retired baked guest
         # image; docker-mac-x64 needs no registry auth at all.
         assert "docker/login-action" not in text, workflow.name
+
+
+def test_recovery_lane_ships_the_tests_archive_to_the_guest() -> None:
+    """soldr#3078: the Recovery guest replays the real nextest archive now,
+    not just `soldr --version`/`--help`, so the share-dir prep must actually
+    ship it in."""
+    target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
+    assert "share/tests.tar.zst" in target_run
+    assert "-tests.tar.zst" in target_run
+    assert "nextest_list_all" in target_run or "nextest list" in target_run
+
+
+def test_release_workflow_has_the_macos_x64_replay_jobs() -> None:
+    """soldr#3078: publish is gated on the same archive replay `e2e-macos-x64`
+    runs on every PR, pinned to the release commit."""
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    assert re.search(r"(?m)^  e2e_macos_x64_build:\s*$", release) is not None
+    assert re.search(r"(?m)^  e2e_macos_x64_replay:\s*$", release) is not None
+    assert "uses: ./.github/workflows/_ci-cross-build-linux.yml" in release
+    assert "target_execution: x86_64-recovery" in release
+
+
+def test_release_publish_depends_on_the_macos_x64_replay() -> None:
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    start = release.index("\n  publish:\n")
+    end = release.index("\n  verify_github_release:\n", start)
+    publish_job = release[start:end]
+    assert "e2e_macos_x64_replay" in publish_job
+    assert "needs.e2e_macos_x64_replay.result == 'success'" in publish_job

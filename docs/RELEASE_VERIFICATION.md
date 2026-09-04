@@ -80,6 +80,14 @@ binaries (`soldr`, `soldr-daemon`, `crgx`, `cargo-chef`) inside the guest. The
 wheel is never executed anywhere -- Recovery has no Python -- so it keeps a
 Linux-side METADATA-version check instead.
 
+Publication is *also* gated on `e2e_macos_x64_build` / `e2e_macos_x64_replay`
+(soldr#3078), which cross-build `x86_64-apple-darwin` at the release commit
+and replay the same positively-owned nextest partition every PR's
+`e2e-macos-x64` lane replays -- inside the same Recovery guest, toolchain
+provisioning included, not just the binary-only smoke `smoke_macos_x64`
+above runs. `publish` requires `e2e_macos_x64_replay` to succeed alongside
+`smoke_macos_x64` and `smoke_windows`.
+
 ## Step 1: Verify The Checksum
 
 Download the release artifact you want and the matching `SHA256SUMS` file.

@@ -61,11 +61,12 @@ on:
           or x86_64-recovery (soldr#3076: a zackees/docker-mac-x64 Recovery
           guest hosted on an ubuntu-24.04 runner. No GitHub Actions job may
           run on a macos-* runner, owner mandate 2026-09-02). x86_64-recovery
-          skips the general nextest archive replay below entirely -- Recovery
-          boots fresh per script, provisions no toolchain, and has no room for
-          the decompressed archive -- and instead runs a small fixed smoke
-          subset via ci/macos_recovery_run.py; see the dedicated step group
-          near the end of this job.
+          skips the general nextest archive replay steps below (they assume
+          per-command exec and a pre-provisioned toolchain; Recovery boots
+          fresh per script and provisions its own toolchain from scratch) and
+          instead replays the same positively-owned partition inside one
+          guest script via ci/macos_recovery_run.py (soldr#3078); see the
+          dedicated step group near the end of this job.
       replay_partitions:
         type: string
         required: false
@@ -89,11 +90,14 @@ jobs:
     # The PEP 517 smoke adds native wheel compilation plus 3m/15m inner smoke
     # limits on top of its replay budget (soldr#2615). A target may request a
     # larger bounded replay budget when native archive execution proves
-    # slower. x86_64-recovery skips the general replay entirely (soldr#3076)
-    # and only pays Recovery boot+drive time (README.md of
-    # zackees/docker-mac-x64: ~6 min with one retry, ~10 min worst case) --
-    # 30 is ample and matches the reusable default.
-    timeout-minutes: ${{ inputs.target_execution == 'x86_64-recovery' && 30 || inputs.run_pep517_smoke && 65 || inputs.extended_replay && 55 || 30 }}
+    # slower. x86_64-recovery now replays the same owned nextest partition
+    # every other target-run lane replays, just packed into one guest script
+    # (soldr#3078): Recovery boot+drive (README.md of zackees/docker-mac-x64:
+    # ~6 min with one retry, ~10 min worst case) plus toolchain provisioning
+    # plus the archive replay itself, bounded by the action's own
+    # run-timeout (3600s) below. 90 gives that headroom on top of the job's
+    # own setup/teardown steps.
+    timeout-minutes: ${{ inputs.target_execution == 'x86_64-recovery' && 90 || inputs.run_pep517_smoke && 65 || inputs.extended_replay && 55 || 30 }}
     env:
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
       # The extracted full-suite archive legitimately leaves hosted Windows
@@ -347,11 +351,11 @@ jobs:
             --soldr "$SOLDR_BIN" \
             --target '${{ inputs.target }}'
 
-      # soldr#3076: x86_64-recovery skips this entirely. Recovery boots fresh
-      # per script with no toolchain and no room for the decompressed
-      # archive, so this lane's coverage comes from the dedicated Recovery
-      # step group near the end of this job instead -- see the "macOS
-      # Recovery guest smoke" steps below.
+      # soldr#3076/#3078: x86_64-recovery skips this multi-step form of the
+      # replay entirely -- Recovery boots fresh per script with no per-command
+      # exec, so it replays the same owned partition packed into one guest
+      # script instead. See the dedicated "macOS Recovery guest replay" step
+      # group below.
       - name: Run owned pre-built native tests
         if: ${{ inputs.target_execution != 'x86_64-recovery' }}
         shell: bash
@@ -537,17 +541,18 @@ jobs:
         run: python .github/scripts/report_free_space.py --label after
 
       # ---------------------------------------------------------------
-      # soldr#3076: macOS Recovery guest smoke (x86_64-recovery only).
+      # soldr#3076/#3078: macOS Recovery guest replay (x86_64-recovery only).
       #
       # Replaces soldr#3071's dockur/macos ssh replay, which needed a
       # hand-baked guest image and an ssh secret that were never produced --
       # every run failed at preflight. zackees/docker-mac-x64 boots a real
       # x86_64 macOS Recovery guest under KVM with neither. Recovery has no
-      # toolchain and no per-command exec (one boot runs exactly one
-      # script), so this ships in only the packaged soldr binary and runs a
-      # small fixed set of binary-only CLI checks -- not the general nextest
-      # archive replay above, which does not fit Recovery's model at all.
-      # See ci/macos_recovery_run.py for exactly what runs where.
+      # toolchain of its own and no per-command exec (one boot runs exactly
+      # one script), so soldr#3078 packs the same positively-owned nextest
+      # partition every other target-run lane replays -- toolchain
+      # provisioning included -- into that one guest script instead of the
+      # dozen workflow steps above. See ci/macos_recovery_run.py for exactly
+      # what runs where.
       - name: Prepare the Recovery guest share directory
         if: ${{ inputs.target_execution == 'x86_64-recovery' }}
         shell: bash
@@ -556,6 +561,30 @@ jobs:
           mkdir -p share
           cp "$SOLDR_BIN" share/soldr
           chmod +x share/soldr
+          cp "$SOLDR_INTERNAL_DAEMON_EXE" share/soldr-daemon
+          chmod +x share/soldr-daemon
+          cp "$NEXTEST_BIN" share/cargo-nextest
+          chmod +x share/cargo-nextest
+          # Untouched: the guest's cargo-nextest decodes .tar.zst itself.
+          cp "artifact/${{ inputs.artifact_name }}-tests.tar.zst" share/tests.tar.zst
+          # Plain, uncompressed tar: bsdtar in the guest is not asked to
+          # decompress zstd.
+          tar -cf share/fixtures.tar -C "$SOLDR_TEST_FIXTURES_DIR" .
+          git archive HEAD -o share/workspace.tar
+          metadata="${NEXTEST_BIN%/*}/cargo-nextest.json"
+          test -f "$metadata"
+          jq -r '.version' "$metadata" | sed 's/^v//' > share/nextest-version.txt
+          # soldr#3078: the guest has no inventory to validate this filter
+          # against before it boots -- that validation runs after
+          # collection, against the inventory the guest's own
+          # nextest_list_all stage produces (see the verify-collected step
+          # below).
+          python .github/scripts/target_run_ownership.py \
+            --manifest ci/target-run-ownership.json \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --filter-only \
+            --target '${{ inputs.target }}' \
+            --filter-output share/filter.txt
 
       # --github-output hands the generated script straight to this step's
       # own `script` output -- no separate heredoc step needed.
@@ -569,13 +598,23 @@ jobs:
             --output "$RUNNER_TEMP/recovery-run.sh" \
             --github-output "$GITHUB_OUTPUT"
 
-      - name: Run the smoke script inside a macOS Recovery guest
+      # ram/boot-timeout/run-timeout/no-progress-timeout raised from the
+      # action's smoke-only defaults: this guest now formats+mounts a work
+      # volume, provisions a managed rustup toolchain, and replays a real
+      # nextest partition, not just `soldr --version`/`--help`.
+      - name: Run the replay inside a macOS Recovery guest
         id: macos
         if: ${{ inputs.target_execution == 'x86_64-recovery' }}
         uses: zackees/docker-mac-x64@605ae73bca3bf03feb5f70a45dec7da048de137b # main
         with:
           share-dir: share
           collect: /tmp/results
+          ram: "10"
+          cores: "2"
+          threads: "4"
+          boot-timeout: "1200"
+          run-timeout: "3600"
+          no-progress-timeout: "1200"
           run: ${{ steps.recovery_guest_script.outputs.script }}
 
       - name: Verify the collected Recovery guest results
@@ -585,14 +624,20 @@ jobs:
           set -euo pipefail
           python ci/macos_recovery_run.py verify-collected \
             --collected '${{ steps.macos.outputs.workdir }}/collected' \
-            --guest-exit-code '${{ steps.macos.outputs.exit-code }}'
+            --guest-exit-code '${{ steps.macos.outputs.exit-code }}' \
+            --manifest ci/target-run-ownership.json \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target '${{ inputs.target }}' \
+            --github-summary "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload Recovery guest screenshots
+      - name: Upload Recovery guest diagnostics
         if: ${{ always() && inputs.target_execution == 'x86_64-recovery' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: target-run-${{ inputs.target }}-recovery-screens
-          path: ${{ steps.macos.outputs.workdir }}/results/
+          name: target-run-${{ inputs.target }}-recovery-diagnostics
+          path: |
+            ${{ steps.macos.outputs.workdir }}/collected/
+            ${{ steps.macos.outputs.workdir }}/results/
           if-no-files-found: warn
           retention-days: 7
 

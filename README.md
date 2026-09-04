@@ -122,9 +122,14 @@ Silicon (`arm64`) macOS. Both are cross-built through soldr's blessed Apple
 SDK path on Linux; Intel artifacts are then smoke-tested inside a
 [zackees/docker-mac-x64](https://github.com/zackees/docker-mac-x64) macOS
 Recovery guest hosted on an ordinary Linux runner before release (no GitHub
-Actions job runs on a native macOS runner). Apple Silicon artifacts are
-cross-built the same way but are not executed anywhere in CI until a
-follow-up issue re-enables that before release.
+Actions job runs on a native macOS runner). The same Recovery guest also
+replays the real `x86_64-apple-darwin` nextest archive -- toolchain
+provisioning included -- on every pull request and again at the release
+commit before publish, so Intel macOS gets the same positively-owned native
+test coverage every other cross-built target gets, without a native macOS
+runner anywhere in the pipeline. Apple Silicon artifacts are cross-built the
+same way but are not executed anywhere in CI until a follow-up issue
+re-enables that before release.
 
 ## GitHub Actions setup
 

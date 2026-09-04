@@ -850,7 +850,10 @@ jobs:
   # and needs none: the archive under test is entirely prebuilt on Linux.
   # soldr#3076 replaced soldr#3071's dockur/macos ssh replay, whose baked
   # guest image and ssh secret were never produced -- every run failed at
-  # preflight. No secret and no registry auth are needed here.
+  # preflight. No secret and no registry auth are needed here. soldr#3078
+  # then grew this guest from a fixed binary-only smoke into a full replay of
+  # the same positively-owned nextest partition every other target-run lane
+  # replays, toolchain provisioning included.
   e2e-macos-x64-build:
     name: cross-build x86_64-apple-darwin (linux host)
     needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
@@ -872,8 +875,10 @@ jobs:
       target: x86_64-apple-darwin
       artifact_name: soldr-ci-e2e-macos-x64
       target_execution: x86_64-recovery
-      # Recovery boots fresh, runs a small fixed smoke subset, and tears
-      # down -- no general archive replay to extend a budget for.
+      # Recovery replays the archive at its own pace inside one guest
+      # script (soldr#3078); `extended_replay` only widens the *native*
+      # multi-step replay's per-step budget above, which this execution
+      # mode does not use.
       extended_replay: false
       # The Recovery guest ships no Python/maturin; the PEP 517 wheel smoke
       # already runs natively on windows-x64 (see `pep517-daemon-smoke`), so

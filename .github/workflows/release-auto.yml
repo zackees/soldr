@@ -762,6 +762,45 @@ jobs:
             --target '${{ matrix.target }}' \
             --expected-version '${{ needs.prepare.outputs.version }}'
 
+  # soldr#3078: gate publish on the same positively-owned nextest partition
+  # replay `e2e-macos-x64` runs on every PR (ci.yml), pinned to the release
+  # commit rather than the tip of main. `smoke_macos_x64` above already
+  # smoke-tests the actual release archive/wheel; this is the separate,
+  # heavier native-execution gate the archive replay itself provides --
+  # x86_64-apple-darwin is cross-built on Linux and cannot execute its own
+  # test suite there, so a real macOS Recovery guest runs it instead (no
+  # macos-* GitHub Actions runner exists anywhere, owner mandate
+  # 2026-09-02).
+  e2e_macos_x64_build:
+    name: cross-build x86_64-apple-darwin for replay (linux host)
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    uses: ./.github/workflows/_ci-cross-build-linux.yml
+    with:
+      target: x86_64-apple-darwin
+      artifact_name: soldr-release-e2e-macos-x64
+      source_ref: ${{ needs.prepare.outputs.commit_sha }}
+      # bootstrap_artifact_name omitted (optional, default ""): ci.yml's
+      # value names an artifact produced by its own e2e-cross-bootstrap-soldr
+      # job earlier in the *same* workflow run. release-auto.yml has no such
+      # job, and artifacts do not cross workflow runs, so this falls back to
+      # `_ci-cross-build-linux.yml`'s own actions/cache-or-bootstrap path.
+
+  e2e_macos_x64_replay:
+    name: target-run x86_64-apple-darwin (release gate)
+    needs:
+      - prepare
+      - e2e_macos_x64_build
+    if: needs.prepare.outputs.should_release == 'true'
+    uses: ./.github/workflows/_ci-target-run.yml
+    with:
+      runs_on: ubuntu-24.04
+      target: x86_64-apple-darwin
+      artifact_name: soldr-release-e2e-macos-x64
+      target_execution: x86_64-recovery
+      extended_replay: false
+      run_pep517_smoke: false
+
   publish:
     name: Attest and publish release assets
     needs:
@@ -769,7 +808,8 @@ jobs:
       - build
       - smoke_macos_x64
       - smoke_windows
-    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success' && needs.smoke_windows.result == 'success'
+      - e2e_macos_x64_replay
+    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success' && needs.smoke_windows.result == 'success' && needs.e2e_macos_x64_replay.result == 'success'
     runs-on: ubuntu-24.04
     # Artifact download + attestation; observed max 0.6 min.
     timeout-minutes: 30

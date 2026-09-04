@@ -175,10 +175,21 @@ native macOS runner — see `ci/macos_recovery_run.py` and the
 `.github/workflows/_ci-target-run.yml` (soldr#3076; this replaced soldr#3071's
 hand-baked dockur/macos guest, whose image was never published and whose ssh
 secret was never set, so it failed at preflight on every run). Recovery boots
-fresh per script with no toolchain and no room for the full decompressed
-nextest archive, so this target-run does *not* replay the general archive:
-it ships in only the packaged `soldr` binary and runs a small fixed set of
-binary-only CLI smoke checks. `aarch64-apple-darwin` is a third build-only
+fresh per script with no toolchain of its own and no per-command exec, so
+soldr#3078 packs the same positively-owned nextest partition every other
+target-run lane replays into that one guest script instead: the guest formats
+and mounts the action's blank disk for scratch space, provisions a managed
+rustup toolchain via `soldr toolchain ensure`/`link`, and runs `nextest list`
++ `nextest run` against the packaged archive, same as the native path just
+without per-step exec. The ownership filter is precomputed Linux-side with
+`target_run_ownership.py --filter-only` (the guest has no inventory to
+validate it against before it boots) and the inventory/coverage validation
+that would normally gate the filter runs afterward, against the guest's own
+`nextest list` output, in `ci/macos_recovery_run.py`'s `verify-collected`
+mode. `release-auto.yml` runs the same replay again at release time
+(`e2e_macos_x64_build` / `e2e_macos_x64_replay`), pinned to the release
+commit, and `publish` will not run unless it succeeds.
+`aarch64-apple-darwin` is a third build-only
 lane alongside the two above: it is still cross-built and release-included,
 but has no execution environment (real or virtualized) anywhere in CI until
 soldr#3071 re-enables it before release, so "every cross-arch target keeps
