@@ -689,11 +689,14 @@ pub(crate) async fn run_cargo_front_door(
             // soldr#1813: an aborted/timed-out cargo run is exactly when the
             // user most needs the log paths, and this arm always returns early —
             // so the summary is emitted here too rather than at the shared tail.
-            log_summary::emit_session_log_summary(&log_summary::SessionLogs {
-                build_log,
-                build_log_paths,
-                compile_fallback_log,
-            });
+            log_summary::emit_session_log_summary(
+                &log_summary::SessionLogs {
+                    build_log,
+                    build_log_paths,
+                    compile_fallback_log,
+                },
+                -1,
+            );
             if let Err(finish_err) = finish_result {
                 eprintln!(
                     "soldr warning: failed to finish zccache session after aborted cargo run: {finish_err}"
@@ -853,11 +856,14 @@ pub(crate) async fn run_cargo_front_door(
     // soldr#1813: tell the user where the logs went. Printed here because this
     // is the last point both the success and the compiler-failure paths pass
     // through — everything below can bail out via `?` or the zthreads retry.
-    log_summary::emit_session_log_summary(&log_summary::SessionLogs {
-        build_log,
-        build_log_paths,
-        compile_fallback_log,
-    });
+    log_summary::emit_session_log_summary(
+        &log_summary::SessionLogs {
+            build_log,
+            build_log_paths,
+            compile_fallback_log,
+        },
+        effective_exit_code,
+    );
     // History is now copied, sanitized, indexed, and marked complete. Keep the
     // lease through that publication boundary so migration GC cannot remove a
     // half-written archive.

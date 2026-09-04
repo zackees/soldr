@@ -218,3 +218,9 @@ def test_a_broken_sink_still_fails_gracefully_with_stamping_on(backend, tmp_path
                 [sys.executable, "-u", "-c", code],
                 env=_relay_env(backend, tmp_path, "1"),
             )
+
+
+def test_anchor_is_skipped_where_the_runner_already_stamps_lines(backend) -> None:
+    assert backend._pep517_epoch_anchor_wanted(None)
+    assert backend._pep517_epoch_anchor_wanted("")
+    assert not backend._pep517_epoch_anchor_wanted("true")

@@ -43,6 +43,16 @@ pub(crate) const TIMESTAMP_LINES_ENV_VAR: &str = "SOLDR_TIMESTAMP_LINES";
 
 /// Emitted once so absolute wall-clock times are derivable from the
 /// elapsed offsets that follow.
+/// Whether to print the `# t0=` anchor at all.
+///
+/// The anchor exists so elapsed stamps can be turned back into wall-clock
+/// time. GitHub Actions already prefixes every log line with a UTC
+/// timestamp, so there the anchor is one more line per invocation that
+/// says nothing the log does not.
+pub(crate) fn epoch_anchor_wanted(github_actions: bool) -> bool {
+    !github_actions
+}
+
 pub(crate) fn epoch_anchor_line(now_unix_ms: i64) -> String {
     format!("# t0={}.{:03}\n", now_unix_ms / 1_000, now_unix_ms % 1_000)
 }
@@ -268,5 +278,11 @@ mod tests {
             "# t0=1784950000.123\n"
         );
         assert_eq!(epoch_anchor_line(1_000), "# t0=1.000\n");
+    }
+
+    #[test]
+    fn anchor_is_skipped_where_the_runner_already_stamps_lines() {
+        assert!(epoch_anchor_wanted(false));
+        assert!(!epoch_anchor_wanted(true));
     }
 }

@@ -81,7 +81,9 @@ fn line_stamp_anchor(is_terminal: bool) -> Option<Instant> {
     // Emit the absolute anchor once, so a reader can convert the
     // elapsed offsets that follow back into wall-clock time. Written
     // before the child starts, so it always precedes the stamped lines.
-    eprint!("{}", timestamp_tee::epoch_anchor_line(current_unix_ms()));
+    if timestamp_tee::epoch_anchor_wanted(foreign_env_flag("GITHUB_ACTIONS")) {
+        eprint!("{}", timestamp_tee::epoch_anchor_line(current_unix_ms()));
+    }
     Some(Instant::now())
 }
 
