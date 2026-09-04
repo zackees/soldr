@@ -24,6 +24,7 @@ fn sample_request<'a>(
         // soldr root failed to resolve produces.
         toolchain: None,
         wrapper: None,
+        fingerprint_dirty: Vec::new(),
     }
 }
 
@@ -498,4 +499,33 @@ fn build_compile_items_pairs_start_and_end_events() {
     assert_eq!(link.items.len(), 1);
     assert_eq!(link.items[0].crate_name, "crate-b");
     assert!(link.derived);
+}
+
+#[test]
+fn fingerprint_dirty_section_renders_when_present_and_vanishes_when_absent() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let cwd = root.path().join("proj");
+    std::fs::create_dir_all(&cwd).expect("cwd");
+    let args = vec!["cargo".to_string(), "build".to_string()];
+    let mut request = sample_request(&paths, &cwd, &args);
+
+    let without = write_build_log(&request).expect("write");
+    let raw = std::fs::read_to_string(&without).expect("read");
+    assert!(!raw.contains("<fingerprint_dirty"), "{raw}");
+
+    request.fingerprint_dirty = vec![FingerprintDirty {
+        name: "serde".into(),
+        version: "1.0.0".into(),
+        reason: "the file `src/lib.rs` has changed (1 < 2)".into(),
+    }];
+    let with = write_build_log(&request).expect("write");
+    let raw = std::fs::read_to_string(&with).expect("read");
+    assert!(raw.contains("  <fingerprint_dirty>\n"), "{raw}");
+    assert!(
+        raw.contains(
+            "    <unit name=\"serde\" version=\"1.0.0\" reason=\"the file `src/lib.rs` has changed (1 &lt; 2)\" />\n"
+        ),
+        "{raw}"
+    );
 }

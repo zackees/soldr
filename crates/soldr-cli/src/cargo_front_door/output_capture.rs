@@ -337,31 +337,27 @@ where
     std::thread::spawn(move || {
         // soldr#1802: stamped copy to the terminal, raw copy on the
         // channel — the diagnostic scanner matches cargo's exact bytes.
-        let mut stamped =
-            stamp_from.map(|t0| timestamp_tee::TimestampedTee::new(std::io::stderr(), t0));
+        // The terminal copy also drops cargo's cold-tree fingerprint
+        // records (see `fingerprint_noise`); the raw copy keeps them.
+        let terminal: Box<dyn Write> = match stamp_from {
+            Some(t0) => Box::new(timestamp_tee::TimestampedTee::new(std::io::stderr(), t0)),
+            None => Box::new(std::io::stderr()),
+        };
+        let mut terminal = fingerprint_noise::FingerprintNoiseFilter::new(terminal);
         let mut chunk = [0u8; 8192];
         loop {
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
                     let bytes = chunk[..n].to_vec();
-                    match stamped.as_mut() {
-                        Some(tee) => {
-                            let _ = tee.write_all(&bytes);
-                            let _ = tee.flush();
-                        }
-                        None => {
-                            let stderr = std::io::stderr();
-                            let _ = stderr.lock().write_all(&bytes);
-                        }
-                    }
+                    let _ = terminal.write_all(&bytes);
+                    let _ = terminal.flush();
                     let _ = tx.send(CapturePipeMessage::Chunk(bytes));
                 }
                 Err(_) => break,
             }
         }
-        let stderr = std::io::stderr();
-        let _ = stderr.lock().flush();
+        let _ = terminal.flush();
         let _ = tx.send(CapturePipeMessage::Eof);
     });
     rx
