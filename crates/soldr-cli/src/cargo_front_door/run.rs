@@ -224,6 +224,7 @@ pub(crate) async fn run_cargo_front_door(
     // of printing the "failed to connect to jobserver" warning (see #283).
     command.env_remove("MAKEFLAGS");
     command.env_remove("CARGO_MAKEFLAGS");
+    quiet_library_backtraces_for_child_cargo(&mut command);
     command.env("RUSTC", &rustc);
     // soldr#2878: Cargo performs fingerprinting and directory scans before a
     // rustc request can reach the daemon's compiler admission gate. Capture
@@ -677,6 +678,7 @@ pub(crate) async fn run_cargo_front_door(
                 compile_journal_start_len,
                 &cargo,
                 cache_plan.wrapper_identity(),
+                Vec::new(),
             );
             crate::cache_lib::build_active::set(false);
             drop(build_activity_lease);
@@ -840,6 +842,10 @@ pub(crate) async fn run_cargo_front_door(
         compile_journal_start_len,
         &cargo,
         cache_plan.wrapper_identity(),
+        captured_stderr_for_diagnosis
+            .as_deref()
+            .map(fingerprint_noise::extract_dirty_records)
+            .unwrap_or_default(),
     );
     // soldr#2302: automatic cache-stats summary from the session baseline-diff
     // (precisely build-scoped), printed just above the log-paths block.

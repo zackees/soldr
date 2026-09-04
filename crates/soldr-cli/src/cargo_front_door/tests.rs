@@ -649,6 +649,48 @@ fn aborted_build_cleanup_prunes_rmetas_and_incremental_dirs() {
 }
 
 #[test]
+fn child_cargo_quiets_library_backtraces_when_only_rust_backtrace_is_set() {
+    let mut command = std::process::Command::new("cargo");
+    apply_library_backtrace_policy(&mut command, Some(OsStr::new("1")), None);
+    assert_eq!(
+        command_env_override(&command, "RUST_LIB_BACKTRACE"),
+        Some(Some(OsString::from("0")))
+    );
+    assert_eq!(command_env_override(&command, "RUST_BACKTRACE"), None);
+
+    let mut command = std::process::Command::new("cargo");
+    apply_library_backtrace_policy(&mut command, Some(OsStr::new("full")), None);
+    assert_eq!(
+        command_env_override(&command, "RUST_LIB_BACKTRACE"),
+        Some(Some(OsString::from("0")))
+    );
+}
+
+#[test]
+fn child_cargo_leaves_library_backtraces_alone_otherwise() {
+    // Nothing set: anyhow captures nothing already; do not add noise.
+    let mut command = std::process::Command::new("cargo");
+    apply_library_backtrace_policy(&mut command, None, None);
+    assert_eq!(command_env_override(&command, "RUST_LIB_BACKTRACE"), None);
+
+    // RUST_BACKTRACE=0 is "off"; same.
+    let mut command = std::process::Command::new("cargo");
+    apply_library_backtrace_policy(&mut command, Some(OsStr::new("0")), None);
+    assert_eq!(command_env_override(&command, "RUST_LIB_BACKTRACE"), None);
+
+    // An explicit caller choice wins, whatever it is.
+    for explicit in ["1", "0", "full"] {
+        let mut command = std::process::Command::new("cargo");
+        apply_library_backtrace_policy(
+            &mut command,
+            Some(OsStr::new("1")),
+            Some(OsStr::new(explicit)),
+        );
+        assert_eq!(command_env_override(&command, "RUST_LIB_BACKTRACE"), None);
+    }
+}
+
+#[test]
 fn child_cargo_scrubs_soldr_cache_lifecycle_controls() {
     let mut command = std::process::Command::new("cargo");
     command.env(SOLDR_CACHE_LIFECYCLE_ENV_VAR, "command");
@@ -2530,6 +2572,7 @@ fn write_build_log_reflects_seeded_compile_session_events() {
             binary: paths.root.join("cargo").join("bin").join("cargo"),
         }),
         wrapper: None,
+        fingerprint_dirty: Vec::new(),
     };
 
     let path = crate::build_log::write_build_log_with_history_for_test(&request, &events)
