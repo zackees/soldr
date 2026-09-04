@@ -11,9 +11,10 @@
 name: macOS universal2 probe
 
 on:
+  # Dispatch-only. This is a probe, not a gate: it costs ~40 min of runner time
+  # (two uncached cross-builds plus an emulated macOS boot) and nothing else
+  # depends on it, so it should never fire on a push.
   workflow_dispatch:
-  push:
-    branches: ['probe/macos-universal2']
 
 # setup-soldr's yank-audit aborts the run when the restored cargo-registry
 # cache contains a yanked crate, and it can only evict the offending entry with
@@ -273,11 +274,18 @@ jobs:
 
             # Bounded on purpose: this probe asks "do mac unit tests run in this
             # guest at all", not "does the whole suite pass".
+            #
+            # core::git::tests are deselected because they shell out to `git`
+            # and read a repository, and the guest has neither: Recovery ships
+            # no git, and the workspace tarball excludes .git (it is most of the
+            # bulk). Measured: with them in, 204 run / 198 passed / 6 failed,
+            # and all 6 are core::git. That is an environment gap, not an
+            # architecture or universal2 one.
             ./cargo-nextest nextest run \
               --archive-file tests.tar.zst \
               --workspace-remap /tmp/w/src \
               --no-fail-fast \
-              -E 'package(soldr-core)' \
+              -E 'package(soldr-core) - test(/^core::git::/)' \
               > /tmp/w/out/nextest.log 2>&1
             echo "nextest-rc=$?" | tee /tmp/w/out/nextest.rc
             tail -60 /tmp/w/out/nextest.log
@@ -300,6 +308,11 @@ jobs:
           grep -q '^x86_64$' "$C/arch.txt" 2>/dev/null || { echo "::error::guest did not report x86_64"; fail=1; }
           grep -q 'universal2-runs-rc=0' "$C/version.txt" 2>/dev/null || { echo "::error::the universal2 binary did not run on x86_64"; fail=1; }
           grep -q 'nextest-rc=0' "$C/nextest.rc" 2>/dev/null || { echo "::error::mac unit tests did not pass: $(cat "$C/nextest.rc" 2>/dev/null || echo missing)"; fail=1; }
+          # A filter that quietly stopped selecting anything would otherwise be
+          # indistinguishable from a clean run. Floor it.
+          ran=$(sed -n 's/.*Summary.*[^0-9]\([0-9]\+\) tests run.*/\1/p' "$C/nextest.log" 2>/dev/null | tail -1)
+          echo "tests executed in the guest: ${ran:-0}"
+          [ "${ran:-0}" -ge 150 ] 2>/dev/null || { echo "::error::only ${ran:-0} tests ran; the selection filter is too narrow to prove anything"; fail=1; }
           exit "$fail"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
