@@ -337,7 +337,11 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     # compiler remains governed by Soldr's shared/exclusive admission. The
     # Windows-target cold-build override still reserves the complete pool.
     assert 'NEXTEST_TEST_THREADS: "4"' in build_and_test
-    assert 'source_soldr="${GITHUB_WORKSPACE}/target/' in flattened
+    # The driver is built into its own target dir under the runner temp:
+    # `soldr cook`'s cargo-chef skeleton build overwrites every bin in the
+    # workspace target dir with a `fn main() {}` stub.
+    assert 'source_soldr="${RUNNER_TEMP}/soldr-source-driver/' in flattened
+    assert 'source_soldr="${GITHUB_WORKSPACE}/target/' not in flattened
     assert 'SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr"' in flattened
     assert "bootstrap_wrapper" not in flattened
     handoff = build_and_test.index("name: Hand off bootstrap broker to source revision")
@@ -346,7 +350,7 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     assert "soldr broker remove" in build_and_test[handoff:validation]
     assert '"$source_soldr" daemon start' in build_and_test[handoff:validation]
     assert '"$source_soldr" broker remove || true' in build_and_test
-    assert 'target/${{ inputs.target }}/debug/soldr"' in flattened
+    assert 'soldr-source-driver/${{ inputs.target }}/debug/soldr"' in flattened
     assert 'ci-test --target "${{ inputs.target }}"' in flattened
     assert "nextest run --no-run" not in build_and_test
     assert "- name: Run CLI smoke tests" not in build_and_test
@@ -585,7 +589,7 @@ def test_host_validation_opportunistically_reuses_exact_sha_bootstrap() -> None:
     assert "cargo build --profile dev --package soldr-cli" in producer
     assert "soldr cargo build --profile dev -p soldr-cli" in host_build
     assert "target/x86_64-unknown-linux-gnu/debug/soldr" in producer
-    assert "target/${{ inputs.target }}/debug/soldr" in host_template
+    assert "soldr-source-driver/${{ inputs.target }}/debug/soldr" in host_template
     assert "--bin soldr" in producer
     assert "--target x86_64-unknown-linux-gnu" in producer
     assert "--features" not in producer

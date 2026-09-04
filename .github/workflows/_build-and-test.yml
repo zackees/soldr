@@ -365,7 +365,8 @@ jobs:
           test -f "$artifact_soldr"
           chmod +x "$artifact_soldr"
           "$artifact_soldr" --version
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
+          mkdir -p "$(dirname "$source_soldr")"
           mkdir -p "$(dirname "$source_soldr")"
           cp "$artifact_soldr" "$source_soldr"
 
@@ -385,6 +386,16 @@ jobs:
           # The source-revision cook step below does the hydrate correctly.
           # Remove this once the pinned setup-soldr Soldr carries the fix.
           SOLDR_COOK_AUTO_HYDRATE: "0"
+          # The driver must NOT live in the workspace target dir. `soldr cook`
+          # runs cargo-chef there, and cargo-chef builds a skeleton workspace
+          # whose every bin is `fn main() {}` -- so after "Cook stable
+          # dependency tree", `target/<triple>/debug/soldr` was a stub that
+          # printed nothing and exited 0, and the host validation's
+          # `"$source_soldr" rustup which cargo` came back empty (runs
+          # 33909213118 and 33913622408, proven by probing the same call
+          # before and after the cooks). Same pattern as
+          # cargo-orchestration-telemetry.yml's soldr-2878-source-target.
+          CARGO_TARGET_DIR: ${{ runner.temp }}/soldr-source-driver
         run: |
           # setup-soldr 0.9.10 writes its historical ci-tests=1 caps through
           # GITHUB_ENV. This lane deliberately leaves both knobs unset so
@@ -402,26 +413,6 @@ jobs:
       # itself across Soldr images. The setup action started the released
       # bootstrap generation; retire it explicitly before the source wrapper
       # needs its own daemon service definition.
-      # Diagnostic only, never fails. Run 33909213118's host validation died
-      # because `"$source_soldr" rustup which cargo` printed NOTHING on either
-      # stream and exited 0, which no local reproduction has matched. Show the
-      # exact bytes and status here, ten minutes into the job, instead of
-      # learning it again thirty minutes in.
-      - name: Probe source driver rustup resolution
-        shell: bash
-        run: |
-          set -uo pipefail
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
-          set -x
-          "$source_soldr" --version
-          command -v rustup
-          rustup which cargo
-          "$source_soldr" rustup which cargo > "$RUNNER_TEMP/probe.out" 2> "$RUNNER_TEMP/probe.err"; echo "rc=$?"
-          od -c "$RUNNER_TEMP/probe.out" | head -20
-          cat "$RUNNER_TEMP/probe.err"
-          set +x
-          exit 0
-
       - name: Hand off bootstrap broker to source revision
         shell: bash
         run: |
@@ -429,7 +420,7 @@ jobs:
           unset CARGO_BUILD_JOBS SOLDR_JOBS
           soldr cache shutdown --shutdown-timeout-seconds 30 || soldr zccache stop
           soldr broker remove
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
           "$source_soldr" daemon start
 
       # soldr#3042: pre-compile the `target/dylint/tests` third-party
@@ -459,7 +450,7 @@ jobs:
         run: |
           set -euo pipefail
           unset CARGO_BUILD_JOBS SOLDR_JOBS
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
           python3 .github/scripts/cook_dylint_tests_tree.py \
             --soldr "$source_soldr" \
             --target-root "${GITHUB_WORKSPACE}/target"
@@ -557,7 +548,7 @@ jobs:
         run: |
           set -euo pipefail
           unset CARGO_BUILD_JOBS SOLDR_JOBS
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
           SOLDR_RUSTC_WRAPPER="$source_soldr" python3 .github/scripts/run_stable_cook.py \
             --soldr "$source_soldr" \
             --target "${{ inputs.target }}" \
@@ -574,26 +565,6 @@ jobs:
       # shim re-enters this source revision through the Soldr front door. Cargo
       # overwrites CARGO for build children, so ci-test also installs the
       # generated target runner at the final Nextest test-process boundary.
-      # Diagnostic only, never fails. The early probe above showed
-      # `rustup which cargo` working right after the driver build; the host
-      # validation immediately below saw it print nothing and exit 0 (run
-      # 33909213118). Repeat the probe at THIS point, after the broker
-      # hand-off and both cooks, with soldr's startup trace on, so the phase
-      # at which it goes quiet is in the log.
-      - name: Probe source driver rustup resolution after cook
-        shell: bash
-        run: |
-          set -uo pipefail
-          unset CARGO_BUILD_JOBS SOLDR_JOBS
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
-          set -x
-          SOLDR_STARTUP_TRACE=1 "$source_soldr" rustup which cargo > "$RUNNER_TEMP/probe2.out" 2> "$RUNNER_TEMP/probe2.err"; echo "rc=$?"
-          od -c "$RUNNER_TEMP/probe2.out" | head -20
-          cat "$RUNNER_TEMP/probe2.err"
-          "$source_soldr" status; echo "status rc=$?"
-          set +x
-          exit 0
-
       - name: Run prescribed host validation
         shell: bash
         run: |
@@ -601,7 +572,7 @@ jobs:
           # Clear setup-soldr's bootstrap-only legacy caps at the source-owned
           # boundary. Explicit overrides remain untouched outside this lane.
           unset CARGO_BUILD_JOBS SOLDR_JOBS
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
           real_cargo=$("$source_soldr" rustup which cargo)
           cargo_guard="${RUNNER_TEMP}/soldr-ci-cargo-guard"
           python3 .github/scripts/install_ci_cargo_guard.py \
@@ -628,7 +599,7 @@ jobs:
         continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
         shell: bash
         run: |
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
           "$source_soldr" status --json > soldr-status.json
           python3 .github/scripts/check_compile_fallbacks.py soldr-status.json
 
@@ -685,7 +656,7 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
           "$source_soldr" cache shutdown --shutdown-timeout-seconds 30 \
             || "$source_soldr" zccache stop
           "$source_soldr" broker remove || true
