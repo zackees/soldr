@@ -42,13 +42,21 @@ fn collect_material_artifacts(
             continue;
         }
         let name = child.file_name().and_then(|value| value.to_str());
-        if !matches!(
-            name,
-            Some(".rustc_info.json" | "CACHEDIR.TAG" | ".cargo-lock")
-        ) {
+        if !is_bookkeeping(name) {
             let bytes = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
             found.push((child, bytes));
         }
     }
     Ok(())
+}
+
+/// Cargo's own bookkeeping, plus soldr's: the front door leaves a zero-byte
+/// `.soldr-*` scrub marker (and its lock) in whatever it took for the target
+/// dir. Neither means a compiler wrote here.
+fn is_bookkeeping(name: Option<&str>) -> bool {
+    match name {
+        Some(".rustc_info.json" | "CACHEDIR.TAG" | ".cargo-lock") => true,
+        Some(other) => other.starts_with(".soldr-"),
+        None => false,
+    }
 }

@@ -558,6 +558,8 @@ fn material_artifacts_skip_bookkeeping_and_list_real_files_in_order() {
     std::fs::write(target.join(".rustc_info.json"), "{}").expect("write");
     std::fs::write(target.join("CACHEDIR.TAG"), "tag").expect("write");
     std::fs::write(target.join("debug/.cargo-lock"), "").expect("write");
+    std::fs::write(target.join(".soldr-fallback-output-scrub-v1"), "").expect("write");
+    std::fs::write(target.join(".soldr-fallback-output-scrub-v1.lock"), "").expect("write");
     assert!(
         super::super::dylint_target_guard::material_artifacts(&target, 40)
             .expect("scan")
