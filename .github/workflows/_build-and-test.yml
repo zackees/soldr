@@ -574,6 +574,26 @@ jobs:
       # shim re-enters this source revision through the Soldr front door. Cargo
       # overwrites CARGO for build children, so ci-test also installs the
       # generated target runner at the final Nextest test-process boundary.
+      # Diagnostic only, never fails. The early probe above showed
+      # `rustup which cargo` working right after the driver build; the host
+      # validation immediately below saw it print nothing and exit 0 (run
+      # 33909213118). Repeat the probe at THIS point, after the broker
+      # hand-off and both cooks, with soldr's startup trace on, so the phase
+      # at which it goes quiet is in the log.
+      - name: Probe source driver rustup resolution after cook
+        shell: bash
+        run: |
+          set -uo pipefail
+          unset CARGO_BUILD_JOBS SOLDR_JOBS
+          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          set -x
+          SOLDR_STARTUP_TRACE=1 "$source_soldr" rustup which cargo > "$RUNNER_TEMP/probe2.out" 2> "$RUNNER_TEMP/probe2.err"; echo "rc=$?"
+          od -c "$RUNNER_TEMP/probe2.out" | head -20
+          cat "$RUNNER_TEMP/probe2.err"
+          "$source_soldr" status; echo "status rc=$?"
+          set +x
+          exit 0
+
       - name: Run prescribed host validation
         shell: bash
         run: |
