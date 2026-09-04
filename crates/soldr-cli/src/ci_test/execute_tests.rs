@@ -558,14 +558,21 @@ fn material_artifacts_skip_bookkeeping_and_list_real_files_in_order() {
     std::fs::write(target.join(".rustc_info.json"), "{}").expect("write");
     std::fs::write(target.join("CACHEDIR.TAG"), "tag").expect("write");
     std::fs::write(target.join("debug/.cargo-lock"), "").expect("write");
-    assert!(material_artifacts(&target, 40).expect("scan").is_empty());
-    assert!(material_artifacts(root.path().join("absent").as_path(), 40)
-        .expect("absent is empty")
-        .is_empty());
+    assert!(
+        super::super::dylint_target_guard::material_artifacts(&target, 40)
+            .expect("scan")
+            .is_empty()
+    );
+    assert!(super::super::dylint_target_guard::material_artifacts(
+        root.path().join("absent").as_path(),
+        40
+    )
+    .expect("absent is empty")
+    .is_empty());
 
     std::fs::write(target.join("debug/deps/libfoo.rlib"), "rlib!").expect("write");
     std::fs::write(target.join("debug/build.log"), "xx").expect("write");
-    let found = material_artifacts(&target, 40).expect("scan");
+    let found = super::super::dylint_target_guard::material_artifacts(&target, 40).expect("scan");
     let names: Vec<String> = found
         .iter()
         .map(|(path, bytes)| {
@@ -576,5 +583,10 @@ fn material_artifacts_skip_bookkeeping_and_list_real_files_in_order() {
         })
         .collect();
     assert_eq!(names, ["debug/build.log=2", "debug/deps/libfoo.rlib=5"]);
-    assert_eq!(material_artifacts(&target, 1).expect("scan").len(), 1);
+    assert_eq!(
+        super::super::dylint_target_guard::material_artifacts(&target, 1)
+            .expect("scan")
+            .len(),
+        1
+    );
 }
