@@ -8,7 +8,18 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(50);
-const RESURRECTION_TEST_ENVELOPE: Duration = Duration::from_secs(45);
+/// Wall-clock envelope for one resurrection scenario. Sized for what the
+/// scenario actually contains, not for a hang: the expired-lease case
+/// injects a 30 s pause into the stale owner
+/// (`SOLDR_TEST_KNOWN_BAD_STOP_PAUSE_MS`) and only then lets the
+/// replacement stage an image, spawn a broker, and reach ready -- a cold
+/// start that hashes the whole executable (soldr#2517). Measured: 45.3 s
+/// on a warm workstation, 48 s on a 4-vCPU runner under `soldr ci-test`
+/// with four test threads and Dylint compiles alongside (runs 33920430360
+/// attempts 2 and 3, both failing a 45 s envelope by the same margin).
+/// nextest's budget for this group is 60 s x 5, so this stays well inside
+/// the real hang detector.
+const RESURRECTION_TEST_ENVELOPE: Duration = Duration::from_secs(120);
 
 fn stage_incumbent_broker(home: &Path) -> std::path::PathBuf {
     let broker_dir = home.join(".soldr").join("broker");
