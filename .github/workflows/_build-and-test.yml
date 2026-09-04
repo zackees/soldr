@@ -134,7 +134,7 @@ jobs:
       # soldr#1799: pin the soldr that builds us. This prevents action-default
       # drift from changing build or catalogue behavior between lanes.
       - name: Setup pinned soldr toolchain
-        uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
+        uses: zackees/setup-soldr@850244f88d111f6cc5dfe9c1018c20fdd9493ecb
         with:
           version: 0.9.10
           toolchain: 1.95.0

@@ -34,7 +34,7 @@ jobs:
       # installs the pinned Cargo/rustup toolchain before the source build and
       # before the telemetry runner isolates each case's cache/target trees.
       - name: Prepare pinned Rust and Cargo toolchain
-        uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
+        uses: zackees/setup-soldr@850244f88d111f6cc5dfe9c1018c20fdd9493ecb
         with:
           version: 0.9.10
           toolchain: 1.95.0
@@ -52,7 +52,7 @@ jobs:
         run: soldr cargo build -p soldr-cli --bin soldr
 
       - name: Stop setup-soldr builder cache before source telemetry
-        uses: zackees/setup-soldr/cleanup@5f1f68dcb8377818413c28ce52214261ae8ff771
+        uses: zackees/setup-soldr/cleanup@850244f88d111f6cc5dfe9c1018c20fdd9493ecb
 
       - name: Retire the bootstrap broker before source telemetry
         shell: bash
