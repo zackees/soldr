@@ -546,7 +546,11 @@ def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
 def test_native_linux_integration_backstop_runs_on_pull_requests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     block = _job_block(ci, "build-linux-x64", "pep517-daemon-smoke")
-    assert "github.ref_name == 'main' || github.event_name == 'pull_request'" in block
+    # Serial gate (2026-09-04): the host lane is stage 2 behind Lint and every
+    # other root job hangs off it, so it carries no event guard of its own --
+    # a workflow_dispatch run must be able to pass through it too.
+    assert "\n    needs: lint\n" in block
+    assert "\n    if:" not in block[: block.index("    uses:")]
     assert "soldr#1676" in block
     assert "canonical native exception" in block
 
@@ -561,11 +565,14 @@ def test_host_validation_opportunistically_reuses_exact_sha_bootstrap() -> None:
     upload = _step_block(ci, "Upload bootstrap soldr artifact")
     host_build = _step_block(host_template, "Build ci-test driver")
 
-    # The producer already runs unconditionally and independently. The host
-    # must not wait for it: a cold producer falls back to the existing local
-    # source build rather than extending the native critical path.
+    # The host must not wait for the producer: under the serial gate the
+    # producer runs AFTER the host (stage 3), so the host always takes the
+    # local source-build fallback rather than extending the native critical
+    # path, and the producer carries no event guard of its own.
     assert "\n    if:" not in producer_header
-    assert not re.search(r"(?m)^    needs:", host)
+    assert "\n    needs: build-linux-x64\n" in producer_header
+    assert re.search(r"(?m)^    needs: lint$", host)
+    assert not re.search(r"(?m)^    needs: e2e-cross-bootstrap-soldr", host)
     assert "source_driver_artifact_name: soldr-ci-bootstrap-linux-gnu" in host
 
     assert "bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ github.sha }}" in producer
