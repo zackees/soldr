@@ -161,6 +161,16 @@ def prepare(
         command.extend(["--restore", str(restore)])
     output = run(command, env=env)
     require_no_zig(output, "GNU preparation")
+    # soldr#3081: the target-scoped pkg-config keys are hyphenated, which is
+    # legal in GITHUB_ENV (and GitHub exports them fine) but falls outside
+    # VALID_ENV, so they never reach `managed` -- the same reason
+    # PKG_CONFIG_PATH_<triple> has never appeared there. Assert this one
+    # against the raw file instead of widening the parser.
+    raw_env = env_file.read_text(encoding="utf-8")
+    if f"PKG_CONFIG_ALLOW_CROSS_{target}=1" not in raw_env.splitlines():
+        raise RuntimeError(
+            "pkg-config cross probing was not enabled for the managed target"
+        )
     managed = read_github_env(env_file)
     prepared_env = os.environ.copy() if env is None else env.copy()
     prepared_env.update(managed)
@@ -219,9 +229,15 @@ def assert_managed_environment(
             raise RuntimeError(
                 f"cross-target alias {alias} leaked the managed target compiler"
             )
-    for key in ("CMAKE_SYSROOT", "PKG_CONFIG_SYSROOT_DIR"):
-        if Path(env[key]) != sysroot:
-            raise RuntimeError(f"{key} does not select the managed sysroot: {env[key]}")
+    if Path(env["CMAKE_SYSROOT"]) != sysroot:
+        raise RuntimeError(
+            f"CMAKE_SYSROOT does not select the managed sysroot: {env['CMAKE_SYSROOT']}"
+        )
+    # soldr#3081: PKG_CONFIG_SYSROOT_DIR is deliberately not exported -- it
+    # prefixes the already-absolute -L/-I paths that soldr's managed syslib
+    # .pc files emit. Cross probing is unlocked with ALLOW_CROSS instead.
+    if "PKG_CONFIG_SYSROOT_DIR" in managed:
+        raise RuntimeError("PKG_CONFIG_SYSROOT_DIR must not be exported (soldr#3081)")
     if str(sysroot) not in env["PKG_CONFIG_LIBDIR"]:
         raise RuntimeError("pkg-config did not receive the managed sysroot")
     if "--sysroot=" + str(sysroot) not in env[f"CFLAGS_{suffix}"]:
