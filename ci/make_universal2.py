@@ -41,7 +41,7 @@ def thin_info(path: Path) -> tuple[int, int, bytes]:
     if len(data) < 16:
         raise SystemExit(f"{path}: too small to be a Mach-O")
     (magic,) = struct.unpack_from("<I", data, 0)
-    if magic == FAT_MAGIC or magic == 0xBEBAFECA:
+    if magic in (FAT_MAGIC, 0xBEBAFECA):
         raise SystemExit(f"{path}: already a fat binary; pass thin slices")
     if magic not in (MH_MAGIC_64, MH_CIGAM_64):
         raise SystemExit(f"{path}: not a 64-bit Mach-O (magic {magic:#x})")
@@ -54,9 +54,11 @@ def build(out: Path, inputs: list[Path]) -> None:
     slices = [thin_info(p) for p in inputs]
 
     seen: set[int] = set()
-    for (cputype, _, _), p in zip(slices, inputs):
+    for (cputype, _, _), p in zip(slices, inputs, strict=True):
         if cputype in seen:
-            raise SystemExit(f"{p}: duplicate architecture {NAMES.get(cputype, cputype)}")
+            raise SystemExit(
+                f"{p}: duplicate architecture {NAMES.get(cputype, cputype)}"
+            )
         seen.add(cputype)
 
     header = 8 + 20 * len(slices)
@@ -72,13 +74,13 @@ def build(out: Path, inputs: list[Path]) -> None:
     blob = bytearray(struct.pack(">II", FAT_MAGIC, len(slices)))
     for cputype, cpusubtype, off, size, align in entries:
         blob += struct.pack(">iiIII", cputype, cpusubtype, off, size, align)
-    for (_, _, data), (_, _, off, _, _) in zip(slices, entries):
+    for (_, _, data), (_, _, off, _, _) in zip(slices, entries, strict=True):
         blob += b"\x00" * (off - len(blob))
         blob += data
 
     out.write_bytes(bytes(blob))
     out.chmod(0o755)
-    for (cputype, cpusubtype, off, size, align) in entries:
+    for cputype, cpusubtype, off, size, align in entries:
         print(
             f"  {NAMES.get(cputype, hex(cputype)):8} "
             f"cputype={cputype:#x} subtype={cpusubtype} "
