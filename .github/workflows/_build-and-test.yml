@@ -60,13 +60,7 @@ jobs:
       # Use soldr's explicit opt-in token env so release metadata requests
       # are authenticated without weakening the generic GITHUB_TOKEN guard.
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
-      # RUST_LIB_BACKTRACE=0 keeps panic backtraces (RUST_BACKTRACE=1) but
-      # stops cargo's anyhow errors from dumping a 30-frame stack for every
-      # cold-tree "failed to read .fingerprint/..." INFO line that
-      # CARGO_LOG=cargo::core::compiler::fingerprint=info emits on purpose.
-      # Those lines are expected on a fresh target dir and are not failures.
       RUST_BACKTRACE: "1"
-      RUST_LIB_BACKTRACE: "0"
       CARGO_TERM_COLOR: always
       # zccache 1.13.17+ gives registered Rust amalgamations and large native
       # C/C++ units exclusive compiler admission. Keep Cargo/Soldr job counts
@@ -136,7 +130,7 @@ jobs:
       - name: Setup pinned soldr toolchain
         uses: zackees/setup-soldr@850244f88d111f6cc5dfe9c1018c20fdd9493ecb
         with:
-          version: 0.9.10
+          version: 0.9.13
           toolchain: 1.95.0
           # Provision the ci-test Dylint foundation once, separately from
           # the stable source-driver target tree used by the prescribed DAG.
@@ -374,18 +368,6 @@ jobs:
         if: steps.shared_source_driver.outcome != 'success'
         shell: bash
         env:
-          # soldr#3043: the stable-cook cache restored above makes the cook
-          # index non-empty for the FIRST time this early in the job, so this
-          # step's front-door pre-flight would now try to hydrate it -- under
-          # the PINNED 0.9.10 bootstrap Soldr, which predates both this PR's
-          # `cook_hydrate::resolve_target_dir` fix and its
-          # `SOLDR_COOK_HYDRATE_TARGET` companion. That binary extracts a
-          # `--target`-scoped archive into the bare `target/` root, which cargo
-          # never reads for a `--target` build: a multi-GB write that buys
-          # nothing and competes for runner disk with the tree ci-test needs.
-          # The source-revision cook step below does the hydrate correctly.
-          # Remove this once the pinned setup-soldr Soldr carries the fix.
-          SOLDR_COOK_AUTO_HYDRATE: "0"
           # The driver must NOT live in the workspace target dir. `soldr cook`
           # runs cargo-chef there, and cargo-chef builds a skeleton workspace
           # whose every bin is `fn main() {}` -- so after "Cook stable
@@ -397,16 +379,10 @@ jobs:
           # cargo-orchestration-telemetry.yml's soldr-2878-source-target.
           CARGO_TARGET_DIR: ${{ runner.temp }}/soldr-source-driver
         run: |
-          # setup-soldr 0.9.10 writes its historical ci-tests=1 caps through
-          # GITHUB_ENV. This lane deliberately leaves both knobs unset so
-          # source Soldr's exclusive heavy-unit admission owns concurrency.
+          # setup-soldr's bootstrap writes its historical ci-tests=1 caps
+          # through GITHUB_ENV. This lane deliberately leaves both knobs unset
+          # so source Soldr's exclusive heavy-unit admission owns concurrency.
           unset CARGO_BUILD_JOBS SOLDR_JOBS
-          # This step runs the PINNED release soldr (setup-soldr), which
-          # predates the front door's cold-tree fingerprint filter, and
-          # nothing reads fingerprint records from the driver build -- the
-          # soldr#3040 ratchet reads ci-test's. Drop the log level here so
-          # the bootstrap does not print one record per unit.
-          unset CARGO_LOG
           soldr cargo build --profile dev -p soldr-cli --bin soldr \
             --target ${{ inputs.target }}
       # The broker is intentionally a stable singleton and never replaces
@@ -435,7 +411,7 @@ jobs:
       #
       # Position is load-bearing in both directions. AFTER "Build ci-test
       # driver" because `--tree` exists only on the source binary -- the
-      # pinned setup-soldr 0.9.10 builder has no such flag -- and AFTER
+      # bootstrap builders before 0.9.13 had no such flag -- and AFTER
       # the broker handoff so these compiles route through the same
       # source-owned daemon ci-test will use. BEFORE "Run prescribed host
       # validation" or it buys nothing.
@@ -480,8 +456,8 @@ jobs:
       # relax the guard.
       #
       # OPTION (b) IS CHOSEN, NOT (a), and the issue's own preference is
-      # overridden for two measured reasons. (i) The pinned setup-soldr
-      # 0.9.10 binary is soldr v0.9.10 = commit dcc19c61, which predates
+      # overridden for two measured reasons. (i) At the time the pinned
+      # setup-soldr binary was soldr v0.9.10 = commit dcc19c61, which predates
       # soldr#2870 (commit 623f0b49). #2870 added `compile_duration_ms` /
       # `save_elapsed_ms` to `CookEntry` plus the `decide_cook_restore` cost
       # gate, and that gate refuses any row whose timings are zero ("no prior

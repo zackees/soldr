@@ -158,7 +158,7 @@ jobs:
         uses: zackees/setup-soldr@850244f88d111f6cc5dfe9c1018c20fdd9493ecb
         with:
           enable: true
-          version: 0.9.10
+          version: 0.9.13
           toolchain: 1.95.0
           cross-targets: ${{ matrix.setup_target }}
           linker: platform-default
