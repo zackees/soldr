@@ -44,7 +44,11 @@ def install_command(python: Path) -> list[str]:
 def source_build_environment(
     base: Mapping[str, str], *, rustc: Path, cargo: Path
 ) -> dict[str, str]:
-    """Expose real rustc to probes while routing Cargo through Soldr."""
+    """Expose real rustc to probes while routing Cargo through Soldr.
+
+    soldr#3123: the CI smoke installer runs the sdist compile at the
+    runner's full width; the release scripts keep their own cap.
+    """
 
     env = dict(base)
     for key in list(env):
@@ -62,11 +66,9 @@ def source_build_environment(
     env.update(
         {
             "CARGO": str(cargo),
-            "CARGO_BUILD_JOBS": "2",
             "PATH": f"{rustc.parent}{os.pathsep}{cargo.parent}{os.pathsep}{env.get('PATH', '')}",
             "RUSTC": str(rustc),
             "RUSTUP_TOOLCHAIN": SOLDR_TOOLCHAIN,
-            "SOLDR_JOBS": "2",
         }
     )
     return env
