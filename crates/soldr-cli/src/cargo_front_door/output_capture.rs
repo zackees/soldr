@@ -359,7 +359,7 @@ where
                 Err(_) => break,
             }
         }
-        let _ = terminal.flush();
+        let _ = terminal.finish();
         let _ = tx.send(CapturePipeMessage::Eof);
     });
     rx
