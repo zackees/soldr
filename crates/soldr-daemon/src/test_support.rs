@@ -19,11 +19,13 @@ pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
         if candidate.is_file() {
             return Some(candidate);
         }
-        #[cfg(windows)]
-        if std::path::Path::new(name).extension().is_none() {
-            let with_exe = dir.join(format!("{name}.exe"));
-            if with_exe.is_file() {
-                return Some(with_exe);
+        // `EXE_SUFFIX` is ".exe" on Windows and empty elsewhere, so this
+        // stays inside the soldr#2493 platform-cfg boundary without a cfg.
+        let suffix = std::env::consts::EXE_SUFFIX;
+        if !suffix.is_empty() && std::path::Path::new(name).extension().is_none() {
+            let with_suffix = dir.join(format!("{name}{suffix}"));
+            if with_suffix.is_file() {
+                return Some(with_suffix);
             }
         }
     }
