@@ -40,11 +40,13 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 console-subscriber = { workspace = true, optional = true }
-zccache = { version = "=1.13.22", default-features = false, features = ["cli"] }
+# soldr#2899: the daemon hosts zccache's embedded service, which is
+# unconditional API. It never enters zccache's standalone CLI or daemon
+# entry point, so no zccache feature is enabled here.
+zccache = { version = "=1.13.22", default-features = false }
 
 [dev-dependencies]
 filetime = { workspace = true }
-zccache = { version = "=1.13.22", default-features = false, features = ["test-support"] }
 
 [features]
 # Opt-in tokio-console support for the daemon and embedded zccache

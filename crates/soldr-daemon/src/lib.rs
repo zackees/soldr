@@ -28,5 +28,7 @@ mod compiler_exit;
 pub mod daemon;
 pub(crate) mod oom_evidence;
 pub(crate) mod resident_compile_admission;
+#[cfg(test)]
+mod test_support;
 pub mod zccache_embedded;
 pub(crate) mod zccache_staging;
