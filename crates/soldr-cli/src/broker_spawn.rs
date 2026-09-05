@@ -23,9 +23,8 @@
 //! placement is a second, structural line of defense, not the only one.
 //!
 //! Spawns via `running_process::spawn_daemon_with_stdio_and_env_policy`
-//! (the same detach machinery `soldr-daemon`'s own client-spawns-daemon path
-//! uses, see `soldr_daemon::daemon::lifecycle::spawn::spawn_detached`) rather
-//! than a bare `std::process::Command::spawn()`. A bare spawn on Windows
+//! (the single detach machinery for every Soldr-owned long-lived process)
+//! rather than a bare `std::process::Command::spawn()`. A bare spawn on Windows
 //! stays attached to the caller's job object / console, so a shell (or a
 //! sandboxed tool harness) that waits for the whole descendant tree to exit
 //! hangs on the long-lived broker even though the direct child (this `soldr`

@@ -12,6 +12,9 @@
 //! `use soldr_cli::core::*` / `soldr_cli::fetch::*` /
 //! `soldr_cli::cache_lib::*` imports unchanged.
 
+// Cross-target `--lib` checks intentionally leave host-only CLI paths unused.
+// The retired external-cache lifecycle (soldr#2900) is guarded by a source
+// lint under `tests/guards/`, so it cannot hide behind this allowance.
 #![allow(dead_code, unused_imports)]
 
 /// Global allocator for the whole `soldr` multicall binary (soldr#3038).
@@ -223,6 +226,10 @@ pub(crate) mod broker_policy;
 pub(crate) mod broker_reaper;
 pub(crate) mod broker_server;
 pub mod broker_spawn;
+/// soldr#2900 — Soldr-owned per-build cache bookkeeping. Replaces the
+/// retired private-zccache lifecycle module, which still carried subprocess
+/// plumbing after the cache service moved in-process.
+pub(crate) mod build_cache_session;
 pub mod build_from_source_cmd;
 /// soldr#1790 — always-on hierarchical per-build XML log
 /// (`<soldr root>/logs/builds/<timestamp>-<cwd-slug>.xml`). See the
@@ -369,7 +376,6 @@ pub mod wrapper_identity;
 pub mod wrapper_target;
 pub mod zccache;
 pub mod zccache_compat;
-pub mod zccache_lifecycle;
 
 // #1490 Phase 2 facade (mechanics rule M3): every module that was
 // ever a `mod` in soldr-cli stays reachable as `soldr_cli::<name>` /
