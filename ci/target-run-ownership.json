@@ -145,10 +145,11 @@
         "daemon_restart_warmth",
         "daemon_rss_ceiling",
         "daemon_stall_harness",
-        "inherited_stdio_spawns_mark_spoke"
+        "inherited_stdio_spawns_mark_spoke",
+        "wasm32_wasip1_threads_materialization"
       ],
       "disposition": "target-replay",
-      "reason": "Daemon stop/flush, singleton, IPC, process observation, pipe leases, restart, stall, RSS-ceiling watchdog sampling, fast SIGTERM exit, and inherited-stdio behavior depend on native runtime primitives."
+      "reason": "Daemon stop/flush, singleton, IPC, process observation, pipe leases, restart, stall, RSS-ceiling watchdog sampling, fast SIGTERM exit, inherited-stdio behavior, and wasm32-wasip1-threads artifact materialization across a daemon restart depend on native runtime primitives."
     },
     {
       "id": "fetch-tools-linux-once",
