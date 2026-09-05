@@ -409,9 +409,18 @@ def build_table(
 # ---------------------------------------------------------------------------
 
 
+# Key families whose trailing `-<segment>` is a per-run generation of one
+# shared lineage: `v0-rust-*` ends in a rust-cache hash, `zccache-unit-*`
+# ends in the GitHub run id (soldr#3041 keys it that way so every host-lane
+# run saves a fresh generation and restores the newest by prefix). Only the
+# newest generation of a lineage is ever restored, so the rest is dead
+# weight -- 1.3 GiB per host-lane run on main (soldr#3102).
+GENERATION_KEY_PREFIXES = ("v0-rust-", "zccache-unit-")
+
+
 def strip_shared_key_hash(key: str) -> str:
-    """Drop a `v0-rust-*` key's trailing `-<hash>` generation segment."""
-    if not key.startswith("v0-rust-"):
+    """Drop a generation key's trailing `-<hash|run id>` segment."""
+    if not key.startswith(GENERATION_KEY_PREFIXES):
         return key
     index = key.rfind("-")
     return key[:index] if index != -1 else key
@@ -440,7 +449,7 @@ def prune_candidates(entries: list[CacheEntry]) -> list[CacheEntry]:
 
     groups: dict[str, list[CacheEntry]] = {}
     for entry in on_main:
-        if not entry.key.startswith("v0-rust-"):
+        if not entry.key.startswith(GENERATION_KEY_PREFIXES):
             continue
         groups.setdefault(strip_shared_key_hash(entry.key), []).append(entry)
 
