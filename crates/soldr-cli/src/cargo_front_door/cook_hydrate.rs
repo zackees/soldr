@@ -204,7 +204,10 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> 
     // front door in the same tree -- each `soldr ci-test` stage, for one --
     // would otherwise verify and walk the whole archive to add zero files,
     // about 10 s a time in CI (soldr#3117).
-    if target_already_cooked(&resolve_target_dir(&manifest_dir, args)) {
+    if target_already_cooked(
+        &resolve_target_dir(&manifest_dir, args),
+        profile_dir_name(resolve_profile_name(args)),
+    ) {
         return None;
     }
 
@@ -478,12 +481,6 @@ fn profile_dir_name(profile: &str) -> &str {
 /// mismatch properly needs an archive-format or index-schema decision,
 /// not a fix here. Should be filed as a `research:` issue per
 /// CLAUDE.md's Agent Code-Smell Reporting Rule.
-/// Whether `soldr cook` has already cooked `target_dir` in place.
-fn target_already_cooked(target_dir: &Path) -> bool {
-    target_dir
-        .join(crate::cook::COOK_MARKER_FILE_NAME)
-        .is_file()
-}
 
 fn resolve_target_dir(manifest_dir: &Path, args: &[String]) -> PathBuf {
     let root = if let Some(env_dir) = std::env::var_os("CARGO_TARGET_DIR") {
@@ -506,6 +503,19 @@ fn resolve_target_dir(manifest_dir: &Path, args: &[String]) -> PathBuf {
 /// unscoped (host, no `--target`) build whose artifacts land directly in the
 /// target root. argv wins; [`SOLDR_COOK_HYDRATE_TARGET_ENV`] is the fallback
 /// for `soldr cook`'s own `cargo chef prepare` (soldr#3043).
+/// Whether `soldr cook` has already cooked `target_dir` in place.
+///
+/// `target_dir` is the archive's extraction root (`target/<triple>/`); the
+/// cook writes its marker one level down, in the profile directory it cooked
+/// (`resolve_cook_target_dir` in cook.rs), so the check is scoped to the
+/// profile this build resolves to.
+fn target_already_cooked(target_dir: &Path, profile_dir: &str) -> bool {
+    target_dir
+        .join(profile_dir)
+        .join(crate::cook::COOK_MARKER_FILE_NAME)
+        .is_file()
+}
+
 fn explicit_target_scope(args: &[String]) -> Option<String> {
     if let Some(triple) = extract_arg_value(args, "--target") {
         return Some(triple);
@@ -715,9 +725,20 @@ mod tests {
     #[test]
     fn a_tree_cooked_in_place_needs_no_restore() {
         let dir = TempDir::new().unwrap();
-        assert!(!target_already_cooked(dir.path()));
+        assert!(!target_already_cooked(dir.path(), "debug"));
+        // The marker lives in the cooked profile directory, not the root.
         std::fs::write(dir.path().join(crate::cook::COOK_MARKER_FILE_NAME), b"{}").unwrap();
-        assert!(target_already_cooked(dir.path()));
+        assert!(!target_already_cooked(dir.path(), "debug"));
+        std::fs::create_dir_all(dir.path().join("debug")).unwrap();
+        std::fs::write(
+            dir.path()
+                .join("debug")
+                .join(crate::cook::COOK_MARKER_FILE_NAME),
+            b"{}",
+        )
+        .unwrap();
+        assert!(target_already_cooked(dir.path(), "debug"));
+        assert!(!target_already_cooked(dir.path(), "release"));
     }
 
     #[test]
