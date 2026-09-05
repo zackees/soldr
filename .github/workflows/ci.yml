@@ -925,6 +925,12 @@ jobs:
       runs_on: windows-2025
       target: x86_64-pc-windows-msvc
       artifact_name: soldr-ci-e2e-windows-x64
+      # soldr#3122 — the single `hash:1/1` replay ran ~serially (aarch64:
+      # 477 s of test time over 721 s wall) because the runtime/cold-build
+      # test groups are `max-threads = 1`; three fresh workers cut the
+      # critical-path tail by ~8 min. Neither lane enables
+      # `run_pep517_smoke`, so `run_followup: false` drops nothing.
+      replay_partitions: '[{"label":"1-of-3","value":"hash:1/3","run_followup":false},{"label":"2-of-3","value":"hash:2/3","run_followup":false},{"label":"3-of-3","value":"hash:3/3","run_followup":false}]'
 
   # ---------- Windows x64 (GNU) ----------
   # soldr#2336: the Linux-hosted MinGW bundle is a blessed canonical target.
@@ -979,6 +985,12 @@ jobs:
       runs_on: windows-11-arm
       target: aarch64-pc-windows-msvc
       artifact_name: soldr-ci-e2e-windows-arm64
+      # soldr#3122 — the single `hash:1/1` replay ran ~serially (aarch64:
+      # 477 s of test time over 721 s wall) because the runtime/cold-build
+      # test groups are `max-threads = 1`; three fresh workers cut the
+      # critical-path tail by ~8 min. Neither lane enables
+      # `run_pep517_smoke`, so `run_followup: false` drops nothing.
+      replay_partitions: '[{"label":"1-of-3","value":"hash:1/3","run_followup":false},{"label":"2-of-3","value":"hash:2/3","run_followup":false},{"label":"3-of-3","value":"hash:3/3","run_followup":false}]'
 
   # ---------- `soldr wheel` cross-verification (soldr#2139 acceptance) ----------
   #

@@ -113,6 +113,9 @@ RETIRED_PREFIXES: tuple[str, ...] = (
     # whose key embeds `github.sha` and therefore cannot be main-gated, so
     # pruning dead generations is the only lever it has.
     "bootstrap-soldr-blessed-linux-gnu-ci-bootstrap-",
+    # `bootstrap-e2e-<target>` in _bootstrap-e2e.yml, retired by soldr#3121
+    # to fund cook on the MSVC/aarch64-gnu cross lanes.
+    "v0-rust-bootstrap-e2e-",
 )
 
 

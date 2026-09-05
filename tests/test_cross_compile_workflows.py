@@ -2,7 +2,7 @@ import json
 import re
 from pathlib import Path
 
-from conftest import WORKSPACE_CRATES
+from conftest import COOK_CACHE_ALLOWLIST_INPUT, WORKSPACE_CRATES
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
@@ -216,6 +216,12 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "if: false" not in arm_build
     assert "if: false" not in arm_run
 
+    # soldr#3122: both MSVC target-run lanes shard into three hash partitions
+    # instead of a single serial `hash:1/1` replay.
+    x64_run = _job_block(ci, "e2e-windows-x64", "e2e-windows-x64-gnu-build")
+    assert "hash:3/3" in x64_run
+    assert "hash:3/3" in arm_run
+
     assert "if: (!contains(inputs.target, 'pc-windows-msvc'))" not in cross
     assert "soldr --no-cache build --profile" not in cross
     assert 'soldr build --profile "$ci_profile" --target "$target"' in cross
@@ -231,10 +237,9 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     )
     # soldr#2996: the cook gate is an allowlist now. The old exclusion list
     # meant x86_64-pc-windows-gnu had cook only by not matching any clause.
-    assert (
-        "cache: ${{ (inputs.target == 'x86_64-pc-windows-gnu' || inputs.target == 'x86_64-unknown-linux-gnu') && 'true' || 'false' }}"
-        in cross
-    )
+    # soldr#3121 added aarch64-pc-windows-msvc, x86_64-pc-windows-msvc and
+    # aarch64-unknown-linux-gnu to the allowlist.
+    assert COOK_CACHE_ALLOWLIST_INPUT in cross
     assert "inputs.target == 'x86_64-unknown-linux-gnu'" in cross
     assert "expected binary missing: $binary; searching target tree" in cross
     assert 'find target -type f \\( -name "soldr" -o -name "soldr.exe" \\)' in cross

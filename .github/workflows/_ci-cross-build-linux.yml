@@ -351,15 +351,16 @@ jobs:
       # 9.76 GiB of Swatinem/rust-cache (soldr#2996).
       #
       # The condition now covers every target that reaches cook, not just the
-      # aarch64 MSVC case it was written for. The second clause is the
-      # negation of the cook exclusion list below and must stay in sync with
-      # it; soldr#2996 flips that list to an explicit allowlist, at which
-      # point both can read from one place.
+      # aarch64 MSVC case it was written for. This clause is the allowlist
+      # used by the cook step's `cache:` input below and must stay in sync
+      # with it. soldr#3121: both now name the same five targets explicitly.
       - name: Prepare blessed target env for cook
         if: >-
-          (contains(inputs.target, 'pc-windows-msvc') && inputs.target != 'x86_64-pc-windows-msvc')
+          inputs.target == 'aarch64-pc-windows-msvc'
+          || inputs.target == 'x86_64-pc-windows-msvc'
           || inputs.target == 'x86_64-pc-windows-gnu'
           || inputs.target == 'x86_64-unknown-linux-gnu'
+          || inputs.target == 'aarch64-unknown-linux-gnu'
         shell: bash
         run: |
           set -euo pipefail
@@ -398,9 +399,14 @@ jobs:
       #
       # x86_64-unknown-linux-gnu joins the allowlist here: it is the lane run
       # 32852360808 measured, so it is the one whose disabling rested most
-      # directly on the disproven numbers. The remaining targets stay out
-      # until they are measured the same way -- an allowlist is a decision per
-      # lane, which is the point.
+      # directly on the disproven numbers.
+      #
+      # soldr#3121: aarch64-pc-windows-msvc, x86_64-pc-windows-msvc and
+      # aarch64-unknown-linux-gnu join too. Measured cold at 810 s of compile
+      # (386 s build + 230 s clippy + 194 s archive) against 301 s warm on
+      # win-gnu -- the same shape as the original evidence above. x64 MSVC's
+      # exclusion was a #1248-era leftover from when Swatinem/rust-cache made
+      # it fast enough not to matter; that path was retired in soldr#3047.
       - name: Restore cooked dependency cache
         id: cook
         # soldr#2996: the cook layer's post step archives `target/` at job end,
@@ -425,7 +431,7 @@ jobs:
           SOLDR_SAVE_PROFILE: ${{ inputs.bootstrap_artifact_name != '' && 'cook' || '' }}
         uses: zackees/setup-soldr/cook@bb28e96d2dc32c058242f56722297caf1efcbd90
         with:
-          cache: ${{ (inputs.target == 'x86_64-pc-windows-gnu' || inputs.target == 'x86_64-unknown-linux-gnu') && 'true' || 'false' }}
+          cache: ${{ (inputs.target == 'x86_64-pc-windows-gnu' || inputs.target == 'x86_64-unknown-linux-gnu' || inputs.target == 'aarch64-pc-windows-msvc' || inputs.target == 'x86_64-pc-windows-msvc' || inputs.target == 'aarch64-unknown-linux-gnu') && 'true' || 'false' }}
           # soldr#3019: fatal on `main`, a warning on pull requests.
           #
           # soldr#3013 made a cook that produced nothing visible; this is the
@@ -753,8 +759,12 @@ jobs:
             --archive-format tar-zst
           ls -la "$archive"
 
+      # soldr#3121: this archive-phase probe costs ~127 s and exercises the
+      # same soldr logic on both MSVC targets. aarch64 is the critical-path
+      # lane, so it keeps only the cheaper binary-phase probe above; x64
+      # keeps this one.
       - name: Validate warm Windows cache restoration (nextest archive)
-        if: contains(inputs.target, 'pc-windows-msvc')
+        if: inputs.target == 'x86_64-pc-windows-msvc'
         shell: bash
         run: |
           python3 .github/scripts/windows_msvc_cache_roundtrip.py \

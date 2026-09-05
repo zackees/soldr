@@ -177,17 +177,10 @@ jobs:
           zccache-seed-strict: true
           linker: platform-default
 
-      # soldr#1232 — cache ~/.cargo/{registry,git} + soldr/target/ so
-      # `Build soldr-cli` doesn't recompile ~700 deps from scratch every
-      # run. Same pattern as #1227 for _ci-cross-build-linux.yml.
-      # `workspaces: soldr` because the checkout lands in a subdir.
-      - name: Restore cargo + target caches
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          shared-key: bootstrap-e2e-${{ inputs.target }}
-          workspaces: soldr
-          # soldr#3047: PRs restore from main; per-PR saves were producing one entry per open PR per family.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # soldr#3121: retired this rust-cache producer (800 MiB on main) to
+      # fund the cook-layer allocation for the three new cross-build cook
+      # lanes. This lane is off the critical path and builds through
+      # soldr's embedded zccache, so it does not need its own rust-cache.
 
       # soldr#1252 — removed the "Reset stale cache fallback artifacts"
       # step. It guarded on `setup_soldr.outputs.*-cache-restore-status
