@@ -306,7 +306,7 @@ fn run_dependency_steps(
         // soldr#3098: spawns share, staged writes exclude. Held only across
         // the spawn call (dropped right after), and kept as a plain statement
         // so `tests/daemon/inherited_stdio_spawns_mark_spoke.rs` still finds
-        // the `let child = command.spawn()` line it pins.
+        // the exact child-start line it pins.
         let spawn_guard = crate::core::spawn_exclusion::spawn_shared();
         let child = command.spawn();
         drop(spawn_guard);
