@@ -80,7 +80,12 @@ pub(crate) fn require_prebuilt_driver(
         .stderr(Stdio::piped());
     apply_driver_runtime_environment(&mut command, plan)?;
     suppress_windows_console_window(&mut command);
-    let mut child = command.spawn().map_err(|error| {
+    // soldr#3098: spawns share, staged writes exclude.
+    let spawned = {
+        let _spawn = crate::core::spawn_exclusion::spawn_shared();
+        command.spawn()
+    };
+    let mut child = spawned.map_err(|error| {
         unavailable_driver_error(
             plan,
             &driver_dir,

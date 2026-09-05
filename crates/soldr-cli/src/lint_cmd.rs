@@ -303,7 +303,14 @@ fn run_dependency_steps(
         // directly under lines naming three child pids. Marked at the spawn
         // rather than on the exit code, matching soldr#2718.
         crate::exit_guard::mark_spoke();
-        let child = command.spawn().map_err(|error| {
+        // soldr#3098: spawns share, staged writes exclude. Held only across
+        // the spawn call (dropped right after), and kept as a plain statement
+        // so `tests/daemon/inherited_stdio_spawns_mark_spoke.rs` still finds
+        // the exact child-start line it pins.
+        let spawn_guard = crate::core::spawn_exclusion::spawn_shared();
+        let child = command.spawn();
+        drop(spawn_guard);
+        let child = child.map_err(|error| {
             SoldrError::Other(format!(
                 "lint deps: failed to start child Soldr process for `{label}`: {error}"
             ))

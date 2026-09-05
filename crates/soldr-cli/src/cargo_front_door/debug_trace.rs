@@ -42,10 +42,15 @@ pub(crate) fn observed_spawn_required() -> bool {
 /// context-specific error mapping.
 pub(crate) fn spawn_traced(command: &mut Command, context: &str) -> std::io::Result<Child> {
     if !enabled() {
+        // soldr#3098: spawns share, staged writes exclude.
+        let _spawn = crate::core::spawn_exclusion::spawn_shared();
         return command.spawn();
     }
     let argv = render_argv(command);
-    let child = command.spawn()?;
+    let child = {
+        let _spawn = crate::core::spawn_exclusion::spawn_shared();
+        command.spawn()?
+    };
     emit(
         context,
         &format!("spawned pid={} ({context}): {argv}", child.id()),
@@ -210,9 +215,13 @@ pub(crate) fn run_observed_inheriting_stdio(
     let observer =
         ObserverConfig::with_categories([EventCategory::Lifecycle, EventCategory::Process]);
     let (process, subscriber) = NativeProcess::with_observer_and_command(owned, config, observer);
-    process
-        .start()
-        .map_err(|err| crate::core::SoldrError::Other(format!("spawn {context} failed: {err}")))?;
+    {
+        // soldr#3098: spawns share, staged writes exclude.
+        let _spawn = crate::core::spawn_exclusion::spawn_shared();
+        process.start().map_err(|err| {
+            crate::core::SoldrError::Other(format!("spawn {context} failed: {err}"))
+        })?;
+    }
     let pid = process.pid().unwrap_or(0);
     emit(
         context,

@@ -94,16 +94,19 @@ ALLOWLIST: dict[str, tuple[int, str]] = {
         "build-activity lease keeper child",
     ),
     "crates/soldr-platform/src/platform_linux/process/spawn.rs": (
-        1,
-        "the platform boundary's own spawn primitive (linux)",
+        2,
+        "the platform boundary's own spawn primitive (linux) plus the "
+        "soldr#3098 fork-window test seam, both under the shared spawn guard",
     ),
     "crates/soldr-platform/src/platform_macos/process/spawn.rs": (
-        1,
-        "the platform boundary's own spawn primitive (macos)",
+        2,
+        "the platform boundary's own spawn primitive (macos) plus the "
+        "soldr#3098 fork-window test seam, both under the shared spawn guard",
     ),
     "crates/soldr-platform/src/platform_win/process/spawn.rs": (
-        1,
-        "the platform boundary's own spawn primitive (windows)",
+        2,
+        "the platform boundary's own spawn primitive (windows) plus the "
+        "soldr#3098 fork-window test seam, both under the shared spawn guard",
     ),
     "crates/soldr-platform/src/platform_linux/process/terminate.rs": (
         1,

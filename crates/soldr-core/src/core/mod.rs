@@ -32,6 +32,9 @@ pub mod installer_watchdog;
 pub mod jobs;
 mod paths;
 pub mod quiet;
+/// soldr#3098 -- staged-write / child-spawn exclusion (re-export of the
+/// platform leaf's lock).
+pub mod spawn_exclusion;
 mod target_triple;
 mod temp;
 mod toolchain_manifest;
@@ -221,9 +224,13 @@ fn command_output_with_timeout_inner(
     suggest_timeout_override: bool,
 ) -> Result<Output, SoldrError> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|err| SoldrError::Other(format!("failed to invoke {context}: {err}")))?;
+    let mut child = {
+        // soldr#3098: spawns share, staged writes exclude.
+        let _spawn = spawn_exclusion::spawn_shared();
+        command
+            .spawn()
+            .map_err(|err| SoldrError::Other(format!("failed to invoke {context}: {err}")))?
+    };
     let started = Instant::now();
     // Milliseconds since `started` at which either pipe last produced bytes.
     // Shared with both reader threads; `Relaxed` is sufficient because the
