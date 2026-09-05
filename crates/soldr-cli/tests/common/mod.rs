@@ -1435,6 +1435,41 @@ pub(crate) fn seed_rust_toolchain_toml(dir: &Path, contents: &str) {
         .expect("failed to write rust-toolchain.toml");
 }
 
+/// Seed a fake rustup toolchain directory that satisfies the soldr#2977
+/// readiness contract, so production code classifies it `Ready`.
+///
+/// The contract is shared by every caller
+/// (`toolchain_readiness::classify_toolchain_dir`): a toolchain directory is
+/// reusable only when it carries **both** `lib/rustlib/multirust-channel-manifest.toml`
+/// and a *host-native* `bin/rustc` (`rustc.exe` on Windows). The cargo front
+/// door's preparation memo additionally fingerprints `lib/rustlib/components`.
+/// A fixture that omits any of those classifies `Partial`, and the front door
+/// then refuses to fingerprint the directory and records no memo at all — so
+/// keep the layout here in one place rather than open-coding it per test.
+pub(crate) fn seed_fake_toolchain_dir(
+    toolchain_dir: &Path,
+    rustc_contents: &[u8],
+    components_contents: &[u8],
+) -> PathBuf {
+    let bin = toolchain_dir.join("bin");
+    let rustlib = toolchain_dir.join("lib").join("rustlib");
+    fs::create_dir_all(&bin).expect("create fake toolchain bin");
+    fs::create_dir_all(&rustlib).expect("create fake toolchain rustlib");
+    fs::write(bin.join("rustc"), rustc_contents).expect("seed fake rustc identity");
+    if cfg!(windows) {
+        // `classify_toolchain_dir` looks for the host-native filename.
+        fs::write(bin.join("rustc.exe"), rustc_contents).expect("seed fake rustc.exe identity");
+    }
+    fs::write(rustlib.join("components"), components_contents)
+        .expect("seed fake component identity");
+    fs::write(
+        rustlib.join("multirust-channel-manifest.toml"),
+        b"manifest-version = '2'\n",
+    )
+    .expect("seed fake channel manifest");
+    toolchain_dir.to_path_buf()
+}
+
 /// Fake cargo that logs one line per invocation to `log_path`, with the
 /// argv joined by `\u{1f}` (ASCII unit separator) so test assertions can
 /// reason about the exact argv even when individual arguments contain

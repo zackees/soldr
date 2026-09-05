@@ -1407,16 +1407,11 @@ fn cargo_front_door_memoizes_successful_toolchain_preparation() {
     let cargo = install_logging_fake_cargo(&cargo_log);
     let (_, rustc, _) = install_fake_toolchain(&cargo_log);
 
-    fs::create_dir_all(toolchain.join("bin")).expect("create fake toolchain bin");
-    fs::create_dir_all(toolchain.join("lib").join("rustlib"))
-        .expect("create fake toolchain rustlib");
-    fs::write(toolchain.join("bin").join("rustc"), b"fake-rustc-v1")
-        .expect("seed fake rustc identity");
-    fs::write(
-        toolchain.join("lib").join("rustlib").join("components"),
+    seed_fake_toolchain_dir(
+        &toolchain,
+        b"fake-rustc-v1",
         b"rustc-test-host\nrustfmt-preview-test-host\nclippy-preview-test-host\n",
-    )
-    .expect("seed fake component identity");
+    );
     seed_rust_toolchain_toml(
             &workspace,
             "[toolchain]\nchannel = \"1.94.1\"\nprofile = \"minimal\"\ncomponents = [\"rustfmt\", \"clippy\"]\n",
@@ -1477,16 +1472,7 @@ fn cargo_front_door_never_memoizes_failed_toolchain_preparation() {
     let cargo = install_logging_fake_cargo(&cargo_log);
     let (_, rustc, _) = install_fake_toolchain(&cargo_log);
 
-    fs::create_dir_all(toolchain.join("bin")).expect("create fake toolchain bin");
-    fs::create_dir_all(toolchain.join("lib").join("rustlib"))
-        .expect("create fake toolchain rustlib");
-    fs::write(toolchain.join("bin").join("rustc"), b"fake-rustc-v1")
-        .expect("seed fake rustc identity");
-    fs::write(
-        toolchain.join("lib").join("rustlib").join("components"),
-        b"rustc-test-host\n",
-    )
-    .expect("seed fake component identity");
+    seed_fake_toolchain_dir(&toolchain, b"fake-rustc-v1", b"rustc-test-host\n");
     seed_rust_toolchain_toml(
         &workspace,
         "[toolchain]\nchannel = \"1.94.1\"\nprofile = \"minimal\"\n",
@@ -1562,20 +1548,11 @@ fn cargo_front_door_invalidates_toolchain_preparation_memo() {
         let toolchain = home
             .join("toolchains")
             .join(format!("{channel}-{host_triple}"));
-        fs::create_dir_all(toolchain.join("bin")).expect("create fake toolchain bin");
-        fs::create_dir_all(toolchain.join("lib").join("rustlib"))
-            .expect("create fake toolchain rustlib");
-        fs::write(
-            toolchain.join("bin").join("rustc"),
-            format!("fake-rustc-{channel}"),
-        )
-        .expect("seed fake rustc identity");
-        fs::write(
-            toolchain.join("lib").join("rustlib").join("components"),
+        seed_fake_toolchain_dir(
+            &toolchain,
+            format!("fake-rustc-{channel}").as_bytes(),
             b"rustc-test-host\nrustfmt-preview-test-host\nclippy-preview-test-host\n",
         )
-        .expect("seed fake component identity");
-        toolchain
     };
     let first_194 = seed_toolchain(&first_rustup_home, "1.94.1");
     let _first_195 = seed_toolchain(&first_rustup_home, "1.95.0");
