@@ -90,6 +90,16 @@ test-group = 'soldr-runtime'
 filter = 'test(=daemon_rss_ceiling::daemon_stays_under_the_512mib_target_while_serving_a_chained_build)'
 slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
 
+# soldr#3096: the breach test runs the same shape of workload (a trivial
+# build plus the 12-crate chained build through a broker-owned daemon) and
+# passes in 29-56s, which left under 2.2x headroom on the 120s default --
+# it timed out on contended ARM/GNU runners. Same budget as its sibling;
+# the test's own per-build waits are shorter than this so its diagnostic,
+# not nextest's, reports which build stalled.
+[[profile.default.overrides]]
+filter = 'test(=daemon_rss_ceiling::daemon_dies_and_dumps_memory_when_the_ceiling_is_breached)'
+slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
+
 # soldr#3059: the rate-gate reproduction runs the same shape of workload as
 # the ceiling test above (one cold build + three rebuild passes through a
 # broker-owned daemon), so it needs the same budget. `#[ignore]`d by default
