@@ -199,6 +199,15 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> 
         return None;
     }
 
+    // A tree `soldr cook` cooked in place already holds everything the
+    // archive would restore (the archive was packed from it). Every later
+    // front door in the same tree -- each `soldr ci-test` stage, for one --
+    // would otherwise verify and walk the whole archive to add zero files,
+    // about 10 s a time in CI (soldr#3117).
+    if target_already_cooked(&resolve_target_dir(&manifest_dir, args)) {
+        return None;
+    }
+
     let sock = client::default_sock_path(paths);
     // Building the lookup key below is expensive: a recursive walk that
     // hashes every Cargo.toml, plus three subprocesses (`rustc -V`,
@@ -469,6 +478,13 @@ fn profile_dir_name(profile: &str) -> &str {
 /// mismatch properly needs an archive-format or index-schema decision,
 /// not a fix here. Should be filed as a `research:` issue per
 /// CLAUDE.md's Agent Code-Smell Reporting Rule.
+/// Whether `soldr cook` has already cooked `target_dir` in place.
+fn target_already_cooked(target_dir: &Path) -> bool {
+    target_dir
+        .join(crate::cook::COOK_MARKER_FILE_NAME)
+        .is_file()
+}
+
 fn resolve_target_dir(manifest_dir: &Path, args: &[String]) -> PathBuf {
     let root = if let Some(env_dir) = std::env::var_os("CARGO_TARGET_DIR") {
         let p = PathBuf::from(&env_dir);
@@ -694,6 +710,14 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_tree_cooked_in_place_needs_no_restore() {
+        let dir = TempDir::new().unwrap();
+        assert!(!target_already_cooked(dir.path()));
+        std::fs::write(dir.path().join(crate::cook::COOK_MARKER_FILE_NAME), b"{}").unwrap();
+        assert!(target_already_cooked(dir.path()));
     }
 
     #[test]

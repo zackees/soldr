@@ -386,7 +386,7 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
     // the bottleneck, not codegen). When the marker matches, short-
     // circuit Phase 2 entirely.
     let cook_target_dir = resolve_cook_target_dir(&ctx.manifest_dir, &parsed);
-    let cook_marker_path = cook_target_dir.join(".soldr-cook-marker.json");
+    let cook_marker_path = cook_target_dir.join(COOK_MARKER_FILE_NAME);
     let expected_marker = compute_cook_marker(&ctx, &parsed);
     let warm_skip = matches!(
         (&expected_marker, read_cook_marker(&cook_marker_path)),
@@ -613,6 +613,12 @@ const COOK_MARKER_VERSION: u32 = 3;
 /// Read + parse the warm-cook marker at `path`. Any error (missing
 /// file, malformed JSON, missing field, version mismatch) returns
 /// `None` so the caller falls through to the normal cook path.
+/// The soldr#621 warm-cook marker `soldr cook` leaves in the cooked
+/// `target/<triple>/` directory. Its presence also tells the front door's
+/// hydrate pre-flight that this tree was cooked in place, so there is nothing
+/// an archive restore could add (soldr#3117).
+pub(crate) const COOK_MARKER_FILE_NAME: &str = ".soldr-cook-marker.json";
+
 fn read_cook_marker(path: &Path) -> Option<CookMarker> {
     let bytes = std::fs::read(path).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
