@@ -311,6 +311,12 @@ jobs:
       # cannot grow run over run. Sizes count against soldr#3047's 2.0 GiB
       # allocation and are reported by the cook step.
       #
+      # The same no-re-save rule is why the key carries a version: every v1
+      # entry was saved with an archive but no index row (soldr#3117 -- the
+      # daemon had been reaped before CookRecord ran), and an exact hit would
+      # keep restoring that unindexable pair until the lockfile changed. v2
+      # starts from entries written after the fix.
+      #
       # Fold this block into soldr#3041's single Soldr-domain `actions/cache`
       # block when that hunk lands; it is separate only because #3041 is not
       # on main yet.
@@ -328,9 +334,9 @@ jobs:
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/state.sqlite3
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/state.sqlite3-wal
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/state.sqlite3-shm
-          key: stable-cook-v1-${{ inputs.target }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
+          key: stable-cook-v2-${{ inputs.target }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: |
-            stable-cook-v1-${{ inputs.target }}-
+            stable-cook-v2-${{ inputs.target }}-
 
       # soldr#3024: the unconditional cross-bootstrap job already builds this
       # exact workflow SHA with the pinned 1.95.0 toolchain, dev profile, and

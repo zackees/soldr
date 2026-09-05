@@ -19,6 +19,12 @@ Exit codes are keyed to the constants `soldr cook` itself defines
         prior cook artifact nor warm-skipped Phase 2. Without `--require-warm`
         this case only emits a `::warning` annotation -- the acceptance
         number is not measurable until soldr#3040's analyzer lands.
+    5   COOK_ARTIFACT_NOT_INDEXED -- cook built and packed the archive but
+        its closing `CookRecord` found no daemon, so no index row names the
+        artifact and no later run can hydrate from it (soldr#3117). `soldr
+        cook` itself only warns here, because a missing daemon must not fail
+        a developer's local cook; in this lane the index row IS the product,
+        so an unindexed artifact is a dead mechanism and fails the step.
     N   any other non-zero exit from `soldr cook` itself, propagated as-is.
 
 This is a diagnostic layer over `soldr cook`, not a reimplementation of it:
@@ -46,9 +52,12 @@ from pathlib import Path
 #     crates/soldr-cli/src/cook.rs
 #   DECISION_SKIP_MARKER: decide_cook_restore()'s Skip branch,
 #     crates/soldr-cli/src/cargo_front_door/cook_hydrate.rs
+#   UNINDEXED_MARKER: the CookRecord failure branch of
+#     index_cooked_artifact_with_packer(), crates/soldr-cli/src/cook.rs
 HYDRATE_MARKER = "soldr cook: auto-hydrate activated"
 WARM_SKIP_MARKER = "soldr cook: warm-cook detected"
 DECISION_SKIP_MARKER = "soldr cook: decision=skip"
+UNINDEXED_MARKER = "CookRecord to daemon failed"
 
 # crates/soldr-cli/src/cook.rs: `const COOK_SKIPPED_UNCOOKABLE_WORKSPACE: i32 = 3;`
 COOK_SKIPPED_UNCOOKABLE_WORKSPACE = 3
@@ -56,6 +65,10 @@ COOK_SKIPPED_UNCOOKABLE_WORKSPACE = 3
 # constant -- soldr cook itself always exits 0 for a `built`/`restore-declined`
 # outcome; the failure is this wrapper's opinion, gated behind the flag.
 REQUIRE_WARM_FAILURE = 4
+# This script's own exit code for a built-but-unindexed archive (soldr#3117).
+# Also not a soldr constant: cook exits 0 and warns, for the reason given in
+# the module docstring.
+COOK_ARTIFACT_NOT_INDEXED = 5
 
 # `--all-targets` is what makes cargo-chef build dev-dependencies, which the
 # ci-test stable tree needs (clippy `--all-targets`, nextest `--lib --tests`).
@@ -106,6 +119,8 @@ def classify(stderr: str) -> tuple[str, str]:
                 break
             return "restore-declined", line[index + len(marker) :].strip()
         return "restore-declined", ""
+    if UNINDEXED_MARKER in stderr:
+        return "built-unindexed", ""
     return "built", ""
 
 
@@ -236,7 +251,17 @@ def main(argv: list[str] | None = None, runner: Runner = default_runner) -> int:
     outcome, detail = classify(result.stderr)
     warm = outcome in ("hydrated", "warm-skip")
 
-    if warm:
+    if outcome == "built-unindexed":
+        print(
+            f"::error title=soldr cook::COOK_ARTIFACT_NOT_INDEXED -- cook[{args.target}] "
+            "built and packed the archive but its CookRecord found no daemon, so "
+            "nothing indexes the artifact and no later run can hydrate from it "
+            "(soldr#3117). cook's stderr (echoed above) carries the daemon "
+            "error. soldr cook holds the daemon route for its whole run "
+            "(cook_route_hold.rs); if that hold failed, its warning is echoed "
+            "above too."
+        )
+    elif warm:
         print(f"::notice title=soldr cook::cook[{args.target}] outcome={outcome}")
     elif args.require_warm:
         print(
@@ -257,6 +282,8 @@ def main(argv: list[str] | None = None, runner: Runner = default_runner) -> int:
         print(line)
     append_summary(lines)
 
+    if outcome == "built-unindexed":
+        return COOK_ARTIFACT_NOT_INDEXED
     if args.require_warm and not warm:
         return REQUIRE_WARM_FAILURE
     return 0

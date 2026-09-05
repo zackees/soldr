@@ -404,6 +404,20 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
         return Ok(0);
     }
 
+    // soldr#3117: from here on this process must be a requester of the
+    // daemon route. Otherwise the compile's wrapper re-entries are the only
+    // requesters, the broker reaps the daemon two minutes after the last one
+    // exits, and the pack below routinely outlives that -- the closing
+    // CookRecord then finds no daemon and the artifact is never indexed.
+    // Holding it before Phase 2 also gives the front door's hydrate
+    // pre-flight a daemon to ask.
+    if let Err(err) = crate::cook_route_hold::hold_daemon_route_for_cook() {
+        eprintln!(
+            "{} {err}; the cook proceeds, but hydrate and CookRecord may find no daemon.",
+            yellow_warning_prefix()
+        );
+    }
+
     // Phase 2: cook. Heavy — compiles every transitive dep against a stub
     // project. Output lands in `target/`.
     let compile_started = Instant::now();
@@ -810,7 +824,7 @@ where
     //    CookRecord cannot be relied on either, so skip the expensive
     //    archive pack entirely.
     let sock = client::default_sock_path(paths);
-    let prior_drift = match client::cook_lookup(
+    let lookup = client::cook_lookup(
         &sock,
         recipe_hash,
         triple.clone(),
@@ -818,17 +832,31 @@ where
         channel.clone(),
         rustc_version.clone(),
         origin.clone(),
-    ) {
+    );
+    // soldr#3117: an exact hit whose archive is still on disk needs no
+    // re-pack. The pack is the slow half of a warm cook, and the indexed
+    // artifact already describes this dependency graph byte for byte.
+    if let Some(existing) = lookup
+        .as_ref()
+        .ok()
+        .and_then(|outcome| already_indexed_archive(&cook_dir, outcome))
+    {
+        eprintln!(
+            "soldr cook: already indexed  path={}  (exact recipe match; skipping re-pack)",
+            existing.display()
+        );
+        return Ok(());
+    }
+    let prior_drift = match lookup {
         Ok(CookLookupOutcome::Hit {
             sha256,
             matched_recipe_hash,
             exact_recipe_match,
             ..
         }) => {
-            // Already-cached for this exact key. Re-pack + re-record
-            // anyway so the artifact bytes match the freshly built
-            // target/ — a previous run might have written from a
-            // sibling worktree with slightly different mtimes.
+            // An exact hit whose archive is gone (evicted, or a foreign
+            // path in the index): re-pack + re-record so the index names
+            // bytes that exist. A drifted hit re-packs as before.
             if exact_recipe_match {
                 Some(DriftSignal::AlreadyIndexed(sha256))
             } else {
