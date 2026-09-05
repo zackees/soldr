@@ -534,12 +534,23 @@ jobs:
       # a re-litigated Tier-2 allocation. Note the sibling deletion in
       # `_ci-target-run.yml`, which shares the same key shape.
 
+      # soldr#3123: build the wheel under test through the checked-out PEP 517
+      # backend (`PYTHONPATH=src`, no build isolation) with the profile and
+      # target dir pinned. The shim smoke at the end of this job builds the
+      # same checkout through the same backend, profile and target dir, so
+      # cargo finds the graph fresh there instead of recompiling it (~12 min
+      # when the profiles or linker env differed). `--no-deps` keeps `dist/`
+      # to the one wheel `pep517_daemon_smoke.py` expects.
       - name: Build soldr wheel under test
         shell: pwsh
+        env:
+          PYTHONPATH: src
+          SOLDR_PEP517_PROFILE: ci-release
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: |
           python -m pip install --upgrade pip
           python .github/scripts/install_soldr_maturin.py
-          maturin build --profile ci-release --out dist
+          python -m pip wheel . --no-deps --no-build-isolation --no-cache-dir --wheel-dir dist
 
       - name: Run downstream PEP 517 daemon smoke
         shell: pwsh
