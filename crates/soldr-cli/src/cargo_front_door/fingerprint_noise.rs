@@ -137,10 +137,29 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+impl<W: Write> FingerprintNoiseFilter<W> {
+    /// Emit whatever is buffered as a final line. Call once at EOF: a
+    /// partial last line is real output (a prompt, a progress fragment),
+    /// but only a complete line can be a filtered record, so it must not
+    /// be released on every `flush()` -- the pipe reader flushes after each
+    /// 8 KiB read, and releasing the fragment there re-glued cargo's
+    /// records around the chunk boundary (soldr#3099).
+    pub(crate) fn finish(&mut self) -> std::io::Result<()> {
+        if !self.pending.is_empty() {
+            let line = std::mem::take(&mut self.pending);
+            self.inner.write_all(&line)?;
+        }
+        self.inner.flush()
+    }
+}
+
 impl<W: Write> Write for FingerprintNoiseFilter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let mut rest = buf;
-        while let Some(pos) = rest.iter().position(|&b| b == b'\n') {
+        // `\r` ends a line too: cargo's progress redraws never contain a
+        // fingerprint record, and holding them until `\n` would freeze an
+        // interactive progress bar.
+        while let Some(pos) = rest.iter().position(|&b| b == b'\n' || b == b'\r') {
             let (head, tail) = rest.split_at(pos + 1);
             let line = if self.pending.is_empty() {
                 head.to_vec()
@@ -157,12 +176,8 @@ impl<W: Write> Write for FingerprintNoiseFilter<W> {
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        // A partial line at EOF is real output (a prompt, a progress
-        // fragment); only a complete line can be a filtered record.
-        if !self.pending.is_empty() {
-            let line = std::mem::take(&mut self.pending);
-            self.inner.write_all(&line)?;
-        }
+        // Only the inner writer: the pending fragment stays until its line
+        // terminator or `finish()`.
         self.inner.flush()
     }
 }
@@ -177,8 +192,9 @@ mod tests {
             let mut filter = FingerprintNoiseFilter::new(&mut out);
             for chunk in chunks {
                 filter.write_all(chunk.as_bytes()).expect("write");
+                filter.flush().expect("flush");
             }
-            filter.flush().expect("flush");
+            filter.finish().expect("finish");
         }
         String::from_utf8(out).expect("utf8")
     }
@@ -257,7 +273,58 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_last_line_is_flushed_unchanged() {
+    fn a_partial_last_line_is_released_at_finish_only() {
         assert_eq!(filtered(&["progress 50%"]), "progress 50%");
+        let mut out = Vec::new();
+        {
+            let mut filter = FingerprintNoiseFilter::new(&mut out);
+            filter.write_all(b"half a").expect("write");
+            filter.flush().expect("flush");
+            assert!(
+                out_is_empty(&filter),
+                "flush must not release a partial line"
+            );
+            filter.finish().expect("finish");
+        }
+        assert_eq!(String::from_utf8(out).expect("utf8"), "half a");
+    }
+
+    fn out_is_empty<W: Write>(filter: &FingerprintNoiseFilter<W>) -> bool {
+        !filter.pending.is_empty()
+    }
+
+    #[test]
+    fn a_record_split_by_a_chunk_flush_is_still_dropped() {
+        // The pipe reader flushes after every read; a flush inside a record
+        // must not re-emit the fragment (soldr#3099's real leak).
+        let input = format!("before\n{COLD_MISS}after\n");
+        for size in [3usize, 7, 64, 1000] {
+            let pieces: Vec<String> = input
+                .as_bytes()
+                .chunks(size)
+                .map(|c| String::from_utf8_lossy(c).into_owned())
+                .collect();
+            let refs: Vec<&str> = pieces.iter().map(String::as_str).collect();
+            assert_eq!(filtered(&refs), "before\nafter\n", "chunk size {size}");
+        }
+    }
+
+    #[test]
+    fn carriage_return_redraws_pass_through_promptly() {
+        let mut out = Vec::new();
+        {
+            let mut filter = FingerprintNoiseFilter::new(&mut out);
+            filter.write_all(b"Building [==>  ] 1/3\r").expect("write");
+            assert_eq!(out_len(&filter), 0, "pending must be empty after a \\r");
+            filter.finish().expect("finish");
+        }
+        assert_eq!(
+            String::from_utf8(out).expect("utf8"),
+            "Building [==>  ] 1/3\r"
+        );
+    }
+
+    fn out_len<W: Write>(filter: &FingerprintNoiseFilter<W>) -> usize {
+        filter.pending.len()
     }
 }

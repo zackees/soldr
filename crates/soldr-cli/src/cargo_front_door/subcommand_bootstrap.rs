@@ -152,7 +152,15 @@ pub(crate) async fn ensure_known_subcommand_tool(
         .map(|v| VersionSpec::Exact(v.to_string()))
         .unwrap_or(VersionSpec::Latest);
 
-    eprintln!("soldr: fetching {}...", spec.crate_name);
+    // Progress chatter for a human at a terminal only (soldr#3099): under
+    // `soldr ci-test` and the Dylint cook these lines repeated once per
+    // nested invocation into the CI log. A real download still reports
+    // itself below. Same rule as the External-tool path in
+    // `soldr_main_dispatch`.
+    let chatty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    if chatty {
+        eprintln!("soldr: fetching {}...", spec.crate_name);
+    }
     let result = match crate::fetch::fetch_tool_for_host_with_paths(
         spec.crate_name,
         &version,
@@ -172,10 +180,12 @@ pub(crate) async fn ensure_known_subcommand_tool(
     };
 
     if result.cached {
-        eprintln!(
-            "soldr: using cached {} v{}",
-            spec.crate_name, result.version
-        );
+        if chatty {
+            eprintln!(
+                "soldr: using cached {} v{}",
+                spec.crate_name, result.version
+            );
+        }
     } else {
         eprintln!("soldr: downloaded {} v{}", spec.crate_name, result.version);
     }
@@ -212,7 +222,10 @@ async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, S
         .and_then(|spec| spec.pinned_version)
         .ok_or_else(|| SoldrError::Other("dylint-link must have a registry pin".into()))?;
     let version = VersionSpec::Exact(pinned_version.to_string());
-    eprintln!("soldr: fetching dylint-link...");
+    let chatty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    if chatty {
+        eprintln!("soldr: fetching dylint-link...");
+    }
     match crate::fetch::fetch_tool_for_host_with_paths("dylint-link", &version, paths).await {
         Ok(result) => {
             if let Err(error) = validated_dylint_link_prebuilt(&result) {
@@ -223,7 +236,9 @@ async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, S
                 ));
             }
             if result.cached {
-                eprintln!("soldr: using cached dylint-link v{}", result.version);
+                if chatty {
+                    eprintln!("soldr: using cached dylint-link v{}", result.version);
+                }
             } else {
                 eprintln!("soldr: downloaded dylint-link v{}", result.version);
             }
