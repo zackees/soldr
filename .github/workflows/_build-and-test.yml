@@ -202,11 +202,15 @@ jobs:
       # actions/cache never re-saves on an exact-key hit, so a key without it
       # freezes the store after the first save. The lockfile+toolchain hash
       # prefers a same-graph entry; the bare prefix still restores something
-      # after a dependency bump. The save runs in the post-step, after
-      # `Stop canonical host CI cache` has flushed the daemon.
+      # after a dependency bump. soldr#3102: the save is an explicit main-only
+      # step after `Stop canonical host CI cache` and the scrub below (a
+      # restore/save split, as the Dylint trees already do) -- every PR run
+      # used to write its own ~1.3 GiB generation on its own ref, three of
+      # which breach the repository's cache ceiling, while PRs restore main's
+      # generation through the prefix restore-key anyway.
       - name: Restore Tier-2 zccache object store (soldr#3039)
         id: zccache_unit_store
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/daemon-state
           key: zccache-unit-v1-${{ inputs.target }}-${{ hashFiles('Cargo.lock', 'dylints/**/Cargo.lock', 'rust-toolchain.toml', 'dylints/**/rust-toolchain.toml') }}-${{ github.run_id }}
@@ -690,6 +694,18 @@ jobs:
       # scrollback — the exact opposite of diagnosable. The inventory below
       # prints names and sizes only; the contents are downloadable from the
       # `build-logs-<target>` artifact.
+      # soldr#3102: main-only save of the Tier-2 store (see the restore step
+      # above). Keyed on the restore step's run-id primary key, so every main
+      # run saves a fresh generation; `check_cache_budget.py --prune`
+      # supersedes the older ones. Sits after the scrub so no lock, socket or
+      # pid file from the just-stopped daemon is archived.
+      - name: Save Tier-2 zccache object store (soldr#3102)
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/daemon-state
+          key: ${{ steps.zccache_unit_store.outputs.cache-primary-key }}
+
       - name: Index build logs
         if: always()
         continue-on-error: true
