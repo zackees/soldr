@@ -402,51 +402,52 @@ fn nextest_execution_and_dylint_ui_really_start_before_either_branch_can_finish(
 }
 
 #[test]
-fn nextest_failure_cancels_dylint_and_starts_no_later_stage() {
+fn nextest_failure_lets_the_dylint_branch_finish_and_reports_it() {
+    // soldr#3100: a red Nextest run no longer cancels the Dylint branch; the
+    // branch runs every remaining stage and the Nextest code is returned.
     if !posix_fixture_available() {
         return;
     }
-    let directory = tempfile::tempdir().expect("cancellation directory");
+    let directory = tempfile::tempdir().expect("join directory");
     let nextest = test_stage("nextest");
     let ui_tests = [test_stage("dylint-test-one"), test_stage("dylint-test-two")];
     let scripts = BTreeMap::from([
         ("nextest".into(), "exit 73".into()),
         (
             "dylint-test-one".into(),
-            "touch \"$FIXTURE_DIR/dylint-started\"; sleep 30".into(),
+            "sleep 0.3; touch \"$FIXTURE_DIR/dylint-one-done\"".into(),
         ),
         (
             "dylint-test-two".into(),
-            "touch \"$FIXTURE_DIR/should-not-start\"".into(),
+            "touch \"$FIXTURE_DIR/dylint-two-done\"".into(),
         ),
     ]);
     let spawner = ScriptSpawner {
         directory: directory.path(),
         scripts,
     };
-    let started = Instant::now();
-
     let code =
         supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
             .expect("Nextest failure result");
-
     assert_eq!(code, 73);
-    assert!(started.elapsed() < Duration::from_secs(5));
-    assert!(!directory.path().join("should-not-start").exists());
+    assert!(directory.path().join("dylint-one-done").is_file());
+    assert!(directory.path().join("dylint-two-done").is_file());
 }
-
 #[test]
-fn dylint_failure_cancels_nextest_and_starts_no_later_stage() {
+fn dylint_failure_stops_its_branch_but_lets_nextest_finish() {
+    // soldr#3100: a failed lint stage ends the Dylint branch (later stages
+    // depend on it) without cancelling Nextest; the lint's code is returned
+    // once Nextest has finished.
     if !posix_fixture_available() {
         return;
     }
-    let directory = tempfile::tempdir().expect("cancellation directory");
+    let directory = tempfile::tempdir().expect("join directory");
     let nextest = test_stage("nextest");
     let ui_tests = [test_stage("dylint-test-one"), test_stage("dylint-test-two")];
     let scripts = BTreeMap::from([
         (
             "nextest".into(),
-            "touch \"$FIXTURE_DIR/nextest-started\"; sleep 30".into(),
+            "sleep 0.5; touch \"$FIXTURE_DIR/nextest-done\"".into(),
         ),
         ("dylint-test-one".into(), "exit 74".into()),
         (
@@ -458,17 +459,35 @@ fn dylint_failure_cancels_nextest_and_starts_no_later_stage() {
         directory: directory.path(),
         scripts,
     };
-    let started = Instant::now();
-
     let code =
         supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
             .expect("Dylint failure result");
-
     assert_eq!(code, 74);
-    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(directory.path().join("nextest-done").is_file());
     assert!(!directory.path().join("should-not-start").exists());
 }
 
+#[test]
+fn the_first_failure_wins_when_both_branches_fail() {
+    if !posix_fixture_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().expect("join directory");
+    let nextest = test_stage("nextest");
+    let ui_tests = [test_stage("dylint-test-one")];
+    let scripts = BTreeMap::from([
+        ("nextest".into(), "sleep 0.4; exit 73".into()),
+        ("dylint-test-one".into(), "exit 74".into()),
+    ]);
+    let spawner = ScriptSpawner {
+        directory: directory.path(),
+        scripts,
+    };
+    let code =
+        supervise_nextest_and_dylint(&spawner, &nextest, fixture_branch(&ui_tests), &NoopVerifier)
+            .expect("both failed");
+    assert_eq!(code, 74);
+}
 #[test]
 fn branch_join_waits_for_both_terminal_stages() {
     if !posix_fixture_available() {

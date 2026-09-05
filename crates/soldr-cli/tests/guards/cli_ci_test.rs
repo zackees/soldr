@@ -348,7 +348,19 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
         .filter(|arg| arg.as_str() != Some("--no-run"))
         .cloned()
         .collect();
-    let run_args = run_args.to_vec();
+    // soldr#3100: the run stage alone carries `--no-fail-fast`; strip it so
+    // the binary selection is still compared verbatim.
+    assert!(run_args
+        .iter()
+        .any(|arg| arg.as_str() == Some("--no-fail-fast")));
+    assert!(!compile_args
+        .iter()
+        .any(|arg| arg.as_str() == Some("--no-fail-fast")));
+    let run_args: Vec<_> = run_args
+        .iter()
+        .filter(|arg| arg.as_str() != Some("--no-fail-fast"))
+        .cloned()
+        .collect();
     assert_eq!(
         compile_without_no_run, run_args,
         "Nextest execution must select exactly the binaries compiled by nextest-compile"

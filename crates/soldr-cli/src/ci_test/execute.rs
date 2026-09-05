@@ -242,6 +242,11 @@ fn supervise_parallel_stage_and_dylint<'a>(
     verifier: &impl DylintBranchVerifier,
 ) -> Result<i32, SoldrError> {
     let fork_started = Instant::now();
+    // soldr#3100: a failing branch no longer cancels its sibling. Both
+    // branches run to completion so one red run reports every failure; the
+    // first non-zero status is what the caller gets. Spawn errors still
+    // cancel, since nothing meaningful can complete after them.
+    let mut first_failure: Option<i32> = None;
     let mut peer = Some(spawn_running(spawner, peer_stage)?);
     let first_dylint = dylint_branch
         .current()
@@ -267,8 +272,11 @@ fn supervise_parallel_stage_and_dylint<'a>(
             let completed = peer.take().expect("polled peer child exists");
             report_completed(&completed, status);
             if !status.success() {
-                cancel_running(&mut dylint);
-                return Ok(exit_code(status));
+                first_failure.get_or_insert(exit_code(status));
+                eprintln!(
+                    "soldr ci-test: `{}` failed; letting the Dylint branch finish so this run reports every failure",
+                    peer_stage.name
+                );
             }
         }
 
@@ -284,8 +292,16 @@ fn supervise_parallel_stage_and_dylint<'a>(
             let completed = dylint.take().expect("polled Dylint child exists");
             report_completed(&completed, status);
             if !status.success() {
-                cancel_running(&mut peer);
-                return Ok(exit_code(status));
+                // A failed lint stage stops its own branch (later stages
+                // depend on it) but not the peer.
+                first_failure.get_or_insert(exit_code(status));
+                if peer.is_some() {
+                    eprintln!(
+                        "soldr ci-test: Dylint branch failed; letting `{}` finish so this run reports every failure",
+                        peer_stage.name
+                    );
+                }
+                continue;
             }
             let next_stage = match dylint_branch.advance(verifier) {
                 Ok(stage) => stage,
@@ -311,7 +327,7 @@ fn supervise_parallel_stage_and_dylint<'a>(
                 peer_stage.name,
                 fork_started.elapsed().as_millis()
             );
-            return Ok(0);
+            return Ok(first_failure.unwrap_or(0));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
