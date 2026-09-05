@@ -595,6 +595,28 @@ impl Drop for ExtractDispatch {
     }
 }
 
+/// Test seam for soldr#3098: lets a test pause an extraction worker while
+/// the staged file is open for writing. A no-op in production builds.
+mod extract_test_hooks {
+    #[cfg(test)]
+    pub(crate) type Hook = Box<dyn Fn(&std::path::Path) + Send + Sync + 'static>;
+    #[cfg(test)]
+    pub(crate) static HOOK: std::sync::Mutex<Option<Hook>> = std::sync::Mutex::new(None);
+
+    #[cfg(test)]
+    pub(crate) fn staged_file_open_for_write(staged: &std::path::Path) {
+        // The hook runs while the registry lock is held; hooks are
+        // test-owned, short, and only ever installed by one test.
+        if let Some(hook) = HOOK.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            hook(staged);
+        }
+    }
+
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn staged_file_open_for_write(_staged: &std::path::Path) {}
+}
+
 /// Worker-side per-entry extraction. Splits Regular vs Directory handling
 /// (Directories are created by the driver thread, so we only see Regular
 /// + the long tail of tar entry types here).
@@ -608,25 +630,40 @@ fn extract_one(job: &ExtractJob) -> Result<()> {
     match job.entry_type {
         tar::EntryType::Regular => {
             // #1909: write to a sibling temp path and rename into place,
-            // rather than writing `dest` directly.
+            // rather than writing `dest` directly, so `dest` never exists in
+            // a partially-written state.
             //
-            // `execve` fails with ETXTBSY if *any* process holds the target
-            // open for writing. Our own handle is closed before this function
-            // returns, but soldr spawns detached children (the auto-gc
-            // sweeper, the daemon) throughout a build: a child forked while a
-            // write descriptor is open inherits it, and keeps that inode busy
-            // until it execs. Rust opens files O_CLOEXEC, so the descriptor
-            // does not survive the exec — but between fork and exec it exists,
-            // and that window is enough for cargo to try running a restored
-            // build script and get "Text file busy".
+            // soldr#3098: that alone does NOT close the ETXTBSY race, though
+            // an earlier version of this comment claimed it did. `execve`
+            // fails with ETXTBSY if *any* process holds the file's inode open
+            // for writing. soldr spawns children throughout a build (cargo,
+            // the broker, the gc sweeper, installers); a child forked while
+            // our write descriptor is open inherits it and keeps it until
+            // its own exec (`O_CLOEXEC` closes on exec, not on fork). The
+            // staged file *is* the inode that lands at `dest` -- `rename`
+            // moves a directory entry, never the inode -- so the inherited
+            // descriptor stays a writable descriptor on the published file
+            // for the child's whole fork-to-exec window, and cargo exec'ing
+            // a restored build script in that window gets "Text file busy".
             //
-            // Renaming makes the race structurally impossible instead of
-            // merely unlikely: the inode that lands at `dest` never had a
-            // writable descriptor pointing at it, so no inherited fd can
-            // refer to it. It also means `dest` never exists in a
-            // partially-written state.
+            // The write therefore runs under the process-wide exclusive
+            // guard: every soldr spawn funnel holds the shared side across
+            // its `spawn()`, so no child can be forked while this descriptor
+            // exists. The guard is dropped as soon as the descriptor is
+            // closed -- metadata and the rename need no exclusion. Nothing
+            // in this section may spawn (it would deadlock on the lock).
             let staged = staging_path_for(&job.dest);
-            std::fs::write(&staged, &job.body).map_err(|e| io(&staged, e))?;
+            {
+                let _write = crate::platform::process::spawn_exclusion::write_exclusive();
+                let mut file = std::fs::File::create(&staged).map_err(|e| io(&staged, e))?;
+                extract_test_hooks::staged_file_open_for_write(&staged);
+                if let Err(e) = std::io::Write::write_all(&mut file, &job.body) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&staged);
+                    return Err(io(&staged, e));
+                }
+                drop(file);
+            }
 
             // Apply metadata to the staged file, so the entry becomes visible
             // at `dest` already complete. `rename` preserves both.

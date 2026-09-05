@@ -281,7 +281,12 @@ fn validate_dylint_path_binary(
             command.env("RUSTUP_TOOLCHAIN", format!("nightly-{}", host.triple()));
         }
         suppress_windows_console_window(&mut command);
-        let mut child = match command.spawn() {
+        // soldr#3098: spawns share, staged writes exclude.
+        let spawned = {
+            let _spawn = crate::core::spawn_exclusion::spawn_shared();
+            command.spawn()
+        };
+        let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {
                 failures.push(format!("{argument} could not start: {error}"));

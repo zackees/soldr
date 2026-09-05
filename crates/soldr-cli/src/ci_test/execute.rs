@@ -862,6 +862,7 @@ impl StageCommandFactory {
             "1",
         );
         crate::exit_guard::mark_spoke();
+        let _spawn = crate::core::spawn_exclusion::spawn_shared(); // soldr#3098
         command.spawn().map_err(|error| {
             SoldrError::Other(format!(
                 "soldr ci-test: failed to start stage `{}`: {error}",

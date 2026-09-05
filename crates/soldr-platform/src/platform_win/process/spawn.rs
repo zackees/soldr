@@ -10,6 +10,9 @@ pub fn spawn_detached(command: &mut Command) -> io::Result<Child> {
     // CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW.
     const FLAGS: u32 = 0x0000_0200 | 0x0000_0008 | 0x0800_0000;
     command.creation_flags(FLAGS);
+    // soldr#3098: spawns share, staged writes exclude (Windows has no fork
+    // inheritance of this kind, but the funnel stays uniform across hosts).
+    let _spawn = crate::platform::process::spawn_exclusion::spawn_shared();
     command.spawn()
 }
 

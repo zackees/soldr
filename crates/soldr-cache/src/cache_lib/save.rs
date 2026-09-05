@@ -295,3 +295,7 @@ include!("load_replay.rs");
 #[cfg(test)]
 #[path = "save_tests.rs"]
 mod tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "load_extract_tests.rs"]
+mod load_extract_tests;

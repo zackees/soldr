@@ -9,6 +9,8 @@ use std::process::{Child, Command, ExitStatus};
 pub fn spawn_detached(command: &mut Command) -> io::Result<Child> {
     use std::os::unix::process::CommandExt;
     command.process_group(0);
+    // soldr#3098: spawns share, staged writes exclude.
+    let _spawn = crate::platform::process::spawn_exclusion::spawn_shared();
     command.spawn()
 }
 

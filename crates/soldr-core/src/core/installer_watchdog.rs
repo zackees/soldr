@@ -239,9 +239,13 @@ fn run_installer_command_inner(
 ) -> Result<InstallerCommandResult, SoldrError> {
     configure_installer_process_tree(command);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|err| SoldrError::Other(format!("failed to invoke {context}: {err}")))?;
+    let mut child = {
+        // soldr#3098: spawns share, staged writes exclude.
+        let _spawn = super::spawn_exclusion::spawn_shared();
+        command
+            .spawn()
+            .map_err(|err| SoldrError::Other(format!("failed to invoke {context}: {err}")))?
+    };
     let (progress_tx, progress_rx) = mpsc::channel();
     let readers = match mode {
         InstallerCommandMode::Forward => installer_forwarding_readers(&mut child, &progress_tx),

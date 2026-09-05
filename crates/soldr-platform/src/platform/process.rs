@@ -13,4 +13,5 @@ pub mod exit;
 pub mod inspect;
 pub mod signal;
 pub mod spawn;
+pub mod spawn_exclusion;
 pub mod terminate;
