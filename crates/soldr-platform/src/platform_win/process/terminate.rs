@@ -469,14 +469,29 @@ fn collect_descendants(edges: &[(u32, u32)], root: u32) -> Vec<u32> {
 }
 
 /// Terminate a single PID (`TerminateProcess` - the Windows equivalent of
-/// SIGKILL; Windows has no graceful signal to offer).
+/// SIGKILL; never the graceful request).
 pub fn terminate_pid(pid: u32) {
     let _ = signal_pid(pid, true);
 }
 
-/// Signal a single PID. Windows ignores `force`: `TerminateProcess` is the only
-/// termination primitive available.
-pub fn signal_pid(pid: u32, _force: bool) -> io::Result<()> {
+/// Signal a single PID.
+///
+/// `force = false` is the Windows equivalent of SIGTERM (soldr#3096): it
+/// signals the target daemon's named terminate event
+/// (`super::signal::request_graceful_terminate`) so the daemon takes its
+/// fast-exit path itself. When the target has no such event -- it is not a
+/// soldr daemon, or it predates the mechanism -- this falls back to
+/// `TerminateProcess` so `soldr daemon stop`-style escalation keeps working.
+/// `force = true` is always `TerminateProcess` (SIGKILL-equivalent).
+pub fn signal_pid(pid: u32, force: bool) -> io::Result<()> {
+    if !force && super::signal::request_graceful_terminate(pid)? {
+        return Ok(());
+    }
+    kill_pid(pid)
+}
+
+/// `TerminateProcess(pid, 1)`: the kernel kill, no code runs in the target.
+fn kill_pid(pid: u32) -> io::Result<()> {
     use std::os::windows::raw::HANDLE;
     // Win32 API spelling - clippy would rename to Dword.
     #[allow(clippy::upper_case_acronyms)]

@@ -328,6 +328,10 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         compile_service,
     });
 
+    // soldr#3096: registered before the accept loop -- see the terminate
+    // hook below for why this must precede readiness.
+    let terminate_signal = crate::platform::process::signal::wait_for_terminate_signal();
+
     let accept_state = state.clone();
     let accept_handle = match control_listener {
         Some((listener, _identity)) => tokio::spawn(async move {
@@ -420,12 +424,19 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // (Ctrl-C at a terminal), where the operator can escalate to SIGKILL
     // themselves if a slow drain is unwelcome, unlike the fixed, short
     // supervisor grace periods SIGTERM has to survive. The signal wait
-    // lives in the platform process facade (Windows parks the hook —
-    // there is no POSIX SIGTERM to wait for, so this path never fires
-    // there).
+    // lives in the platform process facade. On Windows (soldr#3096) the
+    // "signal" is a named terminate event that `signal_pid(pid, false)`
+    // sets; the name printed below stays "SIGTERM" because that is the
+    // lifecycle contract's word for it and the event is precisely the
+    // Windows equivalent. The future is constructed *before* the task is
+    // spawned because the Windows implementation registers its event at
+    // call time -- a stop that races the task's first poll must still
+    // find it (see `platform/process/signal.rs`); it is therefore
+    // constructed above, before the accept loop that makes the daemon
+    // observably ready is spawned.
     let term_paths = paths.clone();
     tokio::spawn(async move {
-        if crate::platform::process::signal::wait_for_terminate_signal().await {
+        if terminate_signal.await {
             fast_exit_on_signal(&term_paths, "SIGTERM");
         }
     });

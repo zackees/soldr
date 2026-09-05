@@ -899,6 +899,12 @@ fn daemon_dies_and_dumps_memory_when_the_ceiling_is_breached() {
     // Build 1: no ceiling at all -- primes an un-watched broker singleton
     // for `home_root`. See the function doc above for why this isolates
     // the daemon's breach path from the broker's.
+    //
+    // soldr#3096: each per-build wait (100s) is deliberately under the
+    // nextest budget for this test (`.config/nextest.toml`, 300s) so a
+    // stalled build is reported by this test's own panic -- naming the
+    // build and carrying its stdout/stderr -- rather than by nextest's
+    // bare TIMEOUT line.
     let trivial = write_trivial_crate(&cache_root_a);
     run_soldr_build_with_ceiling(
         &["cargo", "build", "--quiet"],
@@ -906,7 +912,7 @@ fn daemon_dies_and_dumps_memory_when_the_ceiling_is_breached() {
         &home_root,
         &trivial,
         None,
-        Duration::from_secs(120),
+        Duration::from_secs(100),
     );
 
     // Build 2: the real workload, with the ceiling, against a fresh route
@@ -919,7 +925,7 @@ fn daemon_dies_and_dumps_memory_when_the_ceiling_is_breached() {
         &home_root,
         &project,
         GUARANTEED_BREACH_CEILING_BYTES,
-        Duration::from_secs(120),
+        Duration::from_secs(100),
     );
     if output.status.success() {
         // Not a failure of this test: the watchdog samples every

@@ -24,7 +24,7 @@ fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tar = { workspace = true }
-tokio = { version = "1", features = ["net", "rt", "signal", "time"] }
+tokio = { version = "1", features = ["net", "rt", "signal", "sync", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
