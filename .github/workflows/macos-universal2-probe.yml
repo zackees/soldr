@@ -67,7 +67,7 @@ jobs:
           free -h
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: zackees/setup-soldr@850244f88d111f6cc5dfe9c1018c20fdd9493ecb # v0
+      - uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90 # v0
         with:
           toolchain-file: rust-toolchain.toml
           lockfile: Cargo.lock

@@ -21,6 +21,9 @@ SETUP_SOLDR_V0_9_73_SHA = "62d1596b70168e422156f12273a2ed476d3a16dc"
 # The pin that predated setup-soldr#502 (installing `latest` picked the
 # `-symbols` debug sidecar archive for soldr 0.9.12+ and failed).
 SETUP_SOLDR_PRE_502_SHA = "5f1f68dcb8377818413c28ce52214261ae8ff771"
+# The pin between setup-soldr#502 and #504 (readiness lookup still
+# unauthenticated; v0 moved to bb28e96d when #504 merged, soldr#3101).
+SETUP_SOLDR_PRE_504_SHA = "850244f88d111f6cc5dfe9c1018c20fdd9493ecb"
 SETUP_SOLDR_USE_RE = re.compile(
     r"\buses:\s*(zackees/setup-soldr(?:/[A-Za-z0-9_.-]+)?)@([^\s#]+)"
 )
@@ -95,6 +98,7 @@ def verify_setup_soldr_pins(repo_root: Path = REPO_ROOT) -> None:
         SETUP_SOLDR_V0_9_12_SHA,
         SETUP_SOLDR_V0_9_73_SHA,
         SETUP_SOLDR_PRE_502_SHA,
+        SETUP_SOLDR_PRE_504_SHA,
     ]:
         if old_sha in text:
             errors.append(f"stale setup-soldr SHA remains in workflows: {old_sha}")
