@@ -48,3 +48,19 @@ pub fn named_pipe_stream_from_handle_value(
 /// No-op on Windows: the broker hands over a duplicated handle, never
 /// a descriptor, so there is never a descriptor to close.
 pub fn close_received_fd(_fd: ReceivedFd) {}
+
+/// Unsupported on Windows: there is no `SCM_RIGHTS` transport to drive.
+/// Callers skip the descriptor-handoff regression when they see
+/// `Unsupported`.
+pub fn send_test_handoff_descriptor(
+    _handoff_endpoint: &str,
+    _token: &[u8; running_process::broker::server::HANDOFF_TOKEN_BYTES],
+) -> io::Result<(
+    interprocess::local_socket::Stream,
+    interprocess::local_socket::Stream,
+)> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "SCM_RIGHTS handoff does not exist on Windows",
+    ))
+}

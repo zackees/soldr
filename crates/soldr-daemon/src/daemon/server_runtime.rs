@@ -192,7 +192,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
                 "broker-facing SESSION endpoint was not configured",
             ))
         })?;
-    let handoff_listener = crate::daemon::session_endpoint::resolve_handoff_listener(&paths)?;
+    let handoff_endpoint = crate::daemon::session_endpoint::resolve_handoff_endpoint(&paths)?;
 
     // soldr#2436 phase 2: bound the journal, attribute any un-drained
     // predecessor, then record this start with version + exe identity.
@@ -234,14 +234,17 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     ));
     let (compile_readiness, compile_publisher) =
         crate::daemon::session_endpoint::CompileServiceReadiness::pending();
+    // soldr#3102: the handoff endpoint runs on its own control-plane
+    // runtime so the broker's 5 s ACK budget never competes with compile
+    // runtime workers parked in the embedded cache's synchronous hit path.
     let (session_handle, handoff_handle) =
         crate::daemon::session_endpoint::spawn_session_endpoint_servers(
             session_listener,
-            handoff_listener,
+            handoff_endpoint,
             compile_readiness,
             paths.clone(),
             session_mux,
-        );
+        )?;
 
     // Embedded zccache initializes asynchronously. The first operation that
     // actually needs it awaits this task through `CompileServiceReadiness`;

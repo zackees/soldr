@@ -731,6 +731,11 @@ jobs:
           # `history/<id>/`, and the broker/daemon spawn logs sit at the state
           # root — all three were silently missing from this artifact, which
           # is why a broker that failed to come up left no downloadable trace.
+          # The broker is the per-user singleton, so its `broker-spawn.log`
+          # lives under `~/.soldr/broker/` regardless of `SOLDR_CACHE_DIR`
+          # (soldr#3102: the `handoff fallback: abandoned at AwaitAck stage`
+          # line that explains a `Connection reset by peer` compile failure
+          # is written there, and was never uploaded).
           path: |
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/logs/
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/logs/
@@ -739,6 +744,8 @@ jobs:
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/*-spawn.log
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/broker/*.log
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/broker/*.jsonl
+            ~/.soldr/broker/*.log
+            ~/.soldr/broker/*.jsonl
 
       - name: Ratchet third-party compiles (soldr#3040, report-only)
         if: always()

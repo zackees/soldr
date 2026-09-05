@@ -25,8 +25,9 @@ use std::sync::Arc;
 
 use super::{
     bind_session_listener, handoff_endpoint_path, local_session_name,
-    private_control_endpoint_from_session, serve_session_connection,
-    serve_session_endpoint_with_readiness, soldr_session_endpoint_mux, CompileServiceReadiness,
+    private_control_endpoint_from_session, serve_handoff_endpoint_with_readiness,
+    serve_session_connection, serve_session_endpoint_with_readiness, soldr_session_endpoint_mux,
+    spawn_handoff_control_plane, CompileServiceReadiness,
 };
 use crate::core::SoldrPaths;
 use crate::zccache_embedded::SoldrZccacheService;
@@ -332,4 +333,201 @@ fn session_endpoint_accept_loop_binds_and_dispatches_probe() {
 
             server.abort();
         });
+}
+
+/// Fake-broker half of one `SCM_RIGHTS` handoff: sends the descriptor plus
+/// token prelude, writes the framed `HandoffOffer`, and reports how long the
+/// daemon took to acknowledge -- or `None` when no ACK arrived inside the
+/// broker's [`DEFAULT_HANDOFF_ACK_DEADLINE`].
+///
+/// [`DEFAULT_HANDOFF_ACK_DEADLINE`]: running_process::broker::server::DEFAULT_HANDOFF_ACK_DEADLINE
+fn broker_handoff_ack_latency(
+    handoff_endpoint: &str,
+) -> std::io::Result<Option<std::time::Duration>> {
+    use prost::Message as _;
+    use running_process::broker::protocol::{HandoffAck, HandoffOffer};
+    use running_process::broker::server::handoff::handoff_offer_frame;
+    use running_process::broker::server::{DEFAULT_HANDOFF_ACK_DEADLINE, HANDOFF_TOKEN_BYTES};
+    use std::io::{Read as _, Write as _};
+
+    let token = [7u8; HANDOFF_TOKEN_BYTES];
+    let started = std::time::Instant::now();
+    let (mut control, _client_peer) =
+        crate::platform::ipc::handoff::send_test_handoff_descriptor(handoff_endpoint, &token)?;
+    let service_name = std::env::var(running_process::broker::server::BACKEND_ENV_SERVICE_NAME)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME.to_string()
+        });
+    let offer = HandoffOffer {
+        handle_value: 0,
+        token: token.to_vec(),
+        service_name,
+        correlation_id: 41,
+    };
+    let bytes = encode_framed(&handoff_offer_frame(&offer)).expect("encode offer");
+    control.write_all(&bytes)?;
+    control.flush()?;
+
+    // The sync stream has no read timeout; bound the wait with a channel.
+    let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            if let Ok(Some(decoded)) = try_decode_framed(&buf) {
+                let _ = ack_tx.send(decoded.frame);
+                return;
+            }
+            match control.read(&mut chunk) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+    });
+    match ack_rx.recv_timeout(DEFAULT_HANDOFF_ACK_DEADLINE) {
+        Ok(frame) => {
+            let ack = HandoffAck::decode(frame.payload.as_slice()).expect("decode ack");
+            assert!(
+                ack.accepted,
+                "daemon rejected the handoff: {}",
+                ack.error_detail
+            );
+            assert_eq!(ack.token, token.to_vec(), "ack echoes the offer token");
+            assert_eq!(ack.correlation_id, 41, "ack echoes the correlation id");
+            Ok(Some(started.elapsed()))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+/// Park every worker of `runtime` in a synchronous wait -- the shape of the
+/// embedded cache's store-lock and materialization stalls -- and prove it
+/// took: a fresh task must fail to run within 500 ms.
+fn saturate_runtime_workers(
+    runtime: &tokio::runtime::Runtime,
+    workers: usize,
+    stall: std::time::Duration,
+) {
+    let parked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    for _ in 0..workers {
+        let parked = Arc::clone(&parked);
+        runtime.spawn(async move {
+            parked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(stall);
+        });
+    }
+    // Spawn order is not scheduling order: wait until every stall task has
+    // actually taken a worker before probing.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while parked.load(std::sync::atomic::Ordering::SeqCst) < workers {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "stall tasks never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let probe = runtime.spawn(async {});
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(
+        !probe.is_finished(),
+        "premise: the compile runtime's workers must all be parked for this test to mean anything"
+    );
+}
+
+/// soldr#3102: the broker gives the daemon `DEFAULT_HANDOFF_ACK_DEADLINE`
+/// (5 s) to acknowledge a passed connection and relinquishes it on expiry.
+/// The wrapper then fails with `Connection reset by peer` although broker,
+/// daemon, and client are all alive. The daemon must therefore acknowledge
+/// handoffs even when every compile-runtime worker is parked in a
+/// synchronous cache-hit wait.
+///
+/// Negative control first: a handoff endpoint served *on* the saturated
+/// compile runtime produces no ACK inside the budget -- the exact failure.
+/// Then the control plane: bound on its own runtime, the same handoff is
+/// acknowledged well inside the budget while the compile runtime stays
+/// parked.
+#[test]
+fn handoff_ack_does_not_wait_for_a_saturated_compile_runtime() {
+    use running_process::broker::server::DEFAULT_HANDOFF_ACK_DEADLINE;
+
+    const WORKERS: usize = 2;
+    let stall = DEFAULT_HANDOFF_ACK_DEADLINE + std::time::Duration::from_secs(3);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(temp.path().join("root"));
+    let (readiness, _publisher) = CompileServiceReadiness::pending();
+    let mux = Arc::new(soldr_session_endpoint_mux(test_daemon_identity()));
+
+    // The Windows transport is DuplicateHandle; the descriptor fixture
+    // reports Unsupported there and the test has nothing to drive.
+    let probe_endpoint = handoff_endpoint_path(&unique_session_socket(&temp));
+    if matches!(
+        crate::platform::ipc::handoff::send_test_handoff_descriptor(
+            &probe_endpoint,
+            &[0u8; running_process::broker::server::HANDOFF_TOKEN_BYTES],
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported
+    ) {
+        eprintln!("skipping: descriptor handoff is not the transport on this host");
+        return;
+    }
+
+    let compile_runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(WORKERS)
+        .enable_all()
+        .build()
+        .expect("compile runtime");
+
+    // Negative control: the pre-#3102 arrangement, endpoint on the compile
+    // runtime. Bind while the workers are free, then park them.
+    let shared_endpoint = temp
+        .path()
+        .join("shared.handoff.sock")
+        .display()
+        .to_string();
+    let shared_listener = compile_runtime
+        .block_on(async { bind_session_listener(&shared_endpoint) })
+        .expect("bind shared-runtime handoff endpoint");
+    let _shared_task = compile_runtime.spawn(serve_handoff_endpoint_with_readiness(
+        shared_listener,
+        readiness.clone(),
+        paths.clone(),
+        Arc::clone(&mux),
+        compile_runtime.handle().clone(),
+    ));
+    saturate_runtime_workers(&compile_runtime, WORKERS, stall);
+    let shared_latency =
+        broker_handoff_ack_latency(&shared_endpoint).expect("drive shared handoff");
+    assert!(
+        shared_latency.is_none(),
+        "control: a handoff served on the saturated compile runtime must miss the \
+         broker's ACK deadline, got {shared_latency:?}"
+    );
+
+    // The fix: the control plane binds and acknowledges on its own runtime
+    // while the compile runtime is still parked.
+    let isolated_endpoint = temp
+        .path()
+        .join("isolated.handoff.sock")
+        .display()
+        .to_string();
+    let control_plane = spawn_handoff_control_plane(
+        isolated_endpoint.clone(),
+        readiness,
+        paths,
+        mux,
+        compile_runtime.handle().clone(),
+    )
+    .expect("bind control-plane handoff endpoint");
+    let latency = broker_handoff_ack_latency(&isolated_endpoint)
+        .expect("drive isolated handoff")
+        .expect("the control plane must acknowledge inside the broker's ACK deadline");
+    assert!(
+        latency < DEFAULT_HANDOFF_ACK_DEADLINE / 2,
+        "ACK latency {latency:?} must not track the compile runtime stall"
+    );
+
+    control_plane.abort();
+    compile_runtime.shutdown_background();
 }

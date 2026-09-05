@@ -114,3 +114,46 @@ pub fn named_pipe_stream_from_handle_value(
 pub fn close_received_fd(fd: ReceivedFd) {
     unsafe { libc::close(fd.raw() as libc::c_int) };
 }
+
+/// Test support: play the broker for one `SCM_RIGHTS` handoff.
+///
+/// Connects to the daemon's handoff endpoint, creates a connected socket
+/// pair standing in for the client SESSION connection, sends one end with
+/// the 16-byte token prelude exactly the way the broker's
+/// `try_send_scm_rights_over` does, and returns the control connection (for
+/// the framed offer/ack exchange) with the client's end of the pair. Lives
+/// inside the platform boundary so the daemon's handoff regression tests
+/// (soldr#3102) can drive the real transport without naming descriptor
+/// types outside it.
+pub fn send_test_handoff_descriptor(
+    handoff_endpoint: &str,
+    token: &[u8; running_process::broker::server::HANDOFF_TOKEN_BYTES],
+) -> io::Result<(
+    interprocess::local_socket::Stream,
+    interprocess::local_socket::Stream,
+)> {
+    use interprocess::local_socket::traits::Stream as _;
+    use running_process::broker::server::handoff::{
+        try_send_scm_rights_over, HandoffToken, ScmRightsAttempt, UnixFileDescriptor,
+        UnixHandoffSocket,
+    };
+    use std::os::fd::AsRawFd as _;
+
+    let name = running_process::broker::server::singleton_bind::wrap_socket_name(handoff_endpoint)
+        .map_err(io::Error::other)?;
+    let control = interprocess::os::unix::uds_local_socket::Stream::connect(name)?;
+    let (daemon_side, client_side) = std::os::unix::net::UnixStream::pair()?;
+    let attempt = ScmRightsAttempt::new(
+        UnixFileDescriptor::new(daemon_side.as_raw_fd()),
+        UnixHandoffSocket::new(handoff_endpoint),
+        HandoffToken::from_bytes(*token),
+    );
+    try_send_scm_rights_over(control.inner().as_raw_fd(), &attempt)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    // The daemon now holds its own duplicate; the broker-side copy is done.
+    drop(daemon_side);
+    Ok((
+        control.into(),
+        interprocess::os::unix::uds_local_socket::Stream::from(client_side).into(),
+    ))
+}
