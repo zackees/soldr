@@ -691,41 +691,37 @@ fn verify_dylint_test_targets(plan: &CiTestPlan) -> Result<(), SoldrError> {
     })?;
     for entry in entries {
         let local_target = entry?.path().join("target");
-        if contains_material_artifact(&local_target)? {
+        let offenders = super::dylint_target_guard::material_artifacts(
+            &local_target,
+            super::dylint_target_guard::MATERIAL_ARTIFACT_LIST_LIMIT,
+        )?;
+        if !offenders.is_empty() {
+            // Name what was found, not just where: the writer is whichever
+            // nested tool produced these paths, and that is the only lead a
+            // reader of a CI log has (the tree is gone with the runner).
+            let listing = offenders
+                .iter()
+                .map(|(path, bytes)| {
+                    format!(
+                        "\n    {} ({bytes} bytes)",
+                        path.strip_prefix(&local_target).unwrap_or(path).display()
+                    )
+                })
+                .collect::<String>();
+            let limit = super::dylint_target_guard::MATERIAL_ARTIFACT_LIST_LIMIT;
+            let more = if offenders.len() >= limit {
+                format!("\n    ... (first {limit} shown)")
+            } else {
+                String::new()
+            };
             return Err(SoldrError::Other(format!(
-                "soldr ci-test: Dylint UI tests created compiler artifacts in {}; all six tests must share {}",
+                "soldr ci-test: Dylint UI tests created compiler artifacts in {}; all six tests must share {}. Found:{listing}{more}",
                 local_target.display(),
                 shared.display()
             )));
         }
     }
     Ok(())
-}
-
-fn contains_material_artifact(path: &std::path::Path) -> Result<bool, SoldrError> {
-    let entries = match std::fs::read_dir(path) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.into()),
-    };
-    for entry in entries {
-        let entry = entry?;
-        let child = entry.path();
-        if child.is_dir() {
-            if contains_material_artifact(&child)? {
-                return Ok(true);
-            }
-            continue;
-        }
-        let name = child.file_name().and_then(|value| value.to_str());
-        if !matches!(
-            name,
-            Some(".rustc_info.json" | "CACHEDIR.TAG" | ".cargo-lock")
-        ) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 struct StageCommandFactory {

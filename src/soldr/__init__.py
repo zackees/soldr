@@ -826,6 +826,12 @@ def _should_timestamp_pep517(env_value: "str | None", is_terminal: bool) -> bool
     return not is_terminal
 
 
+def _pep517_epoch_anchor_wanted(github_actions: str | None) -> bool:
+    """Mirror of the Rust ``epoch_anchor_wanted``: skip the ``# t0=`` anchor
+    where the runner already stamps every line."""
+    return not (github_actions or "").strip()
+
+
 def _pep517_epoch_anchor_line(now_unix_ms: int) -> str:
     """One `# t0=<epoch-seconds>` line so absolute times are derivable.
 
@@ -1113,7 +1119,12 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
     # Best-effort like the log write: if the sink is already broken, do not let
     # the anchor turn a graceful "output relay failed" into a raw write error
     # from the main thread -- the relay surfaces a persistent sink failure.
-    if stampers["stderr"] is not None:
+    # Same rule as the Rust `epoch_anchor_wanted`: GitHub Actions already
+    # prefixes every log line with a UTC timestamp, so there the anchor is
+    # one more line per invocation that says nothing the log does not.
+    if stampers["stderr"] is not None and _pep517_epoch_anchor_wanted(
+        os.environ.get("GITHUB_ACTIONS")
+    ):
         try:
             _write_pep517_text(
                 stderr_sink, _pep517_epoch_anchor_line(int(time.time() * 1000))

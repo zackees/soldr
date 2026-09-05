@@ -1,5 +1,6 @@
 //! Native host-validation DAG for `soldr ci-test` (soldr#2867).
 
+mod dylint_target_guard;
 mod execute;
 mod execute_report;
 mod model;

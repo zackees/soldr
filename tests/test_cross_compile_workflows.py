@@ -337,7 +337,11 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     # compiler remains governed by Soldr's shared/exclusive admission. The
     # Windows-target cold-build override still reserves the complete pool.
     assert 'NEXTEST_TEST_THREADS: "4"' in build_and_test
-    assert 'source_soldr="${GITHUB_WORKSPACE}/target/' in flattened
+    # The driver is built into its own target dir under the runner temp:
+    # `soldr cook`'s cargo-chef skeleton build overwrites every bin in the
+    # workspace target dir with a `fn main() {}` stub.
+    assert 'source_soldr="${RUNNER_TEMP}/soldr-source-driver/' in flattened
+    assert 'source_soldr="${GITHUB_WORKSPACE}/target/' not in flattened
     assert 'SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr"' in flattened
     assert "bootstrap_wrapper" not in flattened
     handoff = build_and_test.index("name: Hand off bootstrap broker to source revision")
@@ -346,7 +350,7 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     assert "soldr broker remove" in build_and_test[handoff:validation]
     assert '"$source_soldr" daemon start' in build_and_test[handoff:validation]
     assert '"$source_soldr" broker remove || true' in build_and_test
-    assert 'target/${{ inputs.target }}/debug/soldr"' in flattened
+    assert 'soldr-source-driver/${{ inputs.target }}/debug/soldr"' in flattened
     assert 'ci-test --target "${{ inputs.target }}"' in flattened
     assert "nextest run --no-run" not in build_and_test
     assert "- name: Run CLI smoke tests" not in build_and_test
@@ -546,7 +550,11 @@ def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
 def test_native_linux_integration_backstop_runs_on_pull_requests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     block = _job_block(ci, "build-linux-x64", "pep517-daemon-smoke")
-    assert "github.ref_name == 'main' || github.event_name == 'pull_request'" in block
+    # Serial gate (2026-09-04): the host lane is stage 2 behind Lint and every
+    # other root job hangs off it, so it carries no event guard of its own --
+    # a workflow_dispatch run must be able to pass through it too.
+    assert "\n    needs: lint\n" in block
+    assert "\n    if:" not in block[: block.index("    uses:")]
     assert "soldr#1676" in block
     assert "canonical native exception" in block
 
@@ -561,12 +569,18 @@ def test_host_validation_opportunistically_reuses_exact_sha_bootstrap() -> None:
     upload = _step_block(ci, "Upload bootstrap soldr artifact")
     host_build = _step_block(host_template, "Build ci-test driver")
 
-    # The producer already runs unconditionally and independently. The host
-    # must not wait for it: a cold producer falls back to the existing local
-    # source build rather than extending the native critical path.
+    # The host must not wait for the producer: under the serial gate the
+    # producer runs AFTER the host (stage 3), so the host always takes the
+    # local source-build fallback rather than extending the native critical
+    # path, and the producer carries no event guard of its own.
     assert "\n    if:" not in producer_header
-    assert not re.search(r"(?m)^    needs:", host)
-    assert "source_driver_artifact_name: soldr-ci-bootstrap-linux-gnu" in host
+    assert "\n    needs: build-linux-x64\n" in producer_header
+    assert re.search(r"(?m)^    needs: lint$", host)
+    assert not re.search(r"(?m)^    needs: e2e-cross-bootstrap-soldr", host)
+    # The producer's artifact cannot exist when the host starts, so the host
+    # no longer asks for it; the template skips the download on an empty name.
+    assert "source_driver_artifact_name:" not in host
+    assert "if: inputs.source_driver_artifact_name != ''" in host_template
 
     assert "bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ github.sha }}" in producer
     assert "key: rustup-1.95.0-linux-x64-v1" in producer
@@ -575,7 +589,7 @@ def test_host_validation_opportunistically_reuses_exact_sha_bootstrap() -> None:
     assert "cargo build --profile dev --package soldr-cli" in producer
     assert "soldr cargo build --profile dev -p soldr-cli" in host_build
     assert "target/x86_64-unknown-linux-gnu/debug/soldr" in producer
-    assert "target/${{ inputs.target }}/debug/soldr" in host_template
+    assert "soldr-source-driver/${{ inputs.target }}/debug/soldr" in host_template
     assert "--bin soldr" in producer
     assert "--target x86_64-unknown-linux-gnu" in producer
     assert "--features" not in producer
@@ -889,7 +903,7 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_and_the_blessed_build() ->
     # assertion follows the logic rather than being dropped.
     assert _matrix_binary_source_prepares_gnu_linux()
     assert (
-        "uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771" in release
+        "uses: zackees/setup-soldr@850244f88d111f6cc5dfe9c1018c20fdd9493ecb" in release
     )
     assert "version: 0.9.10" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
@@ -967,7 +981,7 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
 
     assert _matrix_binary_source_prepares_gnu_linux()
     assert (
-        "uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771" in release
+        "uses: zackees/setup-soldr@850244f88d111f6cc5dfe9c1018c20fdd9493ecb" in release
     )
     assert "version: 0.9.10" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release

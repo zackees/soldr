@@ -73,7 +73,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
+        uses: zackees/setup-soldr@850244f88d111f6cc5dfe9c1018c20fdd9493ecb
         with:
           # soldr#1799: pin the soldr that builds us -- the action's default
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every

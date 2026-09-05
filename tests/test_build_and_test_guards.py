@@ -210,7 +210,11 @@ def test_source_driver_reuse_is_exact_sha_opportunistic_and_fails_closed() -> No
 
     assert "steps.shared_source_driver.outcome != 'success'" in build
     assert "soldr cargo build" in build
-    assert 'source_soldr="${GITHUB_WORKSPACE}/target/' in verify
+    # The driver lives outside the workspace target dir: `soldr cook`'s
+    # cargo-chef skeleton build overwrites every bin there with a stub.
+    assert 'source_soldr="${RUNNER_TEMP}/soldr-source-driver/' in verify
+    assert "CARGO_TARGET_DIR: ${{ runner.temp }}/soldr-source-driver" in build
+    assert 'source_soldr="${GITHUB_WORKSPACE}/target/' not in workflow
 
 
 def test_source_compile_guards_cover_the_complete_validation_run() -> None:

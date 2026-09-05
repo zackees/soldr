@@ -152,14 +152,20 @@ def normalize_entries(raw: list[object]) -> list[CacheEntry]:
             or not isinstance(size, int)
         ):
             continue
+        # `gh cache list --json id` emits the id as a JSON NUMBER, not a
+        # string. Accepting only `str` here silently dropped every live id,
+        # so `--prune --apply` reported "no cache id, cannot delete" for all
+        # 21 candidates on 2026-09-04 and reclaimed nothing.
         entry_id = item.get("id")
+        if isinstance(entry_id, bool) or not isinstance(entry_id, (int, str)):
+            entry_id = None
         created_at = item.get("createdAt")
         entries.append(
             CacheEntry(
                 key=key,
                 ref=ref,
                 size_bytes=size,
-                id=entry_id if isinstance(entry_id, str) else None,
+                id=str(entry_id) if entry_id is not None else None,
                 created_at=created_at if isinstance(created_at, str) else None,
             )
         )

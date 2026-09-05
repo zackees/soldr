@@ -30,9 +30,10 @@ def local_dylint_target_artifacts(repo_root: Path) -> list[Path]:
         for path in target_dir.rglob("*"):
             if not path.is_file():
                 continue
-            if (
-                path.relative_to(target_dir).as_posix()
-                not in HARMLESS_BOOKKEEPING_FILES
+            relative = path.relative_to(target_dir).as_posix()
+            # soldr's zero-byte scrub marker (and lock) is bookkeeping too.
+            if relative not in HARMLESS_BOOKKEEPING_FILES and not path.name.startswith(
+                ".soldr-"
             ):
                 artifacts.append(path)
     return sorted(artifacts)

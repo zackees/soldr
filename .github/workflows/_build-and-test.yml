@@ -60,7 +60,13 @@ jobs:
       # Use soldr's explicit opt-in token env so release metadata requests
       # are authenticated without weakening the generic GITHUB_TOKEN guard.
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
+      # RUST_LIB_BACKTRACE=0 keeps panic backtraces (RUST_BACKTRACE=1) but
+      # stops cargo's anyhow errors from dumping a 30-frame stack for every
+      # cold-tree "failed to read .fingerprint/..." INFO line that
+      # CARGO_LOG=cargo::core::compiler::fingerprint=info emits on purpose.
+      # Those lines are expected on a fresh target dir and are not failures.
       RUST_BACKTRACE: "1"
+      RUST_LIB_BACKTRACE: "0"
       CARGO_TERM_COLOR: always
       # zccache 1.13.17+ gives registered Rust amalgamations and large native
       # C/C++ units exclusive compiler admission. Keep Cargo/Soldr job counts
@@ -128,7 +134,7 @@ jobs:
       # soldr#1799: pin the soldr that builds us. This prevents action-default
       # drift from changing build or catalogue behavior between lanes.
       - name: Setup pinned soldr toolchain
-        uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
+        uses: zackees/setup-soldr@850244f88d111f6cc5dfe9c1018c20fdd9493ecb
         with:
           version: 0.9.10
           toolchain: 1.95.0
@@ -359,7 +365,8 @@ jobs:
           test -f "$artifact_soldr"
           chmod +x "$artifact_soldr"
           "$artifact_soldr" --version
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
+          mkdir -p "$(dirname "$source_soldr")"
           mkdir -p "$(dirname "$source_soldr")"
           cp "$artifact_soldr" "$source_soldr"
 
@@ -379,11 +386,27 @@ jobs:
           # The source-revision cook step below does the hydrate correctly.
           # Remove this once the pinned setup-soldr Soldr carries the fix.
           SOLDR_COOK_AUTO_HYDRATE: "0"
+          # The driver must NOT live in the workspace target dir. `soldr cook`
+          # runs cargo-chef there, and cargo-chef builds a skeleton workspace
+          # whose every bin is `fn main() {}` -- so after "Cook stable
+          # dependency tree", `target/<triple>/debug/soldr` was a stub that
+          # printed nothing and exited 0, and the host validation's
+          # `"$source_soldr" rustup which cargo` came back empty (runs
+          # 33909213118 and 33913622408, proven by probing the same call
+          # before and after the cooks). Same pattern as
+          # cargo-orchestration-telemetry.yml's soldr-2878-source-target.
+          CARGO_TARGET_DIR: ${{ runner.temp }}/soldr-source-driver
         run: |
           # setup-soldr 0.9.10 writes its historical ci-tests=1 caps through
           # GITHUB_ENV. This lane deliberately leaves both knobs unset so
           # source Soldr's exclusive heavy-unit admission owns concurrency.
           unset CARGO_BUILD_JOBS SOLDR_JOBS
+          # This step runs the PINNED release soldr (setup-soldr), which
+          # predates the front door's cold-tree fingerprint filter, and
+          # nothing reads fingerprint records from the driver build -- the
+          # soldr#3040 ratchet reads ci-test's. Drop the log level here so
+          # the bootstrap does not print one record per unit.
+          unset CARGO_LOG
           soldr cargo build --profile dev -p soldr-cli --bin soldr \
             --target ${{ inputs.target }}
       # The broker is intentionally a stable singleton and never replaces
@@ -397,7 +420,7 @@ jobs:
           unset CARGO_BUILD_JOBS SOLDR_JOBS
           soldr cache shutdown --shutdown-timeout-seconds 30 || soldr zccache stop
           soldr broker remove
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
           "$source_soldr" daemon start
 
       # soldr#3042: pre-compile the `target/dylint/tests` third-party
@@ -427,7 +450,7 @@ jobs:
         run: |
           set -euo pipefail
           unset CARGO_BUILD_JOBS SOLDR_JOBS
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
           python3 .github/scripts/cook_dylint_tests_tree.py \
             --soldr "$source_soldr" \
             --target-root "${GITHUB_WORKSPACE}/target"
@@ -512,20 +535,20 @@ jobs:
       # nobody reads. Exit 3 (COOK_SKIPPED_UNCOOKABLE_WORKSPACE) has a named
       # fix -- exclude the offending member with `-p`, soldr#3043 step 3 -- and
       # every other non-zero is propagated verbatim with cook's own stderr
-      # echoed above the annotation. The one to watch on the first runs is
-      # cargo-chef 0.1.73's handling of `-- --all-targets`: the `--`
-      # passthrough is documented (docs/API.md `soldr cook`) but is not covered
-      # by an end-to-end test, so if the annotation says cook exited non-zero,
-      # read the echoed cook stderr before assuming a workspace problem; the
-      # documented fallback is to drop `--all-targets` (losing dev-dependency
-      # coverage), not to add a downgrade flag. The one softness knob is
-      # `--require-warm`, left off for the reason given in the paragraph above.
+      # echoed above the annotation. This step was red from the day it landed
+      # (#3072) until the fix in the PR that carries this comment: soldr cook
+      # forwarded its `--` passthrough to cargo-chef *with* the literal `--`,
+      # which clap reads as end-of-options, so cargo-chef rejected
+      # `--all-targets` as a positional. If the annotation says cook exited
+      # non-zero, read the echoed cook stderr before assuming a workspace
+      # problem. The one softness knob is `--require-warm`, left off for the
+      # reason given in the paragraph above.
       - name: Cook stable dependency tree (soldr#3043)
         shell: bash
         run: |
           set -euo pipefail
           unset CARGO_BUILD_JOBS SOLDR_JOBS
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
           SOLDR_RUSTC_WRAPPER="$source_soldr" python3 .github/scripts/run_stable_cook.py \
             --soldr "$source_soldr" \
             --target "${{ inputs.target }}" \
@@ -549,7 +572,7 @@ jobs:
           # Clear setup-soldr's bootstrap-only legacy caps at the source-owned
           # boundary. Explicit overrides remain untouched outside this lane.
           unset CARGO_BUILD_JOBS SOLDR_JOBS
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
           real_cargo=$("$source_soldr" rustup which cargo)
           cargo_guard="${RUNNER_TEMP}/soldr-ci-cargo-guard"
           python3 .github/scripts/install_ci_cargo_guard.py \
@@ -576,7 +599,7 @@ jobs:
         continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
         shell: bash
         run: |
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
           "$source_soldr" status --json > soldr-status.json
           python3 .github/scripts/check_compile_fallbacks.py soldr-status.json
 
@@ -633,7 +656,7 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          source_soldr="${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
           "$source_soldr" cache shutdown --shutdown-timeout-seconds 30 \
             || "$source_soldr" zccache stop
           "$source_soldr" broker remove || true

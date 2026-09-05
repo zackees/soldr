@@ -44,6 +44,7 @@ mod darwin_embed;
 /// soldr#2546 — opt-in build process tracing (`soldr --debug`).
 pub(crate) mod debug_trace;
 mod disk;
+mod fingerprint_noise;
 mod host_tooling;
 mod inputs;
 mod job_budget;
@@ -650,6 +651,8 @@ fn extract_target_arg(args: &[String]) -> Option<&str> {
     None
 }
 
+#[cfg(test)]
+mod backtrace_policy_tests;
 #[cfg(test)]
 mod dylint_driver_tests;
 #[cfg(test)]

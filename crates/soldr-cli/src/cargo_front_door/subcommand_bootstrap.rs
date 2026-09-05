@@ -117,10 +117,15 @@ pub(crate) async fn ensure_known_subcommand_tool(
                     validate_dylint_path_binary(&link, "dylint-link", version)?;
                 }
             }
-            eprintln!(
-                "soldr: deferring to {exe_name} on PATH at {} (set SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 to override)",
-                path.display()
-            );
+            // Informational; on GitHub Actions it repeats once per nested
+            // invocation (a Dylint cook runs dozens) and the override it
+            // advertises is a workflow-level decision, not a per-line one.
+            if !foreign_env_flag("GITHUB_ACTIONS") {
+                eprintln!(
+                    "soldr: deferring to {exe_name} on PATH at {} (set SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 to override)",
+                    path.display()
+                );
+            }
             // Even when cargo-zigbuild is provided by the host, it
             // still shells out to `zig`. Run the transitive bootstrap
             // before returning so the deferred-on-PATH branch doesn't

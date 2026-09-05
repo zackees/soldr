@@ -53,6 +53,12 @@ from pathlib import Path
 
 GUEST_HTTP_BASE = "http://10.0.2.2:8000"
 RESULTS_FILE = "summary.txt"
+# The action attaches a blank 64 GiB qcow2 as the guest hard disk (docker-mac-x64
+# action.yml: `qemu-img create -f qcow2 ... 64G`). `diskutil list` never prints
+# the media model, so the disk is picked by size: the only whole disk at or
+# above this floor. The Base System image (~2 GB) and OpenCore (~1 GB) sit far
+# below it.
+MIN_SCRATCH_DISK_BYTES = 60 * 1000 * 1000 * 1000
 
 # soldr#3076/#3078: every stage this lane's guest script runs, in the order
 # it runs them. The first four are the original binary-only smoke (kept as
@@ -74,6 +80,7 @@ CHECKS = (
     "fetch_filter.txt",
     "fetch_nextest-version.txt",
     "extract_workspace",
+    "runner_shim",
     "extract_fixtures",
     "toolchain_ensure",
     "toolchain_link",
@@ -231,28 +238,28 @@ def _stage_core_smoke() -> list[str]:
 def _stage_storage() -> list[str]:
     """Format+mount the action's blank qcow2 disk, or fall back to /tmp/work.
 
-    `diskutil list` output is parsed as a tiny state machine (last-seen
-    `/dev/diskN` header, then watch for a `QEMU HARDDISK` line inside that
-    disk's block) rather than assumed to be on one exact line, since the
-    Base System's own disk/CD-ROM must not be picked by accident.
+    `diskutil list` does not print media model names, so every whole disk it
+    lists is sized through `diskutil info` and the largest one at or above
+    MIN_SCRATCH_DISK_BYTES is chosen; the Base System and OpenCore disks are
+    both far smaller and can never be picked.
     """
     return [
         "stage_start storage",
         "diskutil list > /tmp/diskutil-list.txt 2>/tmp/diskutil-list.err",
+        ": > /tmp/diskutil-info.txt",
         'DISK=""',
-        'CURRENT=""',
-        "while IFS= read -r line; do",
-        '  case "$line" in',
-        "    /dev/disk*)",
-        "      CURRENT=$(printf '%s\\n' \"$line\" | sed -n 's#^/dev/\\(disk[0-9]*\\).*#\\1#p')",
-        "      ;;",
-        "  esac",
-        '  case "$line" in',
-        '    *"QEMU HARDDISK"*)',
-        '      DISK="$CURRENT"',
-        "      ;;",
-        "  esac",
-        "done < /tmp/diskutil-list.txt",
+        "BEST_BYTES=0",
+        "for dev in $(sed -n 's#^\\(/dev/disk[0-9]*\\).*#\\1#p' /tmp/diskutil-list.txt); do",
+        '  info=$(diskutil info "$dev" 2>/dev/null)',
+        "  printf '%s\\n---\\n' \"$info\" >> /tmp/diskutil-info.txt",
+        "  printf '%s\\n' \"$info\" | grep -q 'Whole:.*Yes' || continue",
+        "  bytes=$(printf '%s\\n' \"$info\" | sed -n 's/.*Disk Size:.*(\\([0-9][0-9]*\\) Bytes).*/\\1/p' | head -n1)",
+        "  case \"$bytes\" in ''|*[!0-9]*) continue ;; esac",
+        f'  if [ "$bytes" -ge {MIN_SCRATCH_DISK_BYTES} ] && [ "$bytes" -gt "$BEST_BYTES" ]; then',
+        '    DISK="${dev#/dev/}"',
+        '    BEST_BYTES="$bytes"',
+        "  fi",
+        "done",
         "",
         'WORK=""',
         'if [ -n "$DISK" ]; then',
@@ -276,9 +283,13 @@ def _stage_storage() -> list[str]:
         '  record storage pass "fallback path=$WORK free_gib=$FREE_GIB disk=${DISK:-none}"',
         "fi",
         "export WORK",
-        'mkdir -p "$WORK/home"',
+        'mkdir -p "$WORK/home" "$WORK/tmp"',
         'HOME="$WORK/home"',
-        "export HOME",
+        "# Recovery's default temp dirs (/tmp, /var/folders) are ~5 GiB tmpfs;",
+        "# 13 of 19 failures on PR #3087's third run were ENOSPC from tests'",
+        "# tempdirs. Point every temp_dir() consumer at the scratch disk.",
+        'TMPDIR="$WORK/tmp"',
+        "export HOME TMPDIR",
         "",
         "# Env every archived test expects (mirrors the native target-run",
         "# path's 'Resolve packaged target tools' step). CARGO_HOME/RUSTUP_HOME",
@@ -329,6 +340,15 @@ def _stage_extract() -> list[str]:
         '  if tar -xf "$WORK/workspace.tar" -C "$WORK/workspace"; then',
         "    record extract_workspace pass",
         "    EXTRACT_WORKSPACE_OK=0",
+        "    # .config/nextest.toml wraps every unix test in",
+        "    # .github/scripts/nextest_timeout_wrapper.py (SIGTERM thread dumps),",
+        "    # resolved relative to the workspace root. Recovery has no python3,",
+        "    # so every test died with `env: python3: No such file or directory`",
+        "    # (PR #3087's first run). Swap the wrapper for a POSIX exec shim; the",
+        "    # nextest slow-timeout still bounds each test, only the dump is lost.",
+        '    printf \'#!/bin/sh\\nexec "$@"\\n\' > "$WORK/workspace/.github/scripts/nextest_timeout_wrapper.py"',
+        '    chmod +x "$WORK/workspace/.github/scripts/nextest_timeout_wrapper.py"',
+        '    record runner_shim pass "nextest_timeout_wrapper.py replaced by exec shim"',
         "  else",
         '    record extract_workspace fail "tar extraction of workspace.tar failed"',
         "    EXTRACT_WORKSPACE_OK=1",
@@ -454,6 +474,9 @@ def _stage_nextest_list_all() -> list[str]:
     return [
         "stage_start nextest_list_all",
         'if [ "$FETCH_TESTS_OK" -eq 0 ] && [ "$EXTRACT_WORKSPACE_OK" -eq 0 ] && [ "$NEXTEST_VERSION_OK" -eq 0 ]; then',
+        # nextest canonicalizes --extract-to before extracting and exits 96 when
+        # it does not exist yet (seen live on release run 33820395040).
+        '  mkdir -p "$WORK/extract"',
         '  "$NEXTEST_BIN" nextest list \\',
         '    --archive-file "$WORK/tests.tar.zst" \\',
         '    --extract-to "$WORK/extract" \\',
@@ -531,13 +554,17 @@ def _stage_nextest_run() -> list[str]:
         'if [ "$LIST_SELECTED_OK" -eq 0 ] && [ "$TOOLCHAIN_LINK_OK" -eq 0 ] \\',
         '  && [ "$FETCH_SOLDR_DAEMON_OK" -eq 0 ] && [ "$EXTRACT_FIXTURES_OK" -eq 0 ]; then',
         '  FILTER=$(cat "$WORK/filter.txt")',
+        "  # --no-fail-fast, unlike the native lanes' --max-fail 3: one guest boot",
+        "  # costs minutes, so a run must report every failure it can find.",
+        "  # (Comments must stay OUT of the continued command below: PR #3087's",
+        "  # third run split it and executed '--no-fail-fast' as a command.)",
         "  # shellcheck disable=SC2086",
         '  "$NEXTEST_BIN" nextest run $REUSE_ARGS \\',
         '    --workspace-remap "$WORK/workspace" \\',
         "    --profile target-run \\",
         "    --partition hash:1/1 \\",
         '    -E "$FILTER" \\',
-        '    --max-fail 3:immediate > "$WORK/nextest-run.log" 2>&1',
+        '    --no-fail-fast > "$WORK/nextest-run.log" 2>&1',
         "  NR_RC=$?",
         '  if [ "$NR_RC" -eq 0 ]; then',
         "    record nextest_run pass",
@@ -584,6 +611,8 @@ def _stage_collect_results() -> list[str]:
         f'  tail -c {NEXTEST_LOG_TAIL_BYTES} "$WORK/nextest-run.log" > /tmp/results/nextest-run.log 2>/dev/null',
         "fi",
         "",
+        "cp /tmp/diskutil-list.txt /tmp/diskutil-info.txt /tmp/erase.log /tmp/results/ 2>/dev/null",
+        'cp "$WORK/all-list.stderr" /tmp/results/ 2>/dev/null',
         "df -h > /tmp/results/df.txt 2>&1",
         "env > /tmp/results/env.txt 2>&1",
         "stage_end collect_results",

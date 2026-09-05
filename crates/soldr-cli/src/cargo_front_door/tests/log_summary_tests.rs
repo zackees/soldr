@@ -130,3 +130,13 @@ fn log_summary_colorizes_only_when_asked() {
     // Color is decoration only — the path itself is unchanged.
     assert!(colored.contains("/state/logs/builds/build-1.xml"));
 }
+
+#[test]
+fn summary_prints_on_failure_or_terminal_only() {
+    // A red build always names its logs; a green one only on a terminal,
+    // never into a pipe where an orchestrator repeats it per nested call.
+    assert!(log_summary::summary_wanted(1, false));
+    assert!(log_summary::summary_wanted(-1, false));
+    assert!(log_summary::summary_wanted(0, true));
+    assert!(!log_summary::summary_wanted(0, false));
+}

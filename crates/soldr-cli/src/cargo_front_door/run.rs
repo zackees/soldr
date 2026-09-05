@@ -224,6 +224,7 @@ pub(crate) async fn run_cargo_front_door(
     // of printing the "failed to connect to jobserver" warning (see #283).
     command.env_remove("MAKEFLAGS");
     command.env_remove("CARGO_MAKEFLAGS");
+    quiet_library_backtraces_for_child_cargo(&mut command);
     command.env("RUSTC", &rustc);
     // soldr#2878: Cargo performs fingerprinting and directory scans before a
     // rustc request can reach the daemon's compiler admission gate. Capture
@@ -677,6 +678,7 @@ pub(crate) async fn run_cargo_front_door(
                 compile_journal_start_len,
                 &cargo,
                 cache_plan.wrapper_identity(),
+                Vec::new(),
             );
             crate::cache_lib::build_active::set(false);
             drop(build_activity_lease);
@@ -687,11 +689,14 @@ pub(crate) async fn run_cargo_front_door(
             // soldr#1813: an aborted/timed-out cargo run is exactly when the
             // user most needs the log paths, and this arm always returns early —
             // so the summary is emitted here too rather than at the shared tail.
-            log_summary::emit_session_log_summary(&log_summary::SessionLogs {
-                build_log,
-                build_log_paths,
-                compile_fallback_log,
-            });
+            log_summary::emit_session_log_summary(
+                &log_summary::SessionLogs {
+                    build_log,
+                    build_log_paths,
+                    compile_fallback_log,
+                },
+                -1,
+            );
             if let Err(finish_err) = finish_result {
                 eprintln!(
                     "soldr warning: failed to finish zccache session after aborted cargo run: {finish_err}"
@@ -840,6 +845,10 @@ pub(crate) async fn run_cargo_front_door(
         compile_journal_start_len,
         &cargo,
         cache_plan.wrapper_identity(),
+        captured_stderr_for_diagnosis
+            .as_deref()
+            .map(fingerprint_noise::extract_dirty_records)
+            .unwrap_or_default(),
     );
     // soldr#2302: automatic cache-stats summary from the session baseline-diff
     // (precisely build-scoped), printed just above the log-paths block.
@@ -847,11 +856,14 @@ pub(crate) async fn run_cargo_front_door(
     // soldr#1813: tell the user where the logs went. Printed here because this
     // is the last point both the success and the compiler-failure paths pass
     // through — everything below can bail out via `?` or the zthreads retry.
-    log_summary::emit_session_log_summary(&log_summary::SessionLogs {
-        build_log,
-        build_log_paths,
-        compile_fallback_log,
-    });
+    log_summary::emit_session_log_summary(
+        &log_summary::SessionLogs {
+            build_log,
+            build_log_paths,
+            compile_fallback_log,
+        },
+        effective_exit_code,
+    );
     // History is now copied, sanitized, indexed, and marked complete. Keep the
     // lease through that publication boundary so migration GC cannot remove a
     // half-written archive.

@@ -82,14 +82,33 @@ pub(crate) fn maybe_spawn_auto_gc_sweeper(paths: &SoldrPaths) {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let mut cmd = std::process::Command::new(exe);
-    cmd.args(["gc", "auto-sweep"])
-        .stdin(std::process::Stdio::null())
+    let mut cmd = sweeper_command(exe);
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     // Detached background spawn: own process group, no console window —
     // the platform crate owns the flag mapping.
     let _ = crate::platform::process::spawn::spawn_detached(&mut cmd);
+}
+
+/// The detached sweeper's argv, with the two facts a self-spawn must state.
+///
+/// `current_exe()` is not always the `soldr` front door: under `soldr
+/// ci-test`'s Dylint stages, and under any `tool-shims`/`toolchain link`
+/// setup, this process was entered through a cargo-named multicall
+/// hardlink. Spawning that path bare re-enters as `cargo gc auto-sweep`,
+/// which the cargo front door runs in whatever cwd it inherited: on run
+/// 33925584046 that was `dylints/ban_raw_env_flag`, where it created a
+/// lint-local `target/` (with soldr's scrub marker) and died with exit 101
+/// on cargo's "no such command", and the shared-tree guard then failed the
+/// whole host validation. The argv0 override pins the identity to `soldr`;
+/// the edge marker is what every first-party self-spawn carries (soldr#2739).
+fn sweeper_command(exe: std::path::PathBuf) -> std::process::Command {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["gc", "auto-sweep"]);
+    cmd.env(crate::multicall::SHIM_ARGV0_ENV, "soldr");
+    cmd.env(soldr_core::self_relocate::SELF_SPAWN_EDGE_ENV_VAR, "1");
+    cmd
 }
 
 /// Issue #1286 (F5): synchronous entry point behind the hidden
