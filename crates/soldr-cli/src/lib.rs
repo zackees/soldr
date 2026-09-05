@@ -246,6 +246,8 @@ pub mod compile_diagnostics;
 pub mod compile_dispatch;
 pub mod compile_fallback_rollup;
 pub mod cook;
+/// soldr#3117 -- keeps the daemon route alive for the whole of `soldr cook`.
+pub(crate) mod cook_route_hold;
 pub mod cook_source_snapshot;
 pub mod daemon_entry;
 /// soldr#2360 — actionable attribution for a daemon-unavailable compile

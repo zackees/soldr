@@ -955,3 +955,59 @@ fn indexed_success_line_reports_raw_bytes_elapsed_and_decision() {
     assert!(line.contains("compile_elapsed_ms=60000"));
     assert!(line.contains("decision=save"));
 }
+
+fn lookup_hit(sha256: [u8; 32], size_bytes: u64, exact_recipe_match: bool) -> CookLookupOutcome {
+    CookLookupOutcome::Hit {
+        sha256,
+        path: String::new(),
+        size_bytes,
+        origin_url_normalized: None,
+        matched_recipe_hash: Some([7u8; 32]),
+        exact_recipe_match,
+        branch_name: None,
+        compile_duration_ms: 1,
+        save_elapsed_ms: 1,
+    }
+}
+
+/// soldr#3117: an exact `CookLookup` hit whose archive is still on disk at
+/// the recorded size stands in for a re-pack; anything less takes the pack
+/// path.
+#[test]
+fn already_indexed_archive_requires_exact_match_and_matching_bytes_on_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cook_dir = tmp.path().join("cook");
+    std::fs::create_dir_all(&cook_dir).unwrap();
+    let sha = [0xabu8; 32];
+    let path = cook_archive::artifact_path_for_sha(&cook_dir, &sha);
+    std::fs::write(&path, b"cooked").unwrap();
+
+    assert_eq!(
+        already_indexed_archive(&cook_dir, &lookup_hit(sha, 6, true)),
+        Some(path.clone())
+    );
+    assert_eq!(
+        already_indexed_archive(&cook_dir, &lookup_hit(sha, 5, true)),
+        None,
+        "a size mismatch means the file is not the indexed artifact"
+    );
+    assert_eq!(
+        already_indexed_archive(&cook_dir, &lookup_hit(sha, 6, false)),
+        None,
+        "a drifted recipe must re-pack"
+    );
+    assert_eq!(
+        already_indexed_archive(&cook_dir, &lookup_hit([0xcdu8; 32], 6, true)),
+        None,
+        "an evicted archive must re-pack"
+    );
+    assert_eq!(
+        already_indexed_archive(
+            &cook_dir,
+            &CookLookupOutcome::Miss {
+                previous_origin_recipe_hashes: Vec::new(),
+            },
+        ),
+        None
+    );
+}

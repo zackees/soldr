@@ -4,6 +4,31 @@ enum DriftSignal {
     AlreadyIndexed(#[allow(dead_code)] [u8; 32]),
 }
 
+/// The on-disk archive a `CookLookup` hit already names, when it can stand in
+/// for a fresh pack (soldr#3117).
+///
+/// An exact recipe match means the indexed artifact was cooked from this very
+/// dependency graph with this rustc; when its `<sha256>.tar.zst` is still
+/// present at the recorded size there is nothing a re-pack would add, and a
+/// level-19 zstd pack of the trimmed tree is the most expensive step of a
+/// warm cook (minutes for the CI stable tree, against a compile the compile
+/// cache already serves in about one). A drifted match, a missing file, or a
+/// size mismatch all return `None` and take the pack path as before.
+fn already_indexed_archive(cook_dir: &Path, outcome: &CookLookupOutcome) -> Option<PathBuf> {
+    let CookLookupOutcome::Hit {
+        sha256,
+        size_bytes,
+        exact_recipe_match: true,
+        ..
+    } = outcome
+    else {
+        return None;
+    };
+    let path = cook_archive::artifact_path_for_sha(cook_dir, sha256);
+    let on_disk = std::fs::metadata(&path).ok()?;
+    (on_disk.is_file() && on_disk.len() == *size_bytes).then_some(path)
+}
+
 fn emit_indexed_line(
     packed: &PackedCookArchive,
     origin: Option<&str>,

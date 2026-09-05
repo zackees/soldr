@@ -317,3 +317,55 @@ def test_main_echoes_cook_stdout_and_stderr(mod, capsys):
     captured = capsys.readouterr()
     assert "cargo-chef stdout line" in captured.out
     assert "soldr cook: auto-hydrate activated" in captured.err
+
+
+# --- soldr#3117: built-but-unindexed archives -----------------------------------
+
+
+def test_classify_names_an_unindexed_archive(mod):
+    stderr = (
+        "soldr: cache 565 HIT, 0 MISS\n"
+        "soldr cook: warning: CookRecord to daemon failed: NotRunning. "
+        "Artifact written at /x/cache/cook/abc.tar.zst but not indexed.\n"
+        "soldr cook: deps built; recipe was ephemeral\n"
+    )
+    assert mod.classify(stderr) == ("built-unindexed", "")
+
+
+def test_classify_indexed_build_is_still_built(mod):
+    stderr = "soldr cook: indexed  sha256=abc size=1 MiB\nsoldr cook: deps built\n"
+    assert mod.classify(stderr) == ("built", "")
+
+
+def test_main_fails_an_unindexed_archive_without_require_warm(mod, capsys):
+    stderr = (
+        "soldr cook: warning: CookRecord to daemon failed: NotRunning. "
+        "Artifact written at /a but not indexed.\n"
+    )
+    status = mod.main(
+        ["--soldr", "/opt/soldr", "--target", "T"],
+        runner=_runner("", stderr),
+    )
+    assert status == mod.COOK_ARTIFACT_NOT_INDEXED == 5
+    out = capsys.readouterr().out
+    assert "::error title=soldr cook::COOK_ARTIFACT_NOT_INDEXED" in out
+    assert "outcome=built-unindexed" in out
+
+
+def test_main_unindexed_exit_code_is_distinct_from_require_warm(mod):
+    stderr = "soldr cook: warning: CookRecord to daemon failed: NotRunning.\n"
+    status = mod.main(
+        ["--soldr", "/opt/soldr", "--target", "T", "--require-warm"],
+        runner=_runner("", stderr),
+    )
+    assert status == mod.COOK_ARTIFACT_NOT_INDEXED
+    assert mod.COOK_ARTIFACT_NOT_INDEXED != mod.REQUIRE_WARM_FAILURE
+
+
+def test_workflow_restores_a_post_fix_cook_cache_generation():
+    """v1 entries were saved with an archive but no index row (soldr#3117)."""
+    workflow = (SCRIPT.parents[1] / "workflows" / "_build-and-test.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "key: stable-cook-v2-${{ inputs.target }}-" in workflow
+    assert "stable-cook-v1-" not in workflow

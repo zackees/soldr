@@ -87,11 +87,20 @@ fn timed_verified_extract<T, E>(
     (outcome, restore_elapsed_ms)
 }
 
-fn decide_cook_restore(
-    archive_bytes: u64,
-    compile_duration_ms: u64,
-    save_elapsed_ms: u64,
-) -> CookRestoreDecision {
+/// Floor on archive restore bandwidth, in compressed bytes per millisecond
+/// (16 MiB/s), used to estimate a restore before it runs (soldr#3117).
+///
+/// Restore is `sha256` verify + zstd decode + tar write. zstd decoding speed
+/// is independent of the compression level, so the level-19 pack that took
+/// minutes says nothing about it: a 742 MB cook archive (4.4 GB tree) verified
+/// and extracted in 5.3 s on a developer host, about 140 MB/s of compressed
+/// input, and the CI stable-tree archive is 187 MiB. The floor sits roughly
+/// nine times under that measurement so that a slow runner disk still cannot
+/// make the estimate optimistic. The measured `performance miss` line after a
+/// restore remains the honest check.
+const COOK_RESTORE_FLOOR_BYTES_PER_MS: u64 = 16 * 1024 * 1024 / 1000;
+
+fn decide_cook_restore(archive_bytes: u64, compile_duration_ms: u64) -> CookRestoreDecision {
     if archive_bytes == 0 {
         return CookRestoreDecision::Skip {
             estimated_transport_ms: None,
@@ -104,19 +113,13 @@ fn decide_cook_restore(
             reason: "no prior compile duration is recorded",
         };
     }
-    if save_elapsed_ms == 0 {
-        return CookRestoreDecision::Skip {
-            estimated_transport_ms: None,
-            reason: "no observed archive bandwidth is recorded",
-        };
-    }
 
-    // The save measurement is the only durable same-key bandwidth sample
-    // available before a restore. Charge the observed save and one equally
-    // sized restore; this is intentionally a conservative transport estimate.
-    let observed_bytes_per_ms = archive_bytes.div_ceil(save_elapsed_ms).max(1);
-    let estimated_restore_ms = archive_bytes.div_ceil(observed_bytes_per_ms);
-    let estimated_transport_ms = save_elapsed_ms.saturating_add(estimated_restore_ms);
+    // Only the restore is on the table: the pack that produced the archive
+    // is sunk cost. The previous estimate charged that pack again and then
+    // assumed a restore as slow as a level-19 compression, which declined
+    // every hit whose compile the compile cache already served -- exactly
+    // the CI shape this gate is meant to speed up (soldr#3117).
+    let estimated_transport_ms = archive_bytes.div_ceil(COOK_RESTORE_FLOOR_BYTES_PER_MS);
     if estimated_transport_ms >= compile_duration_ms {
         CookRestoreDecision::Skip {
             estimated_transport_ms: Some(estimated_transport_ms),
@@ -150,15 +153,28 @@ pub fn maybe_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) {
 /// * A status reply **without** cook stats means "unknown" — an older
 ///   daemon predating the field would otherwise lose hydration it used
 ///   to perform, so we fall through and behave exactly as before.
-/// * An **unreachable** daemon skips too: [`client::cook_lookup`] talks
-///   to the same socket and cannot succeed either, so the key work would
-///   be discarded a few hundred milliseconds later regardless. This does
-///   not suppress hydration that would otherwise have happened — it only
-///   stops paying for a lookup that is already guaranteed to fail.
+/// * A daemon that is **not running** skips too: [`client::cook_lookup`]
+///   talks to the same socket and cannot succeed either, so the key work
+///   would be discarded a few hundred milliseconds later regardless. This
+///   does not suppress hydration that would otherwise have happened; it
+///   only stops paying for a lookup that is already guaranteed to fail.
+/// * Any **other** failure (a status reply that timed out, a protocol
+///   error) is "unknown" and falls through to the lookup. A daemon whose
+///   control plane is still warming up after launch answers a 2 s status
+///   probe late but the lookup fine; reading that timeout as "no daemon"
+///   silently disabled hydration for every `soldr cook` that had just
+///   brought its own daemon up (soldr#3117).
 fn cook_lookup_is_worthwhile(sock: &Path) -> bool {
-    match client::status(sock) {
+    lookup_worthwhile_from_status(client::status(sock))
+}
+
+fn lookup_worthwhile_from_status(
+    status: Result<crate::daemon::protocol::StatusInfo, client::ClientError>,
+) -> bool {
+    match status {
         Ok(info) => info.cook_stats.is_none_or(|stats| stats.entries > 0),
-        Err(_) => false,
+        Err(client::ClientError::NotRunning) => false,
+        Err(_) => true,
     }
 }
 
@@ -180,6 +196,18 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> 
         }
     };
     if !auto_hydrate_enabled(&manifest_dir, &config.cook) {
+        return None;
+    }
+
+    // A tree `soldr cook` cooked in place already holds everything the
+    // archive would restore (the archive was packed from it). Every later
+    // front door in the same tree -- each `soldr ci-test` stage, for one --
+    // would otherwise verify and walk the whole archive to add zero files,
+    // about 10 s a time in CI (soldr#3117).
+    if target_already_cooked(
+        &resolve_target_dir(&manifest_dir, args),
+        profile_dir_name(&resolve_profile_name(args)),
+    ) {
         return None;
     }
 
@@ -230,17 +258,13 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> 
         exact_recipe_match,
         branch_name,
         compile_duration_ms,
-        save_elapsed_ms,
+        save_elapsed_ms: _,
     } = outcome
     else {
         return None;
     };
 
-    let estimated_transport_ms = match decide_cook_restore(
-        size_bytes,
-        compile_duration_ms,
-        save_elapsed_ms,
-    ) {
+    let estimated_transport_ms = match decide_cook_restore(size_bytes, compile_duration_ms) {
         CookRestoreDecision::Restore {
             estimated_transport_ms,
         } => estimated_transport_ms,
@@ -478,6 +502,19 @@ fn resolve_target_dir(manifest_dir: &Path, args: &[String]) -> PathBuf {
 /// unscoped (host, no `--target`) build whose artifacts land directly in the
 /// target root. argv wins; [`SOLDR_COOK_HYDRATE_TARGET_ENV`] is the fallback
 /// for `soldr cook`'s own `cargo chef prepare` (soldr#3043).
+/// Whether `soldr cook` has already cooked `target_dir` in place.
+///
+/// `target_dir` is the archive's extraction root (`target/<triple>/`); the
+/// cook writes its marker one level down, in the profile directory it cooked
+/// (`resolve_cook_target_dir` in cook.rs), so the check is scoped to the
+/// profile this build resolves to.
+fn target_already_cooked(target_dir: &Path, profile_dir: &str) -> bool {
+    target_dir
+        .join(profile_dir)
+        .join(crate::cook::COOK_MARKER_FILE_NAME)
+        .is_file()
+}
+
 fn explicit_target_scope(args: &[String]) -> Option<String> {
     if let Some(triple) = extract_arg_value(args, "--target") {
         return Some(triple);
@@ -625,21 +662,42 @@ mod tests {
     }
 
     #[test]
-    fn cook_cost_gate_restores_when_observed_transport_is_cheaper() {
+    fn cook_cost_gate_restores_when_estimated_restore_is_cheaper() {
+        // 500 MiB at the 16 MiB/s floor is ~31.3 s, against a two-minute compile.
+        let archive: u64 = 500 * 1024 * 1024;
+        let expected = archive.div_ceil(COOK_RESTORE_FLOOR_BYTES_PER_MS);
+        assert!((31_000..32_000).contains(&expected), "{expected}");
         assert_eq!(
-            decide_cook_restore(500 * 1024 * 1024, 120_000, 5_000),
+            decide_cook_restore(archive, 120_000),
             CookRestoreDecision::Restore {
-                estimated_transport_ms: 10_000
+                estimated_transport_ms: expected
             }
         );
     }
 
     #[test]
+    fn cook_cost_gate_is_the_ci_shape_that_used_to_be_declined() {
+        // soldr#3117: the CI stable tree -- 187 MiB archive, a compile the
+        // compile cache served in 95 s, and a pack that took minutes. The old
+        // estimate charged the pack twice over and declined; the restore
+        // estimate is about 12 s and must win.
+        let archive: u64 = 187 * 1024 * 1024;
+        assert!(matches!(
+            decide_cook_restore(archive, 95_000),
+            CookRestoreDecision::Restore {
+                estimated_transport_ms
+            } if estimated_transport_ms < 15_000
+        ));
+    }
+
+    #[test]
     fn cook_cost_gate_skips_when_transport_would_lose() {
+        let archive: u64 = 500 * 1024 * 1024;
+        let expected = archive.div_ceil(COOK_RESTORE_FLOOR_BYTES_PER_MS);
         assert_eq!(
-            decide_cook_restore(500 * 1024 * 1024, 9_000, 5_000),
+            decide_cook_restore(archive, 9_000),
             CookRestoreDecision::Skip {
-                estimated_transport_ms: Some(10_000),
+                estimated_transport_ms: Some(expected),
                 reason: "estimated transport is not cheaper than the avoided compile",
             }
         );
@@ -648,19 +706,53 @@ mod tests {
     #[test]
     fn cook_cost_gate_skips_without_prior_observations() {
         assert!(matches!(
-            decide_cook_restore(1, 0, 5_000),
+            decide_cook_restore(1, 0),
             CookRestoreDecision::Skip {
                 reason: "no prior compile duration is recorded",
                 ..
             }
         ));
         assert!(matches!(
-            decide_cook_restore(1, 5_000, 0),
+            decide_cook_restore(0, 5_000),
             CookRestoreDecision::Skip {
-                reason: "no observed archive bandwidth is recorded",
+                reason: "archive has no recorded bytes",
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_tree_cooked_in_place_needs_no_restore() {
+        let dir = TempDir::new().unwrap();
+        assert!(!target_already_cooked(dir.path(), "debug"));
+        // The marker lives in the cooked profile directory, not the root.
+        std::fs::write(dir.path().join(crate::cook::COOK_MARKER_FILE_NAME), b"{}").unwrap();
+        assert!(!target_already_cooked(dir.path(), "debug"));
+        std::fs::create_dir_all(dir.path().join("debug")).unwrap();
+        std::fs::write(
+            dir.path()
+                .join("debug")
+                .join(crate::cook::COOK_MARKER_FILE_NAME),
+            b"{}",
+        )
+        .unwrap();
+        assert!(target_already_cooked(dir.path(), "debug"));
+        assert!(!target_already_cooked(dir.path(), "release"));
+    }
+
+    #[test]
+    fn only_a_daemon_that_is_not_running_makes_the_lookup_pointless() {
+        assert!(!lookup_worthwhile_from_status(Err(
+            client::ClientError::NotRunning
+        )));
+        // soldr#3117: a status probe that timed out against a daemon still
+        // warming up is not evidence of an empty index.
+        assert!(lookup_worthwhile_from_status(Err(client::ClientError::Io(
+            std::io::Error::from(std::io::ErrorKind::WouldBlock)
+        ))));
+        assert!(lookup_worthwhile_from_status(Err(
+            client::ClientError::Protocol("garbled".into())
+        )));
     }
 
     #[test]
