@@ -414,14 +414,13 @@ def test_fast_build_only_skips_windows_e2e_for_low_risk_changes() -> None:
 
     # 2. The broader gate exists, is driven by the same policy job, and the
     #    macOS lanes -- where a skipped lane also avoids a queue -- are
-    #    behind it. aarch64-apple-darwin has no paired run job any more
-    #    (soldr#3071: no macos-* runner anywhere), so it is checked alone.
+    #    behind it. Both are build-only now: aarch64-apple-darwin has no
+    #    paired run job (soldr#3071: no macos-* runner anywhere) and the
+    #    x86_64-apple-darwin Recovery replay moved to
+    #    macos-recovery-replay.yml (soldr#3116).
     assert "run_platform_e2e" in policy
-    for job, nxt in [
-        ("e2e-macos-x64-build", "e2e-macos-x64"),
-        ("e2e-macos-arm64-build", None),
-    ]:
-        block = _job_block(ci, job, nxt)
+    for job in ("e2e-macos-x64-build", "e2e-macos-arm64-build"):
+        block = _job_block(ci, job)
         assert "needs.windows-e2e-policy.outputs.run_platform_e2e == 'true'" in block
         assert "fast-build" not in block
 
@@ -619,15 +618,16 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
 
     # soldr#3076: no macos-* runner exists anywhere, so there is no macOS
     # PEP 517 smoke leg at all -- the Recovery guest that replaced the
-    # dockur/macos plan (soldr#3071) has no Python/maturin (e2e-macos-x64
-    # sets run_pep517_smoke: false explicitly). windows-x64 keeps its
-    # dedicated smoke leg here, unchanged.
+    # dockur/macos plan (soldr#3071) has no Python/maturin (the replay job in
+    # macos-recovery-replay.yml sets run_pep517_smoke: false explicitly,
+    # soldr#3116). windows-x64 keeps its dedicated smoke leg here, unchanged.
     assert '"name":"macos-arm64"' not in block
     assert '"name":"windows-x64"' in block
     assert "github.event.pull_request.labels" in block
     assert "fromJSON('[" in block
 
-    x64_run = _job_block(ci, "e2e-macos-x64")
+    replay = (WORKFLOWS / "macos-recovery-replay.yml").read_text(encoding="utf-8")
+    x64_run = _job_block(replay, "replay")
     assert _job_input(x64_run, "run_pep517_smoke") == "false"
     assert "no Python" in x64_run or "no Python/maturin" in x64_run
 
@@ -886,7 +886,7 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_and_the_blessed_build() ->
         encoding="utf-8"
     )
 
-    mac_build = _job_block(ci, "e2e-macos-x64-build", "e2e-macos-x64")
+    mac_build = _job_block(ci, "e2e-macos-x64-build")
     assert "if: false" not in mac_build
     assert "target: x86_64-apple-darwin" in mac_build
 

@@ -1,6 +1,7 @@
 """Unit coverage for ci/macos_recovery_run.py (soldr#3076/#3078).
 
-The per-PR `e2e-macos-x64` lane in `ci.yml` (via `_ci-target-run.yml`)
+The `macos-recovery-replay.yml` workflow (nightly, on dispatch, and on PRs
+labelled `macos-replay` -- soldr#3116; via `_ci-target-run.yml`)
 executes this script's guest script inside a zackees/docker-mac-x64
 Recovery guest and verifies the collected results with it. The guest never
 runs under test here -- these pin the script's text, the collected-result

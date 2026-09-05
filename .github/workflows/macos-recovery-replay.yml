@@ -1,0 +1,74 @@
+# The x86_64-apple-darwin Recovery replay, moved out of ci.yml (soldr#3116).
+#
+# This is the same lane ci.yml carried as `e2e-macos-x64-build` +
+# `e2e-macos-x64`: cross-build x86_64-apple-darwin on Linux, then replay the
+# positively-owned nextest partition inside a zackees/docker-mac-x64 macOS
+# Recovery guest (KVM) on an ordinary ubuntu-24.04 runner. No GitHub Actions
+# job runs on a macos-* runner (owner mandate 2026-09-02).
+#
+# Why it is its own workflow: the replay harness is immature (soldr#3089
+# enumerates five distinct harness defects found one live run at a time) and
+# had produced zero green results in 25 consecutive CI runs while sitting at
+# the end of ci.yml's deepest chain, where a wedged guest set the run's wall
+# clock (34-40 min) and its colour. The release side already treats it as
+# advisory (release-auto.yml: `publish` does not depend on
+# `e2e_macos_x64_replay`, soldr#3088). Here it runs nightly against main, on
+# demand, and on any pull request labelled `macos-replay`, so anyone working
+# soldr#3087 / soldr#3088 can still exercise it per PR. Restoring it to ci.yml
+# is the block that was removed, under the criteria soldr#3088 holds.
+#
+# `aarch64-apple-darwin` is unaffected: its cross-build lane stays in ci.yml
+# (release-included, no paired target-run). `smoke_macos_x64` in
+# release-auto.yml stays required: that is the real per-OS signal on the
+# shipped binary.
+name: macOS Recovery replay
+
+on:
+  schedule:
+    # Nightly, off the hour so it does not queue behind the six-hourly
+    # Cache Budget sweep at :17.
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-recovery-replay-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: cross-build x86_64-apple-darwin (linux host)
+    # On pull requests only the `macos-replay` label starts this; `labeled`
+    # fires for every label, so the gate is on the label that was applied.
+    if: ${{ github.event_name != 'pull_request' || github.event.label.name == 'macos-replay' }}
+    uses: ./.github/workflows/_ci-cross-build-linux.yml
+    with:
+      target: x86_64-apple-darwin
+      artifact_name: soldr-macos-replay-x64
+      source_ref: ${{ github.sha }}
+      # bootstrap_artifact_name omitted (optional, default ""): ci.yml's value
+      # names an artifact produced by its own e2e-cross-bootstrap-soldr job in
+      # the same run. This workflow has no such job, so the reusable workflow
+      # takes its own actions/cache-or-bootstrap path, as release-auto.yml does.
+
+  replay:
+    name: target-run x86_64-apple-darwin
+    needs: build
+    if: ${{ github.event_name != 'pull_request' || github.event.label.name == 'macos-replay' }}
+    uses: ./.github/workflows/_ci-target-run.yml
+    with:
+      runs_on: ubuntu-24.04
+      target: x86_64-apple-darwin
+      artifact_name: soldr-macos-replay-x64
+      target_execution: x86_64-recovery
+      # Recovery replays the archive at its own pace inside one guest script
+      # (soldr#3078); `extended_replay` only widens the *native* multi-step
+      # replay's per-step budget, which this execution mode does not use.
+      extended_replay: false
+      # The Recovery guest ships no Python/maturin; the PEP 517 wheel smoke
+      # runs natively on windows-x64 in ci.yml (`pep517-daemon-smoke`).
+      run_pep517_smoke: false

@@ -166,7 +166,7 @@ checked in the build lane instead (`verify_static_link.py`,
 `verify_glibc_baseline.py`).
 
 Owner mandate (2026-09-02, soldr#3071): no GitHub Actions job may run on a
-`macos-*` runner. `x86_64-apple-darwin` keeps its target-run, but "native to
+`macos-*` runner. `x86_64-apple-darwin` keeps a target-run, but "native to
 that target" now means a
 [zackees/docker-mac-x64](https://github.com/zackees/docker-mac-x64) macOS
 **Recovery** guest (KVM) hosted on an `ubuntu-24.04` runner rather than a
@@ -186,8 +186,13 @@ without per-step exec. The ownership filter is precomputed Linux-side with
 validate it against before it boots) and the inventory/coverage validation
 that would normally gate the filter runs afterward, against the guest's own
 `nextest list` output, in `ci/macos_recovery_run.py`'s `verify-collected`
-mode. `release-auto.yml` runs the same replay again at release time
-(`e2e_macos_x64_build` / `e2e_macos_x64_replay`), pinned to the release
+mode. That replay is not on the pull-request critical path: soldr#3116 moved
+it from `ci.yml` into `.github/workflows/macos-recovery-replay.yml`, which
+runs nightly against `main`, on `workflow_dispatch`, and on pull requests
+labelled `macos-replay` (the lane had produced no green result in 25 CI runs
+and a wedged guest set the run's wall clock; soldr#3088 holds the criteria
+for restoring it). `release-auto.yml` runs the same replay again at release
+time (`e2e_macos_x64_build` / `e2e_macos_x64_replay`), pinned to the release
 commit. That release-time replay is advisory: soldr#3088 removed it from
 `publish`'s gate after it blocked v0.9.12 twice on harness bugs without
 ever having been green.

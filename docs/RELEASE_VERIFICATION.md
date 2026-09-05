@@ -82,10 +82,13 @@ Linux-side METADATA-version check instead.
 
 `e2e_macos_x64_build` / `e2e_macos_x64_replay` (soldr#3078) also run at
 release time: they cross-build `x86_64-apple-darwin` at the release commit
-and replay the same positively-owned nextest partition every PR's
-`e2e-macos-x64` lane replays -- inside the same Recovery guest, toolchain
-provisioning included, not just the binary-only smoke `smoke_macos_x64`
-above runs.
+and replay the same positively-owned nextest partition the
+`macos-recovery-replay.yml` workflow replays -- inside the same Recovery
+guest, toolchain provisioning included, not just the binary-only smoke
+`smoke_macos_x64` above runs. That workflow runs nightly against `main`, on
+`workflow_dispatch`, and on pull requests labelled `macos-replay`; soldr#3116
+moved it out of `ci.yml`, where it had set the run's wall clock (34-40 min of
+a wedged guest) without a green result in 25 runs.
 
 They are **advisory, not a publication gate** (soldr#3088). The replay lane
 was briefly a `publish` dependency, but it has never been green: both
