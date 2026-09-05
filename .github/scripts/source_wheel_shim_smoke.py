@@ -161,6 +161,15 @@ def main() -> int:
             [str(path_entry), str(venv_bin(venv)), env.get("PATH", "")]
         )
         env.pop("CARGO", None)
+        # soldr#3123: the wheel under test was just built with
+        # `maturin build --profile ci-release` into <source>/target. The
+        # backend otherwise pins a fresh per-project target dir keyed on
+        # SOLDR_CACHE_DIR (which is a temp dir here) and defaults to the dev
+        # profile, so this smoke re-compiled the whole graph (~5.5 min) to
+        # test a PATH/shim contract that does not depend on the profile.
+        # A caller-provided CARGO_TARGET_DIR always wins in src/soldr/__init__.py.
+        env["CARGO_TARGET_DIR"] = str(source.resolve() / "target")
+        env["SOLDR_PEP517_PROFILE"] = "ci-release"
         resolved_cargo = shutil.which("cargo", path=env["PATH"])
         if resolved_cargo is None or not same_path(Path(resolved_cargo), cargo_shim):
             raise SystemExit(

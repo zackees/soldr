@@ -50,10 +50,8 @@ def test_source_build_environment_uses_real_rustc_and_soldr_cargo() -> None:
             f"{resolved_rustc.parent}{os.pathsep}{resolved_cargo.parent}{os.pathsep}caller-bin"
         ),
         "CARGO": str(resolved_cargo),
-        "CARGO_BUILD_JOBS": "2",
         "RUSTC": str(resolved_rustc),
         "RUSTUP_TOOLCHAIN": "1.95.0",
-        "SOLDR_JOBS": "2",
     }
 
 
