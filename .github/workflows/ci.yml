@@ -480,8 +480,8 @@ jobs:
       # macos-* runner (owner mandate 2026-09-02), so there is no native
       # macOS leg here at all — macOS execution happens only inside a
       # zackees/docker-mac-x64 Recovery guest, which has no Python/maturin
-      # and so cannot host this smoke (see `run_pep517_smoke: false` on
-      # `e2e-macos-x64`).
+      # and so cannot host this smoke (see `run_pep517_smoke: false` in
+      # macos-recovery-replay.yml, soldr#3116).
       # windows-x64 is the sole leg. The matrix stays selected rather than
       # filtered per-leg so a `fast-build` PR allocates no runner.
       matrix:
@@ -571,12 +571,12 @@ jobs:
           --timeout 900
           --require-free-threaded
 
-  # There is no standalone macOS x64 build workflow. The native Linux
-  # integration sweep covers target-independent logic, while the
-  # `e2e-macos-x64` lane below cross-builds on Linux and runs the produced
-  # archive inside a zackees/docker-mac-x64 Recovery guest hosted on an
-  # ubuntu-24.04 runner (soldr#3076: no GitHub Actions job runs on a
-  # macos-* runner).
+  # There is no native macOS build job anywhere. The native Linux
+  # integration sweep covers target-independent logic; the x86_64-apple-darwin
+  # archive is cross-built on Linux and replayed inside a
+  # zackees/docker-mac-x64 Recovery guest on an ubuntu-24.04 runner by
+  # .github/workflows/macos-recovery-replay.yml (soldr#3116; soldr#3076: no
+  # GitHub Actions job runs on a macos-* runner).
 
   # build-windows-{x64,arm64} removed. The unit-test sweep for
   # windows runs on linux x86 via `build-linux-x64` (target-
@@ -858,15 +858,19 @@ jobs:
   # runner for building or testing. x86_64-apple-darwin is cross-built on
   # Linux, same as Windows, and *executed* only inside a
   # zackees/docker-mac-x64 Recovery guest (KVM) hosted on an ordinary
-  # ubuntu-24.04 runner — see ci/macos_recovery_run.py and
-  # .github/workflows/_ci-target-run.yml. The guest has no Xcode CLT/Homebrew
-  # and needs none: the archive under test is entirely prebuilt on Linux.
-  # soldr#3076 replaced soldr#3071's dockur/macos ssh replay, whose baked
-  # guest image and ssh secret were never produced -- every run failed at
-  # preflight. No secret and no registry auth are needed here. soldr#3078
-  # then grew this guest from a fixed binary-only smoke into a full replay of
-  # the same positively-owned nextest partition every other target-run lane
-  # replays, toolchain provisioning included.
+  # ubuntu-24.04 runner -- see ci/macos_recovery_run.py and
+  # .github/workflows/_ci-target-run.yml.
+  #
+  # soldr#3116: the Recovery replay (`e2e-macos-x64`) no longer runs here.
+  # It lives in .github/workflows/macos-recovery-replay.yml -- nightly against
+  # main, on `workflow_dispatch`, and on pull requests labelled
+  # `macos-replay`. It was the last job to finish in most runs (34-40 min of
+  # a wedged guest heartbeating, 0 green results in 25 runs, soldr#3089) and
+  # nothing here consumed its output; it set the run's wall clock and colour
+  # and nothing else. The release-side gate was already advisory
+  # (soldr#3088), which also holds the criteria for bringing it back. The
+  # cross-build stays: like aarch64-apple-darwin below it is a build-only
+  # lane, so a darwin cross-compile break still fails the PR.
   e2e-macos-x64-build:
     name: cross-build x86_64-apple-darwin (linux host)
     needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
@@ -877,26 +881,9 @@ jobs:
       artifact_name: soldr-ci-e2e-macos-x64
       source_ref: ${{ github.sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
-
-  e2e-macos-x64:
-    name: target-run x86_64-apple-darwin
-    needs: [e2e-macos-x64-build, windows-e2e-policy]
-    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
-    uses: ./.github/workflows/_ci-target-run.yml
-    with:
-      runs_on: ubuntu-24.04
-      target: x86_64-apple-darwin
-      artifact_name: soldr-ci-e2e-macos-x64
-      target_execution: x86_64-recovery
-      # Recovery replays the archive at its own pace inside one guest
-      # script (soldr#3078); `extended_replay` only widens the *native*
-      # multi-step replay's per-step budget above, which this execution
-      # mode does not use.
-      extended_replay: false
-      # The Recovery guest ships no Python/maturin; the PEP 517 wheel smoke
-      # already runs natively on windows-x64 (see `pep517-daemon-smoke`), so
-      # it is not duplicated here.
-      run_pep517_smoke: false
+      # Nothing in this workflow replays the archive any more (soldr#3116);
+      # macos-recovery-replay.yml builds its own.
+      upload_test_archive: false
 
   # ---------- macOS ARM64 ----------
   # aarch64-apple-darwin is cross-built on Linux (release-included) but not

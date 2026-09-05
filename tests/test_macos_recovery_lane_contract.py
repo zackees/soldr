@@ -79,13 +79,35 @@ def test_no_ghcr_baked_guest_image_or_ssh_secret_anywhere() -> None:
 
 
 def test_x64_lane_uses_the_recovery_guest_on_an_ubuntu_runner() -> None:
-    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
-    start = ci.index("  e2e-macos-x64:\n")
-    end = ci.index("\n  # ---------- macOS ARM64", start)
-    run_job = ci[start:end]
+    replay = (WORKFLOWS / "macos-recovery-replay.yml").read_text(encoding="utf-8")
+    start = replay.index("  replay:\n")
+    run_job = replay[start:]
     assert "runs_on: ubuntu-24.04" in run_job
     assert "target_execution: x86_64-recovery" in run_job
     assert "uses: ./.github/workflows/_ci-target-run.yml" in run_job
+
+
+def test_x64_replay_lane_is_off_the_pull_request_critical_path() -> None:
+    """soldr#3116: the replay lane produced 0 green results in 25 CI runs and
+    was the last job to finish in most of them (34-40 min of a wedged guest).
+    Nothing in ci.yml consumed its output. It runs from its own workflow --
+    nightly, on dispatch, and on PRs labelled `macos-replay` -- until the
+    soldr#3088 criteria are met."""
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    assert re.search(r"(?m)^  e2e-macos-x64:\s*$", ci) is None
+    # The cross-build stays a per-PR, build-only lane (soldr#1978 item 3
+    # shape, like aarch64-apple-darwin): a darwin cross-compile break must
+    # still fail the PR even though nothing in ci.yml replays the archive.
+    assert re.search(r"(?m)^  e2e-macos-x64-build:\s*$", ci) is not None
+    replay = (WORKFLOWS / "macos-recovery-replay.yml").read_text(encoding="utf-8")
+    assert "schedule:" in replay
+    assert "workflow_dispatch:" in replay
+    assert "types: [labeled]" in replay
+    assert "github.event.label.name == 'macos-replay'" in replay
+    assert "uses: ./.github/workflows/_ci-cross-build-linux.yml" in replay
+    assert "target: x86_64-apple-darwin" in replay
+    # The build-only aarch64 lane is untouched by the move.
+    assert re.search(r"(?m)^  e2e-macos-arm64-build:\s*$", ci) is not None
 
 
 def test_no_macos_arm64_run_job_exists() -> None:
@@ -132,8 +154,9 @@ def test_recovery_lane_ships_the_tests_archive_to_the_guest() -> None:
 
 
 def test_release_workflow_has_the_macos_x64_replay_jobs() -> None:
-    """soldr#3078: the release runs the same archive replay `e2e-macos-x64`
-    runs on every PR, pinned to the release commit.
+    """soldr#3078: the release runs the same archive replay
+    macos-recovery-replay.yml runs nightly (soldr#3116), pinned to the release
+    commit.
 
     The jobs must keep existing and running. soldr#3088 removed only their
     hold over `publish` -- see the test below.
