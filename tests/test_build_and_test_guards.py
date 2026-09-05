@@ -60,6 +60,7 @@ COMPILE_JOURNAL_BASELINE = (
 )
 BUILD_LOGS_UPLOAD = "Upload build log artifacts"
 ZCCACHE_STORE = "Restore Tier-2 zccache object store (soldr#3039)"
+ZCCACHE_SAVE = "Save Tier-2 zccache object store (soldr#3102)"
 ZCCACHE_SCRUB = "Scrub runtime coordination state from the object store (soldr#3039)"
 ZCCACHE_STORE_PATH = (
     "${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}"
@@ -517,6 +518,18 @@ def test_runtime_coordination_state_is_scrubbed_before_the_cache_save() -> None:
     assert workflow.index(f"- name: {FINAL_CACHE_STOP}\n") < workflow.index(
         f"- name: {ZCCACHE_SCRUB}"
     )
+    # soldr#3102: the save is an explicit main-only step (restore/save split)
+    # that follows the scrub, so PR runs never write their own generation.
+    assert workflow.count(f"- name: {ZCCACHE_SAVE}") == 1
+    save = _step_body(workflow, ZCCACHE_SAVE)
+    assert "if: ${{ github.ref == 'refs/heads/main' }}" in save
+    assert "actions/cache/save@" in save
+    assert "steps.zccache_unit_store.outputs.cache-primary-key" in save
+    assert ZCCACHE_STORE_PATH in save
+    assert workflow.index(f"- name: {ZCCACHE_SCRUB}") < workflow.index(
+        f"- name: {ZCCACHE_SAVE}"
+    )
+    assert "actions/cache/restore@" in _step_body(workflow, ZCCACHE_STORE)
 
 
 def test_the_object_store_is_registered_in_the_ownership_manifest() -> None:
