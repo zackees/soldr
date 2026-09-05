@@ -3,6 +3,7 @@
 mod dylint_target_guard;
 mod execute;
 mod execute_report;
+mod executor_contract;
 mod model;
 mod parse;
 pub(crate) mod plan;
