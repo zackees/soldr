@@ -200,7 +200,13 @@ pub(crate) async fn freeze(
         &["clippy"],
         &root,
     ));
-    let mut nextest = vec!["nextest".into(), "run".into()];
+    // soldr#3100: one red test must not hide the rest of the suite. Nextest's
+    // default fail-fast stopped scheduling after the first failure, so a red
+    // run reported only the tests executed until then. The run stage keeps
+    // going; the stage still exits non-zero (nextest's 100) when any test
+    // failed. `--no-run` above makes the flag meaningless on the compile
+    // stage, which is why it is not in the shared `nextest_args`.
+    let mut nextest = vec!["nextest".into(), "run".into(), "--no-fail-fast".into()];
     nextest.extend(nextest_args);
     stages.push(stage(
         "nextest",
