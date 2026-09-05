@@ -553,6 +553,12 @@
       "reason": "Inherited stdio and child spoke tracking depend on process launch semantics."
     },
     {
+      "id": "daemon-wasm32-wasip1-threads-materialization",
+      "source_id": "daemon-target-replay",
+      "test_prefix": "wasm32_wasip1_threads_materialization::",
+      "reason": "A cold wasm32-wasip1-threads build, daemon stop and PID reap, then a fresh-target warm build must keep the .wasm command artifact shape on every OS the packaged Soldr ships for (soldr#2919)."
+    },
+    {
       "id": "standalone-native-cc",
       "source_id": "fetch-tools-target-replay",
       "test_prefix": "cli_cc::",
