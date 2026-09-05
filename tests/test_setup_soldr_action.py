@@ -5,7 +5,7 @@ import json
 import re
 from pathlib import Path
 
-from conftest import WORKSPACE_CRATES, load_script_module
+from conftest import COOK_CACHE_ALLOWLIST_INPUT, WORKSPACE_CRATES, load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / ".github" / "actions" / "setup-soldr" / "resolve_setup.py"
@@ -339,10 +339,9 @@ def test_cross_build_uses_deferred_cook_after_target_setup() -> None:
     # soldr#2996: cook is gated by an explicit allowlist, not by falling
     # through an exclusion list. Pinning the literal keeps a lane from
     # gaining cook silently -- adding one has to be a visible edit here too.
-    assert (
-        "cache: ${{ (inputs.target == 'x86_64-pc-windows-gnu' || inputs.target == 'x86_64-unknown-linux-gnu') && 'true' || 'false' }}"
-        in cook_step
-    )
+    # soldr#3121 added aarch64-pc-windows-msvc, x86_64-pc-windows-msvc and
+    # aarch64-unknown-linux-gnu to the allowlist.
+    assert COOK_CACHE_ALLOWLIST_INPUT in cook_step
     assert 'profile="ci-nextest"' in clean_step
     for package in WORKSPACE_CRATES:
         assert f"-p {package}" in clean_step

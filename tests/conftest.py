@@ -199,6 +199,21 @@ DYLINT_TEST_STEPS = (
     "Test platform-cfg directory boundary lint",
 )
 
+# soldr#2996: the cook `cache:` input is gated by an explicit target
+# allowlist, not by falling through an exclusion list. soldr#3121 added
+# aarch64-pc-windows-msvc, x86_64-pc-windows-msvc and
+# aarch64-unknown-linux-gnu. Two guards -- _ci-cross-build-linux.yml's own
+# step and setup-soldr/cook's flags check -- pin this exact literal, so a
+# lane silently gaining or losing cook has to answer to both.
+COOK_CACHE_ALLOWLIST_INPUT = (
+    "cache: ${{ (inputs.target == 'x86_64-pc-windows-gnu' "
+    "|| inputs.target == 'x86_64-unknown-linux-gnu' "
+    "|| inputs.target == 'aarch64-pc-windows-msvc' "
+    "|| inputs.target == 'x86_64-pc-windows-msvc' "
+    "|| inputs.target == 'aarch64-unknown-linux-gnu') "
+    "&& 'true' || 'false' }}"
+)
+
 
 def workflow_step(workflow: str, name: str) -> str:
     """Return one named GitHub Actions step body from a workflow string."""
