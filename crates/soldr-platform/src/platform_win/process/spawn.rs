@@ -31,3 +31,14 @@ pub fn daemon_stdio(log: Option<&std::fs::File>) -> running_process::DaemonStdio
 pub fn exec_or_status(command: &mut Command) -> io::Result<ExitStatus> {
     command.status()
 }
+
+/// Test seam for soldr#3098. Windows has no fork-to-exec window in which
+/// a child inherits this process's descriptors, so `hold` is ignored; the
+/// child is spawned under the same shared spawn guard as everything else.
+pub fn spawn_holding_fork_window(
+    command: &mut Command,
+    _hold: std::time::Duration,
+) -> io::Result<Child> {
+    let _spawn = crate::platform::process::spawn_exclusion::spawn_shared();
+    command.spawn()
+}

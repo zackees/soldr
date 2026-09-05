@@ -6,7 +6,6 @@
 //! test relies on `pre_exec` to hold a child in its fork-to-exec window.
 
 use super::*;
-use std::os::unix::process::CommandExt;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -56,6 +55,11 @@ fn archive_with_executable(root: &Path) -> (PathBuf, PathBuf) {
 /// it and the exec succeeds.
 #[test]
 fn child_forked_during_staged_write_cannot_make_the_restored_file_busy() {
+    // The fork-to-exec window this test drives is a Unix mechanism; the
+    // platform boundary (#2493) forbids a `cfg` here, so gate at runtime.
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
     let root = tempfile::tempdir().unwrap();
     let (archive, restore) = archive_with_executable(root.path());
 
@@ -99,17 +103,13 @@ fn child_forked_during_staged_write_cannot_make_the_restored_file_busy() {
     // inode. Fork a child through the same funnel soldr's spawns use; hold
     // it between fork and exec so any inherited descriptor stays alive.
     let spawner = std::thread::spawn(|| {
-        let _spawn = crate::platform::process::spawn_exclusion::spawn_shared();
         let mut command = std::process::Command::new("sh");
         command.args(["-c", ":"]);
-        // SAFETY: the closure only sleeps, which is async-signal-safe.
-        unsafe {
-            command.pre_exec(|| {
-                std::thread::sleep(CHILD_PRE_EXEC_HOLD);
-                Ok(())
-            });
-        }
-        command.spawn().expect("fork the lingering child")
+        crate::platform::process::spawn::spawn_holding_fork_window(
+            &mut command,
+            CHILD_PRE_EXEC_HOLD,
+        )
+        .expect("fork the lingering child")
     });
 
     // Let the spawner reach the guard (guarded: blocks; unguarded: forks
