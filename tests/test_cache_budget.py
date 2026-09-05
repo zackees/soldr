@@ -240,3 +240,16 @@ def test_apply_prune_deletes_every_candidate_by_id(
     )
     assert guard.apply_prune(candidates, "zackees/soldr") == []
     assert calls == [["cache", "delete", "7258560456", "--repo", "zackees/soldr"]]
+
+
+def test_prune_supersedes_older_zccache_unit_generations_on_main() -> None:
+    # soldr#3102: every host-lane run on main saves a run-id keyed
+    # generation of the Tier-2 store; only the newest is ever restored.
+    base = "zccache-unit-v1-x86_64-unknown-linux-gnu-abc123"
+    raw = [
+        {**entry(f"{base}-111", 1000), "id": 1, "createdAt": "2026-09-04T01:00:00Z"},
+        {**entry(f"{base}-222", 1000), "id": 2, "createdAt": "2026-09-05T01:00:00Z"},
+        {**entry("stable-cook-v1-x86_64-unknown-linux-gnu-abc123", 10), "id": 3},
+    ]
+    candidates = guard.prune_candidates(guard.normalize_entries(raw))
+    assert [c.key for c in candidates] == [f"{base}-111"]
