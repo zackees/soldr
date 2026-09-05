@@ -26,7 +26,7 @@ RUNNER_LABEL_PATTERN = re.compile(
     r'(?:runs[-_]on|"?runner"?)\s*:\s*"?macos-[a-z0-9.]+', re.IGNORECASE
 )
 
-DOCKER_MAC_X64_PIN = "605ae73bca3bf03feb5f70a45dec7da048de137b"
+DOCKER_MAC_X64_PIN = "0769c0bcc9367c6516da39c0a3aa4cb55988ec79"
 
 
 def _non_comment_lines(text: str) -> list[str]:
