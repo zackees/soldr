@@ -206,7 +206,7 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> 
     // about 10 s a time in CI (soldr#3117).
     if target_already_cooked(
         &resolve_target_dir(&manifest_dir, args),
-        profile_dir_name(resolve_profile_name(args)),
+        profile_dir_name(&resolve_profile_name(args)),
     ) {
         return None;
     }
@@ -481,7 +481,6 @@ fn profile_dir_name(profile: &str) -> &str {
 /// mismatch properly needs an archive-format or index-schema decision,
 /// not a fix here. Should be filed as a `research:` issue per
 /// CLAUDE.md's Agent Code-Smell Reporting Rule.
-
 fn resolve_target_dir(manifest_dir: &Path, args: &[String]) -> PathBuf {
     let root = if let Some(env_dir) = std::env::var_os("CARGO_TARGET_DIR") {
         let p = PathBuf::from(&env_dir);
