@@ -40,6 +40,9 @@
 //!     <arg>build</arg>
 //!     <arg>--release</arg>
 //!   </args>
+//!   <fingerprint_dirty>
+//!     <unit name="serde" version="1.0.0" reason="the config settings changed"/>
+//!   </fingerprint_dirty>
 //!   <steps>
 //!     <download wall_ms="0" cpu_ms="0">
 //!       <item name="cargo-nextest" source="github-release" started_at_ms="0" duration_ms="0"/>
@@ -170,6 +173,22 @@ pub struct BuildLogRequest<'a> {
     /// soldr#2545: effective wrapper identity, absent when the caller could
     /// not resolve it (logged as absent rather than guessed).
     pub wrapper: Option<WrapperIdentity>,
+    /// Units cargo reported as dirty, with its stated reason, parsed from
+    /// the `fingerprint dirty for` records that
+    /// `CARGO_LOG=cargo::core::compiler::fingerprint=info` makes cargo emit.
+    /// Empty when that level is off or nothing was dirty. Recorded here so
+    /// the "why did this recompile?" signal lives in soldr's own log instead
+    /// of only in whatever captured the terminal stderr.
+    pub fingerprint_dirty: Vec<FingerprintDirty>,
+}
+
+/// One `fingerprint dirty for <name> v<version>` record plus the
+/// `dirty: <reason>` line cargo prints under it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FingerprintDirty {
+    pub name: String,
+    pub version: String,
+    pub reason: String,
 }
 
 /// `<soldr root>/logs/builds` — flat directory, one XML file per
@@ -280,6 +299,7 @@ fn write_build_log_with_history(
             binary: t.binary.clone(),
         }),
         wrapper: request.wrapper.clone(),
+        fingerprint_dirty: request.fingerprint_dirty.clone(),
         steps: Steps {
             download: download_step,
             compile: CompileStep {
@@ -369,6 +389,7 @@ struct BuildLogDocument {
     toolchain: Option<ToolchainHomes>,
     /// soldr#2545 -- see [`WrapperIdentity`].
     wrapper: Option<WrapperIdentity>,
+    fingerprint_dirty: Vec<FingerprintDirty>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -501,6 +522,7 @@ fn render_xml(doc: &BuildLogDocument) -> String {
     render_args(&mut out, &doc.args);
     render_toolchain(&mut out, doc.toolchain.as_ref());
     render_wrapper(&mut out, doc.wrapper.as_ref());
+    render_fingerprint_dirty(&mut out, &doc.fingerprint_dirty);
     render_steps(&mut out, &doc.steps, &doc.build);
     render_totals(&mut out, &doc.totals);
 
@@ -535,6 +557,24 @@ fn render_wrapper(out: &mut String, wrapper: Option<&WrapperIdentity>) {
         " />
 ",
     );
+}
+
+/// Cargo's own "why did this recompile?" answer, one `<unit>` per dirty
+/// record. Omitted entirely when there are none, so logs from builds that
+/// ran without fingerprint logging keep their prior shape byte-for-byte.
+fn render_fingerprint_dirty(out: &mut String, dirty: &[FingerprintDirty]) {
+    if dirty.is_empty() {
+        return;
+    }
+    out.push_str("  <fingerprint_dirty>\n");
+    for unit in dirty {
+        out.push_str("    <unit");
+        out.push_str(&attr("name", &unit.name));
+        out.push_str(&attr("version", &unit.version));
+        out.push_str(&attr("reason", &unit.reason));
+        out.push_str(" />\n");
+    }
+    out.push_str("  </fingerprint_dirty>\n");
 }
 
 fn render_toolchain(out: &mut String, toolchain: Option<&ToolchainHomes>) {

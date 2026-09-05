@@ -36,7 +36,9 @@ def console_script(venv: Path) -> Path:
     candidates = [venv / "bin" / "soldr", venv / "Scripts" / "soldr.exe"]
     found = next((candidate for candidate in candidates if candidate.is_file()), None)
     if found is None:
-        raise WheelSmokeError(f"wheel install did not create a soldr console script in {venv}")
+        raise WheelSmokeError(
+            f"wheel install did not create a soldr console script in {venv}"
+        )
     return found
 
 
@@ -75,7 +77,14 @@ def smoke_wheel(*, expected_version: str, dist: Path, venv: Path) -> None:
     wheels = collect_wheels(dist)
     subprocess.run(["uv", "venv", str(venv)], check=True)
     subprocess.run(
-        ["uv", "pip", "install", "--python", str(venv), *(str(wheel) for wheel in wheels)],
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(venv),
+            *(str(wheel) for wheel in wheels),
+        ],
         check=True,
     )
     soldr = console_script(venv)
@@ -87,7 +96,9 @@ def smoke_wheel(*, expected_version: str, dist: Path, venv: Path) -> None:
     print(f"wheel smoke test — soldr --version output: {version_output.strip()}")
 
     json_output = run_cli([str(soldr), "version", "--json"])
-    problem = version_json_problem(json_output, normalized_release_version(expected_version))
+    problem = version_json_problem(
+        json_output, normalized_release_version(expected_version)
+    )
     if problem:
         raise WheelSmokeError(problem)
     print(f"wheel smoke test — soldr version --json output: {json_output.strip()}")
@@ -100,7 +111,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--venv", type=Path, default=Path(".venv"))
     args = parser.parse_args(argv)
     try:
-        smoke_wheel(expected_version=args.expected_version, dist=args.dist, venv=args.venv)
+        smoke_wheel(
+            expected_version=args.expected_version, dist=args.dist, venv=args.venv
+        )
     except (OSError, subprocess.CalledProcessError, WheelSmokeError) as error:
         print(str(error), file=sys.stderr)
         return 1

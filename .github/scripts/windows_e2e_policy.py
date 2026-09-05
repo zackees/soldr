@@ -1,10 +1,26 @@
 #!/usr/bin/env python3
-"""Decide whether a pull request may skip the Windows MSVC E2E pairs.
+"""Decide whether a pull request may skip platform E2E validation.
 
 The ``fast-build`` label is only a request.  It is honored when every changed
 path is documentation or repository metadata that cannot affect a shipped
 binary.  Pushes, empty diffs, and any unclassified path fail safe by running
-Windows validation.
+everything.
+
+Emits two outputs from one classification (soldr#3018):
+
+``run_windows_e2e``
+    The original gate, for the three Windows MSVC pairs.
+
+``run_platform_e2e``
+    The same decision, extended to the macOS pairs and the non-x64 Linux
+    lanes.  A docs-only change used to pay for eight platform fan-outs; on
+    macOS each of those also re-pays a 12-23 minute queue, which soldr#2996
+    measured as the largest single source of CI wall-clock variance.
+
+``e2e-linux-x64`` is deliberately NOT gated.  ``ci.yml`` calls the Linux
+glibc lane the proof of life, and a proof of life that a heuristic can skip
+is not one.  It is also the cheapest lane, so gating it saves least and
+risks most.
 """
 
 from __future__ import annotations
@@ -120,11 +136,19 @@ def main() -> int:
         labels=_labels(event),
         changed_paths=paths,
     )
-    print(f"Windows E2E: {'run' if decision.run else 'skip'} ({decision.reason})")
+    verdict = "run" if decision.run else "skip"
+    print(
+        f"Platform E2E (Windows + macOS + non-x64 Linux): {verdict} ({decision.reason})"
+    )
     if not args.github_output:
         raise SystemExit("--github-output (or GITHUB_OUTPUT) is required")
     with Path(args.github_output).open("a", encoding="utf-8") as output:
-        output.write(f"run_windows_e2e={'true' if decision.run else 'false'}\n")
+        value = "true" if decision.run else "false"
+        output.write(f"run_windows_e2e={value}\n")
+        # soldr#3018: same classification, broader fan-out. Kept as a distinct
+        # output so a future change can narrow one without silently moving the
+        # other.
+        output.write(f"run_platform_e2e={value}\n")
         output.write(f"reason={decision.reason}\n")
     return 0
 

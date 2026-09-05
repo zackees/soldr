@@ -17,8 +17,8 @@ members = [
 # running-process were `_vender/` submodules with their own [workspace]
 # declarations, and each needed excluding so cargo would not fold its crates
 # into soldr's workspace and mis-version them. They are exact crates.io
-# dependencies now (`zccache = { version = "=1.13.14" }`,
-# `running-process = { version = "=4.10.6" }`), so there is no nested
+# dependencies now (`zccache = { version = "=1.13.22" }`,
+# `running-process = { version = "=4.10.9" }`), so there is no nested
 # workspace left to exclude and no `[patch]` pointing at either.
 #
 # `tests/test_externalized_dependency_sources.py` fails if a path dep, a
@@ -30,7 +30,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.9.11"
+version = "0.9.13"
 edition = "2021"
 rust-version = "1.95.0"
 license = "AGPL-3.0-only"
@@ -196,12 +196,45 @@ debug = false
 codegen-units = 1
 
 [profile.release]
-# Drop symbol table + debuginfo from the shipped binary. Biggest
-# single contributor to size (~30–50%). For deep debugging via
-# `SOLDR_ZCCACHE_LOCAL_DIR` the user builds locally without this
-# profile anyway; the managed-zccache debug-symbol path is a
-# separate sibling file (`.pdb` / `.dwp` / `.dSYM`).
-strip = "symbols"
+# soldr#786 / linux+macOS follow-up, revised by soldr#3038: a crash or heap
+# profile from a released daemon must be symbolizable on every platform, not
+# just Windows (MSVC's PDB was always a free by-product of the link step;
+# Linux and macOS shipped with no debug info at all -- there was nothing to
+# strip because `debug` was never set, so `strip = "symbols"` alone used to
+# be the size story here).
+#
+# `debug = "line-tables-only"` emits function names, file names and line
+# numbers -- what a backtrace or pprof heap profile needs -- without full
+# DWARF type info, at a fraction of the size of `debug = true`. This is still
+# what makes soldr's OWN crates carry any debug info at all; the precompiled
+# std and every C dependency built through the `cc` crate (`ring`,
+# `zstd-sys`, `lzma-sys`, `libsqlite3-sys`, mimalloc-pprof) embed their own
+# DWARF in the final link regardless of this setting.
+#
+# `split-debuginfo` deliberately stays `"off"` here -- soldr#3038 found that
+# `"packed"` only splits the per-crate DWARF rustc itself compiles in this
+# build. It cannot see the debug info std and the `cc`-built C dependencies
+# contribute during the link, so that portion stayed embedded in the shipped
+# binary *in addition to* being duplicated into the `.dwp` for the crates
+# `"packed"` could see -- soldr's own release binary went from 21.3 MiB
+# (stripped) to 73.8 MiB (packed, "split") while the `.dwp` beside it held
+# another 48.5 MiB: debug info duplicated, not moved. `strip` stays `"none"`
+# for the same reason it did under `"packed"`: the release-lane packaging
+# script (`stage_release_binaries.py::stage_debug_symbols`) needs the fully
+# linked, undisturbed binary as its input. It runs a post-link
+# `objcopy --only-keep-debug` / `strip --strip-debug` /
+# `objcopy --add-gnu-debuglink` sequence instead, which operates on the
+# COMPLETE linked binary -- every source of DWARF in one pass, no
+# duplication -- and produces the shipped, stripped binary plus a `.debug`
+# sidecar in the same `-symbols.tar.zst` asset the `.dwp` used to ride in.
+# See docs/DEBUG_SIDECARS.md for the measured before/after size table and the
+# macOS asymmetry (dsymutil's `.dSYM` model does not have this duplication
+# problem, so macOS keeps `split-debuginfo = "packed"` -- injected only for
+# darwin targets via `CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO` in
+# release-auto.yml / native_release_build.py, not here).
+debug = "line-tables-only"
+split-debuginfo = "off"
+strip = "none"
 # Cross-crate inlining + dead-code elimination. Soldr is a large product,
 # and full/fat LTO has excessive peak-memory requirements for our CI builders.
 # Thin LTO is the practical release-quality compromise: it preserves most of
@@ -225,6 +258,15 @@ opt-level = 0
 lto = false
 codegen-units = 16
 strip = "none"
+# soldr#786 linux+macOS follow-up: `[profile.release]` now sets
+# `debug = "line-tables-only"` for shipped-binary symbolication. This
+# profile builds a throwaway binary that never survives past the job that
+# built it, so paying for debug-info codegen buys nothing here -- opt back
+# out explicitly rather than inherit it silently. `split-debuginfo` inherits
+# `"off"` from `[profile.release]` (soldr#3038), which was already a no-op
+# for this profile once `debug = false` -- there is nothing to split either
+# way.
+debug = false
 
 # The bootstrap deliberately bypasses the compiler cache, so zccache cannot
 # use its runtime admission gate while its own amalgamated crate is compiling.
@@ -244,12 +286,20 @@ codegen-units = 1
 # optimizer pass so CI still catches optimized-codegen issues without
 # paying full release opt-level 3 on every cross/PEP smoke build.
 # Keeps `strip = "symbols"` so archive size stays comparable.
+# soldr#786 linux+macOS follow-up: also keeps `debug = false` explicitly --
+# `[profile.release]` now generates `line-tables-only` debug info for
+# shipped-binary symbolication, but these are throwaway cross-build/smoke
+# artifacts (not the shipped release), so inheriting that cost would only
+# slow this lane down for no benefit. `[profile.ci-nextest]` below re-opts-in
+# to debug info for its own reason (target-run backtraces) by setting `debug`
+# itself, so this does not affect it.
 [profile.ci-release]
 inherits = "release"
 opt-level = 1
 lto = false
 codegen-units = 16
 strip = "symbols"
+debug = false
 
 [profile.ci-release.package.zccache]
 debug = false
@@ -272,6 +322,15 @@ opt-level = 0
 debug-assertions = true
 debug = "line-tables-only"
 strip = "none"
+# soldr#3038: `[profile.release]` itself now sets `split-debuginfo = "off"`
+# (a post-link objcopy pass replaced rustc's packed split for the shipped
+# binary -- see that profile's comment), so this inherits the value it
+# needs without an override. Kept explicit anyway: nextest test binaries
+# have no sidecar-shipping mechanism at all -- `_ci-target-run.yml` archives
+# and runs the raw executable only -- so debug info MUST stay embedded here
+# regardless of what the base profile does, and a future edit to the base
+# profile should not silently change that for this one.
+split-debuginfo = "off"
 
 # Same workspace-only rule as `[profile.dev.package."*"]`: target-run
 # backtraces only need file:line inside soldr's own frames, so external

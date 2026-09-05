@@ -2,7 +2,7 @@ import json
 import re
 from pathlib import Path
 
-from conftest import WORKSPACE_CRATES
+from conftest import COOK_CACHE_ALLOWLIST_INPUT, WORKSPACE_CRATES
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
@@ -91,7 +91,7 @@ def test_windows_behavior_contract_reaches_native_target_runners() -> None:
     assert "if-no-files-found: ignore" not in upload
 
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
-    replay = _step_block(target_run, "Run complete pre-built test archive")
+    replay = _step_block(target_run, "Run owned pre-built native tests")
     archive_assignment = 'archive="artifact/${{ inputs.artifact_name }}-tests.tar.zst"'
     archive_check = 'test -f "$archive"'
     list_command = '"$NEXTEST_BIN" nextest list'
@@ -118,10 +118,17 @@ def test_windows_behavior_contract_reaches_native_target_runners() -> None:
     assert replay.count('--archive-file "$archive"') == 1
     assert '--extract-to "$NEXTEST_EXTRACT_DIR"' in replay
     assert "--no-fail-fast" not in replay
-    list_invocation = replay[replay.index(list_command) : replay.index(run_command)]
+    assert replay.count(list_command) == 2
+    first_list = replay.index(list_command)
+    ownership_check = replay.index("target_run_ownership.py", first_list)
+    second_list = replay.index(list_command, ownership_check)
+    run_start = replay.index(run_command)
+    complete_inventory_invocation = replay[first_list:ownership_check]
+    owned_list_invocation = replay[second_list:run_start]
     run_invocation = replay[replay.index(run_command) :]
-    _assert_no_narrowing(list_invocation)
-    _assert_no_narrowing(run_invocation)
+    _assert_no_narrowing(complete_inventory_invocation)
+    assert '-E "$TARGET_RUN_FILTER"' in owned_list_invocation
+    assert '-E "$TARGET_RUN_FILTER"' in run_invocation
 
 
 def test_windows_target_runner_pairs_share_their_producer_artifacts() -> None:
@@ -163,10 +170,14 @@ def test_windows_gnu_target_run_is_bounded_and_disk_safe() -> None:
 
     assert "extended_replay:" in target_run
     assert "default: false" in target_run
-    assert (
-        "inputs.run_pep517_smoke && 65 || inputs.extended_replay && 55 || 30"
-        in target_run
-    )
+    # soldr#3078: x86_64-recovery now replays a real nextest partition
+    # (toolchain provisioning included) inside the guest, so it gets a
+    # 90-minute budget instead of the smoke-only 30; the pre-existing
+    # run_pep517_smoke / extended_replay / default chain is unchanged.
+    assert "inputs.target_execution == 'x86_64-recovery' && 90" in target_run
+    assert "inputs.run_pep517_smoke && 65" in target_run
+    assert "inputs.extended_replay && 55" in target_run
+    assert "|| 30 }}" in target_run
     assert _job_input(gnu_run, "extended_replay") == "true"
     partitions = json.loads(_job_input(gnu_run, "replay_partitions").strip("'"))
     assert partitions == [
@@ -180,9 +191,13 @@ def test_windows_gnu_target_run_is_bounded_and_disk_safe() -> None:
     assert "nextest list" in target_run
     assert "nextest run" in target_run
     assert "matrix.replay.label }}-diagnostics" in target_run
+    # soldr#3047 retired the pep517 Swatinem/rust-cache restore from this
+    # lane, so the guard now appears on exactly three steps -- wheel build,
+    # daemon smoke, and the always()-guarded log upload -- not four.
     assert (
-        target_run.count("inputs.run_pep517_smoke && matrix.replay.run_followup") == 4
+        target_run.count("inputs.run_pep517_smoke && matrix.replay.run_followup") == 3
     )
+    assert "uses: Swatinem/rust-cache" not in target_run
 
 
 def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
@@ -201,6 +216,12 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "if: false" not in arm_build
     assert "if: false" not in arm_run
 
+    # soldr#3122: both MSVC target-run lanes shard into three hash partitions
+    # instead of a single serial `hash:1/1` replay.
+    x64_run = _job_block(ci, "e2e-windows-x64", "e2e-windows-x64-gnu-build")
+    assert "hash:3/3" in x64_run
+    assert "hash:3/3" in arm_run
+
     assert "if: (!contains(inputs.target, 'pc-windows-msvc'))" not in cross
     assert "soldr --no-cache build --profile" not in cross
     assert 'soldr build --profile "$ci_profile" --target "$target"' in cross
@@ -214,7 +235,11 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
         "--no-cache"
         not in cross[cross.index("- name: Cross-build soldr (ci-nextest profile)") :]
     )
-    assert "cache: ${{ (contains(inputs.target, 'pc-windows-msvc')" in cross
+    # soldr#2996: the cook gate is an allowlist now. The old exclusion list
+    # meant x86_64-pc-windows-gnu had cook only by not matching any clause.
+    # soldr#3121 added aarch64-pc-windows-msvc, x86_64-pc-windows-msvc and
+    # aarch64-unknown-linux-gnu to the allowlist.
+    assert COOK_CACHE_ALLOWLIST_INPUT in cross
     assert "inputs.target == 'x86_64-unknown-linux-gnu'" in cross
     assert "expected binary missing: $binary; searching target tree" in cross
     assert 'find target -type f \\( -name "soldr" -o -name "soldr.exe" \\)' in cross
@@ -241,8 +266,8 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "artifact/package/soldr-daemon$suffix" in target_run
     assert 'echo "SOLDR_INTERNAL_DAEMON_EXE=$daemon_bin"' in target_run
     assert 'cp "dist/package/soldr$suffix" "dist/package/soldr-daemon$suffix"' in cross
-    assert 'cargo_bin=$("$SOLDR_BIN" rustup which cargo)' in target_run
-    assert 'rustc_bin=$("$SOLDR_BIN" rustup which rustc)' in target_run
+    assert "cargo_bin=$(python .github/scripts/run_target_command.py" in target_run
+    assert "rustc_bin=$(python .github/scripts/run_target_command.py" in target_run
     assert 'echo "CARGO=$cargo_bin"' in target_run
     assert 'echo "RUSTC=$rustc_bin"' in target_run
     assert "SOLDR_SESSION_ATTEMPT_BUDGET_MS" not in target_run
@@ -267,16 +292,25 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "inputs.skip_filter" not in target_run
     assert "SOLDR_TEST_SKIP_SOURCE_TREE" not in target_run
     assert "submodules: recursive" in target_run
-    for workflow in [cross, target_run]:
-        assert "--filter-expr" not in workflow
-        assert "\n            -E " not in workflow
-        assert "\n            --filter " not in workflow
+    # The archive producer remains complete. Native execution is narrowed by
+    # a positive ownership declaration whose selectors are checked against the
+    # complete inventory before either list or run can consume them (#2999).
+    assert "--filter-expr" not in cross
+    assert "\n            -E " not in cross
+    assert "\n            --filter " not in cross
+    assert "target_run_ownership.py" in target_run
+    assert "ci/target-run-ownership.json" in target_run
+    assert target_run.count('-E "$TARGET_RUN_FILTER"') == 2
+    assert 'test -n "$TARGET_RUN_FILTER"' in target_run
+    assert "NEXTEST_ALL_LIST_JSON" in target_run
     assert "ARCHIVE_FILTER" not in cache_roundtrip
     assert '"-E"' not in cache_roundtrip
-    # soldr#2931: the comment now pins coverage-with-a-budget, not
-    # archive-everything-and-compress. The union of replay partitions must
-    # still execute every test; the archive itself is budgeted.
-    assert "the union of replay partitions executes every test" in cross
+    # soldr#2931/#2999: the producer keeps a complete inventory inside the
+    # archive budget. Native replay partitions cover every positively selected
+    # host-sensitive test rather than re-executing the portable inventory.
+    assert "archive must preserve the complete test" in cross
+    assert "replay partitions must cover every" in cross
+    assert "selected test" in cross
     assert "--profile target-run" in target_run
     assert "target/nextest/target-run/junit.xml" in target_run
     assert "target_run_summary.py" in target_run
@@ -304,8 +338,15 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     # the validation DAG or leak an old daemon route into nested tests.
     flattened = " ".join(build_and_test.split())
     assert build_and_test.count("name: Run prescribed host validation") == 1
-    assert 'NEXTEST_TEST_THREADS: "1"' in build_and_test
-    assert 'source_soldr="${GITHUB_WORKSPACE}/target/' in flattened
+    # soldr#3024: four Linux test processes can overlap while every nested
+    # compiler remains governed by Soldr's shared/exclusive admission. The
+    # Windows-target cold-build override still reserves the complete pool.
+    assert 'NEXTEST_TEST_THREADS: "4"' in build_and_test
+    # The driver is built into its own target dir under the runner temp:
+    # `soldr cook`'s cargo-chef skeleton build overwrites every bin in the
+    # workspace target dir with a `fn main() {}` stub.
+    assert 'source_soldr="${RUNNER_TEMP}/soldr-source-driver/' in flattened
+    assert 'source_soldr="${GITHUB_WORKSPACE}/target/' not in flattened
     assert 'SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr"' in flattened
     assert "bootstrap_wrapper" not in flattened
     handoff = build_and_test.index("name: Hand off bootstrap broker to source revision")
@@ -314,7 +355,7 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     assert "soldr broker remove" in build_and_test[handoff:validation]
     assert '"$source_soldr" daemon start' in build_and_test[handoff:validation]
     assert '"$source_soldr" broker remove || true' in build_and_test
-    assert 'target/${{ inputs.target }}/debug/soldr"' in flattened
+    assert 'soldr-source-driver/${{ inputs.target }}/debug/soldr"' in flattened
     assert 'ci-test --target "${{ inputs.target }}"' in flattened
     assert "nextest run --no-run" not in build_and_test
     assert "- name: Run CLI smoke tests" not in build_and_test
@@ -365,8 +406,28 @@ def test_fast_build_only_skips_windows_e2e_for_low_risk_changes() -> None:
 
     windows_section = ci[ci.index("# ---------- Windows x64") :]
     assert "github.event.pull_request.labels" not in windows_section
-    assert "fast-build may skip only the Windows MSVC E2E pairs" in ci
-    assert "macOS E2E pairs always run" in ci
+
+    # soldr#3018 widened the same classification past Windows. The two
+    # properties that must survive that are pinned here rather than the old
+    # prose, which no longer describes the policy.
+    #
+    # 1. The proof-of-life lane is never gated. A proof of life a heuristic
+    #    can skip is not one, and it is the cheapest lane besides.
+    linux_x64 = _job_block(ci, "e2e-linux-x64", "windows-e2e-policy")
+    assert "run_platform_e2e" not in linux_x64
+    assert "if:" not in linux_x64
+
+    # 2. The broader gate exists, is driven by the same policy job, and the
+    #    macOS lanes -- where a skipped lane also avoids a queue -- are
+    #    behind it. Both are build-only now: aarch64-apple-darwin has no
+    #    paired run job (soldr#3071: no macos-* runner anywhere) and the
+    #    x86_64-apple-darwin Recovery replay moved to
+    #    macos-recovery-replay.yml (soldr#3116).
+    assert "run_platform_e2e" in policy
+    for job in ("e2e-macos-x64-build", "e2e-macos-arm64-build"):
+        block = _job_block(ci, job)
+        assert "needs.windows-e2e-policy.outputs.run_platform_e2e == 'true'" in block
+        assert "fast-build" not in block
 
 
 def test_cross_workflow_bootstraps_toolchain_dependencies_through_soldr() -> None:
@@ -401,15 +462,58 @@ def test_catalogue_download_consumers_require_sha256_metadata() -> None:
         REPO_ROOT / ".github" / "scripts" / "download_catalogued_asset.py"
     ).read_text(encoding="utf-8")
 
-    assert cross.count("--json") >= 2
-    assert cross.count("download_catalogued_asset.py") >= 2
     assert "--json cargo-zigbuild" in baseline
+    helper_invocations = [
+        line
+        for line in cross.splitlines()
+        if line.strip().startswith(".github/scripts/fetch_or_build_tool.sh")
+    ]
+    assert len(helper_invocations) == 4
     assert "download_catalogued_asset.py" in baseline
     assert "download_catalogued_asset.py" in fetch
     assert 'asset_url="verified"' in fetch
     assert "-> $asset_url" not in fetch
     assert "sha256 mismatch" in downloader
     assert 'metadata.get("parts")' in downloader
+
+
+def test_cross_release_archives_never_bundle_standalone_zccache() -> None:
+    """zccache is embedded through its crate API, never shipped as a sidecar."""
+    cross = (WORKFLOWS / "cross-compile-all-targets.yml").read_text(encoding="utf-8")
+
+    for forbidden in [
+        "dist/zccache-stage",
+        "Fetch matched zccache release",
+        "download_catalogued_asset.py",
+        '"binaries": [',
+        "zccache-daemon",
+        "zccache-fp",
+    ]:
+        assert forbidden not in cross
+
+    assert cross.count("stage_release_binaries.py") == 2
+    assert cross.count("python3 .github/scripts/release_manifest.py") == 2
+    assert '"embedded": True' in (
+        REPO_ROOT / ".github" / "scripts" / "release_manifest.py"
+    ).read_text(encoding="utf-8")
+
+
+def test_embedded_zccache_pin_has_no_platform_asset_gate() -> None:
+    assert not (REPO_ROOT / ".github" / "scripts" / "check_zccache_asset.py").exists()
+    assert not (REPO_ROOT / ".github" / "scripts" / "zccache_version.py").exists()
+
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    instructions = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    trust_boundaries = (REPO_ROOT / "docs" / "TRUST_BOUNDARIES.md").read_text(
+        encoding="utf-8"
+    )
+    vendoring = (REPO_ROOT / "docs" / "VENDORING.md").read_text(encoding="utf-8")
+    assert "check_zccache_asset.py" not in ci
+    assert "check_zccache_asset.py" not in instructions
+    assert "six platform support archives" not in instructions
+    assert "managed `zccache` download" not in trust_boundaries
+    assert "MANAGED_ZCCACHE_VERSION" not in vendoring
+    assert "embed/manifest.json" not in vendoring
 
 
 def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
@@ -429,7 +533,10 @@ def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
     ]
     for job, next_job in lane_names:
         block = _job_block(ci, job, next_job)
-        assert "needs: e2e-cross-bootstrap-soldr" in block
+        # soldr#3018: gated lanes carry
+        # `needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]`, so assert
+        # the dependency rather than the scalar spelling of it.
+        assert "e2e-cross-bootstrap-soldr" in block.split("uses:")[0]
         assert "bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu" in block
 
     download = cross[
@@ -447,42 +554,105 @@ def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
 def test_native_linux_integration_backstop_runs_on_pull_requests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     block = _job_block(ci, "build-linux-x64", "pep517-daemon-smoke")
-    assert "github.ref_name == 'main' || github.event_name == 'pull_request'" in block
+    # Serial gate (2026-09-04): the host lane is stage 2 behind Lint and every
+    # other root job hangs off it, so it carries no event guard of its own --
+    # a workflow_dispatch run must be able to pass through it too.
+    assert "\n    needs: lint\n" in block
+    assert "\n    if:" not in block[: block.index("    uses:")]
     assert "soldr#1676" in block
     assert "canonical native exception" in block
+
+
+def test_host_validation_opportunistically_reuses_exact_sha_bootstrap() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    host_template = (WORKFLOWS / "_build-and-test.yml").read_text(encoding="utf-8")
+    producer = _job_block(ci, "e2e-cross-bootstrap-soldr", "e2e-linux-x64-gnu-build")
+    host = _job_block(ci, "build-linux-x64", "pep517-daemon-smoke")
+    producer_header = producer[: producer.index("    steps:")]
+    verify = _step_block(ci, "Verify bootstrap soldr")
+    upload = _step_block(ci, "Upload bootstrap soldr artifact")
+    host_build = _step_block(host_template, "Build ci-test driver")
+
+    # The host must not wait for the producer: under the serial gate the
+    # producer runs AFTER the host (stage 3), so the host always takes the
+    # local source-build fallback rather than extending the native critical
+    # path, and the producer carries no event guard of its own.
+    assert "\n    if:" not in producer_header
+    assert "\n    needs: build-linux-x64\n" in producer_header
+    assert re.search(r"(?m)^    needs: lint$", host)
+    assert not re.search(r"(?m)^    needs: e2e-cross-bootstrap-soldr", host)
+    # The producer's artifact cannot exist when the host starts, so the host
+    # no longer asks for it; the template skips the download on an empty name.
+    assert "source_driver_artifact_name:" not in host
+    assert "if: inputs.source_driver_artifact_name != ''" in host_template
+
+    assert "bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ github.sha }}" in producer
+    assert "key: rustup-1.95.0-linux-x64-v1" in producer
+    assert "rustup toolchain install 1.95.0 --profile minimal" in producer
+    assert "toolchain: 1.95.0" in host_template
+    assert "cargo build --profile dev --package soldr-cli" in producer
+    assert "soldr cargo build --profile dev -p soldr-cli" in host_build
+    assert "target/x86_64-unknown-linux-gnu/debug/soldr" in producer
+    assert "soldr-source-driver/${{ inputs.target }}/debug/soldr" in host_template
+    assert "--bin soldr" in producer
+    assert "--target x86_64-unknown-linux-gnu" in producer
+    assert "--features" not in producer
+    assert (
+        'printf \'%s\\n\' "${{ github.sha }}" > "$RUNNER_TEMP/soldr-bin/source-sha"'
+        in verify
+    )
+    assert "path: ${{ runner.temp }}/soldr-bin" in upload
+
+    # source-sha is adjacent artifact metadata, not an executable or directory
+    # contract. Every pre-existing consumer addresses only the soldr file and
+    # therefore safely ignores the marker added for host provenance checks.
+    cross_template = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(
+        encoding="utf-8"
+    )
+    expose = _step_block(cross_template, "Expose bootstrap soldr on PATH")
+    wheel = _step_block(ci, "Build the wheel through `soldr wheel`")
+    assert "$RUNNER_TEMP/soldr-bin/soldr" in expose
+    assert 'driver="$RUNNER_TEMP/soldr-bin/soldr"' in wheel
+    assert "source-sha" not in expose
+    assert "source-sha" not in wheel
 
 
 def test_pep517_platform_smokes_run_on_pull_requests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     block = _job_block(ci, "pep517-daemon-smoke", "e2e-linux-x64")
 
-    # soldr#2615: the macos-arm64 smoke rides the e2e-macos-arm64 target-run
-    # allocation instead of a second macos-15 VM; only windows-x64 keeps a
-    # dedicated smoke leg here.
+    # soldr#3076: no macos-* runner exists anywhere, so there is no macOS
+    # PEP 517 smoke leg at all -- the Recovery guest that replaced the
+    # dockur/macos plan (soldr#3071) has no Python/maturin (the replay job in
+    # macos-recovery-replay.yml sets run_pep517_smoke: false explicitly,
+    # soldr#3116). windows-x64 keeps its dedicated smoke leg here, unchanged.
     assert '"name":"macos-arm64"' not in block
     assert '"name":"windows-x64"' in block
     assert "github.event.pull_request.labels" in block
     assert "fromJSON('[" in block
 
-    run = _job_block(ci, "e2e-macos-arm64")
-    assert _job_input(run, "run_pep517_smoke") == (
-        "${{ github.ref_name == 'main' || "
-        "!contains(github.event.pull_request.labels.*.name, 'fast-build') }}"
-    )
+    replay = (WORKFLOWS / "macos-recovery-replay.yml").read_text(encoding="utf-8")
+    x64_run = _job_block(replay, "replay")
+    assert _job_input(x64_run, "run_pep517_smoke") == "false"
+    assert "no Python" in x64_run or "no Python/maturin" in x64_run
 
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
     assert "run_pep517_smoke:" in target_run
+    # soldr#3076: the Recovery guest has no Python/maturin, so this step
+    # group is also excluded by execution mode as a second, workflow-level
+    # line of defense (not just the false input above).
     for step_name in [
         "Build soldr wheel under test",
         "Run downstream PEP 517 daemon smoke",
     ]:
         step = _step_block(target_run, step_name)
         assert (
-            "if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup }}" in step
+            "if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup "
+            "&& inputs.target_execution != 'x86_64-recovery' }}" in step
         )
     # The smoke must run after (and never gate) the archive replay.
     assert target_run.index(
-        "      - name: Run complete pre-built test archive\n"
+        "      - name: Run owned pre-built native tests\n"
     ) < target_run.index("      - name: Build soldr wheel under test\n")
 
 
@@ -622,7 +792,13 @@ def test_normal_gnu_lifecycle_has_no_zig_fallback() -> None:
 
 
 def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
-    """#2453: cache-disabled hosted lanes must retain memory headroom."""
+    """#2453: cache-disabled hosted lanes must retain memory headroom.
+
+    #3047 (following #2996): Swatinem/rust-cache was retired from this lane --
+    `soldr cook` is the only durable dependency cache left here, so the old
+    `shared-key: cross-build-<target>-v7` assertion is inverted below into a
+    regression guard against reintroducing rust-cache.
+    """
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
 
@@ -634,7 +810,13 @@ def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
     assert "CARGO_BUILD_JOBS: ${{ matrix.jobs }}" in wheel_job
     assert "SOLDR_JOBS: ${{ matrix.jobs }}" in wheel_job
     assert 'CARGO_PROFILE_CI_NEXTEST_CODEGEN_UNITS: "4"' in cross_job
-    assert "shared-key: cross-build-${{ inputs.target }}-v7" in cross_job
+    # soldr#3047 / soldr#2996: cook is the only durable dependency cache in
+    # this lane now -- Swatinem/rust-cache (and its shared-key) must not
+    # reappear as a step. The retirement is explained in a prose comment
+    # that names the action for context, so check for the `uses:` line
+    # specifically rather than the bare word.
+    assert "uses: Swatinem/rust-cache" not in cross_job
+    assert "shared-key:" not in cross_job
 
 
 def test_external_zccache_bootstraps_get_exclusive_service_access() -> None:
@@ -648,9 +830,15 @@ def test_external_zccache_bootstraps_get_exclusive_service_access() -> None:
     lint_job = _job_block(ci, "lint")
     assert "CARGO_BUILD_JOBS" not in lint_job
     assert "SOLDR_JOBS" not in lint_job
-    assert 'CARGO_BUILD_JOBS: "1"' in build_and_test
-    assert 'SOLDR_JOBS: "1"' in build_and_test
-    assert 'NEXTEST_TEST_THREADS: "1"' in build_and_test
+    assert "CARGO_BUILD_JOBS:" not in build_and_test
+    assert "SOLDR_JOBS:" not in build_and_test
+    # zccache admits registered amalgamations and large native units
+    # exclusively, so ordinary compilation can retain full host parallelism
+    # without reintroducing the historical heavyweight-link overlap. Test
+    # execution uses four processes; nested compilers still enter the same
+    # exclusive-aware service admission path.
+    assert "exclusive compiler admission" in build_and_test
+    assert 'NEXTEST_TEST_THREADS: "4"' in build_and_test
     assert "Enlarge swap (OOM headroom)" in build_and_test
 
 
@@ -691,7 +879,7 @@ def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:
         assert required in proof
 
 
-def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
+def test_mac_x64_distribution_uses_pinned_setup_soldr_and_the_blessed_build() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     support_fetch = (
@@ -703,14 +891,15 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
         encoding="utf-8"
     )
 
-    mac_build = _job_block(ci, "e2e-macos-x64-build", "e2e-macos-x64")
+    mac_build = _job_block(ci, "e2e-macos-x64-build")
     assert "if: false" not in mac_build
     assert "target: x86_64-apple-darwin" in mac_build
 
-    # Release lanes use the same pinned setup-soldr target environment;
-    # macOS x64 stays native on the Intel runner. The matrix itself is
-    # contract-generated (soldr#2469 step 2.1) and the intel-runner fact is
-    # pinned in test_canonical_target_contract.py against release.build.
+    # soldr#3071: macOS x64 release binaries now build through the same
+    # Linux-cross blessed path as Windows -- no native macos-* runner. The
+    # matrix itself is contract-generated (soldr#2469 step 2.1) and the
+    # ubuntu-24.04 build-runner fact is pinned in
+    # test_canonical_target_contract.py against release.build.
     assert "include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}" in release
     assert '"x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"}' in support_fetch
     # soldr#2469 step 2.2: the GNU-Linux `soldr prepare` hook moved into
@@ -719,9 +908,9 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     # assertion follows the logic rather than being dropped.
     assert _matrix_binary_source_prepares_gnu_linux()
     assert (
-        "uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771" in release
+        "uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90" in release
     )
-    assert "version: 0.9.10" in release
+    assert "version: 0.9.13" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert "target-wheel-hook" in release
     # soldr#2469 step 2.2: the GitHub gate delegates both release lookup
@@ -729,20 +918,20 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     # prepare-side gate imports the same generator (release_detect.py).
     assert "verify_github_release_assets.py" in release
 
-    sdk_step = _step_block(release, "Restore the native macOS SDK root")
-    assert "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" in sdk_step
-    native_build = _step_block(
-        release, "Build native macOS release binary through pinned Soldr"
-    )
-    assert "if: contains(matrix.target, 'apple-darwin')" in native_build
-    assert ".github/scripts/native_release_build.py binary" in native_build
+    # soldr#3071: neither the native-SDKROOT step nor the native-binary
+    # build step exist any more -- apple-darwin builds through the same
+    # blessed step every other release target does.
+    assert "Restore the native macOS SDK root" not in release
+    assert "Build native macOS release binary through pinned Soldr" not in release
     blessed_build = _step_block(release, "Build release binary (soldr-driven)")
-    assert "!contains(matrix.target, 'apple-darwin')" in blessed_build
+    assert "apple-darwin" not in blessed_build
+    assert "matrix.target != 'aarch64-unknown-linux-musl'" in blessed_build
 
     assert '"darwin-x64": { triple: "x86_64-apple-darwin"' in install
     assert "intentionally not published" not in install
     assert "x86_64-apple-darwin" in npm_docs
-    assert "macos-15-intel" in npm_docs
+    assert "docker-mac-x64" in npm_docs
+    assert "macos-15-intel" not in npm_docs
     assert "x86_64-apple-darwin" in verification_docs
     assert "Mach-O x86_64" in verification_docs
 
@@ -797,9 +986,9 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
 
     assert _matrix_binary_source_prepares_gnu_linux()
     assert (
-        "uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771" in release
+        "uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90" in release
     )
-    assert "version: 0.9.10" in release
+    assert "version: 0.9.13" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert ".github/scripts/prepare_release_wheel.py" in release
     assert '--runner-os "$RUNNER_OS"' in release
@@ -1017,6 +1206,7 @@ def test_cross_compile_docs_match_current_blessed_surfaces() -> None:
     assert "_cross-build-windows-host.yml" not in docs
     assert "cross-build-from-windows-x64-linux" not in docs
     assert "build-macos-x64.yml" not in ci
-    assert "macos-15-intel" in ci
+    # soldr#3071: no GitHub Actions job runs on a macos-* runner any more.
+    assert "macos-15-intel" not in ci
     assert "soldr#1237" not in release
     assert "x86_64-apple-darwin: **intentionally omitted**" not in release

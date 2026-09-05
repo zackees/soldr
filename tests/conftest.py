@@ -40,6 +40,62 @@ def load_script_module(path: str | Path, name: str | None = None) -> ModuleType:
     return module
 
 
+def write_collected_recovery_summary(base: Path, lines: list[str]) -> Path:
+    """Build a `<base>/summary.txt` fixture for a Recovery guest smoke test.
+
+    `ci/smoke_release_artifacts.py` and `ci/macos_recovery_run.py` each parse
+    this exact flat `key=value` shape out of a zackees/docker-mac-x64
+    `collect` tarball (soldr#3076); their tests share the fixture-builder
+    here rather than each hand-rolling the same `mkdir` + `write_text`.
+    """
+
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "summary.txt").write_text("\n".join(lines), encoding="utf-8")
+    return base
+
+
+def assert_recovery_verify_collected_contract(
+    module: ModuleType, tmp_path: Path, *, passing_lines: list[str]
+) -> None:
+    """Shared soldr#3076 `verify_collected` behavior contract.
+
+    `ci/smoke_release_artifacts.py` and `ci/macos_recovery_run.py` each
+    implement the same four-case contract (pass, one named per-check
+    failure, one check that never ran, a missing results file, and a
+    nonzero guest exit code) against different check sets. Both modules'
+    tests call this once rather than each repeating the four cases, which is
+    also what keeps pylint's `duplicate-code` check quiet across the pair
+    (see `load_script_module`'s docstring above for the same rationale
+    applied to the importlib dance, soldr#2113).
+    """
+
+    first_check = passing_lines[0].split("=", 1)[0]
+
+    passing = write_collected_recovery_summary(tmp_path / "pass", passing_lines)
+    assert module.verify_collected(passing, guest_exit_code="0") == 0
+
+    failing = write_collected_recovery_summary(
+        tmp_path / "fail", [f"{first_check}=fail:boom"]
+    )
+    with pytest.raises(SystemExit, match=f"{first_check}: boom"):
+        module.verify_collected(failing, guest_exit_code="0")
+
+    incomplete = write_collected_recovery_summary(
+        tmp_path / "incomplete", passing_lines[1:]
+    )
+    with pytest.raises(SystemExit, match=f"{first_check}: no result recorded"):
+        module.verify_collected(incomplete, guest_exit_code="0")
+
+    missing = write_collected_recovery_summary(tmp_path / "missing", [])
+    (missing / "summary.txt").unlink()
+    with pytest.raises(SystemExit, match="never wrote results"):
+        module.verify_collected(missing, guest_exit_code="0")
+
+    nonzero = write_collected_recovery_summary(tmp_path / "nonzero", passing_lines)
+    with pytest.raises(SystemExit, match="guest script exit code"):
+        module.verify_collected(nonzero, guest_exit_code="1")
+
+
 def write_fake_soldr_console(venv: Path, *, windows: bool) -> Path:
     """Materialize the platform's virtualenv console-script location."""
 
@@ -55,6 +111,34 @@ def uv_pip_install_command(venv: Path, *packages: str) -> list[str]:
     """Build the exact pip-install argv used by isolated wheel smoke doubles."""
 
     return ["uv", "pip", "install", "--python", str(venv), *packages]
+
+
+def maturin_release_build_command(
+    maturin: str, target: str, compatibility: str
+) -> list[str]:
+    """The exact release-locked maturin argv two release scripts must agree on.
+
+    `build_release_wheel.maturin_build_command` and
+    `native_release_build.musl_wheel_maturin_command` both produce this shape;
+    their tests share the expectation here so the two cannot drift apart (and
+    so pylint's `duplicate-code` check does not report the copy).
+    """
+
+    return [
+        maturin,
+        "build",
+        "--release",
+        "--locked",
+        "--strip",
+        "--target",
+        target,
+        "--target-dir",
+        "target",
+        "--out",
+        "dist",
+        "--compatibility",
+        compatibility,
+    ]
 
 
 # Release scripts are standalone modules, but several share this module. Load it
@@ -113,6 +197,21 @@ DYLINT_TEST_STEPS = (
     "Test local-socket name boundary lint",
     "Test raw IPC transport boundary lint",
     "Test platform-cfg directory boundary lint",
+)
+
+# soldr#2996: the cook `cache:` input is gated by an explicit target
+# allowlist, not by falling through an exclusion list. soldr#3121 added
+# aarch64-pc-windows-msvc, x86_64-pc-windows-msvc and
+# aarch64-unknown-linux-gnu. Two guards -- _ci-cross-build-linux.yml's own
+# step and setup-soldr/cook's flags check -- pin this exact literal, so a
+# lane silently gaining or losing cook has to answer to both.
+COOK_CACHE_ALLOWLIST_INPUT = (
+    "cache: ${{ (inputs.target == 'x86_64-pc-windows-gnu' "
+    "|| inputs.target == 'x86_64-unknown-linux-gnu' "
+    "|| inputs.target == 'aarch64-pc-windows-msvc' "
+    "|| inputs.target == 'x86_64-pc-windows-msvc' "
+    "|| inputs.target == 'aarch64-unknown-linux-gnu') "
+    "&& 'true' || 'false' }}"
 )
 
 

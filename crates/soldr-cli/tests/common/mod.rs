@@ -74,6 +74,13 @@ pub(crate) fn soldr_bin() -> PathBuf {
     soldr
 }
 
+/// Cargo capability inherited by a test process. Under prescribed CI this is
+/// the named shim that re-enters the source Soldr binary; Cargo itself supplies
+/// its absolute binary for ordinary local `cargo test` / Nextest runs.
+pub(crate) fn cargo_bin() -> std::ffi::OsString {
+    std::env::var_os("CARGO").expect("test process must inherit the Cargo capability")
+}
+
 /// Companion to `soldr_bin` for tests that need the daemon binary.
 /// Prefers `SOLDR_DAEMON_BIN`; falls back to the in-crate compile-time
 /// path. soldr#1039.
@@ -272,6 +279,12 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         // every fixture.
         .env(soldr_cli::toolchain::ALLOW_UNPINNED_ENV_VAR, "1")
         .env_remove("RUSTC_WRAPPER")
+        // `soldr ci-test` deliberately points this override at the source
+        // binary. Nested fixture front doors model fresh callers: inheriting
+        // the outer override makes them skip their own managed-daemon service
+        // registration, then their compiler re-entry asks the broker for a
+        // route whose service definition was never installed.
+        .env_remove("SOLDR_RUSTC_WRAPPER")
         // soldr#2545: the outer dogfooded suite driver exports the owned
         // effective-wrapper mirror beside RUSTC_WRAPPER. Scrubbing only one
         // of the pair would make every wrapper-shaped fixture child read as

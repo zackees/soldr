@@ -9,6 +9,28 @@ use std::process::{Child, Command, ExitStatus};
 pub fn spawn_detached(command: &mut Command) -> io::Result<Child> {
     use std::os::unix::process::CommandExt;
     command.process_group(0);
+    // soldr#3098: spawns share, staged writes exclude.
+    let _spawn = crate::platform::process::spawn_exclusion::spawn_shared();
+    command.spawn()
+}
+
+/// Test seam for soldr#3098: spawn `command` but hold the child between
+/// fork and exec for `hold`, so any descriptor it inherited from this
+/// process stays open that long. Takes the shared spawn guard like every
+/// other funnel, so a staged write in progress makes this block first.
+pub fn spawn_holding_fork_window(
+    command: &mut Command,
+    hold: std::time::Duration,
+) -> io::Result<Child> {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure only sleeps, which is async-signal-safe.
+    unsafe {
+        command.pre_exec(move || {
+            std::thread::sleep(hold);
+            Ok(())
+        });
+    }
+    let _spawn = crate::platform::process::spawn_exclusion::spawn_shared();
     command.spawn()
 }
 

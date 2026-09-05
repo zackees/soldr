@@ -15,15 +15,21 @@ the main reason this belongs in Python rather than in a heredoc.
 
 Deliberately preserved from the bash, byte for byte:
 
-* a macOS `.dSYM` is a directory, hashed as the `tar -cf -` stream of its
-  contents. `tar` is invoked as a subprocess rather than reimplemented with
-  `tarfile`, because the digest is *published*: member order, mtimes and
-  uid/gid make the two implementations disagree, and `verify_release_manifest`
-  explicitly cannot re-derive this value to catch a drift.
-* Windows `.pdb` is REQUIRED and its absence fails the build; Linux `.dwp` and
-  macOS `.dSYM` are OPTIONAL, because the default release profile does not
-  emit them and a missing sidecar is silent.
+* Windows `.pdb` is REQUIRED and its absence fails the build; it is the only
+  sidecar this manifest (and therefore `soldr.debug_info`) ever describes.
 * format tags must match `release_sidecar.rs::DebugSidecarFormat::as_manifest_str`.
+
+soldr#3038: Linux `.dwp` and macOS `.dSYM` are deliberately NEVER collected
+here, even though the release profile now emits them. `soldr.debug_info` is
+read by every `setup-soldr` consumer via the vendored
+`.github/actions/setup-soldr/zccache_contract.py::validate_release_manifest`,
+which hard-rejects any entry whose `format` is not `"pdb"` -- turning on
+split-debuginfo without this exclusion would have broken `setup-soldr` for
+every Linux/macOS user on the next release. `collect_debug_info` below only
+ever looks at `package_dir`, and `stage_release_binaries.py` deliberately
+never stages a `.dwp`/`.dSYM` there (see its `stage_debug_symbols`) -- the
+sidecar instead ships as its own opt-in `-symbols.tar.zst` release asset that
+setup-soldr never downloads or parses. See docs/DEBUG_SIDECARS.md.
 
 Usage (CI):
     python3 .github/scripts/release_manifest.py \
@@ -38,7 +44,6 @@ import datetime
 import hashlib
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -97,22 +102,9 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def sha256_dsym(path: Path) -> str:
-    """Hash a `.dSYM` bundle as the `tar -cf -` stream of its contents.
-
-    Shells out on purpose — see the module docstring. This digest is
-    published, and `tarfile` would produce different bytes than the `tar` the
-    bash used, silently invalidating it for anyone verifying by hand.
-    """
-    completed = subprocess.run(
-        ["tar", "-cf", "-", "-C", str(path.parent), path.name],
-        stdout=subprocess.PIPE,
-        check=True,
-    )
-    return hashlib.sha256(completed.stdout).hexdigest()
-
-
-def find_sidecar(package_dir: Path, names: list[str], directory: bool = False) -> Path | None:
+def find_sidecar(
+    package_dir: Path, names: list[str], directory: bool = False
+) -> Path | None:
     for name in names:
         candidate = package_dir / name
         if candidate.is_dir() if directory else candidate.is_file():
@@ -121,7 +113,21 @@ def find_sidecar(package_dir: Path, names: list[str], directory: bool = False) -
 
 
 def collect_debug_info(package_dir: Path, suffix: str) -> list[dict[str, str]]:
-    """Debug sidecars staged beside the binary (soldr#786)."""
+    """The Windows PDB sidecar, if this is a Windows release -- and nothing else.
+
+    soldr#3038: this used to also look for `soldr.dwp` / `soldr.dSYM` in
+    `package_dir` and record them here. That path was dormant (the release
+    profile emitted no split-debug info at all) until soldr#786's follow-up
+    turned `split-debuginfo` on, and turning it on would have made this
+    function start recording `format: "dwp"` / `"dsym"` entries that
+    `zccache_contract.py::validate_release_manifest` -- the real code every
+    `setup-soldr` consumer runs -- hard-rejects (`format` must be `"pdb"`).
+    `package_dir` never receives a `.dwp`/`.dSYM` now (see
+    `stage_release_binaries.py::stage_debug_symbols`), so there is nothing
+    left here to intentionally not-collect; the docstring says so anyway
+    because the failure mode is silent and a future edit could easily wire a
+    sidecar back into `package_dir` without knowing why that is dangerous.
+    """
     entries: list[dict[str, str]] = []
     if suffix:
         pdb = find_sidecar(package_dir, ["soldr.pdb", "soldr_cli.pdb"])
@@ -132,12 +138,6 @@ def collect_debug_info(package_dir: Path, suffix: str) -> list[dict[str, str]]:
                 f"{package_dir} for Windows release; contents:\n{listing}"
             )
         entries.append({"name": pdb.name, "sha256": sha256_file(pdb), "format": "pdb"})
-    dwp = find_sidecar(package_dir, ["soldr.dwp", "soldr_cli.dwp"])
-    if dwp is not None:
-        entries.append({"name": dwp.name, "sha256": sha256_file(dwp), "format": "dwp"})
-    dsym = find_sidecar(package_dir, ["soldr.dSYM", "soldr_cli.dSYM"], directory=True)
-    if dsym is not None:
-        entries.append({"name": dsym.name, "sha256": sha256_dsym(dsym), "format": "dsym"})
     return entries
 
 
@@ -161,7 +161,9 @@ def build_manifest(
             "target": target,
             "binary": f"soldr{suffix}",
             "sha256": digests["soldr"],
-            "sidecars": [{"name": f"soldr-daemon{suffix}", "sha256": digests["soldr-daemon"]}],
+            "sidecars": [
+                {"name": f"soldr-daemon{suffix}", "sha256": digests["soldr-daemon"]}
+            ],
             "debug_info": debug_info,
             "commit_sha": commit_sha,
         },

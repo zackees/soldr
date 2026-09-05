@@ -192,7 +192,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
                 "broker-facing SESSION endpoint was not configured",
             ))
         })?;
-    let handoff_listener = crate::daemon::session_endpoint::resolve_handoff_listener(&paths)?;
+    let handoff_endpoint = crate::daemon::session_endpoint::resolve_handoff_endpoint(&paths)?;
 
     // soldr#2436 phase 2: bound the journal, attribute any un-drained
     // predecessor, then record this start with version + exe identity.
@@ -234,14 +234,17 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     ));
     let (compile_readiness, compile_publisher) =
         crate::daemon::session_endpoint::CompileServiceReadiness::pending();
+    // soldr#3102: the handoff endpoint runs on its own control-plane
+    // runtime so the broker's 5 s ACK budget never competes with compile
+    // runtime workers parked in the embedded cache's synchronous hit path.
     let (session_handle, handoff_handle) =
         crate::daemon::session_endpoint::spawn_session_endpoint_servers(
             session_listener,
-            handoff_listener,
+            handoff_endpoint,
             compile_readiness,
             paths.clone(),
             session_mux,
-        );
+        )?;
 
     // Embedded zccache initializes asynchronously. The first operation that
     // actually needs it awaits this task through `CompileServiceReadiness`;
@@ -328,6 +331,10 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         compile_service,
     });
 
+    // soldr#3096: registered before the accept loop -- see the terminate
+    // hook below for why this must precede readiness.
+    let terminate_signal = crate::platform::process::signal::wait_for_terminate_signal();
+
     let accept_state = state.clone();
     let accept_handle = match control_listener {
         Some((listener, _identity)) => tokio::spawn(async move {
@@ -349,6 +356,13 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         })
     });
 
+    let owner_handle = opts.owner_pid.map(|owner_pid| {
+        let owner_state = state.clone();
+        tokio::spawn(async move {
+            run_owner_watchdog(owner_state, owner_pid).await;
+        })
+    });
+
     let maintenance_context = crate::daemon::maintenance::MaintenanceContext {
         paths: paths.clone(),
         db_path: state.db_path.clone(),
@@ -359,32 +373,86 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         crate::daemon::maintenance::run_loop(maintenance_context).await;
     });
 
+    // soldr#3038 / soldr#3057: opt-in, fail-fast RSS ceiling watchdog.
+    // Spawned only when `SOLDR_DAEMON_RSS_CEILING_BYTES` parses to a
+    // positive byte count, so an ordinary daemon start (the overwhelming
+    // common case) pays no extra timer, file write, or mimalloc stats call
+    // at all -- see `rss_ceiling`'s module docs for the full design
+    // rationale, including why a breach now dumps memory and exits rather
+    // than recording and continuing. The sampled profiler must be started
+    // before the watchdog can produce a useful heap.pprof on breach, and
+    // only when a ceiling is actually configured -- same gate, same call.
+    let rss_ceiling_bytes = crate::daemon::rss_ceiling::ceiling_bytes_from_env();
+    crate::daemon::rss_ceiling::start_sampled_profiler_if_configured(rss_ceiling_bytes);
+    let rss_ceiling_handle = rss_ceiling_bytes.map(|ceiling_bytes| {
+        let rss_paths = paths.clone();
+        let rss_shutdown = Arc::clone(&state.shutdown);
+        tokio::spawn(async move {
+            crate::daemon::rss_ceiling::run_watchdog(
+                rss_paths,
+                rss_shutdown,
+                ceiling_bytes,
+                crate::daemon::rss_ceiling::ProcessRole::Daemon,
+            )
+            .await;
+        })
+    });
+
     let signal_state = state.clone();
     tokio::spawn(async move {
         if (tokio::signal::ctrl_c().await).is_ok() {
             signal_state.shutdown.request();
         }
     });
-    // Issue #1286 (F1): SIGTERM previously killed the daemon without
-    // the graceful-drain path below, silently discarding the embedded
-    // zccache's in-memory artifact index + depgraph — a full cold
-    // cache on the next daemon start. `pkill soldr-daemon`, container
-    // stop, and service managers all send TERM, not INT. The signal
-    // wait lives in the platform process facade (Windows parks the
-    // hook — there is no POSIX SIGTERM to wait for).
-    let term_state = state.clone();
+    // Issue #1286 (F1) originally hooked SIGTERM into this same graceful
+    // path so `pkill soldr-daemon` / container stop / service managers
+    // (which all send TERM, not INT) would drain the embedded zccache's
+    // in-memory artifact index + depgraph instead of discarding it.
+    //
+    // soldr#3059 reverses that. Measurement showed the drain this path
+    // triggers is unbounded in practice (maintenance's `spawn_blocking`
+    // deletion worker, an untimed zccache publication barrier), while a
+    // container SIGKILLs ~10s after TERM and systemd's default is ~90s —
+    // both well under the 240s watchdog grace below. "Drain gracefully"
+    // therefore meant "get SIGKILLed mid-drain": the same state loss the
+    // graceful path exists to avoid, plus a blocked supervisor on top.
+    // Fast and honest beats slow and killed.
+    //
+    // SIGTERM now takes a fast path directly from this task
+    // (`fast_exit_on_signal` below) instead of calling
+    // `state.shutdown.request()` — see that function's doc comment for why
+    // going through the shared flag (which SIGINT and every other shutdown
+    // trigger still use) is not equivalent here. SIGINT is deliberately
+    // left on the graceful path: it is normally sent interactively
+    // (Ctrl-C at a terminal), where the operator can escalate to SIGKILL
+    // themselves if a slow drain is unwelcome, unlike the fixed, short
+    // supervisor grace periods SIGTERM has to survive. The signal wait
+    // lives in the platform process facade. On Windows (soldr#3096) the
+    // "signal" is a named terminate event that `signal_pid(pid, false)`
+    // sets; the name printed below stays "SIGTERM" because that is the
+    // lifecycle contract's word for it and the event is precisely the
+    // Windows equivalent. The future is constructed *before* the task is
+    // spawned because the Windows implementation registers its event at
+    // call time -- a stop that races the task's first poll must still
+    // find it (see `platform/process/signal.rs`); it is therefore
+    // constructed above, before the accept loop that makes the daemon
+    // observably ready is spawned.
+    let term_paths = paths.clone();
     tokio::spawn(async move {
-        if crate::platform::process::signal::wait_for_terminate_signal().await {
-            term_state.shutdown.request();
+        if terminate_signal.await {
+            fast_exit_on_signal(&term_paths, "SIGTERM");
         }
     });
 
     state.shutdown.wait().await;
-    arm_shutdown_watchdog();
+    arm_shutdown_watchdog(paths.clone());
     accept_handle.abort();
     session_handle.abort();
     handoff_handle.abort();
     if let Some(handle) = idle_handle {
+        handle.abort();
+    }
+    if let Some(handle) = owner_handle {
         handle.abort();
     }
     let shutdown_phase = |name| {
@@ -403,6 +471,13 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // allowed to finish. In particular, await its spawn_blocking deletion
     // worker before releasing root ownership.
     let _ = maintenance_handle.await;
+    // Same shutdown-aware loop shape as maintenance_handle (it selects on
+    // `shutdown.wait()` internally and returns promptly), so it is awaited
+    // rather than aborted -- an abort mid-write could leave a torn
+    // `rss-ceiling-v1.json` behind.
+    if let Some(handle) = rss_ceiling_handle {
+        let _ = handle.await;
+    }
 
     // L4 (issue soldr#980): drain whatever the background event flusher
     // has staged in memory before the daemon process exits. Must run
@@ -432,6 +507,90 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     Ok(())
 }
 
+/// SIGTERM's fast-exit path (soldr#3059). Never returns.
+///
+/// Called directly from the SIGTERM-wait task above, NOT via
+/// `state.shutdown.request()`. That distinction is load-bearing, not
+/// stylistic: the ordinary shutdown flag is read exactly once, by the
+/// `state.shutdown.wait()` call near the top of `run_async`'s teardown. If
+/// a graceful drain triggered by something else — idle timeout, owner
+/// death, an explicit `soldr daemon stop` — is already in flight when
+/// SIGTERM arrives (the realistic escalation case: a supervisor asks
+/// nicely, then insists), that `wait()` call has already returned and
+/// nothing re-reads the flag again. Setting it a second time would be
+/// silently absorbed, and the daemon would keep draining until the 240s
+/// watchdog — exactly the slow-then-killed outcome this path exists to
+/// avoid. Calling `std::process::exit` straight from this task instead
+/// fires unconditionally, at any point in the daemon's life, regardless of
+/// what else is running — the same shape `rss_ceiling::die_on_breach` uses
+/// to call `std::process::exit` directly rather than routing through
+/// `ShutdownSignal`, for the same reason: a process in a state that
+/// justifies skipping the graceful path cannot wait for that path's own
+/// machinery to notice.
+///
+/// Ordered so the one genuinely corruption-preventing step happens first
+/// and cannot be skipped by an early return:
+///
+/// 1. Append `died-signal-fast` to the lifecycle JSONL soldr owns outright
+///    (`crate::daemon::lifecycle::append_lifecycle_event` — the same
+///    writer `died-idle` / `died-shutdown` already use, not a
+///    reimplementation). This one line is both the shutdown-reason record
+///    *and* the end-of-stream marker the owner asked for: because its
+///    reason string carries the existing `died-*` prefix,
+///    `detect_unclean_shutdown` (`lifecycle/journal_hygiene.rs`) already
+///    recognizes it as a deliberate exit rather than a crash needing an
+///    `unclean-shutdown-detected` record on the next start — see
+///    `journal_hygiene_tests::dead_pid_with_died_signal_fast_record_is_not_reported`.
+///
+///    `compile_journal.jsonl` was considered instead, or as well — it is
+///    the append-only stream a reader most needs to trust — but it is
+///    written by a background thread inside the *vendored* zccache crate
+///    via un-atomic, multi-`write()` `writeln!` calls, with no public API
+///    to request a bounded flush or to have it write a marker of its own.
+///    Appending to it from a second, soldr-owned file handle while that
+///    thread might be mid-write would be a new corruption source this
+///    path must not introduce, so it is left untouched. A reader who wants
+///    to know whether a given daemon generation's compile journal is
+///    complete gets the answer from the lifecycle event instead:
+///    `died-signal-fast` means "this generation exited without draining
+///    its compile journal — trust it only up to whatever it had already
+///    written before this signal, and do not assume a clean-looking last
+///    line means nothing more was coming."
+/// 2. `eprintln!` naming the signal, the pid, and what was (the marker)
+///    and was not (the state DB, the embedded compile cache) flushed.
+/// 3. `std::process::exit(1)`.
+///
+/// Deliberately skipped, with justification rather than silent omission:
+///
+/// - `maintenance_handle` — explicitly out of scope: it can hold the root
+///   maintenance lease through an in-progress destructive `spawn_blocking`
+///   deletion pass with no cancellation point.
+/// - `state.event_batcher.shutdown()` — an unbounded await on a SQLite
+///   write via a `oneshot` ack. SQLite's own crash safety (WAL) means an
+///   abrupt exit here loses at most the not-yet-flushed tail and never
+///   corrupts the file, so skipping it degrades to "a bit more cold," not
+///   "broken."
+/// - `shutdown_compile_service` — the embedded zccache drain: an untimed
+///   publication write barrier plus an index-writer join. Same
+///   crash-safety argument, and the same reason a real memory-ceiling
+///   breach (`die_on_breach` above) also skips straight past it.
+///
+/// Neither skipped step writes anything append-only and otherwise
+/// unprotected the way `compile_journal.jsonl` is — which is exactly why
+/// that file (via the lifecycle event referencing it) needed a marker and
+/// these do not.
+fn fast_exit_on_signal(paths: &SoldrPaths, signal_name: &str) -> ! {
+    crate::daemon::lifecycle::append_lifecycle_event(paths, "died-signal-fast");
+    eprintln!(
+        "soldr-daemon: {signal_name} received (pid {pid}); taking the fast-exit path \
+         (soldr#3059) instead of the graceful drain -- lifecycle end-of-stream marker \
+         'died-signal-fast' written; state DB and embedded compile-cache drains \
+         skipped (unbounded, not corruption-risking); exiting 1",
+        pid = std::process::id(),
+    );
+    std::process::exit(1);
+}
+
 /// Env override for [`SHUTDOWN_WATCHDOG_GRACE`], in seconds. `0` disables.
 pub const SHUTDOWN_WATCHDOG_ENV_VAR: &str = "SOLDR_SHUTDOWN_WATCHDOG_SECS";
 
@@ -439,6 +598,20 @@ pub const SHUTDOWN_WATCHDOG_ENV_VAR: &str = "SOLDR_SHUTDOWN_WATCHDOG_SECS";
 ///
 /// Deliberately under `GRACEFUL_SHUTDOWN_WAIT_TIMEOUT` (300s) so the process
 /// is gone before the client gives up and reports failure.
+///
+/// soldr#3059: SIGTERM no longer goes through this budget at all —
+/// `fast_exit_on_signal` above exits within milliseconds, before
+/// `state.shutdown.wait()` even needs to return. This grace period now
+/// guards only the triggers that still take the graceful path: idle
+/// timeout, owner-process death, an explicit `soldr daemon stop`, and
+/// SIGINT. None of those race an external supervisor's kill deadline the
+/// way SIGTERM did (container ~10s, systemd default ~90s) — they are
+/// either self-paced (idle, owner death) or bounded from the client side by
+/// the 300s `GRACEFUL_SHUTDOWN_WAIT_TIMEOUT` this constant was already
+/// sized against. So there is no forcing function to lower 240s in this
+/// pass, and it is left unchanged; if `soldr daemon stop` wants a tighter
+/// bound in the future that is a question about the CLI-side timeout, not
+/// this watchdog.
 pub const SHUTDOWN_WATCHDOG_GRACE: Duration = Duration::from_secs(240);
 
 pub(crate) fn shutdown_watchdog_grace() -> Option<Duration> {
@@ -461,20 +634,37 @@ pub(crate) fn parse_watchdog_grace(raw: Option<&str>) -> Option<Duration> {
 
 /// Guarantee the process exits once teardown has started.
 ///
-/// Every step after this point is a best-effort flush, and several are
-/// unbounded: the maintenance join waits out an in-flight pass whose
-/// `spawn_blocking` deletion worker cannot be cancelled, the embedded
-/// zccache drain takes an untimed publication write barrier and joins its
-/// index writer, and dropping the multi-thread runtime waits for every
-/// outstanding blocking task. Any one of them wedging left a daemon alive
-/// forever holding the route claim and endpoints — and the CLI
-/// deliberately never force-kills a daemon that acknowledged shutdown, so
-/// nothing else bounded it.
+/// Covers only the graceful shutdown triggers (idle timeout, owner death,
+/// `soldr daemon stop`, SIGINT) — SIGTERM bypasses this backstop entirely
+/// by exiting from `fast_exit_on_signal` before `state.shutdown.wait()`
+/// even returns (soldr#3059; see that function's and
+/// [`SHUTDOWN_WATCHDOG_GRACE`]'s doc comments).
+///
+/// Every step the graceful path still takes after this point is a
+/// best-effort flush, and several are unbounded: the maintenance join
+/// waits out an in-flight pass whose `spawn_blocking` deletion worker
+/// cannot be cancelled, the embedded zccache drain takes an untimed
+/// publication write barrier and joins its index writer, and dropping the
+/// multi-thread runtime waits for every outstanding blocking task. Any one
+/// of them wedging left a daemon alive forever holding the route claim and
+/// endpoints — and the CLI deliberately never force-kills a daemon that
+/// acknowledged shutdown, so nothing else bounded it.
 ///
 /// A detached OS thread, NOT a tokio task: it has to fire even when the
 /// runtime is stalled or its blocking pool is fully occupied, which is
 /// exactly the situation it exists for.
-fn arm_shutdown_watchdog() {
+///
+/// soldr#3059: this originally called `std::process::exit(0)` on expiry,
+/// telling a supervisor, a test, or a CI lane that watched the exit status
+/// that a daemon which blew its entire [`SHUTDOWN_WATCHDOG_GRACE`] exited
+/// cleanly. A first pass changed that to a distinctive `124` (the GNU
+/// `timeout(1)` convention); the owner then asked for plain
+/// [`SHUTDOWN_WATCHDOG_EXIT_CODE`] (`1`) instead — see that constant's doc
+/// comment for what that costs and why it was still the right call. A
+/// clean drain (the normal `Ok(())` return from the caller) still reaches
+/// the process's ordinary `main` exit path and still exits 0; only this
+/// expiry arm changes.
+fn arm_shutdown_watchdog(paths: SoldrPaths) {
     let Some(grace) = shutdown_watchdog_grace() else {
         return;
     };
@@ -484,13 +674,41 @@ fn arm_shutdown_watchdog() {
             std::thread::sleep(grace);
             tracing::error!(
                 grace_secs = grace.as_secs(),
+                exit_code = SHUTDOWN_WATCHDOG_EXIT_CODE,
                 "graceful shutdown did not complete within the watchdog grace; \
                  exiting now. Cache state may not be fully flushed."
             );
-            std::process::exit(0);
+            // Record the expiry in the lifecycle JSONL before exiting: the
+            // ordinary `died-idle`/`died-shutdown` event at the end of the
+            // graceful path may never run if teardown is genuinely wedged,
+            // so without this line a watchdog-forced exit and a clean one
+            // are indistinguishable in the log.
+            crate::daemon::lifecycle::append_lifecycle_event(
+                &paths,
+                "shutdown-watchdog-expired",
+            );
+            std::process::exit(SHUTDOWN_WATCHDOG_EXIT_CODE);
         })
         .ok();
 }
+
+/// Non-zero exit code for a watchdog-forced exit (soldr#3059).
+///
+/// A first pass set this to `124` (the GNU coreutils `timeout(1)`
+/// convention) specifically so it would read as distinct from
+/// `rss_ceiling::die_on_breach`'s plain `1` for a memory-ceiling breach.
+/// The owner overruled that: this is `1` too. Exit code alone therefore no
+/// longer distinguishes "a stuck graceful drain" from "an over-budget
+/// process" (or, since soldr#3059, from `fast_exit_on_signal`'s own `1` on
+/// a fast SIGTERM exit) — that collapse is the owner's deliberate call, not
+/// an oversight reintroduced by accident. A caller that needs to tell
+/// these apart reads the lifecycle JSONL or the stderr line instead of the
+/// exit code: `shutdown-watchdog-expired` (this path) vs.
+/// `daemon_rss_ceiling_breach_dump_written` / a `memory-breach-*` dump
+/// directory (`die_on_breach`) vs. `died-signal-fast`
+/// (`fast_exit_on_signal`) are each unambiguous, and the process never
+/// writes more than one of them.
+const SHUTDOWN_WATCHDOG_EXIT_CODE: i32 = 1;
 
 fn existing_daemon_pid(paths: &SoldrPaths) -> Option<u32> {
     select_existing_daemon_pid(

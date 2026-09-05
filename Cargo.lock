@@ -380,9 +380,9 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "chacha20"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -1732,6 +1732,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mimalloc-pprof"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9143eb24178e618a9671d22074e2e64badd61454a1ae5c042325daf8238f5407"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2464,9 +2473,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.10.6"
+version = "4.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7368c4807d16fce675d432ac06b57c9012c50f3489e655d6c5df723d6aced042"
+checksum = "bd80808893f5ee0f7bc7a67e80dab33639baf8490ff2bc951523bce39a9b5d42"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2478,10 +2487,9 @@ dependencies = [
  "interprocess",
  "libc",
  "prost",
- "prost-build",
  "prost-types",
- "protox",
  "running-process-platform-internal",
+ "running-process-protocol",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2496,21 +2504,34 @@ dependencies = [
 
 [[package]]
 name = "running-process-platform-internal"
-version = "4.10.6"
+version = "4.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b9fe3f046648a8f529d231663e550809fe7cad48540fe39e81b173b1e4353f2"
+checksum = "5db7e27774c0464625c303241bee03cfa7456d871357d4f178849eff206a9346"
 dependencies = [
+ "blake3",
+ "dirs",
  "interprocess",
  "libc",
  "png",
  "sysinfo",
  "thiserror",
  "tokio",
- "toml",
  "widestring",
  "winapi",
  "windows-sys 0.61.2",
  "x11rb",
+]
+
+[[package]]
+name = "running-process-protocol"
+version = "4.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23da64d74781eb1b1060ba32df09279ca0facb6cd766f983efd1127495174e40"
+dependencies = [
+ "prost",
+ "prost-build",
+ "protox",
+ "thiserror",
 ]
 
 [[package]]
@@ -2842,7 +2863,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cache"
-version = "0.9.11"
+version = "0.9.13"
 dependencies = [
  "filetime",
  "fs2",
@@ -2866,7 +2887,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cli"
-version = "0.9.11"
+version = "0.9.13"
 dependencies = [
  "blake3",
  "cap-fs-ext",
@@ -2879,6 +2900,7 @@ dependencies = [
  "interprocess",
  "jwalk",
  "libc",
+ "mimalloc-pprof",
  "prost",
  "rayon",
  "reqwest",
@@ -2910,7 +2932,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-core"
-version = "0.9.11"
+version = "0.9.13"
 dependencies = [
  "fs2",
  "libc",
@@ -2929,7 +2951,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-daemon"
-version = "0.9.11"
+version = "0.9.13"
 dependencies = [
  "console-subscriber",
  "filetime",
@@ -2937,6 +2959,7 @@ dependencies = [
  "hex",
  "interprocess",
  "libc",
+ "mimalloc-pprof",
  "prost",
  "running-process",
  "rusqlite",
@@ -2958,7 +2981,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-fetch"
-version = "0.9.11"
+version = "0.9.13"
 dependencies = [
  "flate2",
  "fs2",
@@ -2983,7 +3006,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-platform"
-version = "0.9.11"
+version = "0.9.13"
 dependencies = [
  "blake3",
  "fs2",
@@ -4031,9 +4054,9 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.13.14"
+version = "1.13.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "668158e286f26294a5ed451c9a7f4f5cd80c5958b5db7b1a7750c7fe7f858ffd"
+checksum = "4a25d00d777eb3d42b7f50081985b90e8764735c30d89aec3f2145748e510fcd"
 dependencies = [
  "arc-swap",
  "bincode",

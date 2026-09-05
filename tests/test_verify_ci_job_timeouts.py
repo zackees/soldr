@@ -76,6 +76,21 @@ jobs:
     assert VERIFY.find_timeout_violations(workflow) == []
 
 
+def test_inputs_string_equality_gate_is_accepted() -> None:
+    # soldr#3076: _ci-target-run.yml selects a budget for the macOS Recovery
+    # guest mode by a string input rather than a boolean one. The comparison
+    # is against a quoted literal, so every branch is still static.
+    workflow = """\
+jobs:
+  direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.target_execution == 'x86_64-recovery' && 30 || inputs.run_pep517_smoke && 65 || 30 }}
+    steps:
+      - run: echo ok
+"""
+    assert VERIFY.find_timeout_violations(workflow) == []
+
+
 def test_conditional_with_out_of_range_branch_is_rejected() -> None:
     for value in (
         "${{ inputs.flag && 361 || 30 }}",

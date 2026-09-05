@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from conftest import maturin_release_build_command
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "build_release_wheel.py"
@@ -117,9 +118,7 @@ def test_source_build_environment_removes_cross_target_state() -> None:
 
 
 def test_source_build_environment_preserves_stricter_concurrency_limits() -> None:
-    env = wheel.source_build_environment(
-        {"CARGO_BUILD_JOBS": "1", "SOLDR_JOBS": "1"}
-    )
+    env = wheel.source_build_environment({"CARGO_BUILD_JOBS": "1", "SOLDR_JOBS": "1"})
     assert env["CARGO_BUILD_JOBS"] == "1"
     assert env["SOLDR_JOBS"] == "1"
 
@@ -136,20 +135,7 @@ def test_direct_maturin_command_is_release_locked(
     target: str, compatibility: str
 ) -> None:
     command = wheel.maturin_build_command(Path("maturin"), target)
-    assert command == [
-        "maturin",
-        "build",
-        "--release",
-        "--locked",
-        "--target",
-        target,
-        "--target-dir",
-        "target",
-        "--out",
-        "dist",
-        "--compatibility",
-        compatibility,
-    ]
+    assert command == maturin_release_build_command("maturin", target, compatibility)
 
 
 def test_environment_rejects_non_release_pep517_profile() -> None:

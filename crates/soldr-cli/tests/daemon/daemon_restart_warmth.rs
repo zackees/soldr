@@ -281,6 +281,53 @@ fn soldr_cargo_check(
 
 /// The embedded store's durable compile journal (soldr#2186 layout): the
 /// versioned daemon-state logs directory, not the unversioned session logs.
+/// Newest mtime of the embedded store's depgraph snapshot, if one exists.
+///
+/// The snapshot is what a dependency-graph batch save writes, so its
+/// appearance (or a fresh mtime on an existing one) is the observable that a
+/// save actually landed. `None` means no snapshot has been written yet.
+fn depgraph_snapshot_mtime(cache_dir: &Path) -> Option<std::time::SystemTime> {
+    fn newest(dir: &Path, found: &mut Option<std::time::SystemTime>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                newest(&path, found);
+            } else if path.file_name().is_some_and(|name| name == "depgraph.bin") {
+                if let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) {
+                    if found.is_none_or(|current| modified > current) {
+                        *found = Some(modified);
+                    }
+                }
+            }
+        }
+    }
+    let mut found = None;
+    newest(&cache_dir.join("cache").join("zccache"), &mut found);
+    found
+}
+
+/// Block until a depgraph save lands, or `budget` elapses.
+///
+/// "Lands" means the snapshot appears, or an existing one is rewritten with a
+/// newer mtime. Expiry is deliberately not an assertion: when the save already
+/// ran during the preceding build there is no further write to observe, and
+/// the caller's own orphan-count assertion is what decides the outcome either
+/// way.
+fn wait_for_depgraph_save(cache_dir: &Path, budget: Duration) {
+    let baseline = depgraph_snapshot_mtime(cache_dir);
+    let deadline = Instant::now() + budget;
+    while Instant::now() < deadline {
+        match (depgraph_snapshot_mtime(cache_dir), baseline) {
+            (Some(_), None) => return,
+            (Some(current), Some(before)) if current > before => return,
+            _ => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
+}
+
 fn compile_journal_path(cache_dir: &Path) -> PathBuf {
     cache_dir
         .join("cache/zccache/daemon-state/embedded-v1")
@@ -403,12 +450,17 @@ fn hard_killed_daemon_loses_at_most_one_save_batch() {
          save batch: {cold:#?}"
     );
 
-    // Let the 5s-polled batch trigger land its save (≥32 unsaved contexts
-    // make one due at the next tick). Three poll periods bound scheduler
-    // noise without masking anything: if batch saving were broken, no
-    // amount of waiting short of the 300s interval timer would save, and
-    // the assertion below would see every context orphaned.
-    std::thread::sleep(Duration::from_secs(15));
+    // Wait for the 5s-polled batch trigger to land its save (≥32 unsaved
+    // contexts make one due at the next tick) by watching for the depgraph
+    // snapshot to be written, rather than sleeping a fixed budget.
+    //
+    // soldr#2996: this was `sleep(Duration::from_secs(15))` — three poll
+    // periods spent unconditionally, on a test that is already serialized by
+    // `.config/nextest.toml`'s one-thread runtime group. The 15s ceiling is
+    // retained as the bound, so the falsifiability argument is unchanged: if
+    // batch saving were broken nothing would appear, the wait would expire,
+    // and the assertion below would still see every context orphaned.
+    wait_for_depgraph_save(&cache_dir, Duration::from_secs(15));
 
     let pid = guard.daemon_pid().expect("daemon PID publication");
     let _ = std::process::Command::new("kill")

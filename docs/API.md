@@ -74,7 +74,7 @@ Current cache behavior:
   state and compile journal live under
   `<soldr-root>/cache/zccache/daemon-state/embedded-v1/v<VERSION>/`.
   `SOLDR_CACHE_DIR` moves this compiler-store boundary; `ZCCACHE_CACHE_DIR`
-  affects auxiliary front-door/session, rust-plan, and rustfmt state, not the
+  affects auxiliary front-door/session and rustfmt state, not the
   service hosted by `soldr-daemon`. Soldr neither uses nor sweeps the
   standalone `~/.zccache` root
 - toolchain binaries (`rustc`, `rustfmt`, `clippy-driver`, etc.) are resolved directly from `RUSTUP_HOME` / `CARGO_HOME` / `PATH` before any `rustup` call; `rustup which` is only used as a fallback when the direct probe fails. The sole exception is when `RUSTUP_TOOLCHAIN` is explicitly set to a non-empty value — in that case soldr skips the direct probe and asks `rustup` for the matching toolchain binary so the pinned channel always wins
@@ -547,16 +547,33 @@ soldr ci-test --explain-plan --format json
 ```
 
 The stable host chain runs formatting and `soldr lint ci`, Clippy, exactly one
-Nextest test-profile build/run, and doctests. `soldr cargo check` is not run
-because Clippy subsumes the same workspace/all-targets host scope. Dependency
-policy fans out across `soldr cargo deny check bans`, `soldr cargo audit`, and
+Nextest test-profile build/run, and doctests. After Clippy, Nextest overlaps the
+serial Dylint libraries -> workspace analysis -> UI-test branch. Doctests start
+only after both branches complete. `soldr cargo check` is not run because
+Clippy subsumes the same workspace/all-targets host scope. Dependency policy
+then fans out across `soldr cargo deny check bans`, `soldr cargo audit`, and
 `soldr cargo machete`. Nextest runs from the workspace root, so
 `.config/nextest.toml` keeps its test groups, slow-test budgets, timeout grace
-period, and platform wrappers. By default the command fixes compiler work at
-one Cargo/Soldr job and one Nextest test thread. Explicit
-`CARGO_BUILD_JOBS`, `SOLDR_JOBS`, and `NEXTEST_TEST_THREADS` values are frozen
-into the plan instead; this keeps memory bounded without conflating compiler
-serialization with test-process concurrency.
+period, and platform wrappers. Unset `CARGO_BUILD_JOBS` and `SOLDR_JOBS`
+remain absent from the plan and stage environments, leaving Cargo's default
+jobserver policy and Soldr's canonical compiler admission in control. Explicit
+values are frozen into the plan byte-for-byte. `NEXTEST_TEST_THREADS` alone
+defaults to one test process. Nextest compilation completes before the fork,
+but individual tests intentionally launch nested Cargo/compiler fixtures.
+Those compiles and Dylint share Soldr's canonical shared/exclusive admission;
+their dynamic child-jobserver count is not converted into a global Cargo cap.
+Cgroup memory capacity remains diagnostic telemetry and is never applied as a
+global `CARGO_BUILD_JOBS` cap.
+
+The prescribed GitHub host lane also makes the Cargo front-door contract
+fail-closed during this command. `CARGO` names a shim that re-enters the
+source-built binary as `soldr cargo`, while a distinct bare `cargo` shim at the
+front of `PATH` rejects accidental bypasses. Cargo replaces `CARGO` with its
+own absolute path while launching build tooling, so the Nextest execution
+stage installs a target runner that restores the allowed shim immediately
+before each test process starts. Nested compiler fixtures remain supported
+when they invoke `$CARGO`. An intentional absolute path to another Cargo
+binary bypasses this name-based diagnostic; this guard is not an OS sandbox.
 
 All six repository Dylints are retained. They intentionally use their exact
 pinned nightly rather than the stable project toolchain. The command reads all
@@ -703,19 +720,24 @@ nightly artifacts into the repository's ordinary stable build tree:
 ```bash
 soldr dylint cook --workspace --all-targets
 soldr dylint cook --plan-only --json
+soldr dylint cook --tree tests --tests --target-root /path/to/repo/target
 ```
 
 The command resolves one exact Dylint nightly from the verified
 soldr-toolchain catalogue (or an explicit `--toolchain nightly-YYYY-MM-DD`),
 then verifies the installed compiler's full release and commit identity. It
-reconstructs a dependency skeleton and runs a check-shaped pass through
+reconstructs a dependency skeleton and runs a dependency-only pass through
 Soldr's normal compilation cache. `RUSTC_WORKSPACE_WRAPPER` and every
 `DYLINT_*` library variable are removed for this phase, so custom lint
 libraries are loaded only by the later real Dylint invocation.
 
-Outputs live under `target/dylint/target/<nightly>/`, matching Dylint 6's own
-workspace-check directory. The warm marker includes the observed compiler
-commit, manifests, lockfile, selected target/profile/features/packages,
+Outputs live under `target/dylint/target/<nightly>/` by default, matching
+Dylint 6's own workspace-check directory; `--tree tests` selects the second
+tree and changes the shape of the pass — see "Which tree" below. The pass is
+check-shaped for the default `analysis` tree and build-shaped for `tests`.
+
+The warm marker includes the observed compiler commit, manifests, lockfile,
+selected target/profile/features/packages,
 configuration, and wrapper identity. Workspace source contents are excluded,
 so editing only a local source file preserves the external-dependency layer.
 Conflicting nightly requirements from configured lint-library paths fail
@@ -729,11 +751,65 @@ payload all match. A normal invocation verifies the compiler again after any
 restore/install and reports `miss` after cooking or `skip` when the complete
 layer is already warm.
 
-Shape options are `--target`, `--release` / `--profile`, `--workspace`,
-repeatable `--package`, `--features`, `--all-features`,
-`--no-default-features`, `--all-targets`, `--tests`, `--benches`,
-`--examples`, repeatable `--config`, `--locked`, `--frozen`, and `--offline`.
-Ordinary `soldr cook` behavior is unchanged.
+Shape options are `--tree <analysis|tests>`, `--target-root <DIR>`,
+`--target`, `--release` / `--profile`, `--workspace`, repeatable `--package`,
+`--features`, `--all-features`, `--no-default-features`, `--all-targets`,
+`--tests`, `--benches`, `--examples`, repeatable `--config`, `--locked`,
+`--frozen`, and `--offline`. `--tree` and `--target-root` are the only two
+that are not forwarded to cargo: they select the target directory instead.
+`--tree` enters the cook key directly; `--target-root` is checked through the
+target directory the marker records. Ordinary `soldr cook` behavior is
+unchanged.
+
+#### Which tree: `--tree <analysis|tests>` (soldr#3042)
+
+There are two Dylint target trees and they are not interchangeable.
+`--tree analysis` (the default, and the only historical behavior) prepares
+`target/dylint/target/<nightly>/`, the tree `cargo dylint` analyses the
+workspace in. `--tree tests` prepares
+`target/dylint/tests/<nightly>-<host-triple>/`, the dependency layer the
+Dylint UI-test stages of `soldr ci-test` compile their `trybuild`/UI
+harnesses against (`dylint_testing` -> `compiletest_rs`, `git2`,
+`libgit2-sys`, plus `dylint`'s own build script).
+
+Three things change with `--tree tests`, and each is required for the cooked
+artifacts to be *reused* rather than merely present:
+
+* **Shape.** The pass is build-shaped (`cargo build`) rather than
+  check-shaped. `cargo check` emits `.rmeta` under a different fingerprint
+  mode than the `cargo test` the UI-test stage runs, so a check-shaped cook
+  of this tree would be recompiled wholesale on first use.
+* **Directory naming.** The channel segment carries the host triple, because
+  that is how `soldr ci-test` names the tree it passes to `--target-dir`.
+  The analysis tree keeps its bare `<nightly>` segment, because that is what
+  `cargo dylint` picks for itself. The two rules genuinely disagree, and the
+  cook deliberately follows each tree's own consumer.
+* **Environment.** The cook applies the same `dylint`/`dylint-link`
+  bootstrap `PATH`, `SOLDR_LINKER=default`, and `SOLDR_NO_GC_TARGET=1` that
+  `soldr ci-test` gives every Dylint stage. `SOLDR_LINKER` is load-bearing:
+  Soldr's linker injection rewrites `RUSTFLAGS`, and `RUSTFLAGS` is in every
+  unit's fingerprint.
+
+`--target <TRIPLE>` is rejected together with `--tree tests`: the UI-test
+stages compile for the host only, so a cross-target cook would land its
+artifacts one directory deeper than Cargo will look.
+
+`--target-root <DIR>` overrides where `target/dylint/...` is rooted. Each
+lint crate under `dylints/` is its own Cargo workspace, so a tests-tree cook
+runs with the working directory inside `dylints/<lint>` while the tree it
+must fill belongs to the *repository*. A relative path resolves against the
+current directory. Without the flag, the tree would be created at
+`dylints/<lint>/target/...`, which
+`.github/scripts/verify_dylint_target_dirs.py` rejects.
+
+The two trees never share a cook key: the tree name is folded into the cache
+digest, so one tree's marker can never satisfy the other's.
+
+`.github/scripts/cook_dylint_tests_tree.py` is the CI driver — it runs one
+`--tree tests` cook per `dylints/*` crate before `soldr ci-test` starts.
+Neither tree is uploaded anywhere: the cook fills an in-run target tree, and
+cross-run reuse comes from the per-unit object store
+(see `ci/cache-ownership.json`).
 
 ### `soldr cook`
 
@@ -854,6 +930,20 @@ Recognised `soldr save` flags:
   sockets, lock files, runtime scratch, zccache runtime binaries, and
   soldr-managed binary/toolchain trees from the cache payload while
   preserving cache artifacts and manifest state needed for warm rustc hits.
+- `SOLDR_SAVE_PROFILE=cook` — cook payload profile (soldr#2996). For a
+  cargo target directory rather than a soldr cache dir. Keeps the
+  dependency graph — `deps/*.rlib` / `*.rmeta` / shared libraries,
+  `.fingerprint/`, and everything under `build/` including the
+  extensionless `build-script-build` executables Cargo needs to
+  rematerialize a closure — and drops what a build layers on top:
+  linked binaries and test executables, `incremental/`, `examples/`,
+  `doc/`, test trees, and debug sidecars.
+
+  The motivating case is zackees/setup-soldr#499: the cook cache layer
+  archives the target dir from a *post* step, by which point the real
+  build has written its binaries into the same tree, turning an 83 MiB
+  cook slice into a 1.62 GB entry. Selecting this profile fixes the
+  payload without moving when the archive is written.
 - `--json` — emit a JSON summary. Save JSON includes
   `profile`, `source_files`, `cache_files`, `excluded_files`,
   `excluded_bytes`, `archive_bytes`, and `elapsed_ms`.
@@ -1250,7 +1340,7 @@ Probes (run in stable order):
    cargo `.fingerprint/` directory. Mirrors the prepopulated-target
    detector landed in PR #508. Reports `would_warn: true` when at least
    one fingerprint dir is found, signalling that a subsequent
-   `soldr cargo build` may collide with the rust-plan restore path.
+   `soldr cargo build` may collide with the cook hydrate path.
 
 Exit code: `0` when every probe reports `ok: true`, `1` otherwise.
 
@@ -1819,12 +1909,21 @@ production `.soldr`, development `.soldr-dev`, or an explicit
 `.zccache` is owned only by a standalone zccache daemon; Soldr never discovers,
 migrates, links into, or deletes it.
 
-The daemon stays resident by default, performs a lightweight pressure check
-every five minutes, and performs a full age pass every 24 hours. The last
+The daemon performs a lightweight pressure check every five minutes and a full
+age pass every 24 hours, and exits after 30 minutes without work. The last
 completed full pass and the latest structured report are stored under
-`<root>/cache/soldr-daemon/`, so an overdue restart catches up immediately.
-Nonzero `soldr daemon start --idle-timeout <seconds>` remains an explicit
-auto-exit option. Soldr does not install Task Scheduler jobs, systemd timers,
+`<root>/cache/soldr-daemon/`, so an overdue restart catches up immediately and
+the schedule survives the exit. `soldr daemon start --idle-timeout <seconds>`
+sets a different budget.
+
+`soldr-daemon --owner-pid <PID>`, or `SOLDR_DAEMON_OWNER_PID`, ties a daemon's
+lifetime to another process: it exits once that process is gone, however the
+process ended. This is for callers that own a throwaway root, such as a test
+fixture with its own `SOLDR_CACHE_DIR`. A broker route is keyed on the soldr
+root, so each such caller gets a daemon of its own, and without an owner a
+fixture that is killed rather than shut down leaves that daemon resident.
+Liveness is polled at the idle interval, so a PID reused within one interval
+can be mistaken for the original owner. Soldr does not install Task Scheduler jobs, systemd timers,
 launchd agents, or any other OS scheduler.
 
 The embedded artifact budget defaults to 5% of filesystem capacity, clamped to
@@ -2094,9 +2193,9 @@ Commands:
 | `SOLDR_RELOCATED_EXE` | Internal recursion guard set after Windows self-relocation | unset |
 | `SOLDR_ORIGINAL_EXE` | Internal path to the original executable when Windows self-relocation is active | unset |
 | `SOLDR_ZCCACHE_SESSION_DIR` | Internal session/report directory passed from `soldr cargo ...` into wrapper mode | unset |
-| `SOLDR_ZCCACHE_PRIVATE` | Opt-in private auxiliary session/rust-plan root. When truthy (`1`/`true`/`yes`/`on`), `soldr cargo ...` routes that state to `<cwd>/.zccache` and `soldr save`/`soldr hydrate` (`load` alias) default `--cache-dir` to the same path when omitted. It does **not** relocate the compiler-artifact service embedded in `soldr-daemon`; use `SOLDR_CACHE_DIR` for a fully isolated embedded compiler store. Explicit `ZCCACHE_CACHE_DIR` (front door) or `--cache-dir` (save/load) always wins. | unset |
-| `SOLDR_SAVE_PROFILE` | Default payload profile for `soldr save` when `--ci` / `--minimal` is not passed. Values: `full`/`default`/`complete` for historical all-files archives, or `ci`/`minimal` for the CI/minimal profile that excludes runtime-only files, zccache runtime binaries, and reports `excluded_files` / `excluded_bytes`. CLI flags win over the env var. | `full` |
-| `ZCCACHE_CACHE_DIR` | Auxiliary zccache front-door/session, rust-plan, and direct-rustfmt cache-root override. It does not relocate the compiler service embedded in `soldr-daemon`; use `SOLDR_CACHE_DIR` for that. `soldr cargo ...` ignores inherited values by default so stale workspace state from setup/action wrappers cannot bleed across projects; pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only when intentionally injecting this state. | unset |
+| `SOLDR_ZCCACHE_PRIVATE` | Opt-in private auxiliary session root. When truthy (`1`/`true`/`yes`/`on`), `soldr cargo ...` routes that state to `<cwd>/.zccache` and `soldr save`/`soldr hydrate` (`load` alias) default `--cache-dir` to the same path when omitted. It does **not** relocate the compiler-artifact service embedded in `soldr-daemon`; use `SOLDR_CACHE_DIR` for a fully isolated embedded compiler store. Explicit `ZCCACHE_CACHE_DIR` (front door) or `--cache-dir` (save/load) always wins. | unset |
+| `SOLDR_SAVE_PROFILE` | Default payload profile for `soldr save` when `--ci` / `--minimal` is not passed. Values: `full`/`default`/`complete` for historical all-files archives; `ci`/`minimal` for the CI/minimal profile that excludes runtime-only files, zccache runtime binaries, and reports `excluded_files` / `excluded_bytes`; or `cook` for archiving a cargo **target directory's dependency graph** while dropping the linked products soldr#2931 classifies tier 3. CLI flags win over the env var. | `full` |
+| `ZCCACHE_CACHE_DIR` | Auxiliary zccache front-door/session and direct-rustfmt cache-root override. It does not relocate the compiler service embedded in `soldr-daemon`; use `SOLDR_CACHE_DIR` for that. `soldr cargo ...` ignores inherited values by default so stale workspace state from setup/action wrappers cannot bleed across projects; pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only when intentionally injecting this state. | unset |
 | `ZCCACHE_SESSION_ID` | Per-build zccache session identifier set by soldr | unset |
 | `SOLDR_NATIVE_CACHE` | Native C/C++ compiler cache toggle. Falsy values (`0`/`false`/`no`/`off`) disable only cc-rs `CC`/`CXX` wrapper injection, leaving rustc-side zccache enabled. Useful when a target cross compiler, such as the managed MinGW `gcc.exe` / `g++.exe` path, must run directly while Rust compilation still uses the cache. | unset (on) |
 | `SOLDR_CARGO_WAIT_TIMEOUT_SECS` | Opt-in wall-clock watchdog for the Cargo child. Normal `soldr Cargo ...` invocations have no Soldr-imposed wall-clock deadline and may run for hours. A timeout terminates the process tree, records abort diagnostics, and returns failure without changing compile topology. | unset (no deadline) |
@@ -2112,16 +2211,12 @@ Commands:
 | `SOLDR_PEP517_LINKER` | PEP 517 backend only: `auto` (default) tries the fastest supported linker and caches a verified platform-linker fallback after a linker-availability failure; `none` / `default` / `off` disables the automatic attempt. An explicit `SOLDR_LINKER=fast` remains non-fallbacking. | `auto` |
 | `SOLDR_LOG` | Log level | `warn` |
 | `SOLDR_OFFLINE` | Disable network access for tool fetches | `false` |
-| `SOLDR_RUST_PLAN_MEMO` | Default-on: memoize the target-cache preparation subprocess outputs (`cargo metadata --format-version 1`, `rustc -Vv`, `cargo --version`) in a versioned protobuf memo under `<zccache cache dir>/plans/`, keyed by a content-identity hash over the workspace manifests, `Cargo.lock`, hierarchical `.cargo/config*`, metadata passthrough args, toolchain binary identity (path + size + mtime), rust-toolchain pins, rustup `settings.toml`, and the steering env vars (issue #1540). Any key mismatch, decode error, or discovery error falls back to the authoritative subprocesses. Set to a falsy value (`0` / `false` / `no` / `off`) to disable. | unset (on) |
 | `SOLDR_FETCH_OVERLAP` | Kill switch for the `soldr build --target <T>` dependency-prefetch overlap (issue #1543). By default the blessed build spawns a best-effort `cargo fetch --target <T>` concurrently with catalogue/SDK preparation so fresh-build time approaches max(fetch, prepare) instead of their sum; the prefetch is joined before the main cargo build spawns and any prefetch failure is logged and ignored. The overlap is automatically skipped for `--offline` / `--frozen` builds, truthy `CARGO_NET_OFFLINE`, or when no `Cargo.lock` exists. Set to `0` / `false` / `no` / `off` (case-insensitive) to disable. | unset (on) |
-| `SOLDR_RUST_PLAN_SKIP_WARM_RESTORE` | Default-on: skip `rust-plan restore` when `target/` is already warm from a prior step in the same GitHub Actions job + attempt (issue #229). Set to a falsy value (`0` / `false` / `no` / `off`) to opt out. | unset (on) |
 | `SOLDR_DYLINT_PREPARE_TTL_SECS` | Freshness window (seconds) for the dylint prepared-toolchain marker under `<soldr root>/dylint/prepared/v1/`. A fresh, valid marker lets a warm top-level `soldr cargo dylint` skip the nightly-map HTTP fetch and the `rustup component list` / `rustc -vV` probes entirely. `0` means never trust the marker (every run pays the full cold path). | `86400` (24 h) |
 | `SOLDR_DYLINT_REVERIFY` | Truthy (`1`/`true`) bypasses the dylint prepared-toolchain marker and always re-runs the full catalogue-fetch + rustup verification path. Use after manually mutating the nightly toolchain or when diagnosing identity mismatches. | unset |
 | `SOLDR_SOURCE_BUILD_CACHE` | Falsy (`0`/`false`/`no`/`off`) restores the historical fully-uncached source-build spawn. By default `soldr build-from-source` and dylint source preparation route compiler work through Soldr so fresh machines can reuse cached objects. | unset (cached) |
 | `SOLDR_TOOLCHAIN_BIN_CACHE` | `off` (case-insensitive) disables the in-process memo and on-disk cache (`<soldr root>/cache/toolchain-bins/v2/<rustup-home+host-scope>/<channel>/<tool>.path`) for channel-scoped `rustup which` binary resolution. The cache saves one `rustup which` subprocess spawn per tool per nested cargo-dylint re-entry; entries self-invalidate when the cached path no longer exists, and the v2 scope prevents one toolchain home or host architecture from reusing another's path. | unset (on) |
 | `DYLINT_DRIVER_PATH` | Soldr sets this on the dylint child process tree to `<soldr root>/dylint/drivers` (a stable soldr-owned home for cargo-dylint's per-toolchain driver builds) **only when the caller has not already set it** — an explicit caller value always wins. A fixed path means warm runs reuse the already-built driver and CI caches have a deterministic path to restore. | soldr-injected |
-| `SOLDR_TARGET_CACHE_MODE` | **Master toggle for target-cache.** `thin` enables thin-slice mode (zccache saves the rmeta/dep-info skeleton, restores it before `cargo build`). `full` enables full-target mode (zccache saves+restores the entire `target/` tree). `off` / `false` / `0` / `no` / empty / unset disables the feature entirely — `maybe_prepare_rust_artifact_plan` short-circuits to `Ok(None)` and no surrounding code (front-door, GC, registry) does any "free" work on this path. Designed for CI runners that can persist `~/.cache/zccache/` across runs; **off by default** because a local dev machine has nothing to save it to. CI workflows that want it set this explicitly (typically via `setup-soldr`). See [Target cache](#target-cache-default-off) for the contract. | unset (off) |
-| `SOLDR_TARGET_CACHE_TAR_THREADS` | Reader-thread count for the target-cache tar walk in zccache, AND for soldr's own thin-slice manifest walk (issue #272). `auto` lets each side pick a vCPU-bounded count (capped at 8). `1` disables parallelism (sequential walk). Any positive integer sets an explicit count, clamped to `[1, 8]` on the soldr side. soldr validates the value at the cargo front door and uses it when statting bundle files for the `manifest.v2.json` thin-slice manifest; the bulk multi-GB `target/` tar walk lives in zccache. | unset (`auto`) |
 | `SOLDR_LINKER` | Pick the linker injected for `soldr cargo ...` builds (issue #285). Accepted values: `default` (no injection — keep the rust-toolchain default), `ld` (system linker — also no injection on every supported platform), `mold` (Linux only; hard error elsewhere), `rust-lld` (Windows MSVC and Linux/MinGW via `clang -fuse-ld=lld`; **no-op on macOS** — see below), `fast` (mold on Linux when present on `PATH`, otherwise rust-lld; rust-lld on Windows MSVC; **no-op on macOS** — see below). The choice resolves to `CARGO_TARGET_<TRIPLE>_LINKER` and `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` injected into the spawned cargo process; the active target is the same one Cargo would pick (`--target` flag, `CARGO_BUILD_TARGET`, or the host triple). A `linker = "..."` field in `~/.soldr/config.toml` is honored when the env var is unset. On macOS targets `rust-lld` and `fast` fall back silently to the platform default linker (issue #509): Apple clang only accepts `-fuse-ld=lld` when the toolchain wires up an `ld64.lld` shim, and stock macOS toolchains do not — injecting it would break even `cc-rs` build-script compilations. | unset |
 | `SOLDR_QUIET_DEFENDER` | Suppress the once-per-day pre-build warning emitted by the cargo front door when Defender is actively scanning the soldr cache directory (issue #358). Truthy values silence the warning; the warning is also automatically suppressed in CI environments. | unset |
 | `SOLDR_OPTIMIZE_HELPER_OUTPUT` | Internal: set by the parent soldr process when it re-launches itself elevated via `--as-elevated-helper`. The elevated child writes its JSON status to this path so the parent can read and propagate it. | unset |
@@ -2133,6 +2228,7 @@ Commands:
 | `SOLDR_TEST_FORBID_SOURCE_BUILD` | Test-only tripwire (soldr#2436): truthy values make every source-build chokepoint (`build-from-source` cargo install, toolchain plugin install) error with a distinctive message instead of spawning cargo, so containment tests can prove no implicit compile path is reached. Never set in production. | unset |
 | `SOLDR_PROFILE_EXTRACT` | Env-var equivalent of `soldr hydrate --profile-extract` (`load` alias) (issue #575). Any non-empty value other than `0` enables the per-phase profile line on stderr after a load (`zstd_decode`, `tar_parse`, `extract_total`, per-worker job counts, per-file `p50`/`p95`/`p99`). Useful for tuning the parallel-extract worker count against real workloads. | unset |
 | `SOLDR_LOAD_WORKERS` | Cap on the parallel-extract worker pool used by `soldr hydrate` (`load` alias) (issue #575). Positive integer; wins over the explicit `--threads` flag. When unset, `--threads` (or rayon's `num_cpus` default) is used. | unset |
+| `SOLDR_DAEMON_RSS_CEILING_BYTES` (soldr#3038 / soldr#3057) | Optional, fail-fast ceiling on the resident set size of `soldr-daemon` *and* its `soldr-broker`, in bytes. Unset means no watchdog task is even spawned in either process, and the sampled mimalloc-pprof profiler is never started — zero behavior change for ordinary builds. When set to a positive integer, each process samples its own RSS every 2 s (`daemon::rss_ceiling::RSS_SAMPLE_INTERVAL`; deliberately not the 5-minute cache-maintenance cadence — see that module's docs), records the running peak and mimalloc's own exact `heap.committed`/`heap.detailed` counters alongside the OS RSS reading to `<SOLDR_CACHE_DIR>/cache/soldr-daemon/rss-ceiling-v1.json` (broker: under its own broker-owned root, e.g. `~/.config/running-process/soldr-broker/cache/soldr-daemon/` on Linux — `daemon::service_definition::broker_owned_paths`), and — as of soldr#3057 — on the first sample that exceeds the ceiling, writes a full memory dump to `<cache>/cache/soldr-daemon/memory-breach-<unix_millis>-<pid>/` (`heap.pprof` sampled profile, `mimalloc-stats.json` exact counters, `proc-self-status.txt` / `proc-self-smaps_rollup.txt` on Linux, `summary.json` naming the pid/role/ceiling/peak/dump path) and calls `std::process::exit(1)` immediately — no graceful drain. The sampled profiler (`mimalloc_pprof::prof::start`) is started at 16 KiB between samples (`daemon::rss_ceiling::HEAP_PROFILE_SAMPLE_INTERVAL_BYTES`) rather than the crate's own ~512 KiB default, so a process that breaches within seconds of startup still records real samples instead of an empty profile. `heap.pprof`'s `MAPPED_LIBRARIES` section names the exact on-disk binary and its load address ranges, so `addr2line -e <that binary>` (or `pprof -http=:0 <that binary> heap.pprof`) resolves the recorded stacks to real function names — this was verified directly against both a daemon and a broker breach dump while building soldr#3057 (e.g. `mi_theap_malloc_zero_aligned_at_overalloc`, `tokio::runtime::task::raw::RawTask::new`). The broker watches its own RSS independently, using the same env var, rather than reacting to a specific daemon's breach (see `rss_ceiling`'s and `broker_server.rs`'s module docs for why). A caller driving a build through this must check for the breach dump *before* trusting a resulting transport error — see `crates/soldr-cli/tests/daemon/daemon_rss_ceiling.rs`'s `assert_build_succeeded_or_report_breach`. Intended for CI/test use, not for production ceilings. | unset (no ceiling, no watchdog, no sampled profiler) |
 
 **Windows: keep `SOLDR_CACHE_DIR` short.** Under the cache root soldr appends a
 fixed staging suffix of roughly 143 characters
@@ -2167,7 +2263,9 @@ On the normal embedded path, `soldr cargo ...` resolves a fresh Soldr
 workspace context by default. It preserves normal process environment used by
 Cargo, Rust, proxies, certificates, CI, and platform SDKs, but ignores
 inherited Soldr/zccache workspace-pinned state such as `ZCCACHE_CACHE_DIR`,
-`SOLDR_TARGET_CACHE_*`, `SOLDR_TARGET_REGISTRY_RECORDED`, and `SETUP_SOLDR_*`.
+`SOLDR_TARGET_REGISTRY_RECORDED`, and `SETUP_SOLDR_*`. The `SOLDR_TARGET_CACHE_*`
+family is still scrubbed defensively even though soldr#2996 removed the target
+cache soldr used to read them for -- a pinned setup-soldr may still export them.
 Pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only
 for advanced workflows that intentionally inject those values. Custom wrapper
 modes leave caller-provided wrapper environment alone; when
@@ -2205,153 +2303,6 @@ and never changes ownership based on `ZCCACHE_CACHE_DIR`. Use
 `soldr cache shutdown` when the whole Soldr daemon must exit.
 
 On Windows, soldr may copy the running `soldr.exe` into `SOLDR_CACHE_DIR/runtime/soldr-self/<version-and-hash>/soldr.exe` and re-run the command from that relocated copy before build orchestration starts. This keeps disposable worktree builds from repeatedly using the worktree-local `soldr.exe` as `RUSTC_WRAPPER`. The trampoline sets `SOLDR_RELOCATED_EXE=1` and `SOLDR_ORIGINAL_EXE=<original path>` as a recursion guard and preserves argv, inherited environment, stdio, and exit status. Stale relocated copies are purged by a best-effort runtime GC step that runs periodically and skips copies that cannot be removed because they are still locked.
-
-`SOLDR_RUST_PLAN_SKIP_WARM_RESTORE` is a default-on short-circuit for the `rust-plan restore` step. After a successful `rust-plan save`, soldr writes a sentinel next to the thin-slice bundle recording the plan inputs hash, target dir, `GITHUB_RUN_ID`, `GITHUB_JOB`, `GITHUB_RUN_ATTEMPT`, zccache session id, and a unix timestamp. On the next invocation, if the sentinel exists and every match field equals the current value — and the sentinel is no older than 5 minutes — soldr skips `rust-plan restore` and leaves the already-warm `target/` tree untouched. This avoids invalidating Cargo's mtime-based fingerprints when split CI steps share a checkout but spawn fresh shells per step (issue #229). The flag is enabled when unset; set it to a falsy value (`0`, `false`, `no`, `off`, or empty, case-insensitive) to opt out, and any other value (including the historical truthy spellings `1`, `true`, `yes`, `on`) keeps the short-circuit enabled. The gate is conservative: a missing, stale, or partially-mismatched sentinel falls through to the normal restore, so the short-circuit can never make a build less correct than the default path. Promoted to default-on after the #229 CI validation runs (PRs #247, #257, #260, #261, #262) landed cleanly on `main`.
-
-As of issue #1529, the cache-resident sentinel is only half of the proof. A
-successful save also writes a paired `.soldr-warm-restore.json` generation
-marker inside the live target directory. The next invocation skips restore
-only when both records parse and their unique generation id and plan hash
-match. `cargo clean` or whole-target deletion removes the marker naturally;
-missing, partial, corrupt, stale, and mismatched markers force the normal
-restore without a target-tree walk.
-
-### Target cache (default off)
-
-soldr's **target-cache** (also called the "rust-plan" path) save/restores
-`target/` artifacts via zccache so a fresh CI runner with a populated cache root
-can skip recompilation. It is **off by default** — the planner short-circuits
-the moment `SOLDR_TARGET_CACHE_MODE` is empty/unset and never touches cargo
-metadata, the tar walker, or the per-build registry. CI workflows that want it
-(typically through `setup-soldr`) set the env var explicitly to `thin` or
-`full`.
-
-Activation contract (verified against `rust_plan.rs` + `cargo_front_door/cache_plan.rs`
-in soldr#784):
-
-* `rust_artifact_cache_mode_from_env()` returns `Ok(None)` on the unset/off
-  branch. `maybe_prepare_rust_artifact_plan` short-circuits to `Ok(None)`
-  immediately — no `cargo metadata`, no `RustArtifactPlanContext` allocation,
-  no env-var fan-out.
-* `restore_rust_artifacts` is `let Some(plan) = … else { return Ok(()) }` — a
-  pure stat-free no-op when the plan is absent.
-* `save_rust_artifacts` is `if let Some(plan) = …` — same no-op shape.
-* `target_dir_for_hooks` falls through to `super::resolve_target_dir_for_hooks`,
-  which only walks `--target-dir` / `CARGO_TARGET_DIR` / workspace lookup. The
-  watchdog hook at `cargo_front_door/mod.rs` therefore sees the same target
-  dir resolution regardless of target-cache state.
-
-The corollary: a local dev machine running `soldr cargo build` with no
-`setup-soldr` involvement pays zero overhead for target-cache. The feature is
-opt-in by design.
-
-If a contributor runs `setup-soldr` locally (e.g. via `act` or a docker
-reproducer), the env vars get exported and the target-cache code DOES fire —
-that's intentional ("reproduce CI exactly"). To suppress it manually, unset
-`SOLDR_TARGET_CACHE_MODE` or set it to `off` before invoking `soldr cargo …`.
-
----
-
-## Cache Layout
-
-```text
-~/.soldr/
-|-- bin/
-|   `-- <tool>-<version>/
-|-- cache/
-|   |-- zccache/
-|   |   |-- daemon-state/
-|   |   |   `-- embedded-v1/
-|   |   |       `-- v<VERSION>/ # embedded artifacts, indexes, logs, journal
-|   |   `-- history/<build-id>/ # per-build session reports and journal tails
-|   `-- sccache/   # injected when SOLDR_RUSTC_WRAPPER=sccache and SCCACHE_DIR is unset
-|-- cargo-target/pep517/ # stable per-project PEP 517 Cargo targets
-|-- pep517/wheels/ # last successful wheels, bounded by daemon maintenance
-|-- runtime/
-|   `-- soldr-self/ # Windows self-relocated soldr.exe copies plus periodic GC marker
-|-- config.toml
-|-- state.sqlite3             # SQLite state store, including tracked target/ dirs
-|-- .gc_warning_marker     # last-emitted timestamp for the stale-target startup warning
-`-- daemon.*
-```
-
-Both wrapper-cache subdirectories live entirely under the soldr-owned cache root so they never collide with a user-managed `~/.zccache` or the system-default `sccache` location on the same machine.
-
----
-
-## Linux artifact glibc floors
-
-Which Linux artifact runs on an old distro is **not** one number. The two
-download routes are built by different toolchains and land on different
-floors, and the release archive's floor is set by binaries soldr does not
-compile at all.
-
-Measured with `readelf -V` on the published **v0.8.30** assets:
-
-| artifact | built by | floor |
-|---|---|---|
-| `soldr-…-x86_64-unknown-linux-gnu.tar.zst` → `soldr` | `soldr build` | GLIBC 2.39 |
-| …the same archive's `crgx` | fetched prebuilt | GLIBC 2.39 |
-| …the same archive's `cargo-chef` | fetched prebuilt | GLIBC 2.39 |
-| `soldr-…-manylinux_2_17_x86_64.whl` → `soldr` | `maturin build --zig` | **GLIBC 2.17** |
-| any `*-unknown-linux-musl` artifact | static | n/a |
-
-Three things follow, and the second is the one that surprises people.
-
-**The wheel really is manylinux_2_17.** `release-auto.yml` passes
-`--zig --compatibility manylinux_2_17` on the wheel lanes, so cargo-zigbuild
-links the embedded binary against a 2.17 baseline. The tag is enforced by
-`verify_wheel_glibc.py`, not merely asserted. On a distro too old for the
-archive, `pip install soldr` is the route that works.
-
-**The archive's floor is capped by `crgx` and `cargo-chef`.** Those are
-fetched prebuilt from the soldr-toolchain catalogue, so no change to how
-soldr builds *itself* can lower them — it needs an upstream republish. Even
-once `soldr` and `soldr-daemon` improve, an archive bundling 2.39 binaries
-does not fully run on RHEL 8 (2.28) or Debian 10 (2.28). Measure the archive,
-not just `soldr`, when answering "does the release run here".
-
-**soldr's own binaries improve after v0.8.30.** That release was tagged
-before soldr#2157, so its 2.39 reflects the old host-glibc link rather than
-current behaviour. GNU Linux targets now select the catalogue-backed glibc
-2.17 sysroot. The release ratchet remains until a real release run
-confirms the measured floor.
-
-### The directive: glibc 2.17, everywhere
-
-**The target floor for every Linux `-gnu` artifact is glibc 2.17.** The 2.28
-and 2.39 numbers above are the *current measured state*, not the goal, and the
-ratchets that encode them are waypoints to be lowered — not a settled policy.
-
-This is one requirement spanning three repos, because the archive's floor is
-the **highest** floor of any binary inside it:
-
-| repo | obligation |
-|---|---|
-| `zackees/forge` | recipes build against glibc 2.17 — this is where the tools are compiled |
-| `zackees/soldr-toolchain` | catalogued `-gnu` assets measure 2.17 or lower; deps above it get recompiled |
-| `zackees/soldr` (here) | own binaries reach 2.17; ratchets lowered once measured |
-
-Fixing only soldr's own binaries does **not** deliver a 2.17 archive:
-`crgx` and `cargo-chef` are fetched prebuilt at 2.39 and cap the result on
-their own. Those need an upstream rebuild.
-
-**Do not reach for zig or `cargo-zigbuild` to get there.** Both are being
-purged in favour of the blessed toolchain, so any 2.17 route built on them is
-a dead end. Reaching 2.17 is a matter of *building against an old sysroot*,
-which is toolchain-agnostic.
-
-One open question worth settling before designing around either answer:
-whether Rust's precompiled `std` blocks 2.17 for a stock build. The evidence
-cuts both ways — the wheel lane reaches 2.17 with the same `std`, while
-`__cxa_thread_atexit_impl@2.18`, `getrandom@2.25` and `statx@2.28` have been
-observed as already-versioned references. Resolve it by building in a
-glibc-2.17 container with the pinned rustc and reading `readelf -V`: a 2.17
-result means the blessed toolchain needs only an old sysroot, while a 2.28
-result means 2.17 requires `-Z build-std` and is a materially larger decision.
-Background in soldr#2145 and soldr#1060.
-
----
 
 ## GitHub Actions
 

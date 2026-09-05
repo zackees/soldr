@@ -840,14 +840,34 @@ fn runtime_alias_targets(
 /// injects this stable basename into `CC`/`CXX` so cc-rs build-script
 /// compiles route through the soldr-daemon embedded zccache service
 /// over the `Request::Compile` IPC verb.
+///
+/// The shim must be version-scoped just like the Rust compiler shim. A test
+/// process running an older bootstrapped Soldr can overlap the source-built
+/// CI process; an unversioned `~/.soldr/bin/zccache-soldr` let those versions
+/// replace each other's native-compiler protocol endpoint mid-build.
 pub(crate) fn zccache_soldr_shim_binary() -> Result<std::path::PathBuf, SoldrError> {
     let paths = SoldrPaths::new()?;
     paths.ensure_dirs()?;
+    zccache_soldr_shim_binary_at(&paths)
+}
+
+fn zccache_soldr_shim_binary_at(paths: &SoldrPaths) -> Result<std::path::PathBuf, SoldrError> {
     let file = crate::platform::executable::name::native("zccache-soldr");
-    let target = paths.bin.join(file);
     let source = crate::shim_materialize::soldr_binary_source()?;
+    let target = zccache_soldr_shim_target(paths, &source)?.join(file);
     crate::shim_materialize::materialize_executable(&source, &target)?;
     Ok(target)
+}
+
+fn zccache_soldr_shim_target(
+    paths: &SoldrPaths,
+    source: &std::path::Path,
+) -> Result<std::path::PathBuf, SoldrError> {
+    let cache = crate::daemon::image_hash::machine_scoped_cache_dir(
+        &paths.cache.join("native-shim-image-hash"),
+    );
+    let digest = crate::daemon::image_hash::cached_blake3_hex(&cache, source)?;
+    Ok(paths.versioned_shims_dir().join("images").join(digest))
 }
 
 /// Resolve `<stem>` as a sibling of the running executable (adding

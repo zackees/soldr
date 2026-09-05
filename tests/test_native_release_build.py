@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from conftest import maturin_release_build_command
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "native_release_build.py"
@@ -23,6 +24,21 @@ MODULE = load_module()
 def test_musl_release_source_builds_the_pinned_soldr_maturin() -> None:
     assert MODULE.SOLDR_MATURIN_REQUIREMENT == "soldr-maturin==1.14.1.post1"
     assert MODULE.SOLDR_MATURIN_NO_BINARY == "soldr-maturin"
+
+
+def test_musl_wheel_maturin_command_strips_for_wheel_size(
+    tmp_path: Path,
+) -> None:
+    """soldr#3038: without --strip this wheel bundles the same unstripped
+    binary [profile.release] deliberately leaves for the archive's own
+    objcopy carve-out -- see the function's own docstring for the measured
+    size cost (36.7 MiB vs 10.3 MiB compressed, x86_64-gnu).
+    """
+    maturin = tmp_path / "maturin"
+    command = MODULE.musl_wheel_maturin_command(maturin, "x86_64-unknown-linux-musl")
+    assert command == maturin_release_build_command(
+        str(maturin), "x86_64-unknown-linux-musl", "musllinux_1_2"
+    )
 
 
 def test_cargo_command_routes_through_pinned_soldr_rustup() -> None:
@@ -52,7 +68,8 @@ def test_soldr_cli_version_requires_exactly_one_package() -> None:
 
 def test_release_build_environment_is_bounded_and_reproducible() -> None:
     env = MODULE.release_build_environment(
-        {"KEEP": "yes", "SOLDR_JOBS": "99", "RUSTC_WRAPPER": "stale-wrapper"}
+        {"KEEP": "yes", "SOLDR_JOBS": "99", "RUSTC_WRAPPER": "stale-wrapper"},
+        target="aarch64-unknown-linux-musl",
     )
     assert env["KEEP"] == "yes"
     assert env["SOLDR_RELEASE_CI"] == "1"
@@ -61,6 +78,21 @@ def test_release_build_environment_is_bounded_and_reproducible() -> None:
     assert env["CARGO_BUILD_JOBS"] == "2"
     assert env["SOLDR_JOBS"] == "2"
     assert "RUSTC_WRAPPER" not in env
+    # soldr#3038: ARM64 musl is ELF -- the post-link objcopy carve-out
+    # handles it, so it must NOT get the macOS-only packed override.
+    assert "CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO" not in env
+
+
+def test_release_build_environment_keeps_packed_split_debuginfo_for_darwin() -> None:
+    """soldr#3038: macOS keeps `split-debuginfo = "packed"` (dsymutil's
+    `.dSYM` model has no duplication problem, unlike Linux's packed split
+    which left std/C-dependency DWARF embedded in the shipped binary AND
+    duplicated into the `.dwp`). This is injected here, per-target, because
+    Cargo.toml profiles cannot themselves vary by target triple.
+    """
+    for target in ("x86_64-apple-darwin", "aarch64-apple-darwin"):
+        env = MODULE.release_build_environment({}, target=target)
+        assert env["CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO"] == "packed", target
 
 
 def test_wheel_environment_points_maturin_at_soldr_cargo_bridge() -> None:
@@ -175,6 +207,31 @@ def test_matrix_build_uses_the_blessed_build_surface(monkeypatch) -> None:
     assert "rustup" not in build[0]
     # `--locked` is deliberately absent here; adding it is a behavior change.
     assert "--locked" not in build[0]
+
+
+def test_matrix_build_injects_packed_split_debuginfo_for_darwin(monkeypatch) -> None:
+    """soldr#3071: both apple-darwin triples now build through this lane
+    (Linux cross, same as Windows) rather than the native `build_binary`
+    path, so the macOS-only split-debuginfo override (soldr#3038) must move
+    here with them instead of silently disappearing.
+    """
+    captured_envs: list[dict[str, str] | None] = []
+
+    def fake_run(command, env=None):
+        captured_envs.append(env)
+
+    monkeypatch.setattr(MODULE, "run", fake_run)
+    monkeypatch.setattr(MODULE.subprocess, "run", lambda *_a, **_k: None)
+    monkeypatch.delenv("CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO", raising=False)
+
+    MODULE.build_matrix_binary(Path("target/release/soldr"), "aarch64-apple-darwin")
+    assert captured_envs[0] is not None
+    assert captured_envs[0]["CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO"] == "packed"
+
+    captured_envs.clear()
+    MODULE.build_matrix_binary(Path("target/release/soldr"), "x86_64-pc-windows-msvc")
+    assert captured_envs[0] is not None
+    assert "CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO" not in captured_envs[0]
 
 
 def test_matrix_build_restores_manifests_before_building(monkeypatch) -> None:

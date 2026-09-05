@@ -2,6 +2,9 @@
 //! production-source ceiling.
 
 use super::*;
+use std::io::Cursor;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 #[test]
 fn shutdown_compat_starts_with_the_immediately_previous_protocol() {
@@ -127,4 +130,92 @@ fn a_peer_that_never_acks_is_still_a_successful_submit() {
         peer.written > 0,
         "the request frame should still have been written to the peer"
     );
+}
+
+struct ScriptedControlStream {
+    replies: Cursor<Vec<u8>>,
+    writes: Arc<Mutex<Vec<u8>>>,
+    dropped: Arc<AtomicBool>,
+}
+
+impl Read for ScriptedControlStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.replies.read(buf)
+    }
+}
+
+impl Write for ScriptedControlStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.writes
+            .lock()
+            .expect("writes lock")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for ScriptedControlStream {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
+}
+
+fn scripted_resident_peer() -> (BoxedControlStream, Arc<Mutex<Vec<u8>>>, Arc<AtomicBool>) {
+    let mut replies = Vec::new();
+    write_frame_sync(
+        &mut replies,
+        &Response::ResidentCapacityAcquired { permits: 2 },
+    )
+    .expect("encode acquired reply");
+    write_frame_sync(&mut replies, &Response::Ack).expect("encode release ack");
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let dropped = Arc::new(AtomicBool::new(false));
+    (
+        Box::new(ScriptedControlStream {
+            replies: Cursor::new(replies),
+            writes: writes.clone(),
+            dropped: dropped.clone(),
+        }),
+        writes,
+        dropped,
+    )
+}
+
+#[test]
+fn resident_capacity_lease_retains_stream_until_explicit_finish() {
+    let (stream, writes, dropped) = scripted_resident_peer();
+    let lease = acquire_resident_capacity_on_stream(stream, 2).expect("acquire lease");
+    assert!(!dropped.load(Ordering::SeqCst));
+
+    lease.finish().expect("release lease");
+    assert!(dropped.load(Ordering::SeqCst));
+
+    let mut sent = Cursor::new(writes.lock().expect("writes lock").clone());
+    assert!(matches!(
+        read_frame_sync::<_, Request>(&mut sent).expect("acquire request"),
+        Request::AcquireResidentCapacity { permits: 2 }
+    ));
+    assert!(matches!(
+        read_frame_sync::<_, Request>(&mut sent).expect("release request"),
+        Request::ReleaseResidentCapacity
+    ));
+}
+
+#[test]
+fn dropping_resident_capacity_lease_disconnects_without_a_release_frame() {
+    let (stream, writes, dropped) = scripted_resident_peer();
+    let lease = acquire_resident_capacity_on_stream(stream, 2).expect("acquire lease");
+    drop(lease);
+    assert!(dropped.load(Ordering::SeqCst));
+
+    let mut sent = Cursor::new(writes.lock().expect("writes lock").clone());
+    assert!(matches!(
+        read_frame_sync::<_, Request>(&mut sent).expect("acquire request"),
+        Request::AcquireResidentCapacity { permits: 2 }
+    ));
+    assert!(read_frame_sync::<_, Request>(&mut sent).is_err());
 }

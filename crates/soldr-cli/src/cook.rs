@@ -27,6 +27,14 @@ use crate::core::{
 };
 use crate::daemon::client::{self, CookLookupOutcome};
 use std::path::{Path, PathBuf};
+
+// soldr#3043 integration: the project-source snapshot/restore helpers moved to
+// their own module to keep this file under the 1,000-line production ceiling.
+// Re-exported so `crate::cook::…` paths (dylint_cook.rs, cook_tests.rs) are
+// unchanged.
+pub(crate) use crate::cook_source_snapshot::{
+    restore_project_source, snapshot_project_source, ProjectSourceSnapshot,
+};
 use std::process::Command;
 use std::time::Instant;
 
@@ -186,119 +194,6 @@ pub(crate) fn resolve_manifest_dir(start: &Path) -> Result<PathBuf, SoldrError> 
     }
 }
 
-/// In-memory snapshot of a project's source-defining files (every
-/// `Cargo.toml` / `Cargo.lock` / `*.rs` outside `target/` and `.git/`), used
-/// to undo cargo-chef's in-place skeleton reconstruction after the cook
-/// compile so `soldr cook` leaves the project pristine (zackees/soldr#566).
-pub(crate) struct ProjectSourceSnapshot {
-    files: Vec<(PathBuf, Vec<u8>)>,
-}
-
-impl ProjectSourceSnapshot {
-    /// File count captured (exposed for tests/diagnostics).
-    #[allow(clippy::len_without_is_empty)]
-    pub(crate) fn len(&self) -> usize {
-        self.files.len()
-    }
-}
-
-/// True for the files cargo-chef rewrites in place: crate manifests, the
-/// lockfile, and Rust sources (crate roots get stubbed). Restricting the
-/// snapshot to these keeps it small (source, not build output).
-fn is_project_source_file(name: &str) -> bool {
-    name == "Cargo.toml" || name == "Cargo.lock" || name.ends_with(".rs")
-}
-
-/// Recurse `dir`, skipping `target/` and `.git/` at any depth, invoking `f`
-/// on every regular project-source file with its path relative to `base`.
-fn walk_project_source(
-    dir: &Path,
-    base: &Path,
-    f: &mut dyn FnMut(&Path, PathBuf),
-) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let path = entry.path();
-        if file_type.is_dir() {
-            if name.as_ref() == "target" || name.as_ref() == ".git" {
-                continue;
-            }
-            walk_project_source(&path, base, f)?;
-        } else if file_type.is_file() && is_project_source_file(name.as_ref()) {
-            let rel = path
-                .strip_prefix(base)
-                .unwrap_or(path.as_path())
-                .to_path_buf();
-            f(path.as_path(), rel);
-        }
-    }
-    Ok(())
-}
-
-/// Capture the project's source-defining files under `manifest_dir`.
-pub(crate) fn snapshot_project_source(
-    manifest_dir: &Path,
-) -> Result<ProjectSourceSnapshot, SoldrError> {
-    let mut files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
-    {
-        let mut collect = |abs: &Path, rel: PathBuf| {
-            if let Ok(bytes) = std::fs::read(abs) {
-                files.push((rel, bytes));
-            }
-        };
-        walk_project_source(manifest_dir, manifest_dir, &mut collect).map_err(|e| {
-            SoldrError::Other(format!(
-                "soldr cook: failed to snapshot project source under {}: {e}",
-                manifest_dir.display()
-            ))
-        })?;
-    }
-    Ok(ProjectSourceSnapshot { files })
-}
-
-/// Restore the project to its snapshotted state: delete every current
-/// project-source file (removing cargo-chef's stubs / any added crate roots),
-/// then rewrite the captured originals. `target/`/`.git/` are never touched,
-/// so the cooked dependency artifacts survive.
-pub(crate) fn restore_project_source(
-    manifest_dir: &Path,
-    snapshot: &ProjectSourceSnapshot,
-) -> Result<(), SoldrError> {
-    // 1. Remove chef's in-place rewrites (manifests + .rs outside target/.git).
-    let mut to_delete: Vec<PathBuf> = Vec::new();
-    {
-        let mut mark = |abs: &Path, _rel: PathBuf| to_delete.push(abs.to_path_buf());
-        // Best-effort: a read error here just means fewer deletions; the
-        // rewrite below still restores originals.
-        let _ = walk_project_source(manifest_dir, manifest_dir, &mut mark);
-    }
-    for path in to_delete {
-        let _ = std::fs::remove_file(&path);
-    }
-    // 2. Rewrite the captured originals.
-    for (rel, bytes) in &snapshot.files {
-        let dest = manifest_dir.join(rel);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                SoldrError::Other(format!(
-                    "soldr cook: failed to restore directory {}: {e}",
-                    parent.display()
-                ))
-            })?;
-        }
-        std::fs::write(&dest, bytes).map_err(|e| {
-            SoldrError::Other(format!(
-                "soldr cook: failed to restore {}: {e}",
-                dest.display()
-            ))
-        })?;
-    }
-    Ok(())
-}
-
 /// Build the [`CookContext`] used by [`run_cook`]. Pure enough to unit-test:
 /// takes the resolved cwd, parsed args, and (for tests) a hook that creates
 /// the tempdir backing an ephemeral recipe.
@@ -368,6 +263,24 @@ pub(crate) async fn run_cook(args: &[String], cache_enabled: bool) -> Result<i32
     let cwd = std::env::current_dir()
         .map_err(|e| SoldrError::Other(format!("soldr cook: failed to read cwd: {e}")))?;
     let (ctx, _tempdir_guard) = build_cook_context(&cwd, &parsed)?;
+
+    // soldr#3043: publish this cook's target scope to the cargo front door
+    // before ANY phase runs. Phase 1 below is `cargo chef prepare`, whose argv
+    // cannot carry `--target` (cargo-chef's `prepare` takes no such flag), yet
+    // it is "build-like" enough that the front door runs its cook-index
+    // pre-flight hydrate. With only the argv to read, that hydrate would
+    // extract a `--target X` archive into the bare `target/` root — a full
+    // duplicate extraction into a directory Cargo never reads for a `--target`
+    // build, and the restored warm-cook marker would land outside
+    // `resolve_cook_target_dir`, so the #621 short-circuit checked below could
+    // never fire on a hydrated tree. Left unset for a `--target`-less cook, so
+    // that path keeps its existing bare-`target/` behaviour exactly.
+    if let Some(triple) = parsed.target.as_deref() {
+        std::env::set_var(
+            crate::cargo_front_door::cook_hydrate::SOLDR_COOK_HYDRATE_TARGET_ENV,
+            triple,
+        );
+    }
 
     // Phase 1: prepare. Cheap, deterministic, reads only the manifest tree.
     if !parsed.cook_only {
@@ -473,7 +386,7 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
     // the bottleneck, not codegen). When the marker matches, short-
     // circuit Phase 2 entirely.
     let cook_target_dir = resolve_cook_target_dir(&ctx.manifest_dir, &parsed);
-    let cook_marker_path = cook_target_dir.join(".soldr-cook-marker.json");
+    let cook_marker_path = cook_target_dir.join(COOK_MARKER_FILE_NAME);
     let expected_marker = compute_cook_marker(&ctx, &parsed);
     let warm_skip = matches!(
         (&expected_marker, read_cook_marker(&cook_marker_path)),
@@ -489,6 +402,20 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
         // downstream cargo build).
         restore_project_source(&ctx.manifest_dir, &source_snapshot)?;
         return Ok(0);
+    }
+
+    // soldr#3117: from here on this process must be a requester of the
+    // daemon route. Otherwise the compile's wrapper re-entries are the only
+    // requesters, the broker reaps the daemon two minutes after the last one
+    // exits, and the pack below routinely outlives that -- the closing
+    // CookRecord then finds no daemon and the artifact is never indexed.
+    // Holding it before Phase 2 also gives the front door's hydrate
+    // pre-flight a daemon to ask.
+    if let Err(err) = crate::cook_route_hold::hold_daemon_route_for_cook() {
+        eprintln!(
+            "{} {err}; the cook proceeds, but hydrate and CookRecord may find no daemon.",
+            yellow_warning_prefix()
+        );
     }
 
     // Phase 2: cook. Heavy — compiles every transitive dep against a stub
@@ -686,6 +613,12 @@ const COOK_MARKER_VERSION: u32 = 3;
 /// Read + parse the warm-cook marker at `path`. Any error (missing
 /// file, malformed JSON, missing field, version mismatch) returns
 /// `None` so the caller falls through to the normal cook path.
+/// The soldr#621 warm-cook marker `soldr cook` leaves in the cooked
+/// `target/<triple>/` directory. Its presence also tells the front door's
+/// hydrate pre-flight that this tree was cooked in place, so there is nothing
+/// an archive restore could add (soldr#3117).
+pub(crate) const COOK_MARKER_FILE_NAME: &str = ".soldr-cook-marker.json";
+
 fn read_cook_marker(path: &Path) -> Option<CookMarker> {
     let bytes = std::fs::read(path).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
@@ -897,7 +830,7 @@ where
     //    CookRecord cannot be relied on either, so skip the expensive
     //    archive pack entirely.
     let sock = client::default_sock_path(paths);
-    let prior_drift = match client::cook_lookup(
+    let lookup = client::cook_lookup(
         &sock,
         recipe_hash,
         triple.clone(),
@@ -905,17 +838,31 @@ where
         channel.clone(),
         rustc_version.clone(),
         origin.clone(),
-    ) {
+    );
+    // soldr#3117: an exact hit whose archive is still on disk needs no
+    // re-pack. The pack is the slow half of a warm cook, and the indexed
+    // artifact already describes this dependency graph byte for byte.
+    if let Some(existing) = lookup
+        .as_ref()
+        .ok()
+        .and_then(|outcome| already_indexed_archive(&cook_dir, outcome))
+    {
+        eprintln!(
+            "soldr cook: already indexed  path={}  (exact recipe match; skipping re-pack)",
+            existing.display()
+        );
+        return Ok(());
+    }
+    let prior_drift = match lookup {
         Ok(CookLookupOutcome::Hit {
             sha256,
             matched_recipe_hash,
             exact_recipe_match,
             ..
         }) => {
-            // Already-cached for this exact key. Re-pack + re-record
-            // anyway so the artifact bytes match the freshly built
-            // target/ — a previous run might have written from a
-            // sibling worktree with slightly different mtimes.
+            // An exact hit whose archive is gone (evicted, or a foreign
+            // path in the index): re-pack + re-record so the index names
+            // bytes that exist. A drifted hit re-packs as before.
             if exact_recipe_match {
                 Some(DriftSignal::AlreadyIndexed(sha256))
             } else {

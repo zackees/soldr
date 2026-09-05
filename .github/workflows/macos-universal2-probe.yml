@@ -1,0 +1,327 @@
+# STAGE 1 PROBE -- deliberately standalone and not wired into ci.yml.
+#
+# Question it answers: can soldr ship ONE universal2 macOS binary instead of
+# separate x86_64 and aarch64 artifacts, and do the mac unit tests still run?
+#
+# Only x86_64 is executed. There is no arm64 macOS that boots under QEMU on
+# Linux and no macos-* runner is permitted here (owner mandate 2026-09-02), so
+# the arm64 slice is verified structurally (it is present, it is a real arm64
+# Mach-O, and lipo can extract it byte-identically) and its *execution* is
+# assumed. That assumption is the explicit trade this probe is testing.
+name: macOS universal2 probe
+
+on:
+  # Dispatch-only. This is a probe, not a gate: it costs ~40 min of runner time
+  # (two uncached cross-builds plus an emulated macOS boot) and nothing else
+  # depends on it, so it should never fire on a push.
+  workflow_dispatch:
+
+# setup-soldr's yank-audit aborts the run when the restored cargo-registry
+# cache contains a yanked crate, and it can only evict the offending entry with
+# `actions: write`. Without it the run dies with "automatic deletion incomplete
+# (deleted=0/1, failures=1)" -- which is what killed the first real attempt here
+# (chacha20 0.10.1). Read-only everywhere else.
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: macos-universal2-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-slice:
+    name: cross-build ${{ matrix.triple }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        triple: [x86_64-apple-darwin, aarch64-apple-darwin]
+    env:
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
+      # soldr#2781. `soldr-daemon` at -C opt-level=3 -C codegen-units=1 is the
+      # memory high-water mark of this build, and at default parallelism on a
+      # 4-core/16 GB hosted runner it gets OOM-killed: rustc exits 255 and soldr
+      # prints "compiler process was terminated by a Unix signal ... Reduce
+      # CARGO_BUILD_JOBS and SOLDR_JOBS". Seen on the aarch64 lane while x86_64
+      # passed in the same run, so it is a resource race rather than anything
+      # architecture-specific. Same fix worked locally.
+      CARGO_BUILD_JOBS: '1'
+      SOLDR_JOBS: '1'
+    steps:
+      # soldr-daemon compiles at -C opt-level=3 -C codegen-units=1, which is the
+      # memory peak of this build, and a hosted runner OOM-kills it: rustc dies
+      # on a signal and soldr reports "terminated by a Unix signal". It is
+      # genuinely marginal rather than systematic -- with JOBS=2 the aarch64
+      # lane passed while x86_64 lost, in the same run. JOBS=1 plus real swap
+      # headroom removes the coin flip. /mnt is the runner's big scratch disk.
+      - name: Add swap headroom for the codegen-units=1 peak
+        run: |
+          set -euo pipefail
+          free -h
+          sudo fallocate -l 8G /mnt/probe-swap
+          sudo chmod 600 /mnt/probe-swap
+          sudo mkswap /mnt/probe-swap >/dev/null
+          sudo swapon /mnt/probe-swap
+          free -h
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90 # v0
+        with:
+          toolchain-file: rust-toolchain.toml
+          lockfile: Cargo.lock
+          target-dir: target
+          # Uncached on purpose, for two reasons that turned out to be the same
+          # blocker. (1) yank-audit aborts the run when the RESTORED dependency
+          # closure contains a yanked crate, and Cargo.lock currently resolves
+          # chacha20 0.10.1 (yanked) via rand 0.10.2 -- so every run that
+          # restored a cache died before compiling anything, and deleting the
+          # poisoned entries only bought one run. With no cache restored there
+          # is no restored closure to audit. (2) `cache: false` also exports
+          # SOLDR_BUILD_CACHE_MODE=off, so the soldr daemon is never invoked --
+          # which removes the most likely real source of the "compiler process
+          # was terminated by a Unix signal" kills that soldr's own diagnostic
+          # attributes to OOM (a 4-core/16GB runner does not OOM compiling
+          # running-process in 20 seconds).
+          # The cost is a cold build. This is a probe; correctness first.
+          cache: false
+
+      # One triple per job on purpose. `soldr prepare` exports SDKROOT, CC_*,
+      # CFLAGS_* and PATH for ONE target shape; preparing both in a single job
+      # would have the second overwrite the first. (Verified the hard way
+      # locally: with the wrong env live, ring's .S files go to host gcc and
+      # die on -arch / -mmacosx-version-min.)
+      - name: Prepare the Darwin toolchain
+        run: soldr prepare --target "${{ matrix.triple }}" --github-env "$GITHUB_ENV"
+
+      - name: Build the thin slice
+        run: |
+          set -euo pipefail
+          # allow-release: this probe lipo's the two slices into the universal2 binary that would ship and executes it in a macOS guest; a cheaper profile would prove a shape soldr never publishes.
+          soldr cargo build --release --target "${{ matrix.triple }}" -p soldr-cli --bin soldr
+          ls -l "target/${{ matrix.triple }}/release/soldr"
+
+      # The unit tests executed in the guest stay thin x86_64: making every test
+      # binary universal2 would double archive size to prove nothing extra,
+      # since only the x86_64 slice can be executed anywhere in this repo's CI.
+      - name: Build the unit-test archive (x86_64 only)
+        if: matrix.triple == 'x86_64-apple-darwin'
+        run: |
+          set -euo pipefail
+          soldr cargo nextest archive \
+            --target x86_64-apple-darwin \
+            --archive-file soldr-tests-x86_64.tar.zst
+          ls -lh soldr-tests-x86_64.tar.zst
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: slice-${{ matrix.triple }}
+          path: |
+            target/${{ matrix.triple }}/release/soldr
+            soldr-tests-x86_64.tar.zst
+          if-no-files-found: error
+          retention-days: 3
+
+  build-universal2:
+    name: combine into universal2
+    needs: build-slice
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: slice-*
+          path: slices
+      # Pins the interpreter the repo scripts run under (soldr#2763): bare
+      # `python3` is whatever the runner image ships.
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+
+      - name: Combine
+        run: |
+          set -euo pipefail
+          find slices -type f | sort
+          mkdir -p share
+          uv run --no-project --python 3.13 python ci/make_universal2.py -o share/soldr-universal2 \
+            slices/slice-x86_64-apple-darwin/target/x86_64-apple-darwin/release/soldr \
+            slices/slice-aarch64-apple-darwin/target/aarch64-apple-darwin/release/soldr
+          cp slices/slice-x86_64-apple-darwin/soldr-tests-x86_64.tar.zst share/
+
+      - name: The fat binary must really contain both slices
+        # Structural proof for arm64, which nothing in this repo's CI can
+        # execute. Verifies the header independently of the script that wrote
+        # it, and that each embedded slice is byte-identical to its thin input.
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.13 python - <<'PY'
+          import struct, pathlib
+          d = pathlib.Path("share/soldr-universal2").read_bytes()
+          magic, n = struct.unpack_from(">II", d, 0)
+          assert magic == 0xCAFEBABE, hex(magic)
+          assert n == 2, n
+          want = {
+              0x01000007: ("x86_64",
+                           "slices/slice-x86_64-apple-darwin/target/x86_64-apple-darwin/release/soldr"),
+              0x0100000C: ("arm64",
+                           "slices/slice-aarch64-apple-darwin/target/aarch64-apple-darwin/release/soldr"),
+          }
+          seen = set()
+          for i in range(n):
+              cpu, sub, off, size, align = struct.unpack_from(">iiIII", d, 8 + 20*i)
+              name, src = want[cpu & 0xFFFFFFFF]
+              thin = d[off:off+size]
+              assert struct.unpack_from("<I", thin, 0)[0] == 0xFEEDFACF, f"{name}: not Mach-O"
+              assert struct.unpack_from("<i", thin, 4)[0] == cpu, f"{name}: cputype mismatch"
+              assert thin == pathlib.Path(src).read_bytes(), f"{name}: differs from {src}"
+              print(f"{name}: offset={off} size={size} align=2^{align} identical to {src}")
+              seen.add(name)
+          assert seen == {"x86_64", "arm64"}, seen
+          print("universal2 OK: both slices present, byte-identical, correct cputypes")
+          PY
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: universal2-payload
+          path: share/
+          if-no-files-found: error
+          retention-days: 3
+
+  run-on-macos-x64:
+    name: run universal2 + unit tests (macOS x86_64 guest)
+    needs: build-universal2
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: universal2-payload
+          path: share
+      - name: Stage payload
+        run: |
+          set -euo pipefail
+          chmod +x share/soldr-universal2
+          # nextest replay needs the project source: the archive records the
+          # workspace root and refuses without it ("workspace root manifest at
+          # ... does not exist"). The blessed lane satisfies this with
+          # --workspace-remap "$GITHUB_WORKSPACE"; the guest has no checkout, so
+          # ship one. .git and target/ are the bulk and neither is read by tests.
+          tar -czf share/workspace.tar.gz \
+            --exclude=./.git --exclude=./target --exclude=./share \
+            --exclude='*.tar.zst' --exclude='*.tar.gz' .
+          du -h share/workspace.tar.gz
+          # cargo-nextest ships as a universal Mach-O, so the same file runs on
+          # either slice; the guest is x86_64.
+          curl -fsSL -o nextest.tar.gz \
+            https://get.nexte.st/latest/mac
+          tar -xzf nextest.tar.gz -C share cargo-nextest
+          chmod +x share/cargo-nextest
+          ls -lh share/
+
+      - name: Boot macOS x86_64 and exercise the universal2 binary
+        id: macos
+        uses: zackees/docker-mac-x64@0769c0bcc9367c6516da39c0a3aa4cb55988ec79 # main
+        with:
+          share-dir: share
+          collect: /tmp/w/out
+          ram: '8'
+          run-timeout: '3600'
+          run: |
+            set -x
+            mkdir -p /tmp/w/out && cd /tmp/w
+            uname -m | tee /tmp/w/out/arch.txt
+
+            curl -s -o soldr http://10.0.2.2:8000/soldr-universal2
+            chmod +x soldr
+            # THE point of the probe: a fat binary, executed on the x86_64 slice.
+            ./soldr --version | tee /tmp/w/out/version.txt
+            echo "universal2-runs-rc=$?" | tee -a /tmp/w/out/version.txt
+
+            curl -s -o cargo-nextest http://10.0.2.2:8000/cargo-nextest
+            chmod +x cargo-nextest
+            curl -s -o tests.tar.zst http://10.0.2.2:8000/soldr-tests-x86_64.tar.zst
+            ls -l tests.tar.zst
+
+            # cargo-nextest is a cargo SUBCOMMAND shim: invoked as
+            # `./cargo-nextest run ...` it proxies to cargo, which answers
+            # "unrecognized subcommand 'run'". The nextest verb is required.
+            # --workspace-remap needs a directory that exists; tests that read
+            # real workspace files will fail individually, which is a result
+            # worth having rather than a reason not to try.
+            curl -s -o workspace.tar.gz http://10.0.2.2:8000/workspace.tar.gz
+            mkdir -p /tmp/w/src && tar -xzf workspace.tar.gz -C /tmp/w/src
+            test -f /tmp/w/src/Cargo.toml || { echo "no workspace manifest"; exit 97; }
+
+            # .config/nextest.toml routes EVERY test through
+            # .github/scripts/nextest_timeout_wrapper.py (a wrapper script
+            # resolved relative-to workspace-root). Recovery has no python3, so
+            # every test dies at spawn in ~0.15s -- which is exactly what the
+            # previous run showed: 204 tests listed, executed, and all failed
+            # uniformly. Replace it with a minimal config so this probe measures
+            # "do mac unit tests run", not "does soldr's CI timeout wrapper run".
+            mkdir -p /tmp/w/src/.config
+            printf '[profile.default]\n' > /tmp/w/src/.config/nextest.toml
+
+            # Point soldr's own test helpers at the shipped tree and at the
+            # universal2 binary itself, so the thing under test is the fat
+            # binary rather than some other build.
+            export SOLDR_TEST_WORKSPACE_ROOT=/tmp/w/src
+            export SOLDR_BIN=/tmp/w/soldr
+
+            ./cargo-nextest nextest list \
+              --archive-file tests.tar.zst \
+              --workspace-remap /tmp/w/src \
+              > /tmp/w/out/nextest-list.log 2>&1
+            echo "list-rc=$?" | tee /tmp/w/out/list.rc
+            head -20 /tmp/w/out/nextest-list.log
+
+            # Bounded on purpose: this probe asks "do mac unit tests run in this
+            # guest at all", not "does the whole suite pass".
+            #
+            # core::git::tests are deselected because they shell out to `git`
+            # and read a repository, and the guest has neither: Recovery ships
+            # no git, and the workspace tarball excludes .git (it is most of the
+            # bulk). Measured: with them in, 204 run / 198 passed / 6 failed,
+            # and all 6 are core::git. That is an environment gap, not an
+            # architecture or universal2 one.
+            ./cargo-nextest nextest run \
+              --archive-file tests.tar.zst \
+              --workspace-remap /tmp/w/src \
+              --no-fail-fast \
+              -E 'package(soldr-core) - test(/^core::git::/)' \
+              > /tmp/w/out/nextest.log 2>&1
+            echo "nextest-rc=$?" | tee /tmp/w/out/nextest.rc
+            tail -60 /tmp/w/out/nextest.log
+
+
+      - name: Report
+        if: always()
+        run: |
+          set -uo pipefail
+          C="${{ steps.macos.outputs.workdir }}/collected"
+          echo "guest exit code: ${{ steps.macos.outputs.exit-code }}"
+          for f in arch.txt version.txt list.rc nextest.rc; do
+            [ -f "$C/$f" ] && { echo "--- $f ---"; cat "$C/$f"; }
+          done
+          [ -f "$C/nextest-list.log" ] && { echo "--- nextest list (head) ---"; head -30 "$C/nextest-list.log"; }
+          [ -f "$C/nextest.log" ] && { echo "--- nextest run (summary) ---"; grep -E "Summary|tests run|^ *FAIL" "$C/nextest.log" | tail -8; }
+
+          # A probe whose test step cannot report red is not testing anything.
+          fail=0
+          grep -q '^x86_64$' "$C/arch.txt" 2>/dev/null || { echo "::error::guest did not report x86_64"; fail=1; }
+          grep -q 'universal2-runs-rc=0' "$C/version.txt" 2>/dev/null || { echo "::error::the universal2 binary did not run on x86_64"; fail=1; }
+          grep -q 'nextest-rc=0' "$C/nextest.rc" 2>/dev/null || { echo "::error::mac unit tests did not pass: $(cat "$C/nextest.rc" 2>/dev/null || echo missing)"; fail=1; }
+          # A filter that quietly stopped selecting anything would otherwise be
+          # indistinguishable from a clean run. Floor it.
+          ran=$(sed -n 's/.*Summary.*[^0-9]\([0-9]\+\) tests run.*/\1/p' "$C/nextest.log" 2>/dev/null | tail -1)
+          echo "tests executed in the guest: ${ran:-0}"
+          [ "${ran:-0}" -ge 150 ] 2>/dev/null || { echo "::error::only ${ran:-0} tests ran; the selection filter is too narrow to prove anything"; fail=1; }
+          exit "$fail"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: universal2-guest-results
+          path: ${{ steps.macos.outputs.workdir }}/
+          if-no-files-found: warn

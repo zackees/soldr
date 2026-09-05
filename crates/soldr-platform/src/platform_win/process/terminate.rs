@@ -272,6 +272,24 @@ fn filetime_value(time: windows_sys::Win32::Foundation::FILETIME) -> u64 {
     (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
 }
 
+/// Creation FILETIME for `pid`, as a PID-reuse-safe identity token.
+///
+/// `pub(crate)` so `process::inspect::process_start_token` -- the portable
+/// facade soldr-cli's broker route reaper calls -- can reuse this exact
+/// query instead of a second, independently-written `OpenProcess` +
+/// `GetProcessTimes` call site that could drift from the one this module's
+/// own `is_same_process` identity check already depends on.
+///
+/// `None` on any failure. `None` must never be treated as a match by a
+/// caller comparing tokens.
+pub(crate) fn process_creation_token(pid: u32) -> Option<u64> {
+    let handle = open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION).ok()?;
+    let times = process_times(handle);
+    // SAFETY: `handle` came from `open_process` above and is not used again.
+    unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+    times.ok().map(|times| times.created)
+}
+
 /// Retain a query handle for each fresh snapshot identity. Pids which cannot
 /// be opened or queried are returned for best-effort termination; they still
 /// make the final result `ProcessKilled`, because no retained handle can prove
@@ -451,14 +469,29 @@ fn collect_descendants(edges: &[(u32, u32)], root: u32) -> Vec<u32> {
 }
 
 /// Terminate a single PID (`TerminateProcess` - the Windows equivalent of
-/// SIGKILL; Windows has no graceful signal to offer).
+/// SIGKILL; never the graceful request).
 pub fn terminate_pid(pid: u32) {
     let _ = signal_pid(pid, true);
 }
 
-/// Signal a single PID. Windows ignores `force`: `TerminateProcess` is the only
-/// termination primitive available.
-pub fn signal_pid(pid: u32, _force: bool) -> io::Result<()> {
+/// Signal a single PID.
+///
+/// `force = false` is the Windows equivalent of SIGTERM (soldr#3096): it
+/// signals the target daemon's named terminate event
+/// (`super::signal::request_graceful_terminate`) so the daemon takes its
+/// fast-exit path itself. When the target has no such event -- it is not a
+/// soldr daemon, or it predates the mechanism -- this falls back to
+/// `TerminateProcess` so `soldr daemon stop`-style escalation keeps working.
+/// `force = true` is always `TerminateProcess` (SIGKILL-equivalent).
+pub fn signal_pid(pid: u32, force: bool) -> io::Result<()> {
+    if !force && super::signal::request_graceful_terminate(pid)? {
+        return Ok(());
+    }
+    kill_pid(pid)
+}
+
+/// `TerminateProcess(pid, 1)`: the kernel kill, no code runs in the target.
+fn kill_pid(pid: u32) -> io::Result<()> {
     use std::os::windows::raw::HANDLE;
     // Win32 API spelling - clippy would rename to Dword.
     #[allow(clippy::upper_case_acronyms)]

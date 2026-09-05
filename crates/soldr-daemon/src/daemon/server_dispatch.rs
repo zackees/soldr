@@ -117,6 +117,61 @@ where
             });
             let _ = write_frame_async(&mut stream, &response).await;
         }
+        Request::AcquireResidentCapacity { permits } => {
+            if permits == 0 {
+                let _ = write_frame_async(
+                    &mut stream,
+                    &Response::Error(
+                        "resident capacity requires at least one permit".to_string(),
+                    ),
+                )
+                .await;
+                return Ok(());
+            }
+
+            // The embedded service owns the canonical compile-capacity
+            // semaphore. Retaining this opaque guard in the connection task
+            // makes both explicit release and transport disconnect release the
+            // same permits with no polling or daemon-global lease registry.
+            let resident_capacity = match state
+                .compile_service
+                .acquire_resident_capacity(permits)
+                .await
+            {
+                Ok(capacity) => capacity,
+                Err(error) => {
+                    let _ = write_frame_async(
+                        &mut stream,
+                        &Response::Error(format!(
+                            "acquire resident compile capacity: {error}"
+                        )),
+                    )
+                    .await;
+                    return Ok(());
+                }
+            };
+
+            // `Ok(false)` (lease declined) and `Err(_)` (transport failure)
+            // are both "nothing to record"; only a granted lease counts as a
+            // served request. Written as `if let` because `-D warnings`
+            // promotes clippy::single_match to an error.
+            if let Ok(true) =
+                serve_resident_capacity_lease(&mut stream, permits, resident_capacity).await
+            {
+                state.request_count.fetch_add(1, Ordering::Relaxed);
+                state.touch_activity();
+            }
+        }
+        Request::ReleaseResidentCapacity => {
+            let _ = write_frame_async(
+                &mut stream,
+                &Response::Error(
+                    "ReleaseResidentCapacity requires an active lease on this connection"
+                        .to_string(),
+                ),
+            )
+            .await;
+        }
         Request::RecordTargetTouch { path, unix_seconds } => {
             // soldr#2558: acknowledge RECEIPT before processing. On
             // macOS/BSD a connection the client closes before this server
@@ -563,6 +618,110 @@ where
         }
     }
     Ok(())
+}
+
+/// Hold an opaque embedded-service capacity guard for the lifetime of one
+/// control connection. `Ok(true)` means the peer explicitly released it;
+/// `Ok(false)` means it sent a different frame. Transport errors include EOF.
+async fn serve_resident_capacity_lease<S, G>(
+    stream: &mut S,
+    permits: u32,
+    resident_capacity: G,
+) -> std::io::Result<bool>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    write_frame_async(
+        &mut *stream,
+        &Response::ResidentCapacityAcquired { permits },
+    )
+    .await?;
+
+    match crate::daemon::ipc::read_frame_async::<_, Request>(&mut *stream).await? {
+        Request::ReleaseResidentCapacity => {
+            // Ack means release is complete, so drop before writing it rather
+            // than relying on scope exit after the response is in flight.
+            drop(resident_capacity);
+            write_frame_async(&mut *stream, &Response::Ack).await?;
+            Ok(true)
+        }
+        other => {
+            write_frame_async(
+                &mut *stream,
+                &Response::Error(format!(
+                    "expected ReleaseResidentCapacity, received {other:?}"
+                )),
+            )
+            .await?;
+            Ok(false)
+        }
+    }
+}
+
+#[cfg(test)]
+mod resident_capacity_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct DropProbe(Arc<AtomicBool>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_release_drops_capacity_before_ack() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let server_dropped = dropped.clone();
+        let task = tokio::spawn(async move {
+            serve_resident_capacity_lease(&mut server, 2, DropProbe(server_dropped)).await
+        });
+
+        assert!(matches!(
+            crate::daemon::ipc::read_frame_async::<_, Response>(&mut client)
+                .await
+                .expect("acquired response"),
+            Response::ResidentCapacityAcquired { permits: 2 }
+        ));
+        assert!(!dropped.load(Ordering::SeqCst));
+        crate::daemon::ipc::write_frame_async(
+            &mut client,
+            &Request::ReleaseResidentCapacity,
+        )
+        .await
+        .expect("release request");
+        assert!(matches!(
+            crate::daemon::ipc::read_frame_async::<_, Response>(&mut client)
+                .await
+                .expect("release ack"),
+            Response::Ack
+        ));
+        assert!(dropped.load(Ordering::SeqCst));
+        assert!(task.await.expect("server task").expect("serve lease"));
+    }
+
+    #[tokio::test]
+    async fn disconnect_drops_capacity_without_release() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let server_dropped = dropped.clone();
+        let task = tokio::spawn(async move {
+            serve_resident_capacity_lease(&mut server, 1, DropProbe(server_dropped)).await
+        });
+
+        assert!(matches!(
+            crate::daemon::ipc::read_frame_async::<_, Response>(&mut client)
+                .await
+                .expect("acquired response"),
+            Response::ResidentCapacityAcquired { permits: 1 }
+        ));
+        drop(client);
+        assert!(task.await.expect("server task").is_err());
+        assert!(dropped.load(Ordering::SeqCst));
+    }
 }
 
 // Daemon-side streaming compile dispatcher (issue #983 Phase 5b /

@@ -28,8 +28,15 @@ Supported npm install targets match the release workflow:
 - `aarch64-pc-windows-msvc`
 
 Intel macOS archives and wheels are cross-built on Linux through the blessed
-Apple SDK path, then architecture-checked and smoke-tested on `macos-15-intel`
-before GitHub Release, PyPI, or npm publication.
+Apple SDK path, then architecture-checked and smoke-tested inside a
+[zackees/docker-mac-x64](https://github.com/zackees/docker-mac-x64) macOS
+Recovery guest hosted on an `ubuntu-24.04` runner (soldr#3076 -- no GitHub
+Actions job may run on a `macos-*` runner) before GitHub Release, PyPI, or
+npm publication. Only the archive's binaries are executed there (Recovery has
+no Python); the wheel keeps a Linux-side METADATA-version check. Apple
+Silicon (`aarch64-apple-darwin`) artifacts are cross-built the same way but
+are not smoke-tested anywhere in CI until soldr#3071 re-enables execution
+before release.
 
 ## Owner Setup
 

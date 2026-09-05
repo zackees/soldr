@@ -106,7 +106,10 @@ use serde::{Deserialize, Serialize};
 /// * v22 (soldr#2251): daemon-owned target registry snapshot/removal IPC.
 /// * v23 (soldr#2866): cook record/hit messages carry the prior compile and
 ///   archive-save timings used by the conservative restore cost gate.
-pub const PROTOCOL_VERSION: u32 = 23;
+/// * v24 (soldr#3024): adds a connection-scoped resident-capacity lease.
+///   Acquisition reserves embedded compile permits until the same control
+///   stream releases them or disconnects.
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -271,6 +274,12 @@ pub enum Request {
     /// "first writer wins for ended_at_ms / exit_code" semantics the local
     /// path had. Replies with [`Response::Ack`].
     AttachBuildLogHistory(Box<BuildLogHistoryUpdate>),
+    /// Begin a connection-scoped reservation of the embedded compiler's
+    /// capacity. The daemon replies only after all requested permits are held.
+    AcquireResidentCapacity { permits: u32 },
+    /// End the resident-capacity reservation held by this connection.
+    /// Valid only as the next frame after a successful acquisition.
+    ReleaseResidentCapacity,
 }
 
 /// Payload of [`Request::AttachBuildLogHistory`] (soldr#1814 slice 2d).
@@ -476,6 +485,10 @@ pub enum Response {
     /// the throttle window answers false.
     CargoDebugWarning {
         emit: bool,
+    },
+    /// The requested resident compile permits are now held by this connection.
+    ResidentCapacityAcquired {
+        permits: u32,
     },
 }
 
@@ -692,8 +705,8 @@ mod tests {
     // soldr#2023 renamed this from the v20 spelling when the daemon began
     // publishing its applied compile limit.
     #[test]
-    fn protocol_version_is_v23_after_adding_cook_cost_observations() {
-        assert_eq!(PROTOCOL_VERSION, 23);
+    fn protocol_version_is_v24_after_adding_resident_capacity_leases() {
+        assert_eq!(PROTOCOL_VERSION, 24);
     }
 
     #[test]

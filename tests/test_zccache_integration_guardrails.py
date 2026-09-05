@@ -18,7 +18,6 @@ NEXTEST_MODULE_FILTER = re.compile(r"^test\(/\^(?P<module>[A-Za-z0-9_]+)::/\)$")
 REQUIRED_GUARDRAIL_IDS = {
     "embedded-runtime-topology",
     "embedded-session-env",
-    "rust-plan-cache",
     "disabled-and-non-build",
     "embedded-flush-shutdown",
     "setup-action-outputs",
@@ -35,7 +34,6 @@ REQUIRED_COMMAND_IDS = {
     "rust-embedded-runtime-topology",
     "rust-zccache-entry",
     "rust-wrapper-env",
-    "rust-rust-plan",
     "rust-cache-cli",
     "rust-cache-session",
     "rust-native-cache-unit",

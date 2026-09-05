@@ -25,7 +25,10 @@ def test_binary_path_uses_target_release_layout(tmp_path: Path) -> None:
 def test_musl_binary_contract_uses_release_version_helpers() -> None:
     assert smoke.expected_version("v0.9.2") == "0.9.2"
     assert smoke.version_problem("soldr 0.9.2\n") is None
-    assert smoke.version_json_problem('warning\n{"soldr_version":"0.9.2"}', "0.9.2") is not None
+    assert (
+        smoke.version_json_problem('warning\n{"soldr_version":"0.9.2"}', "0.9.2")
+        is not None
+    )
 
 
 def test_missing_or_non_executable_binary_is_a_named_failure(tmp_path: Path) -> None:
@@ -111,7 +114,9 @@ def test_json_probe_failure_keeps_the_binary_stderr(
             return SimpleNamespace(stdout="soldr 0.9.2\n")
         if command[-2:] == ["version", "--json"]:
             assert kwargs == {"check": True, "capture_output": True, "text": True}
-            raise smoke.subprocess.CalledProcessError(1, command, output="", stderr="loader error")
+            raise smoke.subprocess.CalledProcessError(
+                1, command, output="", stderr="loader error"
+            )
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(smoke.subprocess, "run", failed_json_probe)

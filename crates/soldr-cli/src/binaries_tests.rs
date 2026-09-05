@@ -40,6 +40,41 @@ fn dylint_wrapper_shim_has_dedicated_identity() {
 }
 
 #[test]
+fn native_compiler_shim_is_version_scoped() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let wrapper = zccache_soldr_shim_binary_at(&paths).expect("materialize native compiler shim");
+
+    assert!(wrapper.is_file(), "missing {}", wrapper.display());
+    assert_eq!(
+        wrapper.file_stem().and_then(std::ffi::OsStr::to_str),
+        Some("zccache-soldr")
+    );
+    assert!(
+        wrapper.starts_with(paths.versioned_shims_dir().join("images")),
+        "native shim must live in the versioned, image-addressed tree: {}",
+        wrapper.display()
+    );
+}
+
+#[test]
+fn native_compiler_shim_images_cannot_overwrite_each_other() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let first = root.path().join("soldr-image-a");
+    let second = root.path().join("soldr-image-b");
+    std::fs::write(&first, b"first independently linked soldr image").expect("first image");
+    std::fs::write(&second, b"second independently linked soldr image").expect("second image");
+
+    let first_target = zccache_soldr_shim_target(&paths, &first).expect("first target");
+    let second_target = zccache_soldr_shim_target(&paths, &second).expect("second target");
+
+    assert_ne!(first_target, second_target);
+    assert!(first_target.starts_with(paths.versioned_shims_dir().join("images")));
+    assert!(second_target.starts_with(paths.versioned_shims_dir().join("images")));
+}
+
+#[test]
 fn relocated_runtime_alias_is_materialized_beside_current_exe() {
     let source = std::path::Path::new("/opt/package/bin/soldr");
     let current = std::path::Path::new("/tmp/runtime/hash/soldr");

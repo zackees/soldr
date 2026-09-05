@@ -40,12 +40,45 @@ fn fingerprint(path: &Path) -> io::Result<(u64, u128)> {
     Ok((meta.len(), mtime_nanos))
 }
 
-/// Cache filename for `target`: a blake3 of its absolute path, so distinct
-/// binaries never collide and the name is filesystem-safe.
+/// Cache filename for `target`: a blake3 of the file's stable identity, so
+/// distinct binaries never collide and the name is filesystem-safe.
+///
+/// Keyed on *which file this is*, not on the name it was reached by. soldr#2996:
+/// the integration harness hard-links one built `soldr-daemon` into a per-test
+/// path so each test gets its own endpoint namespace
+/// (`tests/common/isolated_daemon.rs`). Those links are the same inode with the
+/// same size and mtime — only the path differs — so a path-keyed entry missed
+/// on every test and each broker/daemon cold start re-hashed the identical
+/// image. Identity keying makes every link to one image share a single entry.
+///
+/// Falls back to the canonical path when no identity is available, which keeps
+/// the previous behaviour on any host or filesystem that cannot report one.
 fn cache_entry_path(cache_dir: &Path, target: &Path) -> PathBuf {
-    let abs = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
-    let key = zccache::hash::hash_bytes(abs.to_string_lossy().as_bytes()).to_hex();
+    let key_material = stable_identity_key(target).unwrap_or_else(|| {
+        let abs = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+        format!("path\0{}", abs.to_string_lossy())
+    });
+    let key = zccache::hash::hash_bytes(key_material.as_bytes()).to_hex();
     cache_dir.join(format!("{key}.blake3"))
+}
+
+/// The identity components that survive a hard link: the Unix `(dev, ino)`
+/// pair, or the Windows `(volume serial, file index)` pair.
+///
+/// Deliberately excludes `len` and `modified_ns`. Those are the entry's
+/// *validity* fields, re-checked on every read by [`read_cache_entry`], and
+/// folding them into the entry's name would strand one file per rewrite
+/// instead of replacing the previous digest. Correctness is unchanged: a
+/// recycled inode still fails the `(size, mtime)` check and is recomputed.
+fn stable_identity_key(target: &Path) -> Option<String> {
+    let identity = crate::platform::fs::identity::file_identity(target)?;
+    if let (Some(dev), Some(ino)) = (identity.dev, identity.ino) {
+        return Some(format!("ino\0{dev}\0{ino}"));
+    }
+    match (identity.volume_serial_number, identity.file_index) {
+        (Some(volume), Some(index)) => Some(format!("fileid\0{volume}\0{index}")),
+        _ => None,
+    }
 }
 
 /// Machine-scoped home for image-hash memo entries (soldr#2521 B1).
@@ -376,6 +409,85 @@ fn write_cache_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hard_links_to_one_image_share_a_memo_entry() {
+        // soldr#2996: the integration harness hard-links one built
+        // `soldr-daemon` into a per-test path so each test gets its own
+        // endpoint namespace. Those links are the same inode with the same
+        // size and mtime, so keying the memo on the path made every test a
+        // cold miss and re-hashed the identical image on every broker and
+        // daemon cold start.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let image = temp.path().join("soldr-daemon");
+        std::fs::write(&image, b"daemon image bytes").expect("write image");
+        let linked = temp.path().join("per-test-root").join("soldr-daemon");
+        std::fs::create_dir_all(linked.parent().expect("parent")).expect("link dir");
+        if std::fs::hard_link(&image, &linked).is_err() {
+            // A filesystem without hard links cannot exhibit the bug; the
+            // path fallback below is then the correct behaviour.
+            return;
+        }
+
+        let cache_dir = temp.path().join("memo");
+        let direct = cached_blake3_hex(&cache_dir, &image).expect("hash image");
+        let via_link = cached_blake3_hex(&cache_dir, &linked).expect("hash link");
+        assert_eq!(direct, via_link, "both names address one file");
+        assert_eq!(
+            cache_entry_path(&cache_dir, &image),
+            cache_entry_path(&cache_dir, &linked),
+            "hard links must resolve to one memo entry"
+        );
+
+        let entries = std::fs::read_dir(&cache_dir)
+            .expect("read memo dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "blake3"))
+            .count();
+        assert_eq!(entries, 1, "one image must not occupy two memo entries");
+    }
+
+    #[test]
+    fn distinct_images_never_share_a_memo_entry() {
+        // The other half of the identity contract: keying on the file rather
+        // than the path must not let two different binaries collide.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        std::fs::write(&first, b"first image").expect("write first");
+        std::fs::write(&second, b"second image").expect("write second");
+
+        let cache_dir = temp.path().join("memo");
+        assert_ne!(
+            cache_entry_path(&cache_dir, &first),
+            cache_entry_path(&cache_dir, &second)
+        );
+        assert_ne!(
+            cached_blake3_hex(&cache_dir, &first).expect("hash first"),
+            cached_blake3_hex(&cache_dir, &second).expect("hash second")
+        );
+    }
+
+    #[test]
+    fn a_rewritten_image_is_rehashed_rather_than_served_stale() {
+        // Identity keying reuses one entry name across rewrites, so the
+        // `(size, mtime)` validity check is what keeps a stale digest from
+        // being served. Recycled inodes rely on the same check.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let image = temp.path().join("soldr-daemon");
+        std::fs::write(&image, b"original bytes").expect("write original");
+        let cache_dir = temp.path().join("memo");
+        let before = cached_blake3_hex(&cache_dir, &image).expect("hash original");
+
+        // A fresh mtime is what invalidates the entry; sleep past the
+        // coarsest timestamp granularity we might be running on.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&image, b"replacement bytes of a different length").expect("rewrite");
+        let after = cached_blake3_hex(&cache_dir, &image).expect("hash replacement");
+
+        assert_ne!(before, after, "a rewritten image must be re-hashed");
+        assert_eq!(after, blake3_hex(&image).expect("direct hash"));
+    }
 
     #[test]
     fn platform_lock_contention_is_retryable() {

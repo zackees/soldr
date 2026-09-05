@@ -109,13 +109,30 @@ def compatibility_for_target(target: str) -> str:
 
 
 def maturin_build_command(maturin: Path, target: str) -> list[str]:
-    """Return the locked direct build command for the release target."""
+    """Return the locked direct build command for the release target.
+
+    soldr#3038: `--strip` is load-bearing for wheel size, not a nicety.
+    `[profile.release]` deliberately keeps `strip = "none"` at the Cargo
+    level -- the release archive's packaging step
+    (`stage_release_binaries.py::stage_debug_symbols`) needs the fully
+    linked, undisturbed binary as the input to its own `objcopy`/`strip`
+    symbol carve-out. Left at that Cargo-level default, the wheel step
+    would bundle the SAME unstripped binary maturin just linked --
+    measured at soldr#3038: 36.7 MiB compressed, versus 9.8 MiB before this
+    change. `--strip` tells maturin to strip its own copy at packaging
+    time, independent of the Cargo profile and without touching the
+    archive's separately-built binary at all (different `--target-dir`
+    output, a wholly separate compile) -- measured with it: 10.3 MiB
+    compressed, matching the historical wheel size. See
+    docs/DEBUG_SIDECARS.md for the measured before/after.
+    """
 
     return [
         str(maturin),
         "build",
         "--release",
         "--locked",
+        "--strip",
         "--target",
         target,
         "--target-dir",

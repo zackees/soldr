@@ -31,6 +31,24 @@ use std::time::Instant;
 /// the config files) leaves the choice to the next layer.
 pub const SOLDR_COOK_AUTO_HYDRATE_ENV: &str = "SOLDR_COOK_AUTO_HYDRATE";
 
+/// Soldr-private channel by which `soldr cook` publishes the target triple
+/// its own cook is scoped to, for the front-door invocations it makes
+/// in-process (soldr#3043).
+///
+/// Needed because Phase 1 of `soldr cook` is `cargo chef prepare`, whose argv
+/// carries **no** `--target` (cargo-chef's `prepare` does not accept one — see
+/// `build_chef_prepare_args` in `cook_indexing.rs`). That invocation is still
+/// "build-like" to the front door, so the pre-flight below runs for it, and
+/// with only the argv to go on it would extract a `--target`-scoped archive
+/// into the bare `target/` root: a full duplicate extraction into a directory
+/// Cargo never reads for a `--target` build, which also drops the warm-cook
+/// marker outside `resolve_cook_target_dir` so soldr#621's Phase-2
+/// short-circuit could never fire.
+///
+/// Never set by a user; `soldr cook` sets it for itself and an explicit
+/// `--target` in argv still wins.
+pub const SOLDR_COOK_HYDRATE_TARGET_ENV: &str = "SOLDR_COOK_HYDRATE_TARGET";
+
 /// Conservative decision for a cooked-artifact restore. Unknown historical
 /// values always skip instead of gambling CI wall time on a nominal hit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,11 +87,20 @@ fn timed_verified_extract<T, E>(
     (outcome, restore_elapsed_ms)
 }
 
-fn decide_cook_restore(
-    archive_bytes: u64,
-    compile_duration_ms: u64,
-    save_elapsed_ms: u64,
-) -> CookRestoreDecision {
+/// Floor on archive restore bandwidth, in compressed bytes per millisecond
+/// (16 MiB/s), used to estimate a restore before it runs (soldr#3117).
+///
+/// Restore is `sha256` verify + zstd decode + tar write. zstd decoding speed
+/// is independent of the compression level, so the level-19 pack that took
+/// minutes says nothing about it: a 742 MB cook archive (4.4 GB tree) verified
+/// and extracted in 5.3 s on a developer host, about 140 MB/s of compressed
+/// input, and the CI stable-tree archive is 187 MiB. The floor sits roughly
+/// nine times under that measurement so that a slow runner disk still cannot
+/// make the estimate optimistic. The measured `performance miss` line after a
+/// restore remains the honest check.
+const COOK_RESTORE_FLOOR_BYTES_PER_MS: u64 = 16 * 1024 * 1024 / 1000;
+
+fn decide_cook_restore(archive_bytes: u64, compile_duration_ms: u64) -> CookRestoreDecision {
     if archive_bytes == 0 {
         return CookRestoreDecision::Skip {
             estimated_transport_ms: None,
@@ -86,19 +113,13 @@ fn decide_cook_restore(
             reason: "no prior compile duration is recorded",
         };
     }
-    if save_elapsed_ms == 0 {
-        return CookRestoreDecision::Skip {
-            estimated_transport_ms: None,
-            reason: "no observed archive bandwidth is recorded",
-        };
-    }
 
-    // The save measurement is the only durable same-key bandwidth sample
-    // available before a restore. Charge the observed save and one equally
-    // sized restore; this is intentionally a conservative transport estimate.
-    let observed_bytes_per_ms = archive_bytes.div_ceil(save_elapsed_ms).max(1);
-    let estimated_restore_ms = archive_bytes.div_ceil(observed_bytes_per_ms);
-    let estimated_transport_ms = save_elapsed_ms.saturating_add(estimated_restore_ms);
+    // Only the restore is on the table: the pack that produced the archive
+    // is sunk cost. The previous estimate charged that pack again and then
+    // assumed a restore as slow as a level-19 compression, which declined
+    // every hit whose compile the compile cache already served -- exactly
+    // the CI shape this gate is meant to speed up (soldr#3117).
+    let estimated_transport_ms = archive_bytes.div_ceil(COOK_RESTORE_FLOOR_BYTES_PER_MS);
     if estimated_transport_ms >= compile_duration_ms {
         CookRestoreDecision::Skip {
             estimated_transport_ms: Some(estimated_transport_ms),
@@ -132,15 +153,28 @@ pub fn maybe_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) {
 /// * A status reply **without** cook stats means "unknown" — an older
 ///   daemon predating the field would otherwise lose hydration it used
 ///   to perform, so we fall through and behave exactly as before.
-/// * An **unreachable** daemon skips too: [`client::cook_lookup`] talks
-///   to the same socket and cannot succeed either, so the key work would
-///   be discarded a few hundred milliseconds later regardless. This does
-///   not suppress hydration that would otherwise have happened — it only
-///   stops paying for a lookup that is already guaranteed to fail.
+/// * A daemon that is **not running** skips too: [`client::cook_lookup`]
+///   talks to the same socket and cannot succeed either, so the key work
+///   would be discarded a few hundred milliseconds later regardless. This
+///   does not suppress hydration that would otherwise have happened; it
+///   only stops paying for a lookup that is already guaranteed to fail.
+/// * Any **other** failure (a status reply that timed out, a protocol
+///   error) is "unknown" and falls through to the lookup. A daemon whose
+///   control plane is still warming up after launch answers a 2 s status
+///   probe late but the lookup fine; reading that timeout as "no daemon"
+///   silently disabled hydration for every `soldr cook` that had just
+///   brought its own daemon up (soldr#3117).
 fn cook_lookup_is_worthwhile(sock: &Path) -> bool {
-    match client::status(sock) {
+    lookup_worthwhile_from_status(client::status(sock))
+}
+
+fn lookup_worthwhile_from_status(
+    status: Result<crate::daemon::protocol::StatusInfo, client::ClientError>,
+) -> bool {
+    match status {
         Ok(info) => info.cook_stats.is_none_or(|stats| stats.entries > 0),
-        Err(_) => false,
+        Err(client::ClientError::NotRunning) => false,
+        Err(_) => true,
     }
 }
 
@@ -162,6 +196,18 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> 
         }
     };
     if !auto_hydrate_enabled(&manifest_dir, &config.cook) {
+        return None;
+    }
+
+    // A tree `soldr cook` cooked in place already holds everything the
+    // archive would restore (the archive was packed from it). Every later
+    // front door in the same tree -- each `soldr ci-test` stage, for one --
+    // would otherwise verify and walk the whole archive to add zero files,
+    // about 10 s a time in CI (soldr#3117).
+    if target_already_cooked(
+        &resolve_target_dir(&manifest_dir, args),
+        profile_dir_name(&resolve_profile_name(args)),
+    ) {
         return None;
     }
 
@@ -212,17 +258,13 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> 
         exact_recipe_match,
         branch_name,
         compile_duration_ms,
-        save_elapsed_ms,
+        save_elapsed_ms: _,
     } = outcome
     else {
         return None;
     };
 
-    let estimated_transport_ms = match decide_cook_restore(
-        size_bytes,
-        compile_duration_ms,
-        save_elapsed_ms,
-    ) {
+    let estimated_transport_ms = match decide_cook_restore(size_bytes, compile_duration_ms) {
         CookRestoreDecision::Restore {
             estimated_transport_ms,
         } => estimated_transport_ms,
@@ -411,19 +453,76 @@ fn profile_dir_name(profile: &str) -> &str {
     }
 }
 
-fn resolve_target_dir(manifest_dir: &Path, _args: &[String]) -> PathBuf {
-    // The packed archive (PR 2) records entries with the profile dir
-    // as the leading component (`release/`, `debug/`, ...). So we
-    // extract at the bare `target/` directory and the right paths
-    // fall into place.
-    if let Some(env_dir) = std::env::var_os("CARGO_TARGET_DIR") {
+/// Resolve the extraction root for a hydrated cook archive.
+///
+/// The packed archive (PR 2) records entries with the profile dir
+/// as the leading component (`release/`, `debug/`, ...). With no
+/// `--target`, that means the bare `target/` directory is the right
+/// extraction root and the packed paths fall into place. But with
+/// `--target X`, `soldr cook`'s pack source is `target/X/<profile>`
+/// (see `resolve_cook_target_dir` in `cook.rs`), so the extraction
+/// root must be `target/X` for the same entries to land where cargo
+/// actually reads them (soldr#3043). We key this off the LITERAL
+/// presence of `--target` in argv, not [`resolve_target_triple`],
+/// because that is what determined the packer's source directory.
+///
+/// The one caller whose argv cannot carry `--target` is `soldr cook`'s
+/// own Phase-1 `cargo chef prepare`; it announces the cook's target
+/// scope through [`SOLDR_COOK_HYDRATE_TARGET_ENV`] instead, which
+/// [`explicit_target_scope`] consults after the argv.
+///
+/// Residual asymmetry this does NOT fix: [`resolve_target_triple`]
+/// (used to build the index LOOKUP key) falls back to the detected
+/// host triple when `--target` is absent, so a plain `cargo build`
+/// on a host machine can still match an archive that was cooked with
+/// `--target <host>` and extract it at bare `target/` instead of
+/// `target/<host>/`. For a plain `cargo build` that IS the directory
+/// cargo reads, so the restore is still useful; closing the key/scope
+/// mismatch properly needs an archive-format or index-schema decision,
+/// not a fix here. Should be filed as a `research:` issue per
+/// CLAUDE.md's Agent Code-Smell Reporting Rule.
+fn resolve_target_dir(manifest_dir: &Path, args: &[String]) -> PathBuf {
+    let root = if let Some(env_dir) = std::env::var_os("CARGO_TARGET_DIR") {
         let p = PathBuf::from(&env_dir);
         if p.is_absolute() {
-            return p;
+            p
+        } else {
+            manifest_dir.join(p)
         }
-        return manifest_dir.join(p);
+    } else {
+        manifest_dir.join("target")
+    };
+    match explicit_target_scope(args) {
+        Some(triple) => root.join(triple),
+        None => root,
     }
-    manifest_dir.join("target")
+}
+
+/// The triple this invocation's artifacts are scoped under, or `None` for an
+/// unscoped (host, no `--target`) build whose artifacts land directly in the
+/// target root. argv wins; [`SOLDR_COOK_HYDRATE_TARGET_ENV`] is the fallback
+/// for `soldr cook`'s own `cargo chef prepare` (soldr#3043).
+/// Whether `soldr cook` has already cooked `target_dir` in place.
+///
+/// `target_dir` is the archive's extraction root (`target/<triple>/`); the
+/// cook writes its marker one level down, in the profile directory it cooked
+/// (`resolve_cook_target_dir` in cook.rs), so the check is scoped to the
+/// profile this build resolves to.
+fn target_already_cooked(target_dir: &Path, profile_dir: &str) -> bool {
+    target_dir
+        .join(profile_dir)
+        .join(crate::cook::COOK_MARKER_FILE_NAME)
+        .is_file()
+}
+
+fn explicit_target_scope(args: &[String]) -> Option<String> {
+    if let Some(triple) = extract_arg_value(args, "--target") {
+        return Some(triple);
+    }
+    std::env::var(SOLDR_COOK_HYDRATE_TARGET_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn rustc_version_string(rustc: &Path) -> Option<String> {
@@ -465,6 +564,18 @@ mod tests {
 
     fn clear_env() {
         std::env::remove_var(SOLDR_COOK_AUTO_HYDRATE_ENV);
+    }
+
+    /// The env state every `resolve_target_dir` assertion below depends on:
+    /// no `CARGO_TARGET_DIR` and no cook target scope, so the expected root is
+    /// the tempdir's own `target/`. Not hypothetical — the documented Linux
+    /// dev loop (`ci/perf_local.py`) exports `CARGO_TARGET_DIR=/target` into
+    /// the runner container, and an inherited value moves the resolved root
+    /// out of the tempdir and fails these tests for reasons unrelated to the
+    /// behaviour they pin. Callers must already hold [`ENV_LOCK`].
+    fn clear_target_dir_env() {
+        std::env::remove_var("CARGO_TARGET_DIR");
+        std::env::remove_var(SOLDR_COOK_HYDRATE_TARGET_ENV);
     }
 
     #[test]
@@ -551,21 +662,42 @@ mod tests {
     }
 
     #[test]
-    fn cook_cost_gate_restores_when_observed_transport_is_cheaper() {
+    fn cook_cost_gate_restores_when_estimated_restore_is_cheaper() {
+        // 500 MiB at the 16 MiB/s floor is ~31.3 s, against a two-minute compile.
+        let archive: u64 = 500 * 1024 * 1024;
+        let expected = archive.div_ceil(COOK_RESTORE_FLOOR_BYTES_PER_MS);
+        assert!((31_000..32_000).contains(&expected), "{expected}");
         assert_eq!(
-            decide_cook_restore(500 * 1024 * 1024, 120_000, 5_000),
+            decide_cook_restore(archive, 120_000),
             CookRestoreDecision::Restore {
-                estimated_transport_ms: 10_000
+                estimated_transport_ms: expected
             }
         );
     }
 
     #[test]
+    fn cook_cost_gate_is_the_ci_shape_that_used_to_be_declined() {
+        // soldr#3117: the CI stable tree -- 187 MiB archive, a compile the
+        // compile cache served in 95 s, and a pack that took minutes. The old
+        // estimate charged the pack twice over and declined; the restore
+        // estimate is about 12 s and must win.
+        let archive: u64 = 187 * 1024 * 1024;
+        assert!(matches!(
+            decide_cook_restore(archive, 95_000),
+            CookRestoreDecision::Restore {
+                estimated_transport_ms
+            } if estimated_transport_ms < 15_000
+        ));
+    }
+
+    #[test]
     fn cook_cost_gate_skips_when_transport_would_lose() {
+        let archive: u64 = 500 * 1024 * 1024;
+        let expected = archive.div_ceil(COOK_RESTORE_FLOOR_BYTES_PER_MS);
         assert_eq!(
-            decide_cook_restore(500 * 1024 * 1024, 9_000, 5_000),
+            decide_cook_restore(archive, 9_000),
             CookRestoreDecision::Skip {
-                estimated_transport_ms: Some(10_000),
+                estimated_transport_ms: Some(expected),
                 reason: "estimated transport is not cheaper than the avoided compile",
             }
         );
@@ -574,19 +706,53 @@ mod tests {
     #[test]
     fn cook_cost_gate_skips_without_prior_observations() {
         assert!(matches!(
-            decide_cook_restore(1, 0, 5_000),
+            decide_cook_restore(1, 0),
             CookRestoreDecision::Skip {
                 reason: "no prior compile duration is recorded",
                 ..
             }
         ));
         assert!(matches!(
-            decide_cook_restore(1, 5_000, 0),
+            decide_cook_restore(0, 5_000),
             CookRestoreDecision::Skip {
-                reason: "no observed archive bandwidth is recorded",
+                reason: "archive has no recorded bytes",
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_tree_cooked_in_place_needs_no_restore() {
+        let dir = TempDir::new().unwrap();
+        assert!(!target_already_cooked(dir.path(), "debug"));
+        // The marker lives in the cooked profile directory, not the root.
+        std::fs::write(dir.path().join(crate::cook::COOK_MARKER_FILE_NAME), b"{}").unwrap();
+        assert!(!target_already_cooked(dir.path(), "debug"));
+        std::fs::create_dir_all(dir.path().join("debug")).unwrap();
+        std::fs::write(
+            dir.path()
+                .join("debug")
+                .join(crate::cook::COOK_MARKER_FILE_NAME),
+            b"{}",
+        )
+        .unwrap();
+        assert!(target_already_cooked(dir.path(), "debug"));
+        assert!(!target_already_cooked(dir.path(), "release"));
+    }
+
+    #[test]
+    fn only_a_daemon_that_is_not_running_makes_the_lookup_pointless() {
+        assert!(!lookup_worthwhile_from_status(Err(
+            client::ClientError::NotRunning
+        )));
+        // soldr#3117: a status probe that timed out against a daemon still
+        // warming up is not evidence of an empty index.
+        assert!(lookup_worthwhile_from_status(Err(client::ClientError::Io(
+            std::io::Error::from(std::io::ErrorKind::WouldBlock)
+        ))));
+        assert!(lookup_worthwhile_from_status(Err(
+            client::ClientError::Protocol("garbled".into())
+        )));
     }
 
     #[test]
@@ -595,6 +761,121 @@ mod tests {
         assert!(is_cook_performance_miss(10_001, 10_000));
         assert!(!is_cook_performance_miss(9_999, 10_000));
         assert!(!is_cook_performance_miss(10_000, 0));
+    }
+
+    #[test]
+    fn resolve_target_dir_without_explicit_target_is_the_bare_target_dir() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_target_dir_env();
+        let dir = TempDir::new().unwrap();
+        let args = [
+            "chef".to_string(),
+            "cook".to_string(),
+            "--recipe-path".to_string(),
+            "r.json".to_string(),
+            "--workspace".to_string(),
+        ];
+        let expected = dir.path().join("target");
+        assert_eq!(resolve_target_dir(dir.path(), &args), expected);
+    }
+
+    #[test]
+    fn resolve_target_dir_appends_the_explicit_target_triple() {
+        // Serialized with the CARGO_TARGET_DIR-mutating test below: that one
+        // sets a process-global var this assertion depends on being unset.
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_target_dir_env();
+        let dir = TempDir::new().unwrap();
+        let args = [
+            "build".to_string(),
+            "--target".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
+        ];
+        let expected = dir.path().join("target").join("x86_64-unknown-linux-gnu");
+        assert_eq!(resolve_target_dir(dir.path(), &args), expected);
+    }
+
+    #[test]
+    fn resolve_target_dir_accepts_the_equals_spelling() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_target_dir_env();
+        let dir = TempDir::new().unwrap();
+        let args = [
+            "build".to_string(),
+            "--target=aarch64-unknown-linux-gnu".to_string(),
+        ];
+        let expected = dir.path().join("target").join("aarch64-unknown-linux-gnu");
+        assert_eq!(resolve_target_dir(dir.path(), &args), expected);
+    }
+
+    #[test]
+    fn resolve_target_dir_honours_cargo_target_dir_with_an_explicit_target() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let manifest_dir = TempDir::new().unwrap();
+        let target_dir = TempDir::new().unwrap();
+        std::env::set_var("CARGO_TARGET_DIR", target_dir.path());
+        let args = [
+            "build".to_string(),
+            "--target".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
+        ];
+        let resolved = resolve_target_dir(manifest_dir.path(), &args);
+        std::env::remove_var("CARGO_TARGET_DIR");
+        let expected = target_dir.path().join("x86_64-unknown-linux-gnu");
+        assert_eq!(resolved, expected);
+    }
+
+    // soldr#3043: `cargo chef prepare` (soldr cook's Phase 1) carries no
+    // `--target`, so without this fallback the hydrate would extract a
+    // `--target`-scoped archive to the bare `target/` root — a duplicate
+    // extraction Cargo never reads, with the warm-cook marker landing outside
+    // `resolve_cook_target_dir` so soldr#621's short-circuit can never fire.
+    #[test]
+    fn resolve_target_dir_falls_back_to_the_cook_target_scope_env() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_target_dir_env();
+        let dir = TempDir::new().unwrap();
+        let args = [
+            "chef".to_string(),
+            "prepare".to_string(),
+            "--recipe-path".to_string(),
+            "r.json".to_string(),
+        ];
+        std::env::set_var(SOLDR_COOK_HYDRATE_TARGET_ENV, "aarch64-apple-darwin");
+        let resolved = resolve_target_dir(dir.path(), &args);
+        std::env::remove_var(SOLDR_COOK_HYDRATE_TARGET_ENV);
+        let expected = dir.path().join("target").join("aarch64-apple-darwin");
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn an_explicit_target_argv_beats_the_cook_target_scope_env() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_target_dir_env();
+        let dir = TempDir::new().unwrap();
+        let args = [
+            "chef".to_string(),
+            "cook".to_string(),
+            "--target".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
+        ];
+        std::env::set_var(SOLDR_COOK_HYDRATE_TARGET_ENV, "aarch64-apple-darwin");
+        let resolved = resolve_target_dir(dir.path(), &args);
+        std::env::remove_var(SOLDR_COOK_HYDRATE_TARGET_ENV);
+        let expected = dir.path().join("target").join("x86_64-unknown-linux-gnu");
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn a_blank_cook_target_scope_env_is_ignored() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_target_dir_env();
+        let dir = TempDir::new().unwrap();
+        let args = ["chef".to_string(), "prepare".to_string()];
+        std::env::set_var(SOLDR_COOK_HYDRATE_TARGET_ENV, "   ");
+        let resolved = resolve_target_dir(dir.path(), &args);
+        std::env::remove_var(SOLDR_COOK_HYDRATE_TARGET_ENV);
+        assert_eq!(resolved, dir.path().join("target"));
     }
 
     #[test]

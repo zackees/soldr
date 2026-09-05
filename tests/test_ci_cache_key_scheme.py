@@ -13,12 +13,14 @@ are pinned here rather than left to review:
    either onto a shared namespace either breaks a documented cold guarantee
    or lets one workflow delete/contaminate another's cache.
 
-2. **A shared key only pays if the sharers write the same directory.** `lint`
-   and `build-linux-x64` both compile ~700 dependencies at the dev profile
-   for x86_64-unknown-linux-gnu, but cargo splits `target/debug` from
-   `target/<triple>/debug`, so they shared nothing until both passed
-   `--target`. The key and the flag have to move together; a later edit
-   dropping the flag would leave a shared key that is pure cosmetics.
+2. **The dev-profile shared namespace was retired, not renamed.** `ws-dev-*`
+   (soldr#1978 item 6) promised one `target/` restore per (profile, target)
+   pair, but soldr#2996 found the `Swatinem/rust-cache` step that served it
+   never hit: the key's environment hash covered every installed toolchain,
+   so it flipped with the Dylint nightly and missed 100% of the time.
+   soldr#3047 deleted the step outright rather than re-key it; the Tier-2
+   object store (soldr#3041) and the workflow-level `soldr cook` step
+   (soldr#3043) are the replacement, not another shared-key namespace.
 """
 
 from __future__ import annotations
@@ -94,12 +96,33 @@ def test_no_ci_key_collides_with_the_perf_purge_substring() -> None:
 
 
 def test_native_lane_owns_the_shared_dev_namespace_and_target_dir() -> None:
-    """The non-Rust lint lane must not claim or populate the Rust cache."""
+    """The dead ws-dev namespace and its Swatinem/rust-cache step must stay gone.
+
+    soldr#3047 removed `Restore cargo + target caches` from
+    `_build-and-test.yml`: the `ws-dev-*` key it used carried every installed
+    toolchain into its environment hash, so it flipped with the Dylint
+    nightly and missed 100% of the time. There is no replacement shared-key
+    namespace to re-check here -- the successor is the Tier-2 object store
+    (soldr#3041) plus the workflow-level `soldr cook` step (soldr#3043) -- so
+    this guard now pins the namespace's absence instead of its presence.
+    """
     ci = read("ci.yml")
     build_and_test = read("_build-and-test.yml")
 
     assert "shared-key: ws-dev-x86_64-unknown-linux-gnu" not in ci
-    assert build_and_test.count("shared-key: ws-dev-${{ inputs.target }}") == 1
+    assert "shared-key: ws-dev" not in build_and_test, (
+        "soldr#3047 removed the ws-dev-* shared cache namespace from "
+        "_build-and-test.yml because its environment hash covered every "
+        "installed toolchain, so it flipped with the Dylint nightly and "
+        "missed 100% of the time; it must not reappear"
+    )
+    assert "uses: Swatinem/rust-cache" not in build_and_test, (
+        "soldr#3047 removed the Swatinem/rust-cache step from "
+        "_build-and-test.yml (0% hit rate under the ws-dev-* key); its "
+        "replacement is the Tier-2 object store (soldr#3041) plus the "
+        "workflow-level soldr cook step (soldr#3043), not another "
+        "Swatinem/rust-cache restore"
+    )
     assert "--target ${{ inputs.target }}" in build_and_test, (
         "_build-and-test.yml lost its explicit host target, so the driver and "
         "ci-test could populate different target directories"

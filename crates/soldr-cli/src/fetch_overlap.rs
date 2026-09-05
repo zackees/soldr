@@ -145,7 +145,12 @@ pub(crate) fn spawn_for_blessed_build(build_args: &[String], target: &str) -> Op
 
     let mut command = tokio::process::Command::from(command);
     command.kill_on_drop(true);
-    match command.spawn() {
+    // soldr#3098: spawns share, staged writes exclude.
+    let spawned = {
+        let _spawn = crate::core::spawn_exclusion::spawn_shared();
+        command.spawn()
+    };
+    match spawned {
         Ok(child) => {
             eprintln!(
                 "soldr build: prefetching dependencies alongside SDK preparation \

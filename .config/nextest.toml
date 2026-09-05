@@ -77,8 +77,37 @@ slow-timeout = { period = "60s", terminate-after = 2, grace-period = "30s" }
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_stall_harness)::/))'
+filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_rss_ceiling|daemon_stall_harness)::/))'
 test-group = 'soldr-runtime'
+
+# soldr#3038: `daemon_rss_ceiling` spawns its own broker-owned daemon and
+# drives a real (if small) chained-workspace build through it, so it needs
+# the 300s budget for the same reason as the `session_*` real-rustc entry
+# below: a cold embedded-zccache daemon start plus several sequential
+# `cargo build` passes routinely exceeds the 120s default on a contended
+# runner, and this is real work, not a hang.
+[[profile.default.overrides]]
+filter = 'test(=daemon_rss_ceiling::daemon_stays_under_the_512mib_target_while_serving_a_chained_build)'
+slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
+
+# soldr#3096: the breach test runs the same shape of workload (a trivial
+# build plus the 12-crate chained build through a broker-owned daemon) and
+# passes in 29-56s, which left under 2.2x headroom on the 120s default --
+# it timed out on contended ARM/GNU runners. Same budget as its sibling;
+# the test's own per-build waits are shorter than this so its diagnostic,
+# not nextest's, reports which build stalled.
+[[profile.default.overrides]]
+filter = 'test(=daemon_rss_ceiling::daemon_dies_and_dumps_memory_when_the_ceiling_is_breached)'
+slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
+
+# soldr#3059: the rate-gate reproduction runs the same shape of workload as
+# the ceiling test above (one cold build + three rebuild passes through a
+# broker-owned daemon), so it needs the same budget. `#[ignore]`d by default
+# (see the test's own doc comment), but still needs a real budget for the
+# explicit `--ignored` runs this test exists to be run with.
+[[profile.default.overrides]]
+filter = 'test(=daemon_rss_ceiling::daemon_rss_retention_rate_per_compile_stays_within_budget)'
+slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
 
 # Note the `daemon` binary carries two more modules -- `cli_debug_trace_observer`,
 # `inherited_stdio_spawns_mark_spoke` -- and the
@@ -101,12 +130,15 @@ test-group = 'soldr-runtime'
 filter = 'test(=cli_toolchain::toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=cli_toolchain::toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cli_toolchain::toolchain_link_emits_schema_v1_json_payload) + test(=cli_toolchain::toolchain_link_force_overwrites_user_modified_shim) + test(=cli_toolchain_home_boundary::cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
 test-group = 'soldr-runtime'
 
-# These modules run real Cargo front doors from isolated homes. On hosted
-# Windows, launching several of their cold builds at once has produced clusters
-# of 120s timeouts while neighboring tests complete (soldr#2697). Keep their
+# These modules run real Cargo front doors from isolated homes. Keep their
 # shared pressure serial without coupling them to broker/daemon lifecycle tests.
-# Reserving every nextest thread makes each member globally exclusive: a
-# one-thread group alone still runs beside unrelated test groups (soldr#2697).
+# On hosted Windows, launching even one beside unrelated test processes has
+# produced clusters of 120s timeouts (soldr#2697), so the first override also
+# reserves the complete Windows-target Nextest pool. Linux does not need that
+# full-runner reservation: retaining it there left the second CI test thread
+# idle for 708 measured test-seconds and made Fresh Nextest take 26m57s. The
+# duplicated filter is guarded for exact equality in
+# tests/test_nextest_timeout_wrapper.py so membership cannot drift.
 #
 # The second windows-gnu replay named two more members of the same family
 # (run 32470380389): `cargo_without_timeout_allows_progress_cpu_and_lock_waits`
@@ -159,9 +191,13 @@ test-group = 'soldr-runtime'
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + (binary(cargo_front_door) & test(/^cli_cargo_doc_routes::(cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct|bare_doc_keeps_rustc_wrapped_but_rustdoc_direct|cargo_doc_route_deadline_kills_wrapper_hold_tree|bare_doc_route_deadline_kills_rustdoc_hold_tree|cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct|rustdoc_path_shim_reenters_direct_passthrough_without_zccache)$/)) + test(=cli_rust_plan::cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
-test-group = 'soldr-cargo-cold-builds'
+filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + (binary(cargo_front_door) & test(/^cli_cargo_doc_routes::(cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct|bare_doc_keeps_rustc_wrapped_but_rustdoc_direct|cargo_doc_route_deadline_kills_wrapper_hold_tree|bare_doc_route_deadline_kills_rustdoc_hold_tree|cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct|rustdoc_path_shim_reenters_direct_passthrough_without_zccache)$/)) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
+platform = { target = 'cfg(target_os = "windows")' }
 threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + (binary(cargo_front_door) & test(/^cli_cargo_doc_routes::(cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct|bare_doc_keeps_rustc_wrapped_but_rustdoc_direct|cargo_doc_route_deadline_kills_wrapper_hold_tree|bare_doc_route_deadline_kills_rustdoc_hold_tree|cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct|rustdoc_path_shim_reenters_direct_passthrough_without_zccache)$/)) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
+test-group = 'soldr-cargo-cold-builds'
 
 [scripts.wrapper.timeout-diagnostics]
 command = { command-line = ".github/scripts/nextest_timeout_wrapper.py", relative-to = "workspace-root" }
@@ -256,9 +292,10 @@ slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 filter = 'test(=cli_toolchain::toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=cli_toolchain::toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cli_toolchain::toolchain_link_emits_schema_v1_json_payload) + test(=cli_toolchain::toolchain_link_force_overwrites_user_modified_shim) + test(=cli_toolchain_home_boundary::cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
 slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 
-# 240s: the soldr#2442 kill-matrix — each test cold-starts a broker and
-# daemon (sometimes twice), pays the soldr#2517 image-hash cost per start,
-# and then waits bounded recovery deadlines after real SIGKILLs.
+# 240s: the retained soldr#2442 adapter kill-matrix. Generic multi-route
+# isolation and concurrent single-flight replacement live in running-process
+# 4.10.9; these cases retain only Soldr CLI/route/image behavior after real
+# SIGKILLs (plus a source-only ownership inventory guard).
 [[profile.default.overrides]]
 filter = 'binary(broker) & test(/^cli_kill_matrix::/)'
 slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
@@ -273,6 +310,33 @@ fail-fast = false
 # A failed attempt is evidence, not a reason to spend another target-run slot
 # rerunning a deterministic failure. The workflow bounds the lane to three
 # distinct failures so it still reports a small useful cluster before exiting.
+
+# soldr#2968: the x86_64 macOS replay now runs on `macos-15` ARM under
+# Rosetta, where every packaged tool and every child process is emulated.
+# `gc_list_json_reports_built_project_target_dir` is the suite's most
+# process-heavy test -- it cold-starts a broker and daemon route and builds a
+# project -- and it is already singled out above for exactly that reason
+# (test-group `soldr-runtime`, after it starved on the windows-gnu lane).
+#
+# Under emulation it landed at 120.273s against the inherited 60s x 2 budget:
+# over by a quarter of a second, on a lane where the same work is several
+# times more expensive than the budget was sized for. Widening it here rather
+# than in `[profile.default]` keeps the tighter deadline everywhere the test
+# runs natively, so a real regression on a native lane still surfaces at 120s.
+[[profile.target-run.overrides]]
+filter = 'test(=cli_gc::gc_list_json_reports_built_project_target_dir)'
+slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
+
+# The native-cache-off proof shells out through an isolated Cargo front door
+# and then validates that C/C++ injection stayed disabled.  On the x86_64
+# macOS replay under Rosetta it completed successfully in 119.66s, but the
+# outer timeout wrapper received nextest's SIGTERM at the inherited 120s
+# boundary first and marked the already-successful test as a timeout
+# (runs 33380028079 and 33376007990).  Keep the native deadline tight and
+# grant only the emulated target-run this measured 300s budget.
+[[profile.target-run.overrides]]
+filter = 'test(=cli_cargo_native_cc::no_cache_global_disables_native_too)'
+slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
 
 [profile.target-run.junit]
 path = "junit.xml"

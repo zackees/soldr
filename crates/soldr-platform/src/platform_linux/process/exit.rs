@@ -12,10 +12,10 @@ pub enum TerminationKind {
     WindowsStatus(u32),
 }
 
-/// Classify an exit code. The zccache wrapper contract represents
-/// `ExitStatus::code() == None` (signal termination) as `-1`.
+/// Classify an exit code. Current zccache encodes signal `N` as
+/// `-(128 + N)`; `-1` remains the legacy unknown-signal sentinel.
 pub fn termination_kind(code: i32) -> TerminationKind {
-    if code == -1 {
+    if code == -1 || (-255..=-129).contains(&code) {
         TerminationKind::Signal
     } else {
         TerminationKind::Exit(code)
@@ -58,9 +58,15 @@ mod tests {
     #[test]
     fn linux_exit_classification() {
         assert!(is_signal_termination(-1));
+        assert!(is_signal_termination(-143));
+        assert!(is_signal_termination(-129));
+        assert!(is_signal_termination(-255));
+        assert!(!is_signal_termination(-128));
+        assert!(!is_signal_termination(-256));
         assert!(!is_signal_termination(1));
         assert!(is_init_failure(0xC000_0142_u32 as i32));
         assert_eq!(termination_kind(-1), TerminationKind::Signal);
+        assert_eq!(termination_kind(-143), TerminationKind::Signal);
         assert_eq!(termination_kind(2), TerminationKind::Exit(2));
     }
 }

@@ -23,6 +23,6 @@ operational and integration details.
   replacement path.
 - `SETUP_SOLDR_EXPORTER.md` / `SETUP_SOLDR_PUBLIC_ACTION.md` —
   exporter design and the public action contract.
-- `TARGET_GC_PROPOSAL.md`, `THIN_TARGET_CACHE_PRUNING.md` — Rust
+- `TARGET_GC_PROPOSAL.md` — Rust
   artifact cache / target-dir GC design notes.
 - `TRUST_BOUNDARIES.md` — trust-mode semantics.

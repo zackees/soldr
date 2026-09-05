@@ -155,10 +155,10 @@ jobs:
       - name: Install pinned Soldr and prepare target environment
         id: setup_soldr
         continue-on-error: ${{ matrix.setup_target != '' }}
-        uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
+        uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90
         with:
           enable: true
-          version: 0.9.10
+          version: 0.9.13
           toolchain: 1.95.0
           cross-targets: ${{ matrix.setup_target }}
           linker: platform-default
@@ -175,11 +175,6 @@ jobs:
         if: steps.setup_soldr.outcome == 'failure' && matrix.setup_target != ''
         shell: bash
         run: uv run --no-project --python 3.13 .github/scripts/prepare_release_target.py --target "${{ matrix.setup_target }}" --github-env "$GITHUB_ENV"
-
-      - name: Restore the native macOS SDK root
-        if: contains(matrix.target, 'apple-darwin')
-        shell: bash
-        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
 
       - name: Add cross-compile target
         shell: bash
@@ -213,12 +208,24 @@ jobs:
           "$driver" --version
 
       # ── Build release binary ──
+      # soldr#3071: apple-darwin joined this blessed-build path (the same
+      # Linux cross path Windows uses) once native macOS runners were
+      # removed from CI. Only ARM64 musl remains native (its catalogue
+      # compiler is i386-hosted and cannot execute on the native ARM64
+      # runner it builds on).
       - name: Build release binary (soldr-driven)
-        if: matrix.target != 'aarch64-unknown-linux-musl' && !contains(matrix.target, 'apple-darwin')
+        if: matrix.target != 'aarch64-unknown-linux-musl'
         shell: bash
         env:
           SOLDR_RELEASE_CI: "1"
-          CARGO_PROFILE_RELEASE_DEBUG: "0"
+          # soldr#786 linux+macOS follow-up: debug info generation is now
+          # controlled by `[profile.release] debug` in the workspace
+          # Cargo.toml (`line-tables-only`). This step used to force it back
+          # off with CARGO_PROFILE_RELEASE_DEBUG=0 -- a profile env var
+          # outranks the Cargo.toml setting, so leaving that override in
+          # place would have silently made the Cargo.toml change a no-op for
+          # every release binary built through this step (all of Windows and
+          # every Linux target except aarch64-unknown-linux-musl).
           CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'pc-windows-msvc') && 'false' || 'thin' }}
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ contains(matrix.target, 'pc-windows-msvc') && '16' || '1' }}
           # soldr#2453: bound Cargo's producer queue and zccache's admission
@@ -226,6 +233,29 @@ jobs:
           # defense. These lanes previously ran unbounded on a 4-vCPU runner.
           CARGO_BUILD_JOBS: "2"
           SOLDR_JOBS: "2"
+          # GNU build-id (soldr#786 linux+macOS follow-up): a separately
+          # shipped `.debug` symbol file (soldr#3038: a post-link objcopy
+          # carve-out, not rustc's split-debuginfo) is useless without a
+          # stable id to match it back to the exact binary that produced it,
+          # and Rust does not emit a GNU build-id on Linux by default.
+          # `--strip-debug` (stage_release_binaries.py::stage_debug_symbols)
+          # removes `.debug_*` sections only, so this note survives the
+          # strip untouched -- a symbolizer can cross-check binary and
+          # `.debug` file by build-id, not only by the `.gnu_debuglink` CRC
+          # the carve-out also embeds. Scoped to the Linux release triples via
+          # CARGO_TARGET_<TRIPLE>_RUSTFLAGS (inert for the Windows targets
+          # this same step also builds) rather than repo-wide
+          # `.cargo/config.toml`, because a `.cargo/config.toml` rustflags
+          # change invalidates every contributor's zccache/Cargo fingerprint
+          # on every Linux build, not just the release lane. `--cfg
+          # tokio_unstable` is repeated here (not just relied on from
+          # `.cargo/config.toml`'s `[build] rustflags`) because
+          # CARGO_TARGET_*_RUSTFLAGS does not merge with `[build] rustflags`
+          # -- the same non-merge hazard the macOS cross lane already works
+          # around in `build-soldr-for-darwin.sh`.
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "--cfg tokio_unstable -C link-arg=-Wl,--build-id"
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "--cfg tokio_unstable -C link-arg=-Wl,--build-id"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: "--cfg tokio_unstable -C link-arg=-Wl,--build-id"
         run: >-
           uv run --no-project --python 3.13 .github/scripts/native_release_build.py matrix-binary
           --target '${{ matrix.target }}'
@@ -239,6 +269,13 @@ jobs:
           AR_aarch64_unknown_linux_musl: ar
           RANLIB_aarch64_unknown_linux_musl: ranlib
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          # GNU build-id (soldr#786 linux+macOS follow-up), same rationale as
+          # the "Build release binary (soldr-driven)" step above: this is a
+          # plain `cargo build` invocation (not soldr's blessed rustflags
+          # merge), so CARGO_TARGET_*_RUSTFLAGS fully replaces
+          # `.cargo/config.toml`'s `[build] rustflags` for this target and
+          # must repeat `--cfg tokio_unstable` itself.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: "--cfg tokio_unstable -C link-arg=-Wl,--build-id"
         run: |
           set -euo pipefail
           # The catalogue ARM64-musl compiler is an
@@ -247,18 +284,6 @@ jobs:
           # through the pinned Soldr and rustup toolchain.
           uv run --no-project --python 3.13 .github/scripts/native_release_build.py binary \
             --driver target/release/soldr --target aarch64-unknown-linux-musl
-
-      - name: Build native macOS release binary through pinned Soldr
-        if: contains(matrix.target, 'apple-darwin')
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Native macOS already has the correct Xcode SDK and clang. Soldr
-          # The blessed build path adds its prepared SDK directory as a
-          # bare linker input, so invoke Cargo through pinned Soldr/rustup
-          # without repeating target preparation.
-          uv run --no-project --python 3.13 .github/scripts/native_release_build.py binary \
-            --driver target/release/soldr --target "${{ matrix.target }}"
 
       # soldr#1060 acceptance: the musl artifacts are the "runs anywhere"
       # build precisely because they carry no dynamic dependencies. A musl
@@ -299,9 +324,42 @@ jobs:
             --max-glibc 2.39 \
             "target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
-      - name: Stage soldr release binaries
+      # soldr#3085: every lane below cross-builds on an x86_64 Linux runner
+      # (macOS since soldr#3073, aarch64-gnu since long before), and the
+      # symbol carve-out in the next step has to read the artifact it just
+      # built. The runner's own GNU binutils cannot: it rejects a foreign-arch
+      # ELF ("Unable to recognise the format of the input file") and cannot
+      # read Mach-O at any architecture ("file format not recognized"). Both
+      # took down release run 33820395040 (v0.9.12).
+      #
+      # `llvm-objcopy`/`llvm-strip` are target-agnostic and GNU-option
+      # compatible, so they handle every triple this matrix produces. The
+      # darwin lanes already carry them via soldr's managed LLVM on PATH; the
+      # aarch64-gnu lane carries only its conda cross GCC, so install rustup's
+      # llvm-tools component to give stage_release_binaries.py a deterministic
+      # source instead of relying on what a runner image happens to ship.
+      # Best-effort: if this fails, the script still falls back to the managed
+      # cross toolchain's target-prefixed binutils, and fails loudly naming
+      # every location it searched rather than shipping an uncarved binary.
+      - name: Provision cross-capable binutils for symbol staging (soldr#3085)
+        if: ${{ !contains(matrix.target, 'pc-windows-msvc') }}
+        continue-on-error: true
         shell: bash
-        run: uv run --no-project --python 3.13 .github/scripts/stage_release_binaries.py --target "${{ matrix.target }}" --package-dir dist/package
+        run: soldr rustup component add llvm-tools-preview
+
+      - name: Stage soldr release binaries
+        # soldr#3038: --symbols-dir carves Linux debug info out of the
+        # staged binaries (objcopy --only-keep-debug / strip --strip-debug /
+        # objcopy --add-gnu-debuglink -- NOT rustc's split-debuginfo, which
+        # cannot see std/C-dependency DWARF and only duplicated it) into
+        # soldr.debug, and stages the macOS .dSYM, SEPARATELY from
+        # --package-dir. They must never share a directory: --package-dir
+        # feeds both the main archive and manifest.json's soldr.debug_info,
+        # and every setup-soldr consumer hard-rejects a debug_info entry
+        # whose format isn't "pdb" (zccache_contract.py::validate_release_manifest).
+        # See docs/DEBUG_SIDECARS.md.
+        shell: bash
+        run: uv run --no-project --python 3.13 .github/scripts/stage_release_binaries.py --target "${{ matrix.target }}" --package-dir dist/package --symbols-dir dist/symbols
 
       - name: Fetch support binaries from soldr-toolchain
         shell: bash
@@ -440,6 +498,19 @@ jobs:
         shell: bash
         run: uv run --no-project --python 3.13 .github/scripts/package_release_archive.py --version "${{ needs.prepare.outputs.version }}" --target "${{ matrix.target }}" --runner-os "$RUNNER_OS"
 
+      # soldr#3038: the debug-symbols asset. --allow-empty because most
+      # targets legitimately have nothing in dist/symbols (Windows always --
+      # its PDB already ships inline in the main archive). When something
+      # was staged, this produces soldr-<version>-<target>-symbols.tar.zst,
+      # which lands in dist/ beside the main archive and rides along through
+      # the existing `dist/soldr-*.tar.zst` upload-artifact glob below and
+      # the publish job's `dist/*` release-asset upload -- no separate upload
+      # step needed. Never referenced by manifest.json; setup-soldr never
+      # downloads or parses it. See docs/DEBUG_SIDECARS.md.
+      - name: Package debug-symbols archive (tar.zst level 19)
+        shell: bash
+        run: uv run --no-project --python 3.13 .github/scripts/package_release_archive.py --version "${{ needs.prepare.outputs.version }}" --target "${{ matrix.target }}" --runner-os "$RUNNER_OS" --package-dir dist/symbols --label symbols --allow-empty
+
       # ── Wheel build (soldr-driven, Linux) ──
       - name: Build wheel through setup-soldr target environment
         if: ${{ !contains(matrix.target, 'unknown-linux-musl') }}
@@ -512,11 +583,17 @@ jobs:
           --binary "${{ matrix.binary }}"
 
       - name: Smoke test wheel
-        # GNU ARM64 and Windows are cross-built on Linux. Musl wheels run
-        # under Alpine; Windows wheels run in the smoke_windows job below.
+        # GNU ARM64, Windows, and (soldr#3071) both apple-darwin targets are
+        # cross-built on Linux and cannot `pip install` their own wheel here
+        # (wrong platform). Musl wheels run under Alpine; Windows wheels run
+        # in the smoke_windows job below; apple-darwin wheels run in the
+        # smoke_macos_x64 job below (x86_64 only -- aarch64 has no execution
+        # environment in CI at all, see ci/canonical-targets.json
+        # compatibility_decisions).
         if: |
           !contains(matrix.target, 'musl') &&
           !contains(matrix.target, 'pc-windows-msvc') &&
+          !contains(matrix.target, 'apple-darwin') &&
           matrix.target != 'aarch64-unknown-linux-gnu'
         shell: bash
         env:
@@ -566,21 +643,30 @@ jobs:
           name: pypi-soldr-${{ matrix.target }}
           path: dist/*.whl
 
-  # soldr#2453: ARM macOS artifacts are built natively on macos-15; this
-  # smoke job downloads and re-verifies the uploaded build-job artifacts
-  # on a fresh runner rather than trusting the build lane's own smoke step.
-  smoke_macos_arm64:
-    name: Smoke ARM macOS release artifacts
+  # soldr#3076: no GitHub Actions job may run on a macos-* runner (owner
+  # mandate 2026-09-02). x86_64-apple-darwin is smoke-tested inside a
+  # zackees/docker-mac-x64 Recovery guest hosted on an ordinary ubuntu-24.04
+  # runner -- see ci/smoke_release_artifacts.py's --emit-guest-script /
+  # --verify-collected modes. soldr#3071's hand-baked dockur/macos guest
+  # image was never published and its ssh secret was never set, so that
+  # lane failed at preflight on every run; this replaces it wholesale. This
+  # job downloads and re-verifies the uploaded build-job artifacts on a
+  # fresh runner rather than trusting the build lane's own smoke step, same
+  # as before. aarch64-apple-darwin has no smoke coverage at all: it is
+  # cross-built and release-included but not executed anywhere in CI
+  # (soldr#3071 tracks re-enabling that before release; see the
+  # compatibility_decisions entry in ci/canonical-targets.json).
+  smoke_macos_x64:
+    name: Smoke Intel macOS release artifacts
     needs:
       - prepare
       - build
     if: needs.prepare.outputs.should_release == 'true'
-    runs-on: macos-15
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
-
     steps:
-      # Checkout only for ci/smoke_release_artifacts.py — the smoke
-      # logic lives in a testable Python file, not inline YAML.
+      # Checkout only for ci/smoke_release_artifacts.py — the smoke logic
+      # lives in a testable Python file, not inline YAML.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.commit_sha }}
@@ -592,21 +678,61 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: release-soldr-aarch64-apple-darwin
+          name: release-soldr-x86_64-apple-darwin
           path: dist
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: pypi-soldr-aarch64-apple-darwin
+          name: pypi-soldr-x86_64-apple-darwin
           path: dist
 
-      - name: Architecture-check and smoke archive and wheel
+      # Linux-side only: wheel METADATA version, archive extraction, required
+      # members, and the Mach-O magic-byte check. Also stages the archive
+      # binaries into share/, writes the bash-3.2 script the Recovery guest
+      # below fetches and runs, and (via --github-output) hands that script
+      # straight to this step's own `script` output -- no separate heredoc
+      # step needed (soldr#3076; keeps release-auto.yml's inline `run:`
+      # footprint under tests/test_release_yaml_ratchet.py's ceiling).
+      - name: Architecture-check archive/wheel and build the Recovery guest script
+        id: guest_script
         shell: bash
         run: |
           set -euo pipefail
           uv run --no-project --python 3.13 ci/smoke_release_artifacts.py \
-            --target aarch64-apple-darwin \
-            --expected-version '${{ needs.prepare.outputs.version }}'
+            --target x86_64-apple-darwin --expected-version '${{ needs.prepare.outputs.version }}' \
+            --emit-guest-script "$RUNNER_TEMP/recovery-run.sh" \
+            --share-dir share \
+            --github-output "$GITHUB_OUTPUT"
+
+      # zackees/docker-mac-x64: boots a real x86_64 macOS Recovery guest
+      # under KVM on this stock ubuntu-24.04 runner and runs the script
+      # above as root. No baked image, no registry auth, no ssh secret --
+      # see https://github.com/zackees/docker-mac-x64 (soldr#3076).
+      - name: Run the smoke script inside a macOS Recovery guest
+        id: macos
+        uses: zackees/docker-mac-x64@0769c0bcc9367c6516da39c0a3aa4cb55988ec79 # main
+        with:
+          share-dir: share
+          collect: /tmp/results
+          run: ${{ steps.guest_script.outputs.script }}
+
+      - name: Verify the collected Recovery guest results
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.13 ci/smoke_release_artifacts.py \
+            --target x86_64-apple-darwin --expected-version '${{ needs.prepare.outputs.version }}' \
+            --verify-collected '${{ steps.macos.outputs.workdir }}/collected' \
+            --guest-exit-code '${{ steps.macos.outputs.exit-code }}'
+
+      - name: Upload guest screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-x64-recovery-smoke-screens
+          path: ${{ steps.macos.outputs.workdir }}/results/
+          if-no-files-found: warn
+          retention-days: 7
 
   # Windows artifacts are cross-built on Linux; execution still needs native
   # Windows on both architectures. Each smoke consumes uploaded artifacts.
@@ -659,14 +785,80 @@ jobs:
             --target '${{ matrix.target }}' \
             --expected-version '${{ needs.prepare.outputs.version }}'
 
+  # soldr#3078: gate publish on the same positively-owned nextest partition
+  # replay `e2e-macos-x64` runs on every PR (ci.yml), pinned to the release
+  # commit rather than the tip of main. `smoke_macos_x64` above already
+  # smoke-tests the actual release archive/wheel; this is the separate,
+  # heavier native-execution gate the archive replay itself provides --
+  # x86_64-apple-darwin is cross-built on Linux and cannot execute its own
+  # test suite there, so a real macOS Recovery guest runs it instead (no
+  # macos-* GitHub Actions runner exists anywhere, owner mandate
+  # 2026-09-02).
+  e2e_macos_x64_build:
+    name: cross-build x86_64-apple-darwin for replay (linux host)
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    uses: ./.github/workflows/_ci-cross-build-linux.yml
+    with:
+      target: x86_64-apple-darwin
+      artifact_name: soldr-release-e2e-macos-x64
+      source_ref: ${{ needs.prepare.outputs.commit_sha }}
+      # bootstrap_artifact_name omitted (optional, default ""): ci.yml's
+      # value names an artifact produced by its own e2e-cross-bootstrap-soldr
+      # job earlier in the *same* workflow run. release-auto.yml has no such
+      # job, and artifacts do not cross workflow runs, so this falls back to
+      # `_ci-cross-build-linux.yml`'s own actions/cache-or-bootstrap path.
+
+  e2e_macos_x64_replay:
+    name: target-run x86_64-apple-darwin (release gate)
+    needs:
+      - prepare
+      - e2e_macos_x64_build
+    if: needs.prepare.outputs.should_release == 'true'
+    uses: ./.github/workflows/_ci-target-run.yml
+    with:
+      runs_on: ubuntu-24.04
+      target: x86_64-apple-darwin
+      artifact_name: soldr-release-e2e-macos-x64
+      target_execution: x86_64-recovery
+      extended_replay: false
+      run_pep517_smoke: false
+
   publish:
     name: Attest and publish release assets
     needs:
       - prepare
       - build
-      - smoke_macos_arm64
+      - smoke_macos_x64
       - smoke_windows
-    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_arm64.result == 'success' && needs.smoke_windows.result == 'success'
+    # soldr#3088: `e2e_macos_x64_replay` is deliberately NOT a dependency.
+    # 9a7ea958 added it as a publish gate; it has never once been green.
+    # v0.9.12 died on it twice (runs 33820395040 and 33824207338) and both
+    # times the guest summary.txt showed the harness failing, never the
+    # artifact:
+    #
+    #   nextest_list_all=fail:nextest list exited 96: error extracting
+    #   archive `/tmp/work/tests.tar.zst` ... error canonicalizing
+    #   destination directory `/tmp/work/extract` ... No such file or
+    #   directory (os error 2)
+    #
+    # -- i.e. a missing `mkdir -p`, in the same run where that very binary
+    # reported `arch=pass:x86_64`, `version=pass:soldr 0.9.12`, `help=pass`
+    # in the guest. PR #3087 has since found four more harness defects
+    # behind that one (scratch-disk selection, Recovery having no python3
+    # for the nextest timeout wrapper, tmpfs ENOSPC, a split shell
+    # continuation) and is still stabilizing the lane.
+    #
+    # The artifact's real macOS-x64 signal is the `smoke_macos_x64` job,
+    # which runs the *shipped* `release-soldr-x86_64-apple-darwin` archive
+    # (the replay lane builds its own separate `soldr-release-e2e-macos-x64`
+    # from the same commit) in the same docker-mac-x64 Recovery guest, and
+    # passed on both failed runs. Both builds are independently proven to
+    # boot there. Until the replay lane demonstrates it can be green,
+    # gating publish on it only converts harness bugs into unpublishable
+    # releases. The job still runs on every release and stays visible;
+    # soldr#3088 tracks restoring it to the `if:` below.
+    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success' && needs.smoke_windows.result == 'success'
     runs-on: ubuntu-24.04
     # Artifact download + attestation; observed max 0.6 min.
     timeout-minutes: 30

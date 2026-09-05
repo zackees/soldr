@@ -1,0 +1,722 @@
+{
+  "_comment": "Real `gh cache list` output for zackees/soldr captured 2026-09-01 (soldr#3047), trimmed to the three fields check_cache_budget.py reads. 143 entries; `actions/cache/usage` reported 47,489,917,871 active bytes (44.23 GiB) at capture time. This is the RED fixture: `check_cache_budget.py --from-json` must exit 1 on it.",
+  "captured": "2026-09-01",
+  "usage_bytes": 47489917871,
+  "entries": [
+    {
+      "key": "bootstrap-soldr-blessed-linux-gnu-ci-bootstrap-439faf0d5b3bd14eff217983f63f1a83cda3f667",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 19508413
+    },
+    {
+      "key": "bootstrap-soldr-blessed-linux-gnu-ci-bootstrap-651e137db7002dca1a81ae642bdf5a69af599f9a",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 19508417
+    },
+    {
+      "key": "bootstrap-soldr-blessed-linux-gnu-ci-bootstrap-9907dec0e1539c392a2c7f37b1a3ebee23095958",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 19508415
+    },
+    {
+      "key": "bootstrap-soldr-blessed-linux-gnu-ci-bootstrap-9a5ef7bbbe95732639f721c909f5d5a7ffc1ca41",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 19508423
+    },
+    {
+      "key": "bootstrap-soldr-blessed-linux-gnu-ci-bootstrap-ad3e10eefc552ba7c705cdcbd68586d509e08193",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 19508411
+    },
+    {
+      "key": "bootstrap-soldr-blessed-linux-gnu-ci-bootstrap-e77b4fbec3ab0ed8997e7836d25c978a02e40fd7",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 19508419
+    },
+    {
+      "key": "bootstrap-soldr-blessed-linux-gnu-dev-v1-00bc42ba0ca17b649958c359e1698fe515a99161",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 24060732
+    },
+    {
+      "key": "bootstrap-soldr-blessed-linux-gnu-dev-v1-1eb2dcdfde1b9f4d89a96fa780a04715b92dd2bb",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 24060739
+    },
+    {
+      "key": "bootstrap-soldr-blessed-linux-gnu-dev-v1-2c6c464568d0e75fb959437a79c075a346a045e0",
+      "ref": "refs/pull/3038/merge",
+      "sizeInBytes": 24152732
+    },
+    {
+      "key": "bootstrap-soldr-blessed-linux-gnu-dev-v1-afee79710cf0e2229539076bb1136f133396b80e",
+      "ref": "refs/pull/3038/merge",
+      "sizeInBytes": 24123807
+    },
+    {
+      "key": "bootstrap-soldr-blessed-linux-gnu-dev-v1-b066204fcc34c701dfb7f25157da518da443504c",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 24097618
+    },
+    {
+      "key": "bootstrap-soldr-blessed-linux-gnu-dev-v1-b4312988fa326a0fae133d0086cfe8945d0dd6c2",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 24097607
+    },
+    {
+      "key": "bootstrap-soldr-blessed-linux-gnu-dev-v1-bad6fcf12757de4634963698e7493a3d8c1c1bf8",
+      "ref": "refs/pull/3038/merge",
+      "sizeInBytes": 24152741
+    },
+    {
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-f8a8107f7-l7d14c3dd9edac7e1-soldr0.9.11",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 526782368
+    },
+    {
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-f8a8107f7-l7d14c3dd9edac7e1-soldr0.9.11",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 526681212
+    },
+    {
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-f8a8107f7-l997d441e06776d8b-soldr0.9.11",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 511024381
+    },
+    {
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-f8a8107f7-l997d441e06776d8b-soldr0.9.11",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 570764126
+    },
+    {
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-f8a8107f7-l997d441e06776d8b-soldr0.9.11",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 511070988
+    },
+    {
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-faaa264c8-l7d14c3dd9edac7e1-soldr0.9.11",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 442209327
+    },
+    {
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-faaa264c8-l7d14c3dd9edac7e1-soldr0.9.11",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 442305415
+    },
+    {
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-faaa264c8-l997d441e06776d8b-soldr0.9.11",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 424899283
+    },
+    {
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-faaa264c8-l997d441e06776d8b-soldr0.9.11",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 441866425
+    },
+    {
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-faaa264c8-l997d441e06776d8b-soldr0.9.11",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 424774352
+    },
+    {
+      "key": "cook-delta-v2-linux-x64-glibc-rustc1.95.0-f8a8107f7-l7d14c3dd9edac7e1-soldr0.9.11-s08128dbd3c32-g2c6c464568d0e75f",
+      "ref": "refs/pull/3038/merge",
+      "sizeInBytes": 19741038
+    },
+    {
+      "key": "cook-delta-v2-linux-x64-glibc-rustc1.95.0-f8a8107f7-l997d441e06776d8b-soldr0.9.11-s7d15b4a9a2f6-g651e137db7002dca",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 99384
+    },
+    {
+      "key": "cook-delta-v2-linux-x64-glibc-rustc1.95.0-f8a8107f7-l997d441e06776d8b-soldr0.9.11-s7d15b4a9a2f6-g9907dec0e1539c39",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 128866
+    },
+    {
+      "key": "cook-delta-v2-linux-x64-glibc-rustc1.95.0-f8a8107f7-l997d441e06776d8b-soldr0.9.11-s7d15b4a9a2f6-g9a5ef7bbbe957326",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 131089
+    },
+    {
+      "key": "cook-delta-v2-linux-x64-glibc-rustc1.95.0-f8a8107f7-l997d441e06776d8b-soldr0.9.11-s7d15b4a9a2f6-ge77b4fbec3ab0ed8",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 131089
+    },
+    {
+      "key": "cook-delta-v2-linux-x64-glibc-rustc1.95.0-faaa264c8-l7d14c3dd9edac7e1-soldr0.9.11-s5ee0cf3dc900-g2c6c464568d0e75f",
+      "ref": "refs/pull/3038/merge",
+      "sizeInBytes": 23213089
+    },
+    {
+      "key": "cook-delta-v2-linux-x64-glibc-rustc1.95.0-faaa264c8-l997d441e06776d8b-soldr0.9.11-s4c05299dc125-g651e137db7002dca",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 99277
+    },
+    {
+      "key": "cook-delta-v2-linux-x64-glibc-rustc1.95.0-faaa264c8-l997d441e06776d8b-soldr0.9.11-s4c05299dc125-g9907dec0e1539c39",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 128865
+    },
+    {
+      "key": "cook-delta-v2-linux-x64-glibc-rustc1.95.0-faaa264c8-l997d441e06776d8b-soldr0.9.11-s4c05299dc125-g9a5ef7bbbe957326",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 128661
+    },
+    {
+      "key": "cook-delta-v2-linux-x64-glibc-rustc1.95.0-faaa264c8-l997d441e06776d8b-soldr0.9.11-s4c05299dc125-ge77b4fbec3ab0ed8",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 128831
+    },
+    {
+      "key": "dylint-driver-v1-x86_64-unknown-linux-gnu-nightly-2026-05-28-6.0.3",
+      "ref": "refs/pull/3038/merge",
+      "sizeInBytes": 751288
+    },
+    {
+      "key": "dylint-foundation-v1-x86_64-unknown-linux-gnu-fce14710096b09e1f31d1c146f70816b878d641a66b27a0e32af2bd82463ba8f",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 224738510
+    },
+    {
+      "key": "dylint-foundation-v1-x86_64-unknown-linux-gnu-fce14710096b09e1f31d1c146f70816b878d641a66b27a0e32af2bd82463ba8f",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 224645332
+    },
+    {
+      "key": "dylint-foundation-v2-x86_64-unknown-linux-gnu-46c1e93efdfaf21becd9210ca8ae604d8537060e0ee609c4b29fb79c37636457",
+      "ref": "refs/pull/3038/merge",
+      "sizeInBytes": 224577654
+    },
+    {
+      "key": "dylint-nightly-v1-x86_64-unknown-linux-gnu-nightly-2026-05-28",
+      "ref": "refs/pull/3038/merge",
+      "sizeInBytes": 474681240
+    },
+    {
+      "key": "rustup-1.95.0-linux-x64-v1",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 201453511
+    },
+    {
+      "key": "rustup-1.95.0-linux-x64-v1",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 201453506
+    },
+    {
+      "key": "setup-soldr-buildcache-v2-linux-x64-aa001840e13f2fe7-b5730721072b6f47",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 259916291
+    },
+    {
+      "key": "setup-soldr-cargoregistry-v1-linux-x64-b5730721072b6f47-aa001840e13f2fe7",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 124442115
+    },
+    {
+      "key": "setup-soldr-dogfood-zccache-v1-Linux-X64-18ce412a6c3450b0bd98e6d24b43dacc3265e9fe9165f56c2bb0c2ca425f9d15-9a5ef7bbbe95732639f721c909f5d5a7ffc1ca41",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 382090744
+    },
+    {
+      "key": "setup-soldr-dogfood-zccache-v1-Linux-X64-18ce412a6c3450b0bd98e6d24b43dacc3265e9fe9165f56c2bb0c2ca425f9d15-ad3e10eefc552ba7c705cdcbd68586d509e08193",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 302679020
+    },
+    {
+      "key": "setup-soldr-dogfood-zccache-v1-macOS-ARM64-18ce412a6c3450b0bd98e6d24b43dacc3265e9fe9165f56c2bb0c2ca425f9d15-9a5ef7bbbe95732639f721c909f5d5a7ffc1ca41",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 346161393
+    },
+    {
+      "key": "setup-soldr-dogfood-zccache-v1-macOS-ARM64-18ce412a6c3450b0bd98e6d24b43dacc3265e9fe9165f56c2bb0c2ca425f9d15-ad3e10eefc552ba7c705cdcbd68586d509e08193",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 271231209
+    },
+    {
+      "key": "setup-uv-1-aarch64-apple-darwin-3.14.6-no-dependency-glob",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 69788
+    },
+    {
+      "key": "setup-uv-1-aarch64-apple-darwin-3.14.6-no-dependency-glob",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 69737
+    },
+    {
+      "key": "setup-uv-1-x86_64-unknown-linux-gnu-3.12.3-no-dependency-glob",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 1399
+    },
+    {
+      "key": "soldr-apple-sdk-14.5-darwin-aarch64-v1",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 57585077
+    },
+    {
+      "key": "soldr-apple-sdk-14.5-darwin-aarch64-v1",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 57554374
+    },
+    {
+      "key": "soldr-apple-sdk-14.5-darwin-aarch64-v1",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 57576771
+    },
+    {
+      "key": "soldr-apple-sdk-14.5-darwin-x86_64-v1",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 56990402
+    },
+    {
+      "key": "soldr-apple-sdk-14.5-darwin-x86_64-v1",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 56989882
+    },
+    {
+      "key": "soldr-apple-sdk-14.5-darwin-x86_64-v1",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 56992996
+    },
+    {
+      "key": "soldr-mini-v2-linux-x64-glibc-v0.9.10",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 11944935
+    },
+    {
+      "key": "soldr-mini-v2-linux-x64-glibc-v0.9.11",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 9987363
+    },
+    {
+      "key": "soldr-mini-v2-linux-x64-glibc-v0.9.11",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 9987118
+    },
+    {
+      "key": "soldr-mini-v2-macos-arm64-darwin-v0.9.11",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 8887538
+    },
+    {
+      "key": "soldr-mini-v2-macos-arm64-darwin-v0.9.11",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 8888419
+    },
+    {
+      "key": "soldr-xwin-cache-aarch64-pc-windows-msvc-v2026-06-22",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 100465827
+    },
+    {
+      "key": "soldr-xwin-cache-aarch64-pc-windows-msvc-v2026-06-22",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 100471269
+    },
+    {
+      "key": "soldr-xwin-cache-aarch64-pc-windows-msvc-v2026-06-22",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 100471828
+    },
+    {
+      "key": "soldr-xwin-cache-x86_64-pc-windows-msvc-v2026-06-22",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 137012630
+    },
+    {
+      "key": "soldr-xwin-cache-x86_64-pc-windows-msvc-v2026-06-22",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 137017249
+    },
+    {
+      "key": "soldr-xwin-cache-x86_64-pc-windows-msvc-v2026-06-22",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 137018058
+    },
+    {
+      "key": "solo-toolchain-v3-linux-x64-glibc-rustc1.95.0-cb6b9e404-tnone-soldrv0.9.10",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 179741112
+    },
+    {
+      "key": "solo-toolchain-v3-linux-x64-glibc-rustc1.95.0-cb6b9e404-tnone-soldrv0.9.11",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 179736919
+    },
+    {
+      "key": "solo-toolchain-v3-linux-x64-glibc-rustc1.95.0-cb6b9e404-tnone-soldrv0.9.11",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 179733555
+    },
+    {
+      "key": "solo-toolchain-v3-macos-arm64-darwin-rustc1.95.0-cb6b9e404-tnone-soldrv0.9.11",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 148571046
+    },
+    {
+      "key": "solo-toolchain-v3-macos-arm64-darwin-rustc1.95.0-cb6b9e404-tnone-soldrv0.9.11",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 148613884
+    },
+    {
+      "key": "v0-rust-bootstrap-e2e-x86_64-unknown-linux-gnu-Linux-x64-c88929ea-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 417330063
+    },
+    {
+      "key": "v0-rust-bootstrap-e2e-x86_64-unknown-linux-gnu-Linux-x64-c88929ea-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 417362785
+    },
+    {
+      "key": "v0-rust-bootstrap-e2e-x86_64-unknown-linux-gnu-Linux-x64-c88929ea-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 387406291
+    },
+    {
+      "key": "v0-rust-bootstrap-soldr-linux-gnu-ci-bootstrap-v2-Linux-x64-2768e979-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 440642423
+    },
+    {
+      "key": "v0-rust-bootstrap-soldr-linux-gnu-ci-bootstrap-v2-Linux-x64-2768e979-db6a535e",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 440665323
+    },
+    {
+      "key": "v0-rust-bootstrap-soldr-linux-gnu-dev-v1-Linux-x64-2768e979-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 389286626
+    },
+    {
+      "key": "v0-rust-bootstrap-soldr-linux-gnu-dev-v1-Linux-x64-2768e979-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 419660079
+    },
+    {
+      "key": "v0-rust-bootstrap-soldr-linux-gnu-dev-v1-Linux-x64-2768e979-db6a535e",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 389336217
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-apple-darwin-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 592496448
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-apple-darwin-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 592488543
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-apple-darwin-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 526976220
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-apple-darwin-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 725027666
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-apple-darwin-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 526959598
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-pc-windows-msvc-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 743493932
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-pc-windows-msvc-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 743509591
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-pc-windows-msvc-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 668452290
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-pc-windows-msvc-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 892683550
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-pc-windows-msvc-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 668473034
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-unknown-linux-gnu-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 615900335
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-unknown-linux-gnu-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 615903970
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-unknown-linux-gnu-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 548443138
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-unknown-linux-gnu-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 750181613
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-unknown-linux-gnu-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 548421466
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-unknown-linux-musl-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 615066290
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-unknown-linux-musl-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 615068340
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-unknown-linux-musl-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 547829284
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-unknown-linux-musl-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 749696565
+    },
+    {
+      "key": "v0-rust-cross-build-aarch64-unknown-linux-musl-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 547834173
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-apple-darwin-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 592990565
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-apple-darwin-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 592981676
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-apple-darwin-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 528107305
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-apple-darwin-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 788255364
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-apple-darwin-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 528102358
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-pc-windows-gnu-v7-Linux-x64-5a92c2f8-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 297398052
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-pc-windows-gnu-v7-Linux-x64-5a92c2f8-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 297377488
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-pc-windows-gnu-v7-Linux-x64-5a92c2f8-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 288305755
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-pc-windows-gnu-v7-Linux-x64-5a92c2f8-db6a535e",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 349261510
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-pc-windows-gnu-v7-Linux-x64-5a92c2f8-db6a535e",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 288302061
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-pc-windows-msvc-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 745994992
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-pc-windows-msvc-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 746019223
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-pc-windows-msvc-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 670872061
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-pc-windows-msvc-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 971825440
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-pc-windows-msvc-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 670875603
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-unknown-linux-gnu-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 295281606
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-unknown-linux-gnu-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 295243692
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-unknown-linux-gnu-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 285916491
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-unknown-linux-gnu-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 295278473
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-unknown-linux-gnu-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 285915918
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-unknown-linux-musl-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 620717494
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-unknown-linux-musl-v7-Linux-x64-055aa5db-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 620732033
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-unknown-linux-musl-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 552514420
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-unknown-linux-musl-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 552511487
+    },
+    {
+      "key": "v0-rust-cross-build-x86_64-unknown-linux-musl-v7-Linux-x64-055aa5db-db6a535e",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 552532789
+    },
+    {
+      "key": "v0-rust-pep517-aarch64-apple-darwin-ci-release-v2-Darwin-arm64-31d5838d-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 398458914
+    },
+    {
+      "key": "v0-rust-pep517-aarch64-apple-darwin-ci-release-v2-Darwin-arm64-31d5838d-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 398494570
+    },
+    {
+      "key": "v0-rust-pep517-aarch64-apple-darwin-ci-release-v2-Darwin-arm64-31d5838d-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 370396064
+    },
+    {
+      "key": "v0-rust-pep517-aarch64-apple-darwin-ci-release-v2-Darwin-arm64-31d5838d-db6a535e",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 370381397
+    },
+    {
+      "key": "v0-rust-pep517-aarch64-apple-darwin-ci-release-v2-Darwin-arm64-31d5838d-db6a535e",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 370353266
+    },
+    {
+      "key": "v0-rust-pep517-windows-x64-ci-release-v2-Windows_NT-x64-a30d7c7b-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 485373731
+    },
+    {
+      "key": "v0-rust-pep517-windows-x64-ci-release-v2-Windows_NT-x64-a30d7c7b-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 485386072
+    },
+    {
+      "key": "v0-rust-pep517-windows-x64-ci-release-v2-Windows_NT-x64-a30d7c7b-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 453821843
+    },
+    {
+      "key": "v0-rust-pep517-windows-x64-ci-release-v2-Windows_NT-x64-a30d7c7b-db6a535e",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 485320282
+    },
+    {
+      "key": "v0-rust-pep517-windows-x64-ci-release-v2-Windows_NT-x64-a30d7c7b-db6a535e",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 453731704
+    },
+    {
+      "key": "v0-rust-perf-build-soldr-linux-Linux-x64-8c8e36f5-cca10c3c",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 399870727
+    },
+    {
+      "key": "v0-rust-wheel-cross-aarch64-unknown-linux-gnu-release-v1-Linux-x64-c824fe6e-5f072740",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 453510755
+    },
+    {
+      "key": "v0-rust-wheel-cross-aarch64-unknown-linux-gnu-release-v1-Linux-x64-c824fe6e-5f072740",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 453518931
+    },
+    {
+      "key": "v0-rust-wheel-cross-aarch64-unknown-linux-gnu-release-v1-Linux-x64-c824fe6e-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 419189355
+    },
+    {
+      "key": "v0-rust-ws-dev-x86_64-unknown-linux-gnu-Linux-x64-012fcf49-5f072740",
+      "ref": "refs/pull/3038/merge",
+      "sizeInBytes": 417497374
+    },
+    {
+      "key": "v0-rust-ws-dev-x86_64-unknown-linux-gnu-Linux-x64-012fcf49-db6a535e",
+      "ref": "refs/pull/3036/merge",
+      "sizeInBytes": 472842632
+    },
+    {
+      "key": "v0-rust-ws-dev-x86_64-unknown-linux-gnu-Linux-x64-012fcf49-db6a535e",
+      "ref": "refs/pull/3037/merge",
+      "sizeInBytes": 472849994
+    },
+    {
+      "key": "v0-rust-ws-dev-x86_64-unknown-linux-gnu-Linux-x64-1baba3be-db6a535e",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 472845651
+    },
+    {
+      "key": "v0-rust-ws-dev-x86_64-unknown-linux-gnu-Linux-x64-1baba3be-db6a535e",
+      "ref": "refs/pull/3035/merge",
+      "sizeInBytes": 472859371
+    }
+  ]
+}

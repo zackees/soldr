@@ -2,33 +2,98 @@
 """Native smoke for a release archive + wheel pair (soldr#2294).
 
 Release binaries are cross-built on Linux; EXECUTION still needs the
-target's native OS. The `smoke_macos_arm64` and `smoke_windows` jobs in
+target's native OS. The `smoke_macos_x64` and `smoke_windows` jobs in
 `release-auto.yml` download the lane's artifacts into `dist/` and run
-this script on a native runner. It:
+this script. It:
 
-1. installs the wheel into a fresh venv and checks `soldr --version`
-   (stub guard, soldr#1140) and `soldr version --json` (dispatch-arm
-   guard, soldr#1202) report the expected version;
-2. extracts the `.tar.zst` archive with the installed soldr;
+1. checks the wheel's declared version (soldr#1202);
+2. extracts the `.tar.zst` archive (host-side, via `tar` -- soldr ships as a
+   Python C-extension module (`soldr._native`, see pyproject.toml
+   `[tool.maturin] module-name`), so a *wheel's* console script can only run
+   on a Python able to import that native module for its own platform; the
+   *archive*, by contrast, is a plain compressed tarball and needs nothing
+   but `tar` to open);
 3. asserts the required bundle members are present (including the
    required `.pdb` sidecar on Windows, docs/DEBUG_SIDECARS.md);
 4. on macOS, asserts the Mach-O architecture matches the target;
-5. executes every bundled binary.
+5. executes every bundled binary from the archive (soldr#1140 stub guard,
+   soldr#1202 dispatch-arm guard, then a smoke pass over the rest).
 
 Runnable locally: `python3 ci/smoke_release_artifacts.py
---target aarch64-apple-darwin --expected-version v0.8.40 --dist dist`.
+--target aarch64-pc-windows-msvc --expected-version v0.8.40 --dist dist`.
+
+soldr#3076: no macos-* GitHub Actions runner exists any more, and the
+dockur/macos x86_64 guest from soldr#3071 never got a bootable image. macOS
+binary execution now happens inside a `zackees/docker-mac-x64` Recovery
+guest (https://github.com/zackees/docker-mac-x64) instead of this host --
+the guest has neither Python nor Xcode CLT, and there is no persistent
+image or ssh: one boot runs exactly one script, fetched over HTTP from a
+`share-dir`.
+
+That means step 5 (execution) for `x86_64-apple-darwin` splits into two
+script invocations instead of running in-process:
+
+- `--emit-guest-script <path> --share-dir <dir>` does everything that stays
+  Linux-side (wheel version, archive extraction, required members, the
+  Mach-O magic-byte check) and then, instead of executing anything itself,
+  copies the binaries it wants run into `<dir>` and writes a
+  bash-3.2-compatible script to `<path>` that fetches each one from
+  `http://10.0.2.2:8000/<name>` (the guest's slirp view of the driving
+  container -- see the action's README) and performs the same checks this
+  script runs natively elsewhere, then leaves a flat `key=value` results file
+  under `/tmp/results/` for `--collect` to tar back out.
+- `--verify-collected <dir>` reads that results file back out of the action's
+  `collect` tarball (extracted to `<dir>` by the workflow) plus the action's
+  own `exit-code` output, and fails with a named diagnostic naming exactly
+  which guest-side check did not pass.
+
+The wheel is never executed anywhere, on any target -- only its declared
+METADATA version is read as a zip member (see `wheel_version`). Recovery
+could not run it even if this script wanted to: it ships no Python.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
+import shutil
 import subprocess
 import sys
-import venv
+import zipfile
 from pathlib import Path
 
 MIN_SOLDR_BYTES = 2 * 1024 * 1024  # soldr#1140 stub floor
+
+# soldr#3076: `lipo`/`file` need Xcode CLT, which neither a bare Linux host
+# nor the Recovery guest has. A 64-bit little-endian Mach-O starts with the
+# MH_MAGIC_64 magic number, then a mach/machine.h `cputype` (also
+# little-endian here since the magic identifies this as the native-endian
+# form): CPU_TYPE_X86_64 = 0x01000007, CPU_TYPE_ARM64 = 0x0100000C.
+MACHO_MAGIC_64 = b"\xcf\xfa\xed\xfe"
+_MACHO_CPUTYPE = {
+    "x86_64": b"\x07\x00\x00\x01",
+    "arm64": b"\x0c\x00\x00\x01",
+}
+
+# soldr#3076: the binaries copied into --share-dir and executed inside the
+# Recovery guest for x86_64-apple-darwin, plus the flag run on each one.
+# `soldr` itself (the only binary whose output format soldr controls) gets
+# the strict check: stdout must start with "soldr " and `version --json`
+# must report the expected version, matching `check_version_output` above.
+# Every other binary -- soldr does not control cargo-chef's or crgx's
+# `--version` text -- only needs to exit 0, matching what the native `run()`
+# calls below check for them; "help"/"version" here select which flag to
+# pass, not a stricter check.
+GUEST_BINARY_CHECKS: tuple[tuple[str, str], ...] = (
+    ("soldr", "version"),
+    ("soldr-daemon", "help"),
+    ("crgx", "version"),
+    ("cargo-chef", "version"),
+)
+
+RESULTS_FILE = "summary.txt"
+GUEST_HTTP_BASE = "http://10.0.2.2:8000"
 
 
 def exe_suffix(target: str) -> str:
@@ -48,7 +113,7 @@ def required_members(target: str) -> list[str]:
 
 
 def macho_arch(target: str) -> str | None:
-    """Expected `lipo -archs` token for darwin targets, else None."""
+    """Expected Mach-O `cputype` label for darwin targets, else None."""
     if target == "aarch64-apple-darwin":
         return "arm64"
     if target == "x86_64-apple-darwin":
@@ -56,15 +121,62 @@ def macho_arch(target: str) -> str | None:
     return None
 
 
+def check_macho_architecture(binary: Path, expected_arch: str) -> None:
+    """Read the Mach-O header directly rather than shelling out to `lipo`."""
+    header = binary.read_bytes()[:16]
+    if header[:4] != MACHO_MAGIC_64:
+        sys.exit(f"ERROR: {binary}: not a 64-bit Mach-O binary (magic={header[:4]!r})")
+    expected_bytes = _MACHO_CPUTYPE.get(expected_arch)
+    if expected_bytes is None:
+        sys.exit(f"ERROR: no known Mach-O cputype for {expected_arch!r}")
+    cputype = header[4:8]
+    if cputype != expected_bytes:
+        sys.exit(
+            f"ERROR: {binary}: expected Mach-O cputype for {expected_arch}, "
+            f"got {cputype!r}"
+        )
+    print(f"Mach-O architecture OK: {binary} is {expected_arch}")
+
+
+def wheel_version(wheel: Path) -> str:
+    """Read the `Version:` field from the wheel's own METADATA, unzipped.
+
+    No install, no execution -- a wheel is a zip file, and this needs
+    nothing about the host or the wheel's target platform. Recovery ships no
+    Python at all, so this check -- like every other wheel check -- stays
+    entirely Linux-side regardless of target.
+    """
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_names = [
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        ]
+        if len(metadata_names) != 1:
+            raise RuntimeError(
+                f"expected exactly one *.dist-info/METADATA in {wheel}, "
+                f"found {metadata_names}"
+            )
+        metadata = archive.read(metadata_names[0]).decode("utf-8", errors="replace")
+    match = re.search(r"^Version:\s*(\S+)\s*$", metadata, re.MULTILINE)
+    if not match:
+        raise RuntimeError(f"no Version: field in {wheel}'s METADATA")
+    return match.group(1)
+
+
+def extract_archive(archive: Path, dest: Path) -> None:
+    """Unpack the release `.tar.zst` with `tar`, not the packaged soldr.
+
+    Modern GNU tar and bsdtar (both ship on the ubuntu-24.04 and
+    windows-2025 hosted runners) auto-detect zstd compression from the file
+    itself, so no `--zstd` flag or external `unzstd` pipe is required.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["tar", "-xf", str(archive), "-C", str(dest)], check=True)
+
+
 def run(cmd: list[str | Path]) -> subprocess.CompletedProcess[str]:
-    printable = " ".join(str(part) for part in cmd)
-    print(f"+ {printable}", flush=True)
-    return subprocess.run(
-        [str(part) for part in cmd],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    argv = [str(part) for part in cmd]
+    print(f"+ {' '.join(argv)}", flush=True)
+    return subprocess.run(argv, check=True, capture_output=True, text=True)
 
 
 def check_version_output(binary: Path, expected: str, label: str) -> None:
@@ -90,6 +202,200 @@ def check_version_output(binary: Path, expected: str, label: str) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# soldr#3076: Recovery guest-script generation and result verification.
+# ---------------------------------------------------------------------------
+
+
+def copy_into_share_dir(extract: Path, share_dir: Path, suffix: str) -> None:
+    """Copy every binary `GUEST_BINARY_CHECKS` names into `share_dir`.
+
+    The guest fetches by basename over HTTP, so the destination name always
+    drops the host suffix (there is none on darwin) -- copying rather than
+    symlinking because the action's composite step chmods the whole
+    `share-dir` tree world-readable, which a symlink target outside it would
+    not get.
+    """
+    share_dir.mkdir(parents=True, exist_ok=True)
+    for name, _check in GUEST_BINARY_CHECKS:
+        src = extract / f"{name}{suffix}"
+        if not src.is_file():
+            sys.exit(f"ERROR: cannot stage {src} into the guest share-dir: missing")
+        shutil.copy2(src, share_dir / name)
+
+
+def build_release_guest_script(expected_version: str) -> str:
+    """The bash-3.2 script the Recovery guest runs (soldr#3076).
+
+    Fetches every `GUEST_BINARY_CHECKS` binary from the driving container's
+    HTTP server, runs the same checks `check_version_output`/`run` perform
+    natively for every other target, and leaves one `key=value` line per
+    check in `/tmp/results/summary.txt` -- the file `--collect` tars back
+    out to the host. Never raises on a failed check: every check runs and is
+    recorded, and the script's own exit code (0 only if every check passed)
+    is the second, coarser signal `--verify-collected` checks against the
+    action's `exit-code` output.
+    """
+    lines = [
+        "#!/bin/sh",
+        "set +e",
+        "mkdir -p /tmp/results",
+        f"SUMMARY=/tmp/results/{RESULTS_FILE}",
+        ': > "$SUMMARY"',
+        "FAIL=0",
+        "",
+        "ARCH=$(uname -m)",
+        'if [ "$ARCH" = "x86_64" ]; then',
+        '  echo "arch=pass:$ARCH" >> "$SUMMARY"',
+        "else",
+        '  echo "arch=fail:unexpected uname -m $ARCH" >> "$SUMMARY"',
+        "  FAIL=1",
+        "fi",
+        "",
+    ]
+    for name, check in GUEST_BINARY_CHECKS:
+        dest = f"/tmp/{name}"
+        lines += [
+            f"curl -fsS -o {dest} {GUEST_HTTP_BASE}/{name}",
+            "if [ $? -ne 0 ]; then",
+            f'  echo "fetch_{name}=fail:curl could not reach {GUEST_HTTP_BASE}/{name}" >> "$SUMMARY"',
+            "  FAIL=1",
+            "else",
+            f"  chmod +x {dest}",
+            f'  echo "fetch_{name}=pass" >> "$SUMMARY"',
+            "fi",
+            "",
+        ]
+        if name == "soldr":
+            # `soldr` is the one binary whose `--version` output format soldr
+            # itself controls, so it gets the strict "starts with 'soldr '"
+            # + JSON version-match check `check_version_output` runs
+            # natively for every other target.
+            lines += [
+                f"VOUT=$({dest} --version 2>&1)",
+                'case "$VOUT" in',
+                '  "soldr "*)',
+                f'    echo "{name}_version=pass:$VOUT" >> "$SUMMARY" ;;',
+                "  *)",
+                f'    echo "{name}_version=fail:$VOUT" >> "$SUMMARY"',
+                "    FAIL=1 ;;",
+                "esac",
+                "",
+                "JOUT=$(/tmp/soldr version --json 2>&1)",
+                'case "$JOUT" in',
+                f'  *\'"soldr_version": "{expected_version}"\'*)',
+                '    echo "soldr_version_json=pass:$JOUT" >> "$SUMMARY" ;;',
+                "  *)",
+                '    echo "soldr_version_json=fail:$JOUT" >> "$SUMMARY"',
+                "    FAIL=1 ;;",
+                "esac",
+                "",
+            ]
+        else:
+            # `soldr-daemon`, `crgx`, `cargo-chef` are tools soldr does not
+            # control the version-string format of (matching what `run()`
+            # checks for them natively elsewhere: exit 0, nothing about
+            # stdout content).
+            flag = "--help" if check == "help" else "--version"
+            lines += [
+                f"{dest} {flag} >/tmp/{name}.out 2>&1",
+                "RC=$?",
+                'if [ "$RC" -eq 0 ]; then',
+                f'  echo "{name}_{check}=pass" >> "$SUMMARY"',
+                "else",
+                f'  echo "{name}_{check}=fail:exit $RC" >> "$SUMMARY"',
+                "  FAIL=1",
+                "fi",
+                "",
+            ]
+    lines.append('exit "$FAIL"')
+    return "\n".join(lines) + "\n"
+
+
+def append_github_output_multiline(path: Path, name: str, value: str) -> None:
+    """Append a multi-line `name<<EOF / value / EOF` block to `$GITHUB_OUTPUT`.
+
+    Doing this in Python instead of a separate bash heredoc step keeps the
+    workflow's inline `run:` footprint down (soldr#2469 step 2.2's ratchet
+    in tests/test_release_yaml_ratchet.py) and makes the delimiter handling
+    testable instead of hand-typed YAML.
+    """
+    delimiter = f"GITHUB_OUTPUT_{name.upper()}_EOF"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(f"{name}<<{delimiter}\n{value}{delimiter}\n")
+
+
+def parse_summary(text: str) -> dict[str, tuple[bool, str]]:
+    """Parse the guest's flat `key=value` results file.
+
+    Each line is `name=pass[:detail]` or `name=fail[:detail]`; a malformed
+    or truncated line (a wedged guest can be killed mid-write) is not
+    silently dropped -- it fails as its own diagnostic.
+    """
+    results: dict[str, tuple[bool, str]] = {}
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        name, sep, rest = line.partition("=")
+        if not sep:
+            results[f"summary_line_{lineno}"] = (False, f"malformed line: {raw!r}")
+            continue
+        status, _, detail = rest.partition(":")
+        results[name] = (status == "pass", detail)
+    return results
+
+
+def expected_check_names() -> list[str]:
+    names = ["arch"]
+    for name, check in GUEST_BINARY_CHECKS:
+        names.append(f"fetch_{name}")
+        names.append(f"{name}_{check}")
+    names.append("soldr_version_json")
+    return names
+
+
+def verify_collected(collected_dir: Path, *, guest_exit_code: str) -> int:
+    """Read the collected Recovery results and fail with a named diagnostic.
+
+    `guest_exit_code` is the action's own `exit-code` output -- the guest
+    script's process exit status. It is checked in addition to, not instead
+    of, the per-check summary: a script that dies before writing every line
+    (a killed heartbeat, an unhandled signal) must not read as a pass just
+    because the lines it did write all say `pass`.
+    """
+    summary_path = collected_dir / RESULTS_FILE
+    if not summary_path.is_file():
+        sys.exit(
+            f"ERROR: {summary_path} is missing — the Recovery guest never wrote "
+            "results (did the script even reach a shell? check the action's "
+            "workdir/results/*.ppm screendumps)."
+        )
+    results = parse_summary(summary_path.read_text(encoding="utf-8", errors="replace"))
+
+    failures: list[str] = []
+    for name in expected_check_names():
+        if name not in results:
+            failures.append(f"{name}: no result recorded (guest script exited early?)")
+            continue
+        ok, detail = results[name]
+        if not ok:
+            failures.append(f"{name}: {detail}")
+
+    if guest_exit_code.strip() != "0":
+        failures.append(
+            f"guest script exit code {guest_exit_code!r} != '0' "
+            "(see the per-check results above for which check failed)"
+        )
+
+    if failures:
+        joined = "\n  - ".join(failures)
+        sys.exit(f"ERROR: Recovery guest smoke failed:\n  - {joined}")
+
+    print(f"Recovery guest smoke OK: {len(results)} checks recorded, all passed")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True, help="rust target triple")
@@ -97,6 +403,51 @@ def main() -> int:
         "--expected-version", required=True, help="release version, vX.Y.Z"
     )
     parser.add_argument("--dist", default="dist", type=Path)
+    parser.add_argument(
+        "--emit-guest-script",
+        default=None,
+        type=Path,
+        help=(
+            "soldr#3076: write a bash-3.2 script to this path that runs the "
+            "guest-side checks inside a zackees/docker-mac-x64 Recovery "
+            "guest, and copy the binaries it fetches into --share-dir. When "
+            "given, this invocation does the Linux-side checks and then "
+            "exits WITHOUT executing any binary itself."
+        ),
+    )
+    parser.add_argument(
+        "--share-dir",
+        default=None,
+        type=Path,
+        help="directory the guest binaries are copied into, paired with --emit-guest-script",
+    )
+    parser.add_argument(
+        "--verify-collected",
+        default=None,
+        type=Path,
+        help=(
+            "soldr#3076: skip every Linux-side check and instead read the "
+            "Recovery guest's collected results directory (the action's "
+            "`collect` tarball, already extracted by the workflow) and fail "
+            "with a named diagnostic per check. Pair with --guest-exit-code."
+        ),
+    )
+    parser.add_argument(
+        "--guest-exit-code",
+        default=None,
+        help="the docker-mac-x64 action's `exit-code` output; required with --verify-collected",
+    )
+    parser.add_argument(
+        "--github-output",
+        default=None,
+        type=Path,
+        help=(
+            "soldr#3076: with --emit-guest-script, also append the guest "
+            "script to this $GITHUB_OUTPUT file as a 'script' multi-line "
+            "output, so the workflow needs no separate heredoc step to hand "
+            "it to the docker-mac-x64 action's `run:` input."
+        ),
+    )
     args = parser.parse_args()
 
     target: str = args.target
@@ -104,24 +455,33 @@ def main() -> int:
     expected = version.removeprefix("v")
     suffix = exe_suffix(target)
 
+    if args.verify_collected is not None:
+        if args.guest_exit_code is None:
+            parser.error("--verify-collected requires --guest-exit-code")
+        return verify_collected(
+            args.verify_collected, guest_exit_code=args.guest_exit_code
+        )
+
+    if args.emit_guest_script is not None and args.share_dir is None:
+        parser.error("--emit-guest-script requires --share-dir")
+
     wheels = sorted(args.dist.glob("*.whl"))
     if len(wheels) != 1:
         sys.exit(f"expected exactly one wheel in {args.dist}, found {wheels}")
 
-    venv_dir = Path(".smoke-venv")
-    venv.create(venv_dir, with_pip=True)
-    bin_dir = venv_dir / ("Scripts" if sys.platform == "win32" else "bin")
-    python = bin_dir / ("python.exe" if sys.platform == "win32" else "python")
-    run([python, "-m", "pip", "install", "--disable-pip-version-check", wheels[0]])
-    wheel_soldr = bin_dir / f"soldr{suffix}"
-    check_version_output(wheel_soldr, expected, f"{target} wheel")
+    reported_wheel_version = wheel_version(wheels[0])
+    if reported_wheel_version != expected:
+        sys.exit(
+            f"ERROR: wheel {wheels[0]}: METADATA Version {reported_wheel_version!r} "
+            f"!= expected {expected!r} (soldr#1202)."
+        )
+    print(f"{target} wheel — METADATA Version: {reported_wheel_version}")
 
     archive = args.dist / f"soldr-{version}-{target}.tar.zst"
     if not archive.is_file():
         sys.exit(f"missing archive: {archive}")
     extract = Path("extracted")
-    extract.mkdir()
-    run([wheel_soldr, "archive", "--input", archive, "--extract-dir", extract])
+    extract_archive(archive, extract)
 
     for member in required_members(target):
         if not (extract / member).is_file():
@@ -143,14 +503,25 @@ def main() -> int:
 
     arch = macho_arch(target)
     if arch is not None:
-        file_out = run(["file", soldr_bin]).stdout.strip()
-        print(f"archive architecture: {file_out}")
-        if f"Mach-O 64-bit executable {arch}" not in file_out:
-            sys.exit(f"expected a Mach-O {arch} binary, got: {file_out}")
-        lipo_out = run(["lipo", "-archs", soldr_bin]).stdout.strip()
-        print(f"lipo architectures: {lipo_out}")
-        if arch not in lipo_out.split():
-            sys.exit(f"expected a thin {arch} binary, lipo reports: {lipo_out}")
+        check_macho_architecture(soldr_bin, arch)
+
+    if args.emit_guest_script is not None:
+        # soldr#3076: Recovery has no Python/Xcode CLT, so execution moves
+        # into a generated guest script instead of running here. The
+        # Mach-O/member/wheel checks above already ran, host-side, for every
+        # target including this one.
+        copy_into_share_dir(extract, args.share_dir, suffix)
+        script_text = build_release_guest_script(expected)
+        args.emit_guest_script.parent.mkdir(parents=True, exist_ok=True)
+        args.emit_guest_script.write_text(script_text, encoding="utf-8")
+        print(
+            f"wrote Recovery guest script to {args.emit_guest_script} "
+            f"({len(GUEST_BINARY_CHECKS)} binaries staged in {args.share_dir})"
+        )
+        if args.github_output is not None:
+            append_github_output_multiline(args.github_output, "script", script_text)
+            print(f"appended 'script' output to {args.github_output}")
+        return 0
 
     check_version_output(soldr_bin, expected, f"{target} archive")
     run([extract / f"soldr-daemon{suffix}", "--help"])

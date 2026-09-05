@@ -3,20 +3,23 @@
 use std::io;
 use std::os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _};
 
-pub fn bind_listener(endpoint: &str, backlog: i32) -> io::Result<interprocess::local_socket::tokio::Listener> {
-    let _guard = UnixBindGuard::acquire(endpoint)?;
-    create_listener(endpoint, backlog).or_else(|error| {
-        if running_process::broker::server::singleton_bind::is_already_bound_error(&error)
-            && running_process::broker::server::singleton_bind::unix_socket_path_is_stale(endpoint)
-        {
-            std::fs::remove_file(endpoint)?;
-            return create_listener(endpoint, backlog);
-        }
-        Err(error)
+pub fn bind_listener(
+    endpoint: &str,
+    backlog: i32,
+) -> io::Result<interprocess::local_socket::tokio::Listener> {
+    if let Some(parent) = std::path::Path::new(endpoint).parent() {
+        running_process::broker::secure_dir::ensure_private_dir(parent)?;
+    }
+    running_process::broker::server::singleton_bind::bind_singleton_with(endpoint, || {
+        create_listener(endpoint, backlog)
     })
+    .map_err(map_bind_singleton_error)
 }
 
-fn create_listener(endpoint: &str, backlog: i32) -> io::Result<interprocess::local_socket::tokio::Listener> {
+fn create_listener(
+    endpoint: &str,
+    backlog: i32,
+) -> io::Result<interprocess::local_socket::tokio::Listener> {
     use interprocess::local_socket::ListenerOptions;
     use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
 
@@ -32,34 +35,16 @@ fn create_listener(endpoint: &str, backlog: i32) -> io::Result<interprocess::loc
     Ok(listener.into())
 }
 
-struct UnixBindGuard(std::fs::File);
+fn map_bind_singleton_error(
+    error: running_process::broker::server::singleton_bind::BindSingletonError,
+) -> io::Error {
+    use running_process::broker::server::singleton_bind::BindSingletonError;
 
-impl UnixBindGuard {
-    fn acquire(endpoint: &str) -> io::Result<Self> {
-        use fs2::FileExt as _;
-        use std::os::unix::fs::PermissionsExt as _;
-        let lock_path = std::path::Path::new(endpoint)
-            .parent()
-            .ok_or_else(|| io::Error::other("broker endpoint has no parent"))?
-            .join("bind.lock");
-        let file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&lock_path)?;
-        std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600))?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        loop {
-            match file.try_lock_exclusive() {
-                Ok(()) => return Ok(Self(file)),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(error) => return Err(error),
-            }
+    match error {
+        BindSingletonError::InvalidName(message) => {
+            io::Error::new(io::ErrorKind::InvalidInput, message)
         }
-    }
-}
-
-impl Drop for UnixBindGuard {
-    fn drop(&mut self) {
-        let _ = fs2::FileExt::unlock(&self.0);
+        BindSingletonError::AlreadyBound(error) | BindSingletonError::Other(error) => error,
     }
 }
 

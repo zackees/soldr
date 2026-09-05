@@ -55,6 +55,13 @@ pub mod ipc_peer;
 pub mod lifecycle;
 pub mod maintenance;
 pub mod protocol;
+/// soldr#3038 / soldr#3057 — optional `SOLDR_DAEMON_RSS_CEILING_BYTES`
+/// watchdog: samples this process's own resident set on a short interval
+/// (plus mimalloc's exact allocator counters), and on breach writes a
+/// memory dump (sampled heap profile, exact counters, `/proc` snapshot)
+/// then exits immediately -- fail-fast, not "record and keep running". Also
+/// used by `soldr-cli`'s `broker_server.rs` to watch the broker's own RSS.
+pub mod rss_ceiling;
 pub mod server;
 pub mod service_definition;
 /// SESSION `0x5350` endpoint per-connection handler (soldr#2388 Step 6d/7 /

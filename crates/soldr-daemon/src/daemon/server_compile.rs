@@ -278,6 +278,29 @@ async fn run_idle_watchdog(state: Arc<State>, idle_timeout: Duration) {
     }
 }
 
+/// Exit as soon as the process that asked for this daemon is gone.
+///
+/// Separate from the idle watchdog on purpose: an owned daemon may be busy
+/// right up to the moment its owner dies, so idleness is the wrong signal.
+/// It shares `IDLE_POLL_INTERVAL` because both are coarse liveness polls and
+/// a second cadence would only add a knob.
+async fn run_owner_watchdog(state: Arc<State>, owner_pid: u32) {
+    loop {
+        tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+        if state.shutdown.is_requested() {
+            return;
+        }
+        if super::server::owner_has_exited(Some(owner_pid)) {
+            // Tagged as an idle exit so the lifecycle JSONL records a chosen
+            // shutdown rather than a crash. The two are the same class of
+            // event: the daemon decided it had no further reason to run.
+            state.exit_via_idle.store(true, Ordering::Relaxed);
+            state.shutdown.request();
+            return;
+        }
+    }
+}
+
 /// Used by the `soldr daemon` CLI to derive sockets and paths in one
 /// place. Mirrors [`crate::daemon::client::default_sock_path`].
 pub fn server_sock_path(paths: &SoldrPaths) -> PathBuf {

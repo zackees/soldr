@@ -154,7 +154,7 @@ jobs:
         run: rustup toolchain install 1.95.0 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
+        uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90
         env:
           ACTION_WORKSPACE: ${{ github.workspace }}/soldr
         with:
@@ -162,7 +162,7 @@ jobs:
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every
           # build, so the next build recompiles the world. See
           # tests/test_setup_soldr_version_pins.py.
-          version: 0.9.10
+          version: 0.9.13
           toolchain-file: rust-toolchain.ci.toml
           # soldr#2451: turn off every setup-soldr reuse layer, not just the
           # `cache` umbrella (which does not gate soldr-mini / solo-toolchain /
@@ -177,15 +177,10 @@ jobs:
           zccache-seed-strict: true
           linker: platform-default
 
-      # soldr#1232 — cache ~/.cargo/{registry,git} + soldr/target/ so
-      # `Build soldr-cli` doesn't recompile ~700 deps from scratch every
-      # run. Same pattern as #1227 for _ci-cross-build-linux.yml.
-      # `workspaces: soldr` because the checkout lands in a subdir.
-      - name: Restore cargo + target caches
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          shared-key: bootstrap-e2e-${{ inputs.target }}
-          workspaces: soldr
+      # soldr#3121: retired this rust-cache producer (800 MiB on main) to
+      # fund the cook-layer allocation for the three new cross-build cook
+      # lanes. This lane is off the critical path and builds through
+      # soldr's embedded zccache, so it does not need its own rust-cache.
 
       # soldr#1252 — removed the "Reset stale cache fallback artifacts"
       # step. It guarded on `setup_soldr.outputs.*-cache-restore-status
@@ -250,7 +245,7 @@ jobs:
           & "${{ steps.soldr_binary.outputs.path }}" --version
 
       - name: Stop setup-soldr builder cache before bootstrap test
-        uses: zackees/setup-soldr/cleanup@5f1f68dcb8377818413c28ce52214261ae8ff771
+        uses: zackees/setup-soldr/cleanup@bb28e96d2dc32c058242f56722297caf1efcbd90
 
       - name: Build third-party app through soldr
         shell: pwsh

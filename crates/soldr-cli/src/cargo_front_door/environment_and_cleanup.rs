@@ -203,7 +203,12 @@ fn cleanup_after_aborted_cargo_run(
     args: &[String],
     timeout: bool,
 ) -> CargoAbortCleanupReport {
-    let orphan_rmetas_pruned = cache_plan.prune_orphan_rmetas_after_failed_build();
+    let orphan_rmetas_pruned = cache_plan
+        .target_dir_for_hooks(args)
+        .map(|target_dir| {
+            orphan_rmeta::prune_orphan_rmetas_after_failed_build(&target_dir)
+        })
+        .unwrap_or(0);
     let incremental_dirs_removed = if timeout {
         cache_plan
             .target_dir_for_hooks(args)
@@ -310,6 +315,46 @@ fn augment_aborted_cargo_error(
 fn scrub_soldr_cache_lifecycle_env_for_child_cargo(command: &mut std::process::Command) {
     command.env_remove(SOLDR_CACHE_LIFECYCLE_ENV_VAR);
     command.env_remove(SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR);
+}
+
+/// Keep panic backtraces, drop library-error backtraces, for the child Cargo.
+///
+/// `anyhow` (which Cargo, cargo-chef, dylint and nextest all use for their
+/// `Result` errors) captures a backtrace inside every error it creates when
+/// `RUST_LIB_BACKTRACE` is set to anything but `0`, or -- when that variable
+/// is unset -- when `RUST_BACKTRACE` is. CI sets `RUST_BACKTRACE=1` so a real
+/// panic is diagnosable, and the host lane sets
+/// `CARGO_LOG=cargo::core::compiler::fingerprint=info` so a warm tree that
+/// recompiles explains itself. Together, on a cold tree, Cargo logs one
+/// expected "failed to read .fingerprint/<unit>" `Err` per unit and prints a
+/// 30-frame backtrace under each -- a thousand stack traces on a build that
+/// is working. Setting `RUST_LIB_BACKTRACE=0` for the child turns those back
+/// into single lines; `RUST_BACKTRACE` is left alone, so panics keep theirs.
+///
+/// An explicit `RUST_LIB_BACKTRACE` from the caller always wins: someone
+/// chasing a real Cargo error can set it to `1` and get the frames back.
+pub(crate) fn quiet_library_backtraces_for_child_cargo(command: &mut std::process::Command) {
+    apply_library_backtrace_policy(
+        command,
+        std::env::var_os("RUST_BACKTRACE").as_deref(),
+        std::env::var_os("RUST_LIB_BACKTRACE").as_deref(),
+    );
+}
+
+pub(crate) fn apply_library_backtrace_policy(
+    command: &mut std::process::Command,
+    rust_backtrace: Option<&std::ffi::OsStr>,
+    rust_lib_backtrace: Option<&std::ffi::OsStr>,
+) {
+    if rust_lib_backtrace.is_some() {
+        return;
+    }
+    match rust_backtrace {
+        Some(value) if value != "0" => {
+            command.env("RUST_LIB_BACKTRACE", "0");
+        }
+        _ => {}
+    }
 }
 
 fn scrub_inherited_soldr_workspace_env_for_child_cargo(command: &mut std::process::Command) {

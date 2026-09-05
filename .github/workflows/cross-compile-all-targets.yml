@@ -6,7 +6,9 @@ name: Cross-compile soldr (bootstrap + all targets, single linux-x86_64 runner f
 #     checkout on a linux-x86 runner using bare cargo. That binary is
 #     uploaded as the `bootstrap-soldr` artifact AND used by the same
 #     job to produce the full linux-x86 release archive (soldr +
-#     zccache trio + crgx + cargo-chef + manifest). One job → one
+#     soldr-daemon + crgx + cargo-chef + manifest). zccache is embedded
+#     through its crate API and is never staged as a standalone binary.
+#     One job → one
 #     artifact for the linux-x86 lane + one artifact for the
 #     downstream cross-compilers.
 #
@@ -54,11 +56,11 @@ env:
   FORCE_COLOR: "1"
   CLICOLOR_FORCE: "1"
   PY_COLORS: "1"
-  # soldr#1322 — soldr's zccache/crgx fetch reads SOLDR_GITHUB_TOKEN for
+  # soldr#1322 — soldr's crgx fetch reads SOLDR_GITHUB_TOKEN for
   # authenticated GitHub Releases lookups (5,000/hr) instead of
   # unauthenticated (60/hr per runner IP). Without this a busy CI window
-  # pushes a lane into the `cargo install zccache` fallback (~700 s of
-  # source compile). See soldr#1319 for the CI-lane fix.
+  # pushes a lane into a source-build fallback. See soldr#1319 for the
+  # CI-lane fix.
   SOLDR_GITHUB_TOKEN: ${{ github.token }}
 
 # soldr#1985 - stop superseded runs from holding runner slots.
@@ -197,44 +199,17 @@ jobs:
             target/x86_64-unknown-linux-gnu/debug/soldr
 
       - name: Stage layout for linux-x86 archive
-        run: mkdir -p dist/package dist/zccache-stage stats
+        run: mkdir -p dist/package stats
 
       # The linux-x86 soldr binary is the same one we just bootstrapped.
       # No second build needed.
       - name: Stage soldr binary for linux-x86 archive
         run: |
           set -euo pipefail
-          cp target/x86_64-unknown-linux-gnu/debug/soldr dist/package/soldr
-          chmod +x dist/package/soldr
-
-      - name: Fetch matched zccache release for linux-x86
-        run: |
-          set -euo pipefail
-          zccache_version=$(python3 .github/scripts/zccache_version.py)
-          # zccache ships musl-only for Linux x64 (static; runs on
-          # glibc). The soldr-toolchain catalogue resolves both the URL
-          # and the version pinning.
-          asset_metadata=$(python3 .github/scripts/toolchain_asset_query.py \
-              --platform linux --arch x86 --extra musl \
-              --version "$zccache_version" --json zccache)
-          asset_filename=$(printf '%s' "$asset_metadata" | \
-            python3 -c 'import json,sys; print(json.load(sys.stdin)["filename"])')
-          echo "catalogue: zccache $zccache_version linux-x64-musl"
-          python3 .github/scripts/download_catalogued_asset.py \
-            --platform linux --arch x86 --extra musl \
-            --version "$zccache_version" zccache \
-            --output "/tmp/${asset_filename}"
-          tar -xzf "/tmp/${asset_filename}" -C dist/zccache-stage
-          for b in zccache zccache-daemon zccache-fp; do
-            src=$(find dist/zccache-stage -type f -name "${b}" -print -quit)
-            if [ -z "$src" ]; then
-              echo "expected ${b} in zccache archive" >&2
-              find dist/zccache-stage -maxdepth 3 -print >&2
-              exit 1
-            fi
-            cp "$src" "dist/package/${b}"
-            chmod +x "dist/package/${b}"
-          done
+          python3 .github/scripts/stage_release_binaries.py \
+            --target x86_64-unknown-linux-gnu \
+            --release-dir target/x86_64-unknown-linux-gnu/debug \
+            --package-dir dist/package
 
       # crgx + cargo-chef were previously source-built here every run
       # (~60s + ~42s of warm wall time). The
@@ -254,40 +229,22 @@ jobs:
               cargo-chef x86_64-unknown-linux-gnu soldr-build "" dist/package
 
       - name: Write linux-x86 manifest.json + package
+        env:
+          CRGX_SOURCE_COMMIT: ${{ env.CRGX_SOURCE_COMMIT }}
+          CARGO_CHEF_SOURCE_COMMIT: ${{ env.CARGO_CHEF_SOURCE_COMMIT }}
         run: |
           set -euo pipefail
           version="${{ steps.read_version.outputs.version }}"
           commit_sha=$(git rev-parse HEAD)
-          zccache_version=$(python3 .github/scripts/zccache_version.py)
-          crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-fetch/src/fetch/mod.rs | head -n1)
-          cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-fetch/src/fetch/known_tools.rs | head -n1)
-          soldr_sha=$(sha256sum dist/package/soldr | awk '{print $1}')
-          zccache_sha=$(sha256sum dist/package/zccache | awk '{print $1}')
-          zccache_daemon_sha=$(sha256sum dist/package/zccache-daemon | awk '{print $1}')
-          zccache_fp_sha=$(sha256sum dist/package/zccache-fp | awk '{print $1}')
-          crgx_sha=$(sha256sum dist/package/crgx | awk '{print $1}')
-          cargo_chef_sha=$(sha256sum dist/package/cargo-chef | awk '{print $1}')
-          built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          cat > dist/package/manifest.json <<EOF
-          {
-            "schema_version": 3,
-            "soldr": { "version": "${version}", "target": "x86_64-unknown-linux-gnu", "binary": "soldr", "sha256": "${soldr_sha}", "debug_info": [], "commit_sha": "${commit_sha}" },
-            "zccache": { "version": "${zccache_version}", "target": "x86_64-unknown-linux-musl",
-              "binaries": [
-                { "name": "zccache",        "sha256": "${zccache_sha}" },
-                { "name": "zccache-daemon", "sha256": "${zccache_daemon_sha}" },
-                { "name": "zccache-fp",     "sha256": "${zccache_fp_sha}" }
-              ]
-            },
-            "crgx": { "version": "${crgx_version}", "target": "x86_64-unknown-linux-gnu", "binary": "crgx", "sha256": "${crgx_sha}", "source_commit": "${CRGX_SOURCE_COMMIT:-unknown}" },
-            "cargo_chef": { "version": "${cargo_chef_version}", "target": "x86_64-unknown-linux-gnu", "binary": "cargo-chef", "sha256": "${cargo_chef_sha}", "source_commit": "${CARGO_CHEF_SOURCE_COMMIT:-unknown}" },
-            "archive": { "format": "tar.zst", "compression_level": 19 },
-            "cross_compile": { "host_target": "x86_64-unknown-linux-gnu", "tool": "native", "driver": "in-tree soldr" },
-            "built_at": "${built_at}"
-          }
-          EOF
+          python3 .github/scripts/release_manifest.py \
+            --version "$version" \
+            --commit-sha "$commit_sha" \
+            --target x86_64-unknown-linux-gnu \
+            --package-dir dist/package \
+            --crgx-source-commit "${CRGX_SOURCE_COMMIT:-unknown}" \
+            --cargo-chef-source-commit "${CARGO_CHEF_SOURCE_COMMIT:-unknown}"
+          python3 .github/scripts/verify_release_manifest.py \
+            dist/package/manifest.json --package-dir dist/package
           name="soldr-${version}-x86_64-unknown-linux-gnu"
           tar -cf - -C dist/package . | zstd -19 -T0 -o "dist/${name}.tar.zst"
           ls -la "dist/${name}.tar.zst"
@@ -376,7 +333,7 @@ jobs:
         run: zstd --version | head -n1
 
       - name: Stage layout
-        run: mkdir -p dist/package dist/zccache-stage stats
+        run: mkdir -p dist/package stats
 
       # ONE step replaces what used to be "Download Apple SDK for darwin
       # cross-compile" + target-specific SDK/cache preparation +
@@ -486,69 +443,13 @@ jobs:
           }
           EOF
 
-      - name: Fetch matched zccache release
-        run: |
-          set -euo pipefail
-          zccache_version=$(python3 .github/scripts/zccache_version.py)
-          # Map the rust target triple to toolchain asset query CLI args. zccache
-          # ships linux as musl-only (static, glibc-compatible).
-          case "${{ matrix.target }}" in
-            x86_64-unknown-linux-*)   q="--platform linux   --arch x86 --extra musl" ;;
-            aarch64-unknown-linux-*)  q="--platform linux   --arch arm --extra musl" ;;
-            x86_64-apple-darwin)      q="--platform mac     --arch x86" ;;
-            aarch64-apple-darwin)     q="--platform mac     --arch arm" ;;
-            x86_64-pc-windows-msvc)   q="--platform windows --arch x86 --extra msvc" ;;
-            aarch64-pc-windows-msvc)  q="--platform windows --arch arm --extra msvc" ;;
-            *) echo "no zccache platform mapping for ${{ matrix.target }}" >&2; exit 1 ;;
-          esac
-          asset_metadata=$(python3 .github/scripts/toolchain_asset_query.py \
-              $q --version "$zccache_version" --json zccache)
-          asset_filename=$(printf '%s' "$asset_metadata" | \
-            python3 -c 'import json,sys; print(json.load(sys.stdin)["filename"])')
-          echo "catalogue: zccache $zccache_version ${{ matrix.target }}"
-          python3 .github/scripts/download_catalogued_asset.py \
-            $q --version "$zccache_version" zccache \
-            --output "/tmp/${asset_filename}"
-          case "$asset_filename" in
-            *.tar.gz)  tar -xzf "/tmp/${asset_filename}" -C dist/zccache-stage ;;
-            *.zip)     sudo apt-get install -y --no-install-recommends unzip
-                       unzip -oq "/tmp/${asset_filename}" -d dist/zccache-stage ;;
-            *) echo "unknown archive format for $asset_filename" >&2; exit 1 ;;
-          esac
-          suffix="${{ matrix.exe_suffix }}"
-          for b in zccache zccache-daemon zccache-fp; do
-            src=$(find dist/zccache-stage -type f -name "${b}${suffix}" -print -quit)
-            if [ -z "$src" ]; then
-              echo "expected ${b}${suffix} in zccache archive" >&2
-              find dist/zccache-stage -maxdepth 3 -print >&2
-              exit 1
-            fi
-            cp "$src" "dist/package/${b}${suffix}"
-            chmod +x "dist/package/${b}${suffix}" || true
-          done
-
       - name: Stage soldr binary
         run: |
           set -euo pipefail
-          suffix="${{ matrix.exe_suffix }}"
-          built="target/${{ matrix.target }}/debug/soldr${suffix}"
-          if [ ! -f "$built" ]; then
-            echo "expected soldr binary not found at $built" >&2
-            ls -la "target/${{ matrix.target }}/debug/" >&2 || true
-            exit 1
-          fi
-          cp "$built" "dist/package/soldr${suffix}"
-          chmod +x "dist/package/soldr${suffix}" || true
-          if [[ "${{ matrix.target }}" == *-pc-windows-msvc ]]; then
-            for cand in \
-              "target/${{ matrix.target }}/debug/soldr.pdb" \
-              "target/${{ matrix.target }}/debug/soldr_cli.pdb"; do
-              if [ -f "$cand" ]; then
-                cp "$cand" "dist/package/$(basename "$cand")"
-                break
-              fi
-            done
-          fi
+          python3 .github/scripts/stage_release_binaries.py \
+            --target "${{ matrix.target }}" \
+            --release-dir "target/${{ matrix.target }}/debug" \
+            --package-dir dist/package
 
       # Same fetch-or-build pattern as the bootstrap job. The helper
       # script first probes the soldr-toolchain catalogue for a prebuilt asset
@@ -569,55 +470,22 @@ jobs:
               "${{ matrix.exe_suffix }}" dist/package
 
       - name: Write manifest.json + package
+        env:
+          CRGX_SOURCE_COMMIT: ${{ env.CRGX_SOURCE_COMMIT }}
+          CARGO_CHEF_SOURCE_COMMIT: ${{ env.CARGO_CHEF_SOURCE_COMMIT }}
         run: |
           set -euo pipefail
           version="${{ needs.bootstrap-and-linux-x86.outputs.version }}"
           commit_sha=$(git rev-parse HEAD)
-          zccache_version=$(python3 .github/scripts/zccache_version.py)
-          crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-fetch/src/fetch/mod.rs | head -n1)
-          cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-fetch/src/fetch/known_tools.rs | head -n1)
-          suffix="${{ matrix.exe_suffix }}"
-          case "${{ matrix.target }}" in
-            x86_64-unknown-linux-*)  zccache_target=x86_64-unknown-linux-musl ;;
-            aarch64-unknown-linux-*) zccache_target=aarch64-unknown-linux-musl ;;
-            *)                       zccache_target="${{ matrix.target }}" ;;
-          esac
-          soldr_sha=$(sha256sum "dist/package/soldr${suffix}" | awk '{print $1}')
-          zccache_sha=$(sha256sum "dist/package/zccache${suffix}" | awk '{print $1}')
-          zccache_daemon_sha=$(sha256sum "dist/package/zccache-daemon${suffix}" | awk '{print $1}')
-          zccache_fp_sha=$(sha256sum "dist/package/zccache-fp${suffix}" | awk '{print $1}')
-          crgx_sha=$(sha256sum "dist/package/crgx${suffix}" | awk '{print $1}')
-          cargo_chef_sha=$(sha256sum "dist/package/cargo-chef${suffix}" | awk '{print $1}')
-          built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          soldr_debug_info_json="[]"
-          if [ -n "$suffix" ]; then
-            pdb=$(find dist/package -maxdepth 1 -type f \( -name 'soldr.pdb' -o -name 'soldr_cli.pdb' \) -print -quit)
-            if [ -n "$pdb" ]; then
-              pdb_name=$(basename "$pdb")
-              pdb_sha=$(sha256sum "$pdb" | awk '{print $1}')
-              soldr_debug_info_json="[{\"name\":\"${pdb_name}\",\"sha256\":\"${pdb_sha}\",\"format\":\"pdb\"}]"
-            fi
-          fi
-          cat > dist/package/manifest.json <<EOF
-          {
-            "schema_version": 3,
-            "soldr": { "version": "${version}", "target": "${{ matrix.target }}", "binary": "soldr${suffix}", "sha256": "${soldr_sha}", "debug_info": ${soldr_debug_info_json}, "commit_sha": "${commit_sha}" },
-            "zccache": { "version": "${zccache_version}", "target": "${zccache_target}",
-              "binaries": [
-                { "name": "zccache${suffix}",        "sha256": "${zccache_sha}" },
-                { "name": "zccache-daemon${suffix}", "sha256": "${zccache_daemon_sha}" },
-                { "name": "zccache-fp${suffix}",     "sha256": "${zccache_fp_sha}" }
-              ]
-            },
-            "crgx": { "version": "${crgx_version}", "target": "${{ matrix.target }}", "binary": "crgx${suffix}", "sha256": "${crgx_sha}", "source_commit": "${CRGX_SOURCE_COMMIT:-unknown}" },
-            "cargo_chef": { "version": "${cargo_chef_version}", "target": "${{ matrix.target }}", "binary": "cargo-chef${suffix}", "sha256": "${cargo_chef_sha}", "source_commit": "${CARGO_CHEF_SOURCE_COMMIT:-unknown}" },
-            "archive": { "format": "tar.zst", "compression_level": 19 },
-            "cross_compile": { "host_target": "x86_64-unknown-linux-gnu", "tool": "soldr-build", "driver": "in-tree soldr (bootstrapped from same workflow)", "profile": "release" },
-            "built_at": "${built_at}"
-          }
-          EOF
+          python3 .github/scripts/release_manifest.py \
+            --version "$version" \
+            --commit-sha "$commit_sha" \
+            --target "${{ matrix.target }}" \
+            --package-dir dist/package \
+            --crgx-source-commit "${CRGX_SOURCE_COMMIT:-unknown}" \
+            --cargo-chef-source-commit "${CARGO_CHEF_SOURCE_COMMIT:-unknown}"
+          python3 .github/scripts/verify_release_manifest.py \
+            dist/package/manifest.json --package-dir dist/package
           name="soldr-${version}-${{ matrix.target }}"
           tar -cf - -C dist/package . | zstd -19 -T0 -o "dist/${name}.tar.zst"
 

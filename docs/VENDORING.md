@@ -261,18 +261,14 @@ When all `[[deltas]]` upstream PRs are **merged AND released** in a
 new zccache version:
 
 ```bash
-# 1. Bump the vendored zccache submodule commit (soldr#1368 removed the
-#    MANAGED_ZCCACHE_VERSION managed-binary download; the zccache CLI is
-#    now a compiled-in soldr [[bin]] built from _vender/zccache).
-$EDITOR crates/soldr-fetch/src/fetch/mod.rs
-$EDITOR contracts/zccache-runtime.v1.json
-# Regenerate embed/manifest.json with the new release URLs + sha256s
-# (the same script approach we used for the 1.12.11 bump).
+# 1. Record the released zccache crate version that contains every delta.
+#    zccache is an embedded API dependency; there is no managed binary,
+#    standalone zccache release asset, or embedded download manifest to update.
 
 # 2. Switch zccache back from path = to the released version.
 # Replace the `zccache = { path = "../../_vender/zccache/..." }`
 # line with the released form:
-#   zccache = { git = "https://github.com/zackees/zccache.git", rev = "<new-sha>" }
+#   zccache = { version = "=<released-version>" }
 
 # 3. Delete the vendor.
 git rm -r _vender/zccache/
@@ -305,10 +301,9 @@ Two interactions matter:
    non-upstreamed zccache code; track soldr#981."
 
 2. **Vendored zccache pin/version bump while vendor is active**: legal
-   and substantive. The submodule pin is the library and CLI implementation
-   linked into soldr, and its version is recorded in `manifest.json`. As of
-   soldr#1593 there is no second executable or managed-binary version to
-   synchronize with it.
+   and substantive. The vendored source is the embedded library implementation
+   linked into `soldr-daemon`, and its version is recorded in `manifest.json`.
+   There is no second executable or managed-binary version to synchronize.
 
 When the vendor ends and we restore the released git/crates.io pin,
 only the library pin moves — there is no separate managed-binary

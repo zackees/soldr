@@ -167,12 +167,28 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
         assert (
             "_ci-target-run.yml" in run
         ), f"{ci['run_job']} lost native execution coverage"
+        # soldr#3018: gated lanes carry `needs: [<build job>, windows-e2e-policy]`,
+        # so assert the dependency rather than the scalar spelling of it. The
+        # property under test is that the run job is not detached from its
+        # build job, which a list satisfies just as well.
+        needs_line = next(
+            (line for line in run.splitlines() if line.strip().startswith("needs:")),
+            "",
+        )
         assert (
-            f"needs: {ci['build_job']}" in run
+            ci["build_job"] in needs_line
         ), f"{ci['run_job']} is detached from its build job"
         assert (
             row["triple"] in run and ci["runner"] in run
         ), f"{ci['run_job']} target/runner drifted"
+        if ci.get("execution") == "x86_64-recovery":
+            assert ci["runner"] == "ubuntu-24.04", (
+                f"{row['triple']} Recovery replay must run on an ubuntu-24.04 host "
+                "(no macos-* GitHub Actions runner, owner mandate 2026-09-02)"
+            )
+            assert "target_execution: x86_64-recovery" in run, (
+                f"{ci['run_job']} can silently substitute a different execution " "mode"
+            )
 
     blessed = (ROOT / ".github" / "workflows" / "build-all-from-linux.yml").read_text(
         encoding="utf-8"

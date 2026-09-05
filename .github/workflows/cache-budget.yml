@@ -1,0 +1,61 @@
+# Enforces the repository's GitHub Actions-cache budget (soldr#3047 Phase B).
+#
+# A dedicated workflow rather than a step in ci.yml: a `schedule:` trigger
+# added to ci.yml would run its full 21-job sweep every day just to total up
+# cache bytes, and this job needs `actions: read` (to call `gh cache list` /
+# the cache-usage API) -- a grant ci.yml's top-level `permissions: contents:
+# read` does not carry.
+#
+# See ci/cache-ownership.json's `budget` object for the family allocations
+# this gate enforces, and .github/scripts/check_cache_budget.py for the gate
+# itself (including its `--prune` dry-run mode).
+
+name: Cache Budget
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    # Six-hourly: every host-lane run on a PR ref saves a ~1.3 GiB Tier-2
+    # generation that nothing restores across PRs, and three of them
+    # already breach the 9.5 GiB hard ceiling (soldr#3102).
+    - cron: '17 1,7,13,19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # `actions: write` is what `gh cache delete` needs for the sweep step;
+  # on pull_request events GitHub downgrades the token regardless.
+  actions: write
+
+jobs:
+  budget:
+    name: Repository Actions cache budget
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+      # The sweep only runs where the token can delete caches: main pushes,
+      # the schedule, and manual dispatch. A pull_request token is read-only
+      # (fork PRs cannot even try), so PR runs stay a pure check; the sweep
+      # from the last main push or schedule keeps that check green.
+      - name: Sweep reclaimable cache entries
+        if: github.event_name != 'pull_request'
+        # The script evaluates the budget on the listing it fetched BEFORE
+        # deleting, so a sweep that reclaims its way back under budget still
+        # exits 1 here; the check step below is the verdict.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --no-project --python 3.13 python
+          .github/scripts/check_cache_budget.py --prune --apply
+      - name: Repository Actions cache budget
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --no-project --python 3.13 python
+          .github/scripts/check_cache_budget.py

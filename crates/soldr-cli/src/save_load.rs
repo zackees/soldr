@@ -362,7 +362,7 @@ fn resolve_save_profile(cli_ci: bool) -> Result<SaveProfile, String> {
     };
     SaveProfile::parse(&raw).ok_or_else(|| {
         format!(
-            "{SAVE_PROFILE_ENV} must be one of: full, default, complete, ci, minimal (got {raw:?})"
+            "{SAVE_PROFILE_ENV} must be one of: full, default, complete, ci, minimal, cook (got {raw:?})"
         )
     })
 }

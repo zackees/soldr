@@ -1,0 +1,15 @@
+{
+  "action": "synchronize",
+  "number": 0,
+  "pull_request": {
+    "number": 0,
+    "labels": [],
+    "head": { "ref": "feature-branch" },
+    "base": { "ref": "main" }
+  },
+  "repository": {
+    "name": "soldr",
+    "full_name": "zackees/soldr",
+    "owner": { "login": "zackees" }
+  }
+}

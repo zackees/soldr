@@ -210,20 +210,24 @@ fn build_chef_cook_args_release_workspace_target() {
 }
 
 #[test]
-fn build_chef_cook_args_appends_passthrough_after_double_dash() {
+fn build_chef_cook_args_appends_passthrough_as_chef_options() {
+    // cargo-chef 0.1.73 rejects anything after a literal `--` as an
+    // unexpected positional, so the passthrough must be appended bare, in
+    // cargo-chef's option region, after soldr's own recognised flags.
     let ctx = CookContext {
         manifest_dir: PathBuf::from("/proj"),
         recipe_path: PathBuf::from("/tmp/recipe.json"),
         recipe_owned_tempdir: false,
     };
     let args = CookArgs {
-        passthrough: vec!["--features".into(), "extra".into()],
+        workspace: true,
+        passthrough: vec!["--all-targets".into(), "--features".into(), "extra".into()],
         ..Default::default()
     };
     let argv = build_chef_cook_args(&ctx, &args);
-    let sep = argv.iter().position(|a| a == "--").unwrap();
-    assert_eq!(argv[sep + 1], "--features");
-    assert_eq!(argv[sep + 2], "extra");
+    assert!(!argv.iter().any(|a| a == "--"), "{argv:?}");
+    let ws = argv.iter().position(|a| a == "--workspace").unwrap();
+    assert_eq!(&argv[ws + 1..], ["--all-targets", "--features", "extra"]);
 }
 
 #[test]
@@ -685,6 +689,88 @@ fn restore_project_source_reports_failure_instead_of_allowing_success() {
 }
 
 // ---------------------------------------------------------------------------
+// soldr#3043: restore must be idempotent w.r.t. mtimes, so a cook run late
+// in a CI job does not dirty Cargo's fingerprints for units already built.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn restore_project_source_preserves_mtime_of_unchanged_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let manifest = "[package]\nname = \"unchanged\"\nversion = \"0.1.0\"\n";
+    let lib_rs = "pub fn real() -> i32 {\n    1\n}\n";
+    std::fs::write(root.join("Cargo.toml"), manifest).unwrap();
+    std::fs::write(root.join("src/lib.rs"), lib_rs).unwrap();
+
+    // Pin the mtime to a known value in the past so this assertion cannot
+    // pass by coincidence (e.g. two writes landing in the same clock tick).
+    let old_time = filetime::FileTime::from_unix_time(1_700_000_000, 0);
+    filetime::set_file_mtime(root.join("src/lib.rs"), old_time).unwrap();
+    let meta_before = std::fs::metadata(root.join("src/lib.rs")).unwrap();
+    let before = meta_before.modified().unwrap();
+
+    let snapshot = snapshot_project_source(root).unwrap();
+    restore_project_source(root, &snapshot).unwrap();
+
+    let meta_after = std::fs::metadata(root.join("src/lib.rs")).unwrap();
+    let after = meta_after.modified().unwrap();
+    assert_eq!(
+        before, after,
+        "restore must not rewrite a file whose content is unchanged"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        lib_rs
+    );
+}
+
+#[test]
+fn restore_project_source_rewrites_files_cargo_chef_stubbed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let manifest = "[package]\nname = \"stubbed\"\nversion = \"0.1.0\"\n";
+    let lib_rs = "pub fn real() -> i32 {\n    2\n}\n";
+    std::fs::write(root.join("Cargo.toml"), manifest).unwrap();
+    std::fs::write(root.join("src/lib.rs"), lib_rs).unwrap();
+
+    let snapshot = snapshot_project_source(root).unwrap();
+
+    // Simulate cargo-chef stubbing the crate root down to an empty file.
+    std::fs::write(root.join("src/lib.rs"), "").unwrap();
+
+    restore_project_source(root, &snapshot).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        lib_rs
+    );
+}
+
+#[test]
+fn restore_project_source_deletes_files_absent_from_the_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let manifest = "[package]\nname = \"absent\"\nversion = \"0.1.0\"\n";
+    let lib_rs = "pub fn real() -> i32 {\n    3\n}\n";
+    std::fs::write(root.join("Cargo.toml"), manifest).unwrap();
+    std::fs::write(root.join("src/lib.rs"), lib_rs).unwrap();
+
+    let snapshot = snapshot_project_source(root).unwrap();
+
+    // Simulate cargo-chef adding a spurious crate root that wasn't there
+    // when the snapshot was captured.
+    std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+    assert!(root.join("src/main.rs").exists());
+
+    restore_project_source(root, &snapshot).unwrap();
+
+    assert!(!root.join("src/main.rs").exists());
+}
+
+// ---------------------------------------------------------------------------
 // #621 warm-cook marker round-trip
 // ---------------------------------------------------------------------------
 
@@ -868,4 +954,60 @@ fn indexed_success_line_reports_raw_bytes_elapsed_and_decision() {
     assert!(line.contains("elapsed_ms=5000"));
     assert!(line.contains("compile_elapsed_ms=60000"));
     assert!(line.contains("decision=save"));
+}
+
+fn lookup_hit(sha256: [u8; 32], size_bytes: u64, exact_recipe_match: bool) -> CookLookupOutcome {
+    CookLookupOutcome::Hit {
+        sha256,
+        path: String::new(),
+        size_bytes,
+        origin_url_normalized: None,
+        matched_recipe_hash: Some([7u8; 32]),
+        exact_recipe_match,
+        branch_name: None,
+        compile_duration_ms: 1,
+        save_elapsed_ms: 1,
+    }
+}
+
+/// soldr#3117: an exact `CookLookup` hit whose archive is still on disk at
+/// the recorded size stands in for a re-pack; anything less takes the pack
+/// path.
+#[test]
+fn already_indexed_archive_requires_exact_match_and_matching_bytes_on_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cook_dir = tmp.path().join("cook");
+    std::fs::create_dir_all(&cook_dir).unwrap();
+    let sha = [0xabu8; 32];
+    let path = cook_archive::artifact_path_for_sha(&cook_dir, &sha);
+    std::fs::write(&path, b"cooked").unwrap();
+
+    assert_eq!(
+        already_indexed_archive(&cook_dir, &lookup_hit(sha, 6, true)),
+        Some(path.clone())
+    );
+    assert_eq!(
+        already_indexed_archive(&cook_dir, &lookup_hit(sha, 5, true)),
+        None,
+        "a size mismatch means the file is not the indexed artifact"
+    );
+    assert_eq!(
+        already_indexed_archive(&cook_dir, &lookup_hit(sha, 6, false)),
+        None,
+        "a drifted recipe must re-pack"
+    );
+    assert_eq!(
+        already_indexed_archive(&cook_dir, &lookup_hit([0xcdu8; 32], 6, true)),
+        None,
+        "an evicted archive must re-pack"
+    );
+    assert_eq!(
+        already_indexed_archive(
+            &cook_dir,
+            &CookLookupOutcome::Miss {
+                previous_origin_recipe_hashes: Vec::new(),
+            },
+        ),
+        None
+    );
 }

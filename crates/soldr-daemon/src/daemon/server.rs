@@ -38,10 +38,22 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 /// hashes for this origin+target".
 const COOK_DRIFT_LIMIT: usize = 8;
 
-// The daemon is the primary owner of five-minute pressure checks and daily age
-// retention.  It therefore stays resident by default; callers can still opt
-// into an explicit nonzero inactivity timeout.
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::MAX;
+// soldr#1782 made this `Duration::MAX` so the daemon would stay resident to
+// own five-minute pressure checks and daily age retention. That premise does
+// not survive contact with `maintenance::run_loop_inner`, which states in its
+// own comment that "the first tick is immediate" and that an absent or overdue
+// full marker yields an immediate catch-up. The markers are persisted under
+// `<root>/cache/soldr-daemon/`, so a daemon that exits while idle resumes the
+// schedule on its next start instead of losing it.
+//
+// What the unbounded default did cost is a population. `broker_route_identity`
+// keys a broker route on the canonicalized soldr root, so every caller with
+// its own `SOLDR_CACHE_DIR` -- every test fixture, notably -- gets a distinct
+// route and a daemon that then lives forever. A single run of this
+// repository's own suite left 63 of them resident.
+//
+// 1800s is the value that predates soldr#1782, restored rather than reinvented.
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(1800);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const IPC_BACKPRESSURE_RETRY_AFTER_MS: u32 = 25;
@@ -386,13 +398,46 @@ mod ipc_burst_tests {
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
     pub idle_timeout: Duration,
+    /// Tie this daemon's lifetime to another process.
+    ///
+    /// A test fixture that starts a daemon under its own `SOLDR_CACHE_DIR`
+    /// owns a route nothing else will ever use again, so the daemon has no
+    /// reason to outlive the fixture -- and if the fixture is killed rather
+    /// than allowed to clean up, nothing else will ever stop it. Naming the
+    /// owner makes the daemon's death the owner's death.
+    ///
+    /// This is deliberately not `PR_SET_PDEATHSIG`: the daemon's parent is
+    /// the broker, not the process that wanted the daemon, so parent-death
+    /// signalling watches the wrong process. See the polling caveat on
+    /// [`owner_has_exited`].
+    pub owner_pid: Option<u32>,
 }
 
 impl Default for ServerOptions {
     fn default() -> Self {
         Self {
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            owner_pid: None,
         }
+    }
+}
+
+/// True once `owner` names a process that is gone. `None` means the daemon
+/// has no owner and keeps its own lifetime.
+///
+/// Liveness is polled rather than awaited, which leaves a PID-reuse window:
+/// between two polls the owner can exit and the kernel can hand its number to
+/// an unrelated process, and the daemon would then watch a stranger. Closing
+/// that properly needs a handle the kernel keeps valid across the exit --
+/// `pidfd_open` on Linux, `EVFILT_PROC`/`NOTE_EXIT` on macOS, a process handle
+/// or job object on Windows -- which is a portable primitive that belongs in
+/// `kernal-api` rather than three copies here. The exposure is one poll
+/// interval against a 32-bit PID space, and the failure mode is a daemon that
+/// lives too long, which is the status quo this replaces.
+fn owner_has_exited(owner: Option<u32>) -> bool {
+    match owner {
+        None => false,
+        Some(pid) => !crate::platform::process::inspect::is_alive(pid),
     }
 }
 
@@ -630,3 +675,63 @@ async fn shutdown_compile_service(state: &Arc<State>) {
 include!("server_runtime.rs");
 include!("server_dispatch.rs");
 include!("server_compile.rs");
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+
+    /// soldr#1782 set the default lifetime to `Duration::MAX` on the premise
+    /// that the daemon must stay resident to own five-minute pressure checks
+    /// and daily age retention. `maintenance::run_loop_inner` disproves that
+    /// premise in the same tree: "The first tick is immediate. An
+    /// absent/overdue full marker yields an immediate catch-up", and the
+    /// markers live under `<root>/cache/soldr-daemon/`, so a restart resumes
+    /// the schedule rather than losing it.
+    ///
+    /// The cost of the unbounded default is a population, not one process:
+    /// `broker_route_identity` keys a route on the canonicalized soldr root,
+    /// so every test fixture with its own `SOLDR_CACHE_DIR` earns a distinct
+    /// route and a daemon that outlives the fixture forever. One measured run
+    /// of this repository's own suite left 63 live daemons behind.
+    #[test]
+    fn the_default_daemon_lifetime_is_bounded() {
+        assert_ne!(
+            ServerOptions::default().idle_timeout,
+            Duration::MAX,
+            "an unbounded default lifetime leaks one immortal daemon per soldr root"
+        );
+    }
+
+    /// The watchdog is only spawned when the timeout is not `Duration::MAX`
+    /// (`server_runtime.rs`), so a default that never trips is the same thing
+    /// as no watchdog at all. Pin the value that predates soldr#1782.
+    #[test]
+    fn the_default_daemon_lifetime_is_the_pre_1782_value() {
+        assert_eq!(
+            ServerOptions::default().idle_timeout,
+            Duration::from_secs(1800)
+        );
+    }
+
+    /// A daemon started for a test fixture must not outlive the process that
+    /// asked for it. Without an owner the daemon keeps its own lifetime.
+    #[test]
+    fn an_owner_pid_is_absent_by_default() {
+        assert_eq!(ServerOptions::default().owner_pid, None);
+    }
+
+    /// The owner watch is a liveness poll, so it must treat "the owner is
+    /// gone" as terminal and "the owner is alive" as no reason to act.
+    #[test]
+    fn the_owner_watch_stops_exactly_when_the_owner_is_gone() {
+        assert!(
+            owner_has_exited(Some(u32::MAX)),
+            "an unallocated pid is gone"
+        );
+        assert!(
+            !owner_has_exited(Some(std::process::id())),
+            "this process is its own proof of liveness"
+        );
+        assert!(!owner_has_exited(None), "no owner is not a dead owner");
+    }
+}

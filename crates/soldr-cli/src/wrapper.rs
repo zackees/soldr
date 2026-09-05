@@ -308,7 +308,6 @@ pub(crate) fn run_rustc_wrapper(
         tracing::debug!("soldr: {tool_stem} invocation is non-cacheable; bypassing zccache");
         profile.mark("non_cacheable_bypass");
     }
-
     // Route rustc-like compiler invocations through the daemon's
     // embedded zccache compile service. This includes `clippy-driver`
     // when cargo nests `RUSTC_WORKSPACE_WRAPPER=clippy-driver` inside

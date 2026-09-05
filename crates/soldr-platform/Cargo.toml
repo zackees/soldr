@@ -12,19 +12,19 @@ publish = false
 # Dependency-leaf crate (issue #2493): soldr-platform must NOT depend on
 # soldr-core, soldr-fetch, soldr-cache, soldr-daemon, soldr-cli, or zccache.
 # Only external libraries needed for host primitives may appear here.
-# `running-process` is the external process-creation boundary (resolved to
-# the vendored submodule by the workspace [patch] tables, like every other
-# soldr crate).
+# `running-process` is the external process-creation boundary, consumed as an
+# exact crates.io pin. soldr#2837 retired the vendored `_vender/` submodule and
+# the workspace [patch] tables that used to redirect it.
 
 [dependencies]
 blake3 = "1"
 interprocess = { version = "2", features = ["tokio"] }
-running-process = { version = "=4.10.6", default-features = false, features = ["client"] }
+running-process = { version = "=4.10.9", default-features = false, features = ["client"] }
 fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tar = { workspace = true }
-tokio = { version = "1", features = ["net", "rt", "signal", "time"] }
+tokio = { version = "1", features = ["net", "rt", "signal", "sync", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -36,6 +36,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Console",
     "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }

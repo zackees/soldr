@@ -5,9 +5,9 @@
   "guard": ".github/scripts/check_cache_ownership.py",
   "comment": "Ownership manifest for everything this repository persists between or across CI runs. Cache admission is decided by the stability of an artifact's identity key relative to its size, NOT by whether GitHub happens to call the store a 'cache' or an 'artifact'. Every persisting step in .github/workflows/ must be classified here. Adding a store means amending this file in the same PR, so the edge shows up in review rather than as one line in a workflow nobody diffs.",
   "tiers": {
-    "cook": "Tier 1. External dependency compilation plus build-script / native (cc-rs, bindgen) outputs. The identity key is the locked dependency graph, which moves rarely relative to its size, so the entry is durable and worth persisting across runs. Swatinem/rust-cache belongs here: it prunes workspace-member artifacts, examples and target/*/incremental before saving, so what survives is the dependency graph.",
+    "cook": "Tier 1. External dependency compilation plus build-script / native (cc-rs, bindgen) outputs. The identity key is the locked dependency graph, which moves rarely relative to its size, so the entry is durable and worth persisting across runs. Swatinem/rust-cache also lands here -- it prunes workspace-member artifacts, examples and target/*/incremental before saving, so what survives is the dependency graph -- which is exactly the problem soldr#2996 resolves: two implementations of one tier, with the third-party one carrying the load. soldr#3047 removed it from `_ci-cross-build-linux.yml` (the lane soldr#2996 measured cook on), `_build-and-test.yml`, and both pep517 lanes; the two producers that remain -- `ci.yml`'s bootstrap driver and `ci.yml`'s wheel-cross build -- save only on `main` and are budgeted under `rust-cache-residual` until migrated to soldr cook. soldr#3121 retired the third producer, `bootstrap-e2e`, entirely (no replacement rust-cache) to fund cook on the new MSVC/aarch64-gnu cross lanes. `soldr dylint cook` prepares the Dylint analysis and UI-test dependency trees under this tier; it is content-addressed on the lint crate's locked graph and the exact nightly, and it fills an in-run target tree rather than uploading one.",
     "zccache-unit": "Tier 2. Per-compilation-unit, content-addressed compiler outputs held by the embedded zccache service. Safe by construction: the key IS the hash of the compiler inputs, so a stale entry cannot be served. Durable, and deliberately still live in normal lanes -- soldr#2931 bans persisting LINKED products and bulk target/ snapshots, not content-addressed per-unit caching.",
-    "none": "Tier 3. Everything else. Not admitted to any cross-run reusable compiler/dependency store. Run-scoped uploads (logs, diagnostics, benchmark rows, wheels kept for inspection) live here: they are retained for humans and are never restored into a later build. Linked TEST products are permanently Tier 3 -- test binaries, benches, examples built for tests, doctest products, test debug sidecars and test-specific incremental state may not enter cook, an rlib cache, a broad target/ cache, a compiler-cache archive, or any other cross-run reusable store."
+    "none": "Tier 3. Everything else. Not admitted to any cross-run reusable compiler/dependency store. Run-scoped uploads (logs, diagnostics, benchmark rows, wheels kept for inspection) live here: they are retained for humans and are never restored into a later build. Linked TEST products are permanently Tier 3 -- test binaries, benches, examples built for tests, doctest products, test debug sidecars and test-specific incremental state may not enter cook, an rlib cache, a broad target/ cache, a compiler-cache archive, or any other cross-run reusable store. linked TEST PRODUCTS -- test binaries, harness executables, and fixture crates built for UI tests -- are Tier 3 wherever they live, INCLUDING `target/dylint/tests`; but the third-party dependency rlibs and build-script outputs that same directory holds are Tier 1 by identity-key stability (their key is the lint crate's `Cargo.lock`), and they are prepared by `soldr dylint cook --tree tests` (soldr#3042). soldr#3003's lesson was that scoping to a DIRECTORY instead of an artifact tier was the defect; a content-addressed cook of the dependency layer is the only admitted path for that layer, and `target/dylint/tests` itself remains excluded from every `actions/cache` key."
   },
   "exceptions": {
     "release-deliverable": "The shipped output. Its lifetime is the release, not a build; it is uploaded to be published, never restored into a compile.",
@@ -15,9 +15,29 @@
     "dylint-foundation": "The ci-test Dylint foundation: cargo-dylint / dylint-link plus the one exact nightly every lint manifest declares. Keyed on that nightly, and required by contract to never reuse or invalidate the stable target tree (CLAUDE.md, ci-test verb).",
     "cache-experiment": "The cache is the subject under test. These workflows measure cold/warm behaviour, cook sizing, target-cache slices or parent-cache sharing, so the guard cannot constrain what they persist without destroying the measurement. Listed explicitly in experiment_workflows.",
     "same-run-transport": "A bundle handed from one job to another INSIDE one workflow run via upload-artifact/download-artifact. Not a cache: it is keyed by run id, never restored into a later run, and discarded on retention expiry. This is the only sanctioned way a linked test archive may be moved to a target-run lane -- it must be compact and budgeted, and it must never be written to a cross-run store.",
-    "bootstrap-driver-binary": "The host bootstrap `soldr` that DRIVES a lane (spawns the broker, prepares blessed SDKs). Keyed on the exact commit SHA, so the key is maximally stable; one binary, no test products. It is the compiler for the lane, not an output under test. Beyond the four exceptions named in soldr#2931; recorded here because the class exists in-tree and needed a name."
+    "bootstrap-driver-binary": "The host bootstrap `soldr` that DRIVES a lane (spawns the broker, prepares blessed SDKs). Keyed on the exact commit SHA, so the key is maximally stable; one binary, no test products. It is the compiler for the lane, not an output under test. Beyond the four exceptions named in soldr#2931; recorded here because the class exists in-tree and needed a name.",
+    "cook-unreachable-lane": "A lane that CANNOT use `soldr cook`, keeping a dependency-graph cache by name rather than by omission (soldr#3016). After soldr#3047 only ONE qualifies, for a structural reason that no cook change can fix: `ci.yml`'s bootstrap driver runs bare `cargo build` with RUSTC_WRAPPER emptied and has no setup-soldr step at all -- it is the job that BUILDS soldr, so giving it a soldr to run cook with would reintroduce exactly the prebuilt-binary coupling soldr#2451 forbids. `_ci-target-run.yml`'s pep517 wheel cache, previously the second exception here, was retired outright in soldr#3047 rather than kept as an exception: the lane is still structurally cook-unreachable -- it deliberately has no setup-soldr step because it runs the packaged target-native soldr under test -- but it is now simply uncached rather than carrying a Swatinem/rust-cache entry. Deleting the surviving exception instead would cost ~5 min per commit on the bootstrap driver, which every darwin and MSVC cross lane waits on, for no cache in return. An entry here is a reviewed exception with a stated cost, not a way to keep a cache nobody owns: soldr#2996 removed five, soldr#3047 removed the other qualifying entry."
   },
-  "durable_tiers": ["cook", "zccache-unit"],
+  "durable_tiers": [
+    "cook",
+    "zccache-unit"
+  ],
+  "budget": {
+    "comment": "Per-family allocation of the repository's Actions-cache budget (soldr#3047, part of soldr#3039). GitHub evicts least-recently-used entries at 10 GB, so a persisted object store (soldr#3041) and cook archives (soldr#3042/#3043) are worthless unless the repo stays under budget. Measured 2026-09-01 before this PR: 47,489,917,871 bytes (44.23 GiB) across 143 entries; 23.79 GiB was cross-build rust-cache and no producer restricted saves to main, so every family carried one entry per open PR. Allocations below are >= each family's measured live-on-main size after the sweep, and sum to exactly total_max_bytes. Enforced by .github/scripts/check_cache_budget.py: an entry whose key matches no key_prefix here is a hard failure, so a producer cannot appear without being registered. NOTE: soldr#3047's opening table allocated 1.0 GiB to the remaining rust-cache producers; measurement put the live figure at 2.0 GiB, so the pep517 rust-cache (0.82 GiB live, 3.98 GiB across refs) was retired beyond that issue's step-1 list in order to hold the zccache-unit reserve at the 2.0 GiB soldr#3039 fixed for it. Raising total_max_bytes is not an option; the next lever is retiring another producer.",
+    "total_max_bytes": 9663676416,
+    "fail_total_bytes": 10200547328,
+    "measured": { "date": "2026-09-01", "usage_bytes": 47489917871, "entry_count": 143, "fixture": "tests/fixtures/actions-cache/listing-2026-09-01.json" },
+    "families": {
+      "pinned-immutable-download": { "key_prefixes": ["rustup-", "soldr-xwin-cache-", "soldr-apple-sdk-", "solo-toolchain-", "soldr-mini-", "setup-uv-"], "max_bytes": 1127428915, "measured_live_bytes": 1095216660, "entries": ["bootstrap-e2e-rustup-toolchain", "build-and-test-rustup-toolchain", "cross-build-xwin-sdk", "cross-build-apple-sdk-x86-64", "cross-build-apple-sdk-aarch64", "ci-bootstrap-rustup-toolchain", "benchmark-stats-rustup-toolchain"], "rationale": "Version-keyed immutable downloads. Bytes never change under the key, so these are the cheapest entries in the store; they are budgeted rather than exempt because per-target keys multiply." },
+      "bootstrap-driver-binary": { "key_prefixes": ["bootstrap-soldr-blessed-"], "max_bytes": 161061274, "measured_live_bytes": 67714437, "entries": ["cross-build-bootstrap-binary-cache", "ci-bootstrap-binary-cache"], "rationale": "One ~20-24 MB driver per commit SHA. Keyed on github.sha, so it cannot be restored across commits and cannot be main-gated; it churns instead of accumulating." },
+      "cook-layer": { "key_prefixes": ["cook-base-", "cook-delta-"], "max_bytes": 2501818450, "measured_live_bytes": 1905443161, "entries": ["cross-build-cook"], "rationale": "setup-soldr's cook archives for the cross lanes; Tier 1 and the layer that replaced cross-build rust-cache. The key embeds the rustc commit, lockfile hash and soldr version and setup-soldr/cook exposes no save-if input, so this family cannot be main-gated from inside this repo (soldr#3047 step 7). If it exceeds this allocation, the key shape is a zackees/setup-soldr change and the finding belongs in soldr#3039. soldr#3121 added aarch64-pc-windows-msvc, x86_64-pc-windows-msvc and aarch64-unknown-linux-gnu (~450 MiB base archive each), funded by retiring the bootstrap-e2e rust-cache and trimming headroom elsewhere." },
+      "dylint-foundation": { "key_prefixes": ["dylint-foundation-", "dylint-nightly-", "dylint-driver-"], "max_bytes": 773094113, "measured_live_bytes": 700171038, "entries": ["build-and-test-dylint-foundation", "build-and-test-dylint-trees"], "rationale": "The ci-test Dylint foundation (soldr#3017) plus setup-soldr's ci-tests layer. dylint-foundation-* is main-gated via a restore/save split in soldr#3047; dylint-nightly-* and dylint-driver-* are written by setup-soldr's ci-tests layer and cannot be gated from here." },
+      "rust-cache-residual": { "key_prefixes": ["v0-rust-bootstrap-soldr-linux-gnu-dev-", "v0-rust-wheel-cross-"], "max_bytes": 1020054733, "measured_live_bytes": 1685672919, "entries": ["ci-bootstrap-rust-cache", "ci-wheel-rust-cache"], "rationale": "The two Swatinem/rust-cache producers left after soldr#3047 (the bootstrap-e2e producer was retired in soldr#3121). Both save only on main. Every other rust-cache prefix is deliberately unregistered so a resurrected producer fails the gate by name." },
+      "setup-soldr-action-stores": { "key_prefixes": ["setup-soldr-dogfood-zccache-", "setup-soldr-buildcache-", "setup-soldr-cargoregistry-"], "max_bytes": 1395864371, "measured_live_bytes": 1374389535, "entries": ["benchmark-stats-zccache", "setup-soldr-action-runtime-state", "setup-soldr-action-dogfood-zccache"], "rationale": "Content-addressed per-unit zccache stores plus setup-soldr's own registry slice, written by the action-smoke and benchmark lanes. The dogfood store is main-gated by a restore/save split in soldr#3047." },
+      "experiment-lanes": { "key_prefixes": ["v0-rust-perf-build-soldr-", "v0-rust-perf-cold-warm-", "v0-rust-ws-release-", "v0-rust-cache-delta-exp-", "v0-rust-parent-cache-bench", "soldr-bin-", "bootstrap-soldr-linux-gnu-release-", "soldr-zigbuild-toolchain-", "perf-cold-warm-zccache-", "soldr-baseline-", "soldr-cook-", "soldr-delta-"], "max_bytes": 536870912, "measured_live_bytes": 536870912, "entries": ["baseline-zero-deps-experiment", "cache-delta-experiment", "dylint-cache-acceptance-experiment", "dylint-cook-acceptance-experiment", "parent-cache-bench-experiment", "perf-cold-warm-experiment", "perf-matrix-experiment"], "rationale": "Workflows where the cache IS the subject under test. Deliberately NOT main-gated: perf-matrix.yml runs only on main and perf/** branches, so a main-only save rule would leave the lane PERF.md calls the most important in the repo permanently cold. Budgeted instead, so the measurement lanes are bounded without being broken." },
+      "zccache-unit": { "key_prefixes": ["zccache-unit-", "stable-cook-"], "max_bytes": 2147483648, "measured_live_bytes": 0, "entries": ["build-and-test-zccache-unit", "build-and-test-stable-cook"], "rationale": "The two cross-run stores the ci-test host lane writes: soldr#3041's Tier-2 per-unit object store (zccache-unit-*) and soldr#3043's stable cook archives (stable-cook-*). They share one allocation because they hold the same bytes at different granularities -- a unit cook pre-compiles is a unit the object store never has to serve -- so budgeting them separately would double-count the third-party dependency graph. The key_prefixes are a contract: a producer keyed outside them is rejected by the gate as an unregistered producer." }
+    }
+  },
   "experiment_workflows": [
     "baseline-zero-deps.yml",
     "cache-delta-experiment.yml",
@@ -28,10 +48,10 @@
     "parent-cache-bench.yml",
     "perf-cold-warm.yml",
     "perf-matrix.yml",
-    "thin-v2-verify.yml"
+    "stable-cook-acceptance.yml"
   ],
   "setup_soldr_layers": {
-    "comment": "setup-soldr provisions several independent reuse layers. Each is gated on its own input, NOT on the `cache` umbrella (soldr#2451) -- which is why this repo's self-build lanes spell out `false` for all of them: this repo IS soldr and no self-build lane may restore a prebuilt soldr binary. Only layers a workflow turns ON get an entry below.",
+    "comment": "setup-soldr provisions several independent reuse layers. Each is gated on its own input, NOT on the `cache` umbrella (soldr#2451) -- which is why this repo's self-build lanes spell out `false` for all of them: this repo IS soldr and no self-build lane may restore a prebuilt soldr binary. Only layers a workflow turns ON get an entry below. soldr#2996 removed the target-cache layers entirely: the thin slice was a freshness slice whose library bytes zccache had to reproduce anyway, and `full` was a banned bulk target/ snapshot. soldr cook is the only durable compiler cache.",
     "cache": {
       "tier": "zccache-unit",
       "rationale": "The action's own zccache compiler store under `cache-dir`. Content-addressed per unit."
@@ -39,18 +59,6 @@
     "build-cache": {
       "tier": "zccache-unit",
       "rationale": "zccache compiler store keyed on toolchain + commit. Content-addressed per unit; disabled in every self-build lane here."
-    },
-    "target-cache:thin": {
-      "tier": "cook",
-      "rationale": "thin-v2 slice bundle. Dependency-scoped by construction: `assert_thin_manifest.py` fails the gate if the manifest re-lists a dropped transient/debug category, so linked test products cannot enter it."
-    },
-    "target-cache:full": {
-      "tier": "none",
-      "rationale": "A bulk snapshot of the whole target/ directory, test binaries and incremental state included. Banned in normal lanes; no workflow in this repo selects it."
-    },
-    "target-cache:off": {
-      "tier": "none",
-      "rationale": "Nothing is persisted."
     },
     "cargo-registry-cache": {
       "tier": "pinned-immutable-download",
@@ -81,14 +89,6 @@
       "mechanism": "actions/cache",
       "tier": "pinned-immutable-download",
       "rationale": "The 1.95.0 toolchain tree, keyed on the exact version; immutable bytes under an immutable key."
-    },
-    {
-      "id": "bootstrap-e2e-rust-cache",
-      "workflow": "_bootstrap-e2e.yml",
-      "step": "Restore cargo + target caches",
-      "mechanism": "Swatinem/rust-cache",
-      "tier": "cook",
-      "rationale": "Dependency graph + cargo registry for the bootstrap build; rust-cache prunes workspace members, examples and incremental before saving."
     },
     {
       "id": "bootstrap-e2e-soldr-binary-upload",
@@ -123,12 +123,20 @@
       "rationale": "Provisions the ci-test Dylint foundation once, on its own nightly, separate from the stable target tree."
     },
     {
-      "id": "build-and-test-rust-cache",
+      "id": "build-and-test-dylint-trees",
       "workflow": "_build-and-test.yml",
-      "step": "Restore cargo + target caches",
-      "mechanism": "Swatinem/rust-cache",
+      "step": "Restore Dylint libraries and analysis trees",
+      "mechanism": "actions/cache",
+      "tier": "dylint-foundation",
+      "rationale": "The Dylint libraries and analysis target trees, keyed on the exact nightly every lint manifest declares plus the lint sources. 638s/run of byte-identical cold work that no other layer can serve: Swatinem/rust-cache deletes target/dylint/** at save, and dylint_cook_acceptance.py shows a per-unit object cache alone still misses. target/dylint/tests is DELIBERATELY excluded -- soldr#3012 measured it at 1.9 GiB of UI-test products, which is tier 3 and may not enter any cross-run store (soldr#3017). As of soldr#3042 the third-party dependency layer inside that directory is prepared in-run by the `build-and-test-dylint-tests-cook` entry below, so 'the UI-test stages stay cold by design' now applies only to the linked UI-test products themselves; the directory exclusion is unchanged."
+    },
+    {
+      "id": "build-and-test-dylint-tests-cook",
+      "workflow": "_build-and-test.yml",
+      "step": "Cook the Dylint UI-test dependency layer (soldr#3042)",
+      "mechanism": "soldr dylint cook",
       "tier": "cook",
-      "rationale": "The `ws-dev-<target>` dependency namespace so the ci-test plan does not recompile ~700 dependencies per run."
+      "rationale": "soldr#3042. Prepares the third-party dependency layer of target/dylint/tests (dylint_testing -> compiletest_rs, git2, libgit2-sys, and dylint's build script) before ci-test, so those compiles no longer overlap Fresh Nextest. Tier 1 by identity key: the lint crate's Cargo.lock plus the one exact nightly every lint manifest declares. Nothing is uploaded and no directory enters a cross-run store -- the step fills an in-run target tree, and cross-run reuse comes from the Tier-2 object store (soldr#3041). The Tier-3 ban on the linked UI-test products in that same directory is unchanged."
     },
     {
       "id": "build-and-test-build-logs",
@@ -137,6 +145,31 @@
       "mechanism": "actions/upload-artifact",
       "tier": "none",
       "rationale": "Run-scoped build XML + compile journals for toolchain-home and recompile-storm triage."
+    },
+    {
+      "id": "build-and-test-source-driver-download",
+      "workflow": "_build-and-test.yml",
+      "step": "Reuse shared source driver if already available",
+      "mechanism": "actions/download-artifact",
+      "tier": "same-run-transport",
+      "rationale": "Opportunistically receives the exact-workflow-SHA dev-profile Soldr driver already produced for cross lanes. Missing or mismatched provenance falls back to the identical local dev-profile source build; it is never restored across workflow runs."
+    },
+    {
+      "id": "build-and-test-zccache-unit",
+      "workflow": "_build-and-test.yml",
+      "step": "Restore Tier-2 zccache object store (soldr#3039)",
+      "mechanism": "actions/cache",
+      "tier": "zccache-unit",
+      "rationale": "Saved on main only since soldr#3102 (restore/save split; PRs restore main's generation through the prefix restore-key). Content-addressed per-unit compiler outputs for the ci-test host lane; the path selects cache/zccache/daemon-state only, so the compile journals (cache/zccache/history) and session logs (cache/zccache/logs) that the build-logs artifact ships stay run-scoped and outside the entry. Not a new cache family: zccache-unit is already declared durable and live in normal lanes. soldr#3039 Phase 0.",
+      "notes": "The service's own versioned log directory (daemon-state/embedded-v1/v<VERSION>/logs/) is INSIDE the selected path and is stored with the objects; zccache owns its rotation, and an actions/cache path negation could not exclude it. The lane scrubs staging/ and every lock/socket/pid file from the tree after the daemon stops and before the post-step tar, mirroring archive_always_excludes_cache_path in crates/soldr-cache/src/cache_lib/save_inventory.rs -- those files are never cache payload, they race the tar, and restoring them breaks a later daemon start. No per-entry size cap is set: the embedded budget (ZCCACHE_CACHE_SIZE_BYTES / ZCCACHE_CACHE_SIZE_PERCENT) is the one real cap. The per-family allocation belongs to soldr#3047, which sizes this store's share at 2.0 GiB; this entry states that share and does not enforce it."
+    },
+    {
+      "id": "build-and-test-stable-cook",
+      "workflow": "_build-and-test.yml",
+      "step": "Restore stable cook archives (soldr#3043)",
+      "mechanism": "actions/cache",
+      "tier": "cook",
+      "rationale": "Holds the content-addressed `soldr cook` artifacts for the stable tree (`<SOLDR_CACHE_DIR>/cache/cook`) plus the `cook_index_v2` rows in `state.sqlite3` that name them. This is Tier 1 by identity key: the key is the cargo-chef recipe hash plus triple/profile/channel/rustc version, which moves only with the locked dependency graph. No `target/` snapshot and no linked test product is persisted -- the archive is the post-`StripTargetOptions::cook` trimmed dependency tree. It counts against soldr#3047's 2.0 GiB allocation alongside soldr#3041's object store, into whose single cache block it should be folded when that hunk lands."
     },
     {
       "id": "cross-build-xwin-sdk",
@@ -161,14 +194,6 @@
       "mechanism": "actions/cache",
       "tier": "pinned-immutable-download",
       "rationale": "Apple SDK 14.5 darwin-aarch64 slice, keyed on the catalogue version and shape."
-    },
-    {
-      "id": "cross-build-rust-cache",
-      "workflow": "_ci-cross-build-linux.yml",
-      "step": "Restore cargo + target caches",
-      "mechanism": "Swatinem/rust-cache",
-      "tier": "cook",
-      "rationale": "`cross-build-<target>-v7` dependency namespace; restored BEFORE the cook step so cook is never overwritten by a bulk snapshot."
     },
     {
       "id": "cross-build-bootstrap-artifact-download",
@@ -220,14 +245,6 @@
       "rationale": "The receiving half of cross-build-test-transport: cross-built products executed on a native runner in the same run."
     },
     {
-      "id": "target-run-pep517-rust-cache",
-      "workflow": "_ci-target-run.yml",
-      "step": "Restore cargo + target caches for wheel build",
-      "mechanism": "Swatinem/rust-cache",
-      "tier": "cook",
-      "rationale": "`pep517-<target>-ci-release-v2` dependency namespace for the PEP 517 follow-up wheel build."
-    },
-    {
       "id": "target-run-pep517-logs",
       "workflow": "_ci-target-run.yml",
       "step": "Upload PEP 517 Soldr logs",
@@ -242,14 +259,6 @@
       "mechanism": "actions/upload-artifact",
       "tier": "none",
       "rationale": "Run-scoped toolchain-ensure/doctor JSON for triage."
-    },
-    {
-      "id": "ci-pep517-rust-cache",
-      "workflow": "ci.yml",
-      "step": "Restore cargo + target caches for wheel build",
-      "mechanism": "Swatinem/rust-cache",
-      "tier": "cook",
-      "rationale": "`pep517-<name>-ci-release-v2` dependency namespace for the Windows PEP 517 platform smoke."
     },
     {
       "id": "ci-pep517-logs",
@@ -273,15 +282,15 @@
       "step": "Restore cached bootstrap soldr binary",
       "mechanism": "actions/cache",
       "tier": "bootstrap-driver-binary",
-      "rationale": "The ci-bootstrap driver keyed on the exact commit SHA (deliberately not hashFiles, which misses submodule content)."
+      "rationale": "The dev-profile bootstrap driver keyed on the exact commit SHA (deliberately not hashFiles, which misses submodule content)."
     },
     {
       "id": "ci-bootstrap-rust-cache",
       "workflow": "ci.yml",
       "step": "Restore cargo + target caches for bootstrap build",
       "mechanism": "Swatinem/rust-cache",
-      "tier": "cook",
-      "rationale": "`bootstrap-soldr-linux-gnu-ci-bootstrap-v2` dependency namespace, used only on a bootstrap cache miss."
+      "tier": "cook-unreachable-lane",
+      "rationale": "Dependency graph for the bootstrap driver build. That step runs bare `cargo build` with RUSTC_WRAPPER=\"\" and the job has no setup-soldr step, so no soldr-side layer can see it. Keeping this saves ~5 min per commit on the critical path of every darwin/MSVC cross lane. The sibling binary cache is the separate `bootstrap-driver-binary` exception."
     },
     {
       "id": "ci-bootstrap-artifact-upload",
@@ -404,20 +413,20 @@
       "rationale": "The action's own runtime state under a `cache-dir` deliberately disjoint from the soldr build under test."
     },
     {
-      "id": "setup-soldr-action-target-cache",
-      "workflow": "setup-soldr-action.yml",
-      "step": "setup (target-cache: true)",
-      "mechanism": "setup-soldr:target-cache",
-      "tier": "cook",
-      "rationale": "Default thin-v2 slice: dependency-scoped, with assert_thin_manifest.py failing the gate if a dropped transient/debug category reappears."
-    },
-    {
       "id": "setup-soldr-action-dogfood-zccache",
       "workflow": "setup-soldr-action.yml",
       "step": "Restore dogfood build cache",
       "mechanism": "actions/cache",
       "tier": "zccache-unit",
       "rationale": "The zccache store for the dogfood build. Content-addressed per unit -- exactly the store soldr#2931 keeps live; the ban is on linked products and bulk target/ snapshots."
+    },
+    {
+      "id": "cargo-orchestration-telemetry-evidence",
+      "workflow": "cargo-orchestration-telemetry.yml",
+      "step": "Upload Cargo orchestration telemetry evidence",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Run-scoped JSON snapshots and command logs retained for soldr#2878 analysis; no later build restores them."
     },
     {
       "id": "baseline-zero-deps-experiment",
@@ -476,12 +485,36 @@
       "rationale": "The perf sweep; cache state is an independent variable of the measurement."
     },
     {
-      "id": "thin-v2-verify-experiment",
-      "workflow": "thin-v2-verify.yml",
+      "id": "stable-cook-acceptance-experiment",
+      "workflow": "stable-cook-acceptance.yml",
       "step": "*",
       "mechanism": "*",
       "tier": "cache-experiment",
-      "rationale": "Verifier for the thin-v2 target-cache slice itself."
+      "rationale": "Acceptance for cook behaviour on the ci-test stable tree (soldr#3043)."
+    },
+    {
+      "id": "macos-universal2-probe-slice-upload",
+      "workflow": "macos-universal2-probe.yml",
+      "step": "actions/upload-artifact (slice-<triple>)",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Per-triple release binary plus the x86_64 nextest archive, handed to the combine job of the SAME dispatch-only run (3-day retention); never restored into a later build."
+    },
+    {
+      "id": "macos-universal2-probe-payload-upload",
+      "workflow": "macos-universal2-probe.yml",
+      "step": "actions/upload-artifact (universal2-payload)",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "The lipo'd universal2 binary and test payload for the macOS guest job of the same run; inspection only, nothing downloads it into a compile."
+    },
+    {
+      "id": "macos-universal2-probe-guest-results-upload",
+      "workflow": "macos-universal2-probe.yml",
+      "step": "actions/upload-artifact (universal2-guest-results)",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Guest logs and test results retained for humans."
     }
   ]
 }

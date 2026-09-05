@@ -166,6 +166,12 @@ fn mutated_vars(text: &str) -> Vec<String> {
 /// fixture, so no test barrier applies. Each needs a reason.
 const PRODUCTION_ENV_WRITERS: &[(&str, &str)] = &[
     (
+        "crates/soldr-cli/src/cook_route_hold.rs",
+        "soldr#3117: `soldr cook` pins SOLDR_BROKER_SERVICE to the daemon route it holds for \
+         the rest of its run, exactly as `soldr daemon start` (soldr_main_helpers.rs) does; \
+         a production process-wide setting, not a test mutating shared state",
+    ),
+    (
         "crates/soldr-cli/src/cli_dispatch.rs",
         "prepend_path_dirs_to_env rewrites PATH for the child process",
     ),
@@ -190,6 +196,21 @@ const PRODUCTION_ENV_WRITERS: &[(&str, &str)] = &[
          mutating shared state. Previously invisible to this lint only because the file \
          also carried a test module using TEST_PROCESS_ENV_LOCK; moving those tests to \
          cli_args_tests.rs left the production write correctly bare",
+    ),
+    (
+        "crates/soldr-cli/src/dylint_cook_tree.rs",
+        "soldr#3042: a `--tree tests` cook must compile under the same environment the \
+         later Dylint UI-test stage reuses the artifacts under. `ci_test/execute.rs` sets \
+         that environment per stage with `Command::env`, but `soldr dylint cook` spawns its \
+         child cargo from the current process, so the equivalent is `set_var` here. \
+         Production child-process setup, not a test mutating ambient state",
+    ),
+    (
+        "crates/soldr-cli/src/cook.rs",
+        "soldr#3043: `run_cook` publishes the cook's `--target` scope before phase 1, because \
+         `cargo chef prepare`'s argv cannot carry `--target` yet still triggers the front \
+         door's cook-index hydrate. The variable is read back in cook_hydrate.rs, whose own \
+         mutex guards its tests; this write is production behaviour on the cook path",
     ),
     (
         "crates/soldr-cli/src/target_lifecycle.rs",

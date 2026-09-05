@@ -57,8 +57,6 @@ jobs:
         include:
           - name: Linux
             runner: ubuntu-24.04
-          - name: macOS
-            runner: macos-15
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -73,14 +71,18 @@ jobs:
       # soldr#2131. install.sh was executed by nothing -- it appeared in the
       # workflows only inside `paths:` triggers -- so a bash 4.0 builtin sat in
       # the one script users are told to run and every check stayed green
-      # (soldr#2130). This job already allocates both a Linux and a macOS
-      # runner and already triggers on install.sh, so it is the cheapest place
-      # to actually run it.
+      # (soldr#2130). This job already triggers on install.sh, so it is the
+      # cheapest place to actually run it.
       #
-      # The macOS leg is the one that matters: it executes under the real
-      # /bin/bash 3.2, which is what the bug needed. The Linux leg has bash 5
-      # and could not have caught it -- kept anyway, since the CRLF handling
-      # this also covers is not macOS-specific.
+      # soldr#3071: this used to run on both a Linux and a macOS leg, and the
+      # macOS leg was the one that mattered -- it executed under the real
+      # /bin/bash 3.2, which is what the original bug needed; Linux's bash 5
+      # could not have caught it. No GitHub Actions job may run on a macos-*
+      # runner any more, so that live coverage is gone; the static regex scan
+      # in tests/test_macos_bash_portability.py is what is left guarding
+      # bash-4-only constructs in this and every other contributor-facing
+      # shell script. This step (Linux, bash 5) still covers the CRLF
+      # handling install.sh also fixed, which was never macOS-specific.
       # This workflow had no uv step; the same pinned action ci.yml uses.
       - name: Install uv
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
@@ -89,8 +91,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Printed because the bash version IS the thing under test on the
-          # macOS leg -- a green run means little if it silently used bash 5.
           bash --version | head -1
           uv run --no-project --python 3.13 --with pytest python -m pytest \
             tests/test_install_sh_smoke.py -q
@@ -106,9 +106,8 @@ jobs:
           set -uo pipefail
           # soldr#2763: the `command -v python3` fallback existed because this
           # workflow had no interpreter it could count on. The uv step above
-          # supplies one on every leg -- including the macOS runner, whose
-          # `python3` is whatever the image ships -- so the branch is gone
-          # rather than being converted twice.
+          # supplies one on every leg, so the branch is gone rather than being
+          # converted twice.
           uv run --no-project --python 3.13 python \
             .github/scripts/verify_setup_soldr_pin.py
           status=$?
@@ -120,7 +119,7 @@ jobs:
       - id: setup
         # This is zackees/setup-soldr@v0 pinned to a full SHA
         # because this repository's ruleset requires SHA-pinned actions.
-        uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
+        uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90
         with:
           cache: true
           zccache-seed-strict: true
@@ -131,7 +130,10 @@ jobs:
           cache-dir: ${{ runner.temp }}/setup-soldr-action-state
           cache-key-suffix: dogfood-action-state
           build-cache: false
-          target-cache: true
+          # soldr#2996 removed soldr's target-cache implementation, so the
+          # action's layer has nothing left to drive. Kept explicit rather
+          # than defaulted until the input itself is retired upstream.
+          target-cache: false
           # This workflow builds and tests soldr explicitly below. Running
           # soldr-cook here compiles the same workspace first, and release-only
           # Cargo.lock version bumps invalidate its whole-lockfile cache key.
@@ -179,7 +181,7 @@ jobs:
 
       - id: dogfood-build-cache
         name: Restore dogfood build cache
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ runner.temp }}/soldr-build-under-test/cache/zccache
           key: setup-soldr-dogfood-zccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
@@ -188,7 +190,7 @@ jobs:
             setup-soldr-dogfood-zccache-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Stop setup-soldr builder cache before dogfood build
-        uses: zackees/setup-soldr/cleanup@5f1f68dcb8377818413c28ce52214261ae8ff771
+        uses: zackees/setup-soldr/cleanup@bb28e96d2dc32c058242f56722297caf1efcbd90
 
       - name: Build through soldr
         shell: pwsh
@@ -283,3 +285,13 @@ jobs:
             exit 0
           }
           & $soldr.Source zccache stop
+
+      # actions/cache@v4 has no `save-if` input, so main-only saving requires
+      # the restore/save split (soldr#3047). This save must stay after the
+      # zccache stop above — the cache is saved with the daemon stopped.
+      - name: Save dogfood build cache (soldr#3047)
+        if: ${{ always() && github.ref == 'refs/heads/main' && steps.dogfood-build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/soldr-build-under-test/cache/zccache
+          key: ${{ steps.dogfood-build-cache.outputs.cache-primary-key }}

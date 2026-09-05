@@ -690,8 +690,9 @@ pub fn wait_for_daemon_exit(pid: u32, timeout: Duration) -> bool {
 }
 
 fn terminate_pid(pid: u32, deadline: Option<Instant>) {
-    // SIGTERM (Windows: TerminateProcess — the platform has no graceful
-    // signal), wait a short grace, then escalate to SIGKILL. The deadline
+    // SIGTERM (Windows: the daemon's named terminate event, soldr#3096,
+    // falling back to TerminateProcess when the target has none), wait a
+    // short grace, then escalate to SIGKILL. The deadline
     // bookkeeping is lifecycle policy; the platform crate owns the
     // signaling.
     let _ = crate::platform::process::terminate::signal_pid(pid, false);

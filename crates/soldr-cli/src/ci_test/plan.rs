@@ -42,8 +42,10 @@ pub(crate) async fn freeze(
     let config = cargo_config_paths(&root);
     let rustflags = effective_rustflags();
     let wrapper = wrapper_identity(cache_enabled);
-    let cargo_build_jobs = effective_limit("CARGO_BUILD_JOBS", "1");
-    let soldr_jobs = effective_limit("SOLDR_JOBS", "1");
+    // Absence is load-bearing: ci-test schedules work, but it does not invent a
+    // one-thread Cargo/compiler policy. Explicit values are frozen verbatim.
+    let cargo_build_jobs = inherited_limit("CARGO_BUILD_JOBS");
+    let soldr_jobs = inherited_limit("SOLDR_JOBS");
     let nextest_test_threads = effective_limit("NEXTEST_TEST_THREADS", "1");
     let dylint_key = canonical_channel(&nightly.channel, &host);
     let dylint_libraries = target_root
@@ -96,10 +98,18 @@ pub(crate) async fn freeze(
         &["rustfmt", "lint-ci"],
         &root,
     ));
-    for lint in DYLINTS {
-        let name = format!("dylint-library-{lint}");
+    let library_names: Vec<String> = DYLINTS
+        .iter()
+        .map(|lint| format!("dylint-library-{lint}"))
+        .collect();
+    for (index, lint) in DYLINTS.iter().enumerate() {
+        let dependency = if index == 0 {
+            "clippy"
+        } else {
+            library_names[index - 1].as_str()
+        };
         stages.push(stage(
-            &name,
+            &library_names[index],
             "dylint-libraries",
             COMPILER,
             cargo_command(
@@ -114,14 +124,10 @@ pub(crate) async fn freeze(
                 ],
                 &[],
             ),
-            &["clippy"],
+            &[dependency],
             &root.join("dylints").join(lint),
         ));
     }
-    let library_names: Vec<String> = DYLINTS
-        .iter()
-        .map(|lint| format!("dylint-library-{lint}"))
-        .collect();
     let mut dylint = vec![
         "dylint".into(),
         "--no-build".into(),
@@ -136,13 +142,23 @@ pub(crate) async fn freeze(
         "dylint-analysis",
         COMPILER,
         cargo_command(&dylint, &[]),
-        &library_names.iter().map(String::as_str).collect::<Vec<_>>(),
+        &[library_names
+            .last()
+            .expect("the frozen Dylint inventory is non-empty")],
         &root,
     ));
-    for lint in DYLINTS {
-        let name = format!("dylint-test-{lint}");
+    let dylint_test_names: Vec<String> = DYLINTS
+        .iter()
+        .map(|lint| format!("dylint-test-{lint}"))
+        .collect();
+    for (index, lint) in DYLINTS.iter().enumerate() {
+        let dependency = if index == 0 {
+            "dylint-workspace"
+        } else {
+            dylint_test_names[index - 1].as_str()
+        };
         stages.push(stage(
-            &name,
+            &dylint_test_names[index],
             "dylint-ui-tests",
             COMPILER,
             cargo_command(
@@ -155,17 +171,12 @@ pub(crate) async fn freeze(
                 ],
                 &[],
             ),
-            &["dylint-workspace"],
+            &[dependency],
             &root.join("dylints").join(lint),
         ));
     }
-    let dylint_test_names: Vec<String> = DYLINTS
-        .iter()
-        .map(|lint| format!("dylint-test-{lint}"))
-        .collect();
-    let mut nextest = vec!["nextest".into(), "run".into()];
-    nextest.extend(workspace_selection(&invocation.scope));
-    nextest.extend([
+    let mut nextest_args = workspace_selection(&invocation.scope);
+    nextest_args.extend([
         "--lib".into(),
         "--tests".into(),
         "--target".into(),
@@ -173,28 +184,53 @@ pub(crate) async fn freeze(
         "--test-threads".into(),
         nextest_test_threads.clone(),
     ]);
-    nextest.extend(scope_args.clone());
+    nextest_args.extend(scope_args.clone());
+
+    // Compile every test binary before the Dylint branch begins. The
+    // following `nextest` stage has the identical target selection, so Cargo
+    // observes those binaries as Fresh and only executes them while Dylint
+    // performs its independent nightly compilation.
+    let mut nextest_compile = vec!["nextest".into(), "run".into(), "--no-run".into()];
+    nextest_compile.extend(nextest_args.clone());
+    stages.push(stage(
+        "nextest-compile",
+        "stable",
+        COMPILER,
+        cargo_command(&nextest_compile, &[]),
+        &["clippy"],
+        &root,
+    ));
+    // soldr#3100: one red test must not hide the rest of the suite. Nextest's
+    // default fail-fast stopped scheduling after the first failure, so a red
+    // run reported only the tests executed until then. The run stage keeps
+    // going; the stage still exits non-zero (nextest's 100) when any test
+    // failed. `--no-run` above makes the flag meaningless on the compile
+    // stage, which is why it is not in the shared `nextest_args`.
+    let mut nextest = vec!["nextest".into(), "run".into(), "--no-fail-fast".into()];
+    nextest.extend(nextest_args);
     stages.push(stage(
         "nextest",
         "stable",
-        COMPILER_AND_TEST,
+        TEST,
         cargo_command(&nextest, &[]),
-        &dylint_test_names
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
+        &["nextest-compile"],
         &root,
     ));
     let mut doctest = vec!["test".into()];
     doctest.extend(workspace_selection(&invocation.scope));
     doctest.extend(["--doc".into(), "--target".into(), host.clone()]);
     doctest.extend(scope_args.clone());
+    let tail_dependencies = tail_join_dependencies(
+        dylint_test_names
+            .last()
+            .expect("the frozen Dylint test inventory is non-empty"),
+    );
     stages.push(stage(
         "doctests",
         "rustdoc",
         COMPILER_AND_TEST,
         cargo_command(&doctest, &[]),
-        &["nextest"],
+        &tail_dependencies,
         &root,
     ));
     for (name, args) in [
@@ -207,7 +243,7 @@ pub(crate) async fn freeze(
             "policy",
             POLICY,
             cargo_command(&args, &[]),
-            &["doctests"],
+            &tail_dependencies,
             &root,
         ));
     }
@@ -306,8 +342,8 @@ pub(crate) async fn freeze(
             reason: "ci-test observes Cargo freshness and does not insert a dev-profile warm-up",
         },
         resource_limits: ResourceLimits {
-            cargo_build_jobs: Some(cargo_build_jobs),
-            soldr_jobs: Some(soldr_jobs),
+            cargo_build_jobs,
+            soldr_jobs,
             nextest_test_threads: Some(nextest_test_threads),
         },
         test_target_count,
@@ -326,7 +362,7 @@ pub(crate) async fn freeze(
                 vec!["dylint-workspace".into()],
             ),
             group("dylint-ui-tests", "dylint-ui-tests", dylint_test_names),
-            group("nextest", "stable", vec!["nextest".into()]),
+            group("nextest-compile", "stable", vec!["nextest-compile".into()]),
             group("doctests", "rustdoc", vec!["doctests".into()]),
         ],
         observability: super::model::Observability {
@@ -336,6 +372,13 @@ pub(crate) async fn freeze(
             stage_bytes: "reported where the child exposes byte counters",
         },
     })
+}
+
+/// The post-validation tail has one join and four independent consumers.
+/// Keeping this edge list shared with the executor prevents the frozen graph
+/// and its optimized schedule from silently drifting apart.
+pub(super) fn tail_join_dependencies(last_dylint_ui_test: &str) -> [&str; 2] {
+    ["nextest", last_dylint_ui_test]
 }
 
 #[derive(Clone, Copy)]
@@ -359,6 +402,11 @@ const COMPILER_AND_TEST: StageExecution = StageExecution {
     kind: "compiler-and-test",
     concurrency_group: None,
     executes_compiler: true,
+};
+const TEST: StageExecution = StageExecution {
+    kind: "test",
+    concurrency_group: None,
+    executes_compiler: false,
 };
 const POLICY: StageExecution = StageExecution {
     kind: "policy",
@@ -548,6 +596,12 @@ fn non_empty_env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
+fn inherited_limit(name: &str) -> Option<String> {
+    // Keep even an empty/invalid explicit value. Cargo/the daemon owns
+    // validation; treating it as absent would silently change caller intent.
+    std::env::var(name).ok()
+}
+
 fn effective_limit(name: &str, default: &str) -> String {
     non_empty_env(name).unwrap_or_else(|| default.into())
 }
@@ -580,7 +634,9 @@ fn workspace_metadata_fingerprint(root: &Path, config: &[String]) -> Result<Stri
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn canonical_channel(channel: &str, host: &str) -> String {
+/// Shared with `dylint_cook_tree::CookTree::channel_segment` so the cook and
+/// the UI-test stage name the same directory (soldr#3042).
+pub(crate) fn canonical_channel(channel: &str, host: &str) -> String {
     if channel.ends_with(host) {
         channel.into()
     } else {
@@ -636,6 +692,14 @@ mod tests {
                 "x86_64-unknown-linux-gnu"
             ),
             "nightly-2026-05-28-x86_64-unknown-linux-gnu"
+        );
+    }
+
+    #[test]
+    fn post_validation_tail_has_one_shared_join() {
+        assert_eq!(
+            tail_join_dependencies("dylint-test-final"),
+            ["nextest", "dylint-test-final"]
         );
     }
 }

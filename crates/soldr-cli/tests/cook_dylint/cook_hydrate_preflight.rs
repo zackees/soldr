@@ -478,7 +478,7 @@ marker = "main"
         &repo.join("src").join("main.rs"),
         b"fn main() { println!(\"branch fallback demo\"); }\n",
     );
-    let mut generate_lock = Command::new("cargo");
+    let mut generate_lock = Command::new(common::cargo_bin());
     generate_lock.arg("generate-lockfile").current_dir(&repo);
     run_command_success(generate_lock, "cargo generate-lockfile");
     run_git_in(&repo, &["add", "Cargo.toml", "Cargo.lock", "src/main.rs"]);

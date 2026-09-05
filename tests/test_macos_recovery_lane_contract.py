@@ -1,0 +1,211 @@
+"""No macos-* GitHub Actions runner exists anywhere (soldr#3071, soldr#3076).
+
+Owner mandate (2026-09-02): no job may run on a macos-* runner for building
+or testing. macOS execution happens only inside a zackees/docker-mac-x64
+Recovery guest (ci/macos_recovery_run.py, ci/smoke_release_artifacts.py)
+hosted on an ordinary ubuntu-24.04 runner.
+
+This replaces tests/test_macos_dockur_lane_contract.py, whose contract (a
+hand-baked dockur/macos image pulled from GHCR over ssh, soldr#3071) never
+worked: the image was never published and the ssh secret was never set, so
+`e2e-macos-x64` and `smoke_macos_x64` failed at preflight on every run.
+soldr#3076 replaces that whole plan with zackees/docker-mac-x64, which needs
+neither.
+"""
+
+import re
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+WORKFLOWS = REPO_ROOT / ".github" / "workflows"
+
+# A `runs-on:`/`runs_on:`/`runner:` YAML value (bare or quoted, matrix-row
+# style or JSON-style `"runner": "..."`) naming a macos-* runner label.
+# Comment-only lines are excluded below.
+RUNNER_LABEL_PATTERN = re.compile(
+    r'(?:runs[-_]on|"?runner"?)\s*:\s*"?macos-[a-z0-9.]+', re.IGNORECASE
+)
+
+DOCKER_MAC_X64_PIN = "0769c0bcc9367c6516da39c0a3aa4cb55988ec79"
+
+
+def _non_comment_lines(text: str) -> list[str]:
+    return [line for line in text.splitlines() if not line.strip().startswith("#")]
+
+
+def test_no_workflow_names_a_macos_runner_label() -> None:
+    offenders = []
+    for workflow in sorted(WORKFLOWS.glob("*.y*ml")):
+        for line in _non_comment_lines(workflow.read_text(encoding="utf-8")):
+            if RUNNER_LABEL_PATTERN.search(line):
+                offenders.append(f"{workflow.name}: {line.strip()}")
+    assert not offenders, (
+        "no GitHub Actions job may run on a macos-* runner (owner mandate "
+        f"2026-09-02, soldr#3071): {offenders}"
+    )
+
+
+SCAN_ROOTS = (".github", "ci", "docs", "tests")
+SCAN_TOP_LEVEL_FILES = ("README.md",)
+
+
+def test_no_ghcr_baked_guest_image_or_ssh_secret_anywhere() -> None:
+    """soldr#3071's hand-baked guest was never published; soldr#3076 dropped it.
+
+    Scoped to the directories that could plausibly reference it (workflow
+    config, ci scripts, docs, and this test suite) rather than the whole
+    checkout -- `target/` alone is tens of gigabytes of unrelated build
+    output.
+    """
+    this_file = Path(__file__).resolve()
+    offenders = []
+    paths = [
+        p
+        for root in SCAN_ROOTS
+        for p in sorted((REPO_ROOT / root).rglob("*"))
+        if p.is_file() and p.resolve() != this_file
+    ]
+    paths += [REPO_ROOT / name for name in SCAN_TOP_LEVEL_FILES]
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, PermissionError):
+            continue
+        if "ghcr.io/zackees/soldr/macos-x64-guest" in text:
+            offenders.append(f"{path.relative_to(REPO_ROOT)}: baked guest image string")
+        if "SOLDR_MACOS_GUEST_SSH_KEY" in text:
+            offenders.append(f"{path.relative_to(REPO_ROOT)}: guest ssh secret name")
+    assert not offenders, offenders
+
+
+def test_x64_lane_uses_the_recovery_guest_on_an_ubuntu_runner() -> None:
+    replay = (WORKFLOWS / "macos-recovery-replay.yml").read_text(encoding="utf-8")
+    start = replay.index("  replay:\n")
+    run_job = replay[start:]
+    assert "runs_on: ubuntu-24.04" in run_job
+    assert "target_execution: x86_64-recovery" in run_job
+    assert "uses: ./.github/workflows/_ci-target-run.yml" in run_job
+
+
+def test_x64_replay_lane_is_off_the_pull_request_critical_path() -> None:
+    """soldr#3116: the replay lane produced 0 green results in 25 CI runs and
+    was the last job to finish in most of them (34-40 min of a wedged guest).
+    Nothing in ci.yml consumed its output. It runs from its own workflow --
+    nightly, on dispatch, and on PRs labelled `macos-replay` -- until the
+    soldr#3088 criteria are met."""
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    assert re.search(r"(?m)^  e2e-macos-x64:\s*$", ci) is None
+    # The cross-build stays a per-PR, build-only lane (soldr#1978 item 3
+    # shape, like aarch64-apple-darwin): a darwin cross-compile break must
+    # still fail the PR even though nothing in ci.yml replays the archive.
+    assert re.search(r"(?m)^  e2e-macos-x64-build:\s*$", ci) is not None
+    replay = (WORKFLOWS / "macos-recovery-replay.yml").read_text(encoding="utf-8")
+    assert "schedule:" in replay
+    assert "workflow_dispatch:" in replay
+    assert "types: [labeled]" in replay
+    assert "github.event.label.name == 'macos-replay'" in replay
+    assert "uses: ./.github/workflows/_ci-cross-build-linux.yml" in replay
+    assert "target: x86_64-apple-darwin" in replay
+    # The build-only aarch64 lane is untouched by the move.
+    assert re.search(r"(?m)^  e2e-macos-arm64-build:\s*$", ci) is not None
+
+
+def test_no_macos_arm64_run_job_exists() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    assert re.search(r"(?m)^  e2e-macos-arm64:\s*$", ci) is None
+    # The build-only lane must still exist -- only its paired run job is gone.
+    assert re.search(r"(?m)^  e2e-macos-arm64-build:\s*$", ci) is not None
+
+
+def test_docker_mac_x64_action_is_pinned_to_a_full_sha_with_a_main_comment() -> None:
+    target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    for workflow_name, text in (
+        ("_ci-target-run.yml", target_run),
+        ("release-auto.yml", release),
+    ):
+        pattern = re.compile(
+            rf"uses:\s*zackees/docker-mac-x64@{DOCKER_MAC_X64_PIN}\s*#\s*main"
+        )
+        assert pattern.search(text), (
+            f"{workflow_name} must pin zackees/docker-mac-x64 to a full commit "
+            f"SHA ({DOCKER_MAC_X64_PIN}) with a '# main' comment"
+        )
+
+
+def test_no_dockur_ssh_machinery_referenced_in_workflows() -> None:
+    for workflow in sorted(WORKFLOWS.glob("*.y*ml")):
+        text = workflow.read_text(encoding="utf-8")
+        assert "macos_x64_guest.py" not in text, workflow.name
+        assert "x86_64-dockur" not in text, workflow.name
+        # soldr#3076: GHCR auth existed only to pull the retired baked guest
+        # image; docker-mac-x64 needs no registry auth at all.
+        assert "docker/login-action" not in text, workflow.name
+
+
+def test_recovery_lane_ships_the_tests_archive_to_the_guest() -> None:
+    """soldr#3078: the Recovery guest replays the real nextest archive now,
+    not just `soldr --version`/`--help`, so the share-dir prep must actually
+    ship it in."""
+    target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
+    assert "share/tests.tar.zst" in target_run
+    assert "-tests.tar.zst" in target_run
+    assert "nextest_list_all" in target_run or "nextest list" in target_run
+
+
+def test_release_workflow_has_the_macos_x64_replay_jobs() -> None:
+    """soldr#3078: the release runs the same archive replay
+    macos-recovery-replay.yml runs nightly (soldr#3116), pinned to the release
+    commit.
+
+    The jobs must keep existing and running. soldr#3088 removed only their
+    hold over `publish` -- see the test below.
+    """
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    assert re.search(r"(?m)^  e2e_macos_x64_build:\s*$", release) is not None
+    assert re.search(r"(?m)^  e2e_macos_x64_replay:\s*$", release) is not None
+    assert "uses: ./.github/workflows/_ci-cross-build-linux.yml" in release
+    assert "target_execution: x86_64-recovery" in release
+
+
+def _publish_job() -> str:
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    start = release.index("\n  publish:\n")
+    end = release.index("\n  verify_github_release:\n", start)
+    return release[start:end]
+
+
+def test_release_publish_is_not_gated_on_the_macos_x64_replay() -> None:
+    """soldr#3088: inverted from soldr#3078's gate. The replay lane has never
+    been green, and both v0.9.12 release attempts (runs 33820395040 and
+    33824207338) were blocked by harness bugs -- a missing `mkdir -p` for
+    nextest's `--extract-to`, in a guest where that same binary reported
+    `arch=pass:x86_64` / `version=pass:soldr 0.9.12` / `help=pass`. A gate
+    that has produced only false positives must not make releases
+    unpublishable. Restore it under the criteria in soldr#3088.
+    """
+    publish_job = _publish_job()
+    assert "e2e_macos_x64_replay" not in _needs_and_if(publish_job), (
+        "publish must not depend on the Recovery replay lane (soldr#3088); a "
+        "failed `needs:` skips publish even when the `if:` would allow it"
+    )
+
+
+def test_release_publish_keeps_the_native_macos_and_windows_smokes() -> None:
+    """soldr#3088 dropped exactly one gate. The two native release smokes --
+    the real per-OS signal on the shipped binaries -- stay required."""
+    publish_job = _publish_job()
+    for job in ("smoke_macos_x64", "smoke_windows"):
+        assert f"      - {job}\n" in publish_job, job
+        assert f"needs.{job}.result == 'success'" in publish_job, job
+
+
+def _needs_and_if(publish_job: str) -> str:
+    """The dependency-bearing part of the job: `needs:` list plus the `if:`
+    expression, with comment lines stripped so soldr#3088's rationale (which
+    names the lane) is not mistaken for a live dependency."""
+    return "\n".join(
+        line
+        for line in publish_job.splitlines()
+        if not line.strip().startswith("#") and "steps:" not in line
+    ).split("runs-on:", maxsplit=1)[0]

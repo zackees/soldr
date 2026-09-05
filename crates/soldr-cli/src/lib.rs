@@ -14,6 +14,41 @@
 
 #![allow(dead_code, unused_imports)]
 
+/// Global allocator for the whole `soldr` multicall binary (soldr#3038).
+///
+/// soldr previously declared no `#[global_allocator]`, so every surface —
+/// including the long-lived `soldr-daemon` — ran on the Rust default
+/// (glibc's ptmalloc on Linux). A canonical daemon on production hardware
+/// reached 11.7 GiB of private anonymous memory, growing in step with
+/// compile volume and never giving any of it back; 116 anonymous mappings
+/// pinned at exactly 64 MiB (glibc's per-thread `HEAP_MAX_SIZE` across the
+/// daemon's 37 threads) were consistent with either live data or allocator
+/// arena retention, and there was no instrumentation to tell which.
+///
+/// mimalloc is far more aggressive about returning freed pages to the OS
+/// than a per-thread ptmalloc arena, and — unlike the previous default —
+/// exposes exact allocator counters (`mimalloc_pprof::prof::stats()`,
+/// notably `heap.committed`/`heap.detailed`) that let a future
+/// investigation tell "the daemon is holding live data" from "the allocator
+/// is holding freed pages" instead of guessing from `/proc/<pid>/maps`.
+///
+/// Declared exactly once, here in the facade crate that both `src/main.rs`
+/// (the `soldr` `[[bin]]`) and every multicall alias link — including
+/// `soldr-daemon`, reached via `argv[0]` dispatch in
+/// [`daemon_entry`] — so one declaration covers every surface. A binary may
+/// have at most one `#[global_allocator]`; a second declaration anywhere
+/// else in the dependency graph would be a compile error, which is the
+/// enforcement that keeps this the only one.
+///
+/// This wires in the allocator and its always-on exact counters
+/// unconditionally (see `Cargo.toml`'s `mimalloc-pprof` entry for why
+/// default features — `pprof`, which compiles mimalloc's C build with
+/// `MI_PPROF=1` — stay on). It does **not** start the crate's *sampled*
+/// heap profiler: nothing here calls `mimalloc_pprof::prof::start`, so that
+/// stays opt-in at runtime, off by default.
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc_pprof::MiMalloc = mimalloc_pprof::MiMalloc;
+
 /// Neutral host-platform facade (#2493): the single selection site lives
 /// in `soldr-platform`; this crate calls only `crate::platform::…`.
 pub(crate) use soldr_platform as platform;
@@ -175,11 +210,17 @@ pub mod bootstrap;
 pub(crate) mod broker_bringup;
 pub mod broker_cmd;
 mod broker_control_transport;
+/// soldr#2493: broker route-acquisition deadlines and their `soldr doctor`
+/// surface, split out of `broker_server` to keep it under the 1,000-line
+/// production-source ceiling.
+pub(crate) mod broker_deadlines;
 /// soldr#2388: container-safe broker/session socket identity (graceful fallback
 /// when the OS provides no `/etc/machine-id`).
 pub mod broker_identity;
 mod broker_launcher;
 pub(crate) mod broker_lease;
+pub(crate) mod broker_policy;
+pub(crate) mod broker_reaper;
 pub(crate) mod broker_server;
 pub mod broker_spawn;
 pub mod build_from_source_cmd;
@@ -205,6 +246,9 @@ pub mod compile_diagnostics;
 pub mod compile_dispatch;
 pub mod compile_fallback_rollup;
 pub mod cook;
+/// soldr#3117 -- keeps the daemon route alive for the whole of `soldr cook`.
+pub(crate) mod cook_route_hold;
+pub mod cook_source_snapshot;
 pub mod daemon_entry;
 /// soldr#2360 — actionable attribution for a daemon-unavailable compile
 /// dispatch failure, split out of `compile_dispatch.rs` (over the #1966
@@ -215,6 +259,11 @@ pub(crate) mod daemon_status_render;
 pub mod docker_cross;
 pub mod doctor;
 mod dylint_cook;
+/// soldr#3042 step 3 — which of the two Dylint target trees a
+/// `soldr dylint cook` invocation is preparing (`target/dylint/target` vs.
+/// `target/dylint/tests`), split out so `dylint_cook.rs` does not have to
+/// grow past the line ceiling to add the second tree.
+mod dylint_cook_tree;
 /// soldr#2945 — the driver half of the old `dylint_toolchain.rs`: the
 /// binary-or-exit gate on `dylint-driver`, its catalogue fetch, and the
 /// per-host runtime environment the driver needs to load a nightly's
@@ -285,7 +334,6 @@ mod prepare_state_tests;
 pub mod pyo3_detect;
 pub mod reentrancy_guard;
 pub mod release_sidecar;
-pub mod rust_plan;
 pub mod save_load;
 pub mod session_transport;
 pub mod shim_dir;

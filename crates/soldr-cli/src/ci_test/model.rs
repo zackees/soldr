@@ -6,7 +6,10 @@
 
 use serde::Serialize;
 
-pub(crate) const PLAN_SCHEMA_VERSION: u32 = 1;
+// Version 3 preserves unset Cargo/Soldr job limits as JSON null. Consumers must
+// not interpret null as one: ci-test leaves the variable untouched and the
+// canonical Cargo/daemon schedulers retain ownership of concurrency.
+pub(crate) const PLAN_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OutputFormat {
@@ -138,6 +141,8 @@ pub(crate) struct Stage {
     pub(crate) working_directory: String,
     pub(crate) depends_on: Vec<String>,
     pub(crate) concurrency_group: Option<&'static str>,
+    /// Whether the planned stage command builds its own Cargo graph. This does
+    /// not classify compiler fixtures intentionally launched by test bodies.
     pub(crate) executes_compiler: bool,
     pub(crate) metrics: StageMetrics,
 }
@@ -167,7 +172,9 @@ pub(crate) struct CookDecision {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ResourceLimits {
+    /// Exact inherited value, or null when ci-test must not stamp the child.
     pub(crate) cargo_build_jobs: Option<String>,
+    /// Exact inherited value, or null when ci-test must not stamp the child.
     pub(crate) soldr_jobs: Option<String>,
     pub(crate) nextest_test_threads: Option<String>,
 }

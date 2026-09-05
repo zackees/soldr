@@ -34,20 +34,37 @@ def read_test_list(path: Path | None) -> tuple[int | None, int | None]:
     if not path.is_file():
         raise ValueError(f"required nextest list JSON is missing: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    discovered = payload.get("test-count")
-    if isinstance(discovered, bool) or not isinstance(discovered, int):
+    reported = payload.get("test-count")
+    if isinstance(reported, bool) or not isinstance(reported, int):
         raise ValueError("nextest list JSON is missing integer test-count")
-    if discovered < 0:
+    if reported < 0:
         raise ValueError("nextest list test-count must be nonnegative")
     rust_suites = payload.get("rust-suites")
     if not isinstance(rust_suites, dict):
         raise ValueError("nextest list JSON is missing rust-suites object")
-    ignored = sum(
-        1
-        for suite in rust_suites.values()
-        for testcase in suite.get("testcases", {}).values()
-        if testcase.get("ignored") is True
-    )
+    selected: list[dict[str, Any]] = []
+    for suite in rust_suites.values():
+        for testcase in suite.get("testcases", {}).values():
+            filter_match = testcase.get("filter-match")
+            if filter_match is None:
+                # Unfiltered `nextest list` documents no match decision; every
+                # testcase is selected in that representation.
+                selected.append(testcase)
+                continue
+            if not isinstance(filter_match, dict) or filter_match.get("status") not in {
+                "matches",
+                "mismatch",
+            }:
+                raise ValueError("nextest testcase has invalid filter-match status")
+            if filter_match["status"] == "matches":
+                selected.append(testcase)
+    discovered = len(selected)
+    if discovered > reported:
+        raise ValueError(
+            "nextest selected testcase count exceeds reported test-count: "
+            f"selected={discovered}, reported={reported}"
+        )
+    ignored = sum(1 for testcase in selected if testcase.get("ignored") is True)
     if ignored > discovered:
         raise ValueError("nextest ignored count exceeds discovered count")
     return discovered, ignored

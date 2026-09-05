@@ -10,6 +10,9 @@ pub fn spawn_detached(command: &mut Command) -> io::Result<Child> {
     // CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW.
     const FLAGS: u32 = 0x0000_0200 | 0x0000_0008 | 0x0800_0000;
     command.creation_flags(FLAGS);
+    // soldr#3098: spawns share, staged writes exclude (Windows has no fork
+    // inheritance of this kind, but the funnel stays uniform across hosts).
+    let _spawn = crate::platform::process::spawn_exclusion::spawn_shared();
     command.spawn()
 }
 
@@ -27,4 +30,15 @@ pub fn daemon_stdio(log: Option<&std::fs::File>) -> running_process::DaemonStdio
 /// Windows has no exec: spawn and wait, returning the exit status.
 pub fn exec_or_status(command: &mut Command) -> io::Result<ExitStatus> {
     command.status()
+}
+
+/// Test seam for soldr#3098. Windows has no fork-to-exec window in which
+/// a child inherits this process's descriptors, so `hold` is ignored; the
+/// child is spawned under the same shared spawn guard as everything else.
+pub fn spawn_holding_fork_window(
+    command: &mut Command,
+    _hold: std::time::Duration,
+) -> io::Result<Child> {
+    let _spawn = crate::platform::process::spawn_exclusion::spawn_shared();
+    command.spawn()
 }

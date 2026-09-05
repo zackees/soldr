@@ -1,9 +1,8 @@
 //! Who consumes a jobs flag under `soldr build` (soldr#2786).
 //!
-//! The `--jobs` long_help tells a reader being OOM-killed how to cap cargo.
-//! If the routing ever changes, that text becomes a wrong answer given to
-//! someone at their least patient moment, so it is pinned here rather than
-//! trusted.
+//! The `--jobs` long_help documents how an explicit caller value reaches
+//! Cargo. If the routing ever changes, that text becomes a wrong answer, so it
+//! is pinned here rather than trusted.
 //!
 //! Measured, not assumed. Each row was run and its exit code recorded before
 //! being written down:
@@ -78,8 +77,8 @@ fn long_jobs_is_soldrs_at_every_position() {
     }
 }
 
-// The three routes the `--jobs` help now points an OOM-killed reader at. If
-// any stops reaching cargo, that advice is wrong and this fails.
+// The three explicit routes documented by `--jobs`. If any stops reaching
+// Cargo, that contract is wrong and this fails.
 #[test]
 fn short_j_reaches_cargo() {
     let text = run(&["build", "-j", "notanumber"], None);

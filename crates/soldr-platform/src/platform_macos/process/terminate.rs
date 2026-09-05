@@ -36,10 +36,26 @@ pub fn terminate_pid(pid: u32) {
 /// is already gone (ESRCH) counts as success.
 pub fn signal_pid(pid: u32, force: bool) -> io::Result<()> {
     let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+    // Refuse anything `pid_t` cannot represent as a single process, BEFORE
+    // the syscall. `pid_t` is signed, so a `u32` above `i32::MAX` arrives at
+    // `kill` as a negative number, and negative arguments do not mean "that
+    // process": -N signals process group N, and -1 signals every process the
+    // caller may signal. `signal_pid(4294967295, true)` would therefore
+    // SIGKILL the user's entire session rather than one stale pid. Real
+    // Linux and macOS pids never come near that range, but these values
+    // arrive from pid files and environment variables, not only from
+    // `Child::id()`.
+    let target = libc::pid_t::try_from(pid).ok().filter(|pid| *pid > 0);
+    let Some(target) = target else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("refusing to signal pid {pid}: not a single-process id"),
+        ));
+    };
     // SAFETY: kill(2) on a pid the caller captured. ESRCH — the process
     // exited between the probe and the signal — is success for a
     // terminate request.
-    let rc = unsafe { libc::kill(pid as libc::pid_t, signal) };
+    let rc = unsafe { libc::kill(target, signal) };
     if rc == 0 {
         return Ok(());
     }

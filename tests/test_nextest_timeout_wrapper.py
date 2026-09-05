@@ -328,10 +328,6 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
         "cargo_doc_route_execution_budget_leaves_cleanup_headroom",
     ):
         assert excluded_doc_test not in doc_route_tests, cold_filter
-    assert (
-        "test(=cli_rust_plan::cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled)"
-        in cold_filter
-    ), cold_filter
     # soldr#2737: `cli_cargo_basic` is scoped as a whole unit because 19 of its
     # 21 tests drive `isolated_soldr_command`. Its per-test entry is subsumed
     # and must not come back alongside the module one -- two entries covering
@@ -354,7 +350,28 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     # a name that existed nowhere in the tree, so this reservation had silently
     # not been in effect. Keep the dead suffix from creeping back.
     assert "exec_cargo_build_routes_through_child_shims_and_zccache" not in cold_filter
-    assert 'threads-required = "num-cpus"' in cold_override
+    assert 'threads-required = "num-cpus"' not in cold_override
+    # soldr#3024 attempt 2 promoted this group to priority 100. That made the
+    # four-thread Linux run contend with cold nested builds from the start and
+    # regressed Fresh Nextest from an 18m11 median to 26m14. Keep the group
+    # serial, but let Nextest's normal queue order decide when it enters.
+    assert "priority =" not in cold_override
+    cold_full_runner_overrides = [
+        block
+        for block in config.split("[[profile.default.overrides]]")[1:]
+        if 'threads-required = "num-cpus"' in block
+        and "target = 'cfg(target_os = \"windows\")'" in block
+    ]
+    assert len(cold_full_runner_overrides) == 1
+    cold_filter_line = next(
+        line for line in cold_filter.splitlines() if line.startswith("filter = '")
+    )
+    windows_filter_line = next(
+        line
+        for line in _filter_expressions(cold_full_runner_overrides[0]).splitlines()
+        if line.startswith("filter = '")
+    )
+    assert windows_filter_line == cold_filter_line
     # The daemon-lifecycle and worktree units are likewise modules now, so the
     # claim "this unit is still named by some filter" is spelled per binary.
     daemon_modules = _module_alternation(filters, "daemon")
@@ -394,12 +411,18 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
             'grace-period = "30s"' in block
         ), f"a raised budget with no explicit grace period:\n{block}"
     # Kept beside it: the count still makes an addition deliberate rather than
-    # incidental. 9 = the default profile + eight measured per-test override
-    # blocks. Newest: soldr#2887's `cli_dylint_wrapper` block (now spelled
-    # `binary(cargo_front_door) & test(/^cli_dylint_wrapper::/)`), whose two
-    # fake-dylint front doors the prescribed `soldr ci-test` run measured at
-    # 121s each when they raced.
-    assert config.count('grace-period = "30s"') == 9
+    # incidental. 14 = the default profile + eleven measured per-test override
+    # blocks (soldr#3038 added `daemon_rss_ceiling`'s 300s budget, the ninth;
+    # soldr#3059 added the retention-rate gate's 300s budget, the tenth;
+    # soldr#3096 gave the ceiling-breach sibling the same 300s, the eleventh)
+    # + two on `[profile.target-run]`. Both target-run blocks are
+    # scoped Rosetta exceptions, preserving the 120s deadline on native lanes.
+    #
+    # The block above walks `[[profile.default.overrides]]` only, so the
+    # grace-period-with-every-raised-budget rule is not enforced for
+    # `target-run` blocks; this count is what makes one visible.
+    assert config.count('grace-period = "30s"') == 14
+    assert "test(=cli_cargo_native_cc::no_cache_global_disables_native_too)" in config
 
 
 def test_every_binary_named_in_nextest_filters_is_a_real_test_target() -> None:

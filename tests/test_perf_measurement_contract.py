@@ -69,15 +69,6 @@ def test_fixture_extraction_resets_previous_scenario_state() -> None:
     assert script.index('rm -rf "${DEST}"') < script.index('mkdir -p "${DEST}"')
 
 
-def test_thin_verifier_deletes_target_and_disables_warm_skip() -> None:
-    workflow = read(".github/workflows/thin-v2-verify.yml")
-
-    delete_target = workflow.index('rm -rf "${{ runner.temp }}/verify-noop/target"')
-    second_build = workflow.index("Second (fresh-target restore)")
-    assert delete_target < second_build
-    assert 'SOLDR_RUST_PLAN_SKIP_WARM_RESTORE: "0"' in workflow[second_build:]
-
-
 def test_readme_comparison_labels_clean_target_reconstruction() -> None:
     """The README comparison's old 'warm' cell deletes ``target/`` first.
 

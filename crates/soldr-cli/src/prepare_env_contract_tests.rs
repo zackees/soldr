@@ -94,7 +94,9 @@ fn managed_gnu_toolchain_is_exported_for_later_github_steps() {
         format!("CARGO_TARGET_{target_upper}_LINKER"),
         format!("CARGO_TARGET_{target_upper}_RUSTFLAGS"),
         "CMAKE_SYSROOT".to_string(),
-        "PKG_CONFIG_SYSROOT_DIR".to_string(),
+        // soldr#3081: the managed sysroot is exported to the compiler and to
+        // CMake, but never to pkg-config as a path-rewriting prefix.
+        format!("PKG_CONFIG_ALLOW_CROSS_{target}"),
         "PKG_CONFIG_LIBDIR".to_string(),
         "SOLDR_GNU_LINUX_SYSROOT".to_string(),
         "SOLDR_GNU_LINUX_TOOLCHAIN_ROOT".to_string(),
@@ -291,7 +293,9 @@ fn managed_musl_toolchain_is_exported_without_zig_or_host_tools() {
         format!("CARGO_TARGET_{target_upper}_LINKER"),
         format!("CARGO_TARGET_{target_upper}_RUSTFLAGS"),
         "CMAKE_SYSROOT".to_string(),
-        "PKG_CONFIG_SYSROOT_DIR".to_string(),
+        // soldr#3081: the managed sysroot is exported to the compiler and to
+        // CMake, but never to pkg-config as a path-rewriting prefix.
+        format!("PKG_CONFIG_ALLOW_CROSS_{target}"),
         "PKG_CONFIG_LIBDIR".to_string(),
         "SOLDR_MUSL_LINUX_SYSROOT".to_string(),
         "SOLDR_MUSL_LINUX_TOOLCHAIN_ROOT".to_string(),

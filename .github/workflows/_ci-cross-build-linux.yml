@@ -166,13 +166,13 @@ jobs:
       # lane's target-specific compiler/SDK setup and passes the real
       # target/profile shape.
       - name: Setup soldr build cache (Rust toolchain only)
-        uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
+        uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90
         with:
           # soldr#1799: pin the soldr that builds us -- the action's default
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every
           # build, so the next build recompiles the world. See
           # tests/test_setup_soldr_version_pins.py.
-          version: 0.9.10
+          version: 0.9.13
           toolchain: 1.95.0
           # soldr#2451: `cache: false` alone does NOT stop setup-soldr's
           # soldr-mini / solo-toolchain / build-cache layers (each is gated on
@@ -231,36 +231,25 @@ jobs:
           path: ${{ runner.temp }}/setup-soldr-soldr/bin/apple-sdk/14.5/darwin-aarch64
           key: soldr-apple-sdk-14.5-darwin-aarch64-v1
 
-      # soldr#1227 — cache target/ + ~/.cargo/{registry,git} across runs.
-      # Bootstrap (host x86_64-linux-gnu) + Cross-build (target subtree)
-      # both live under target/ and share Cargo.lock-keyed rlibs. Keyed on
-      # Cargo.lock + rustc + toolchain by Swatinem/rust-cache so a hit
-      # happens even when source code changes (deps stable).
+      # soldr#3047 — removed the Swatinem/rust-cache step that used to live
+      # here (`Restore cargo + target caches`, shared-key
+      # cross-build-${{ inputs.target }}-v7). ci/cache-ownership.json already
+      # declared Tier 1 `cook` the surviving implementation of the dependency-
+      # graph cache, and this lane is the one soldr#2996 measured cook on
+      # (387.7s -> 9.3s). Running both meant two implementations of one tier,
+      # with the deprecated one carrying 23.79 GiB of a 10 GB repo cache
+      # budget for no wall-time benefit cook doesn't already provide. The
+      # surviving durable layer for this lane is the `Restore cooked
+      # dependency cache` step below.
       #
-      # Setup-soldr's `cache: false` covers only its own zccache seeding;
-      # rust-cache handles the cargo target-dir surface on top.
-      - name: Restore cargo + target caches
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          # soldr#1287 → v2 forced a fresh save with the ci-bootstrap/
-          # subdir; soldr#1315 → v3 forces another fresh save because
-          # the v2 primary key stuck with a cargo registry snapshot
-          # where libz-ng-sys-1.1.29's src/zlib-ng was missing
-          # zlib-ng.map.in + test/. soldr#1357 → v4 forces a fresh save
-          # after Stage B switched from --release to --profile ci-release:
-          # rust-cache's meta-hash doesn't include Cargo.toml profile
-          # additions, so the v3 primary key kept hitting with only
-          # target/<triple>/release/ deps cached — Stage B's cold
-          # ci-release/ subdir added ~5 min per lane in run 28750573776.
-          # Bumping to v4 forced one cache-miss cycle that saved the
-          # ci-release/ deps for every subsequent run. soldr#1248 → v5
-          # forces the same refresh for target/<triple>/ci-nextest after
-          # the nextest-archive lanes moved to a shared CI test profile.
-          # soldr#1479 → v6 forces a fresh save after the CI-only
-          # profiles lowered opt-levels; rust-cache's meta-hash does
-          # not include profile setting changes. soldr#2453 bumps v7 for the
-          # ci-nextest opt-level/codegen-unit memory-pressure changes.
-          shared-key: cross-build-${{ inputs.target }}-v7
+      # The one thing rust-cache covered that cook does not: the
+      # ~/.cargo/{registry,git} source tarballs, so the first `cargo fetch`
+      # of a run is now cold. If that shows up in lane wall time, the
+      # sanctioned fix is setup-soldr's `cargo-registry-cache` layer (tier
+      # `pinned-immutable-download`), NOT reinstating rust-cache. It is
+      # deliberately left `false` above for now because soldr#2451 turns
+      # every setup-soldr reuse layer off in self-build lanes, and flipping
+      # one of them back on is its own reviewed change.
 
       # Bootstrap soldr from the current checkout. Linux cross lanes need
       # the current front door's target-linker reconstruction and preflight;
@@ -347,8 +336,31 @@ jobs:
       # rustc's self-contained crt files. Zig already supplies its own
       # crt1.o via `-target X`; without this, the linker sees BOTH and
       # fails with "duplicate symbol: _start". soldr#1068.
+      # soldr#3008: cook compiles the dependency graph *for the target*
+      # (`soldr cook --target <triple>`), so the target's std has to exist
+      # before it runs. The cross-build below prepares the target itself, but
+      # that is ~70 lines later -- cook is the one step that sees a toolchain
+      # with only the host installed.
+      #
+      # The result was a hard failure that never went red: `soldr cook` died
+      # with `error[E0463]: can't find crate for 'core'` inside
+      # `chef::recipe::Recipe::cook`, the action logged "continuing without
+      # cooked deps", and the post step logged "cook did not run successfully
+      # - skipping save". So the repo's only cook-enabled lane wrote no cache
+      # at all, which is why `gh cache list` shows zero cook entries against
+      # 9.76 GiB of Swatinem/rust-cache (soldr#2996).
+      #
+      # The condition now covers every target that reaches cook, not just the
+      # aarch64 MSVC case it was written for. This clause is the allowlist
+      # used by the cook step's `cache:` input below and must stay in sync
+      # with it. soldr#3121: both now name the same five targets explicitly.
       - name: Prepare blessed target env for cook
-        if: contains(inputs.target, 'pc-windows-msvc') && inputs.target != 'x86_64-pc-windows-msvc'
+        if: >-
+          inputs.target == 'aarch64-pc-windows-msvc'
+          || inputs.target == 'x86_64-pc-windows-msvc'
+          || inputs.target == 'x86_64-pc-windows-gnu'
+          || inputs.target == 'x86_64-unknown-linux-gnu'
+          || inputs.target == 'aarch64-unknown-linux-gnu'
         shell: bash
         run: |
           set -euo pipefail
@@ -356,23 +368,112 @@ jobs:
 
       # Every target-run lane builds with ci-nextest so the archive step
       # reuses the same target profile instead of compiling a second tree.
-      # soldr#1248: legacy musl lanes repeatedly spend several minutes in
-      # cook restore for later builds that are already ~4 min from rust-cache.
-      # soldr#1248: x64 MSVC and Darwin now build quickly from
-      # rust-cache + the blessed target env, while cook restore/save alone can
-      # take ~9-12 min on a fresh profile/cache key. Keep the lanes and
-      # archive coverage, but skip cook for these targets until
-      # setup-soldr/cook grows a cost gate. The GNU lane is included after
-      # run 32852360808 spent 526 s restoring + 478 s saving around a 278 s
-      # compile. Soldr now records the observations needed for that gate
-      # (#2866), but this pinned external action must implement and release
-      # the corresponding restore decision before GNU is re-enabled.
+      # Cook runs for the targets named in the allowlist below. It was an
+      # exclusion list until soldr#2996, which meant a target got cook by
+      # falling through rather than by decision.
+      #
+      # The evidence that disabled cook has been measured and does not hold.
+      # The comment here used to cite run 32852360808 as "526 s restoring +
+      # 478 s saving around a 278 s compile", and soldr#1248 as "~9-12 min"
+      # for restore/save. All three numbers were artifacts of three separate
+      # defects, now fixed:
+      #
+      #   * The 526 s "restore" restored ZERO bytes -- both keys missed and
+      #     the action fell through to a cold `soldr cook`.
+      #   * The 478 s "save" was 472.8 s of `zstd -9` over a 1.62 GB payload,
+      #     because the post step archived the whole `target/` after the
+      #     cross-build had written into it (zackees/setup-soldr#499). The
+      #     `cook` save profile (soldr#3003) now scopes it.
+      #   * `soldr cook` was crashing outright on the one enabled lane,
+      #     silently, because it ran before the target's std was installed
+      #     (soldr#3008).
+      #
+      # Measured on x86_64-pc-windows-gnu after all three fixes:
+      #
+      #   cold: cook 387.7 s, base archive 497.4 MiB
+      #   warm: restore 10.4 s (6,614 files), cook 9.3 s, delta 22.2 MiB
+      #
+      # 378.4 s saved per run, for a 10.4 s restore, against a 635.0 MiB
+      # Swatinem/rust-cache entry for the same lane. Cook is both smaller and
+      # faster than the layer it replaces.
+      #
+      # x86_64-unknown-linux-gnu joins the allowlist here: it is the lane run
+      # 32852360808 measured, so it is the one whose disabling rested most
+      # directly on the disproven numbers.
+      #
+      # soldr#3121: aarch64-pc-windows-msvc, x86_64-pc-windows-msvc and
+      # aarch64-unknown-linux-gnu join too. Measured cold at 810 s of compile
+      # (386 s build + 230 s clippy + 194 s archive) against 301 s warm on
+      # win-gnu -- the same shape as the original evidence above. x64 MSVC's
+      # exclusion was a #1248-era leftover from when Swatinem/rust-cache made
+      # it fast enough not to matter; that path was retired in soldr#3047.
       - name: Restore cooked dependency cache
-        uses: zackees/setup-soldr/cook@5f1f68dcb8377818413c28ce52214261ae8ff771
+        id: cook
+        # soldr#2996: the cook layer's post step archives `target/` at job end,
+        # by which point the cross-build and nextest-archive steps have written
+        # into the same tree -- on run 32852360808 that turned an 83.0 MiB cook
+        # slice into a 1.62 GB entry carrying linked test products, which
+        # ci/cache-ownership.json classifies tier 3 (zackees/setup-soldr#499).
+        #
+        # `cook` is the save profile added for exactly this shape: it keeps the
+        # dependency graph (deps/ libraries, .fingerprint/, and all of build/
+        # including the extensionless build-script executables Cargo needs) and
+        # drops what the build layered on top. It fixes the payload without
+        # moving when the archive is written, so the action's caching contract
+        # is untouched.
+        #
+        # Gated on the bootstrap artifact because that is what guarantees
+        # SOLDR_BINARY points at the source-built soldr from this SHA -- the
+        # one that has the profile. Without the artifact the cook step falls
+        # back to the released soldr on PATH, which would reject the value; an
+        # empty string is a valid spelling of `full`, so that path is unchanged.
+        env:
+          SOLDR_SAVE_PROFILE: ${{ inputs.bootstrap_artifact_name != '' && 'cook' || '' }}
+        uses: zackees/setup-soldr/cook@bb28e96d2dc32c058242f56722297caf1efcbd90
         with:
-          cache: ${{ (contains(inputs.target, 'pc-windows-msvc') || inputs.target == 'x86_64-unknown-linux-gnu' || inputs.target == 'x86_64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-gnu' || contains(inputs.target, 'apple-darwin')) && 'false' || 'true' }}
+          cache: ${{ (inputs.target == 'x86_64-pc-windows-gnu' || inputs.target == 'x86_64-unknown-linux-gnu' || inputs.target == 'aarch64-pc-windows-msvc' || inputs.target == 'x86_64-pc-windows-msvc' || inputs.target == 'aarch64-unknown-linux-gnu') && 'true' || 'false' }}
+          # soldr#3019: fatal on `main`, a warning on pull requests.
+          #
+          # soldr#3013 made a cook that produced nothing visible; this is the
+          # step that makes it actionable. The reason it is not simply on
+          # everywhere is ci.yml:70-88, which records a 10-minute lint bound
+          # cancelling 6 of 7 healthy runs and concludes "an always-red gate
+          # teaches people to ignore it". Red-gating every contributor on a
+          # transient cache failure would repeat that.
+          #
+          # `main` is where a persistent regression actually lives, and where
+          # the cook entry every feature branch restores from is written -- a
+          # silent failure there starves the whole repo, which is precisely
+          # what soldr#3008 did for an unknown period. PRs keep the warning,
+          # so a contributor sees the signal without being blocked by it.
+          fail-on-error: ${{ github.ref_name == 'main' }}
           target-dir: target
           flags: --profile ci-nextest --target ${{ inputs.target }} --workspace
+
+      # soldr#3008: cook failing is not a lane failure -- the action degrades
+      # to "continuing without cooked deps" by design, so the build still
+      # succeeds without the cache. That fallback is right, but it made cook
+      # broken-and-silent: it crashed on every run of the only enabled lane
+      # for an unknown period, and nothing said so. `gh cache list` showing
+      # zero cook entries was the only symptom, and only when someone looked.
+      #
+      # Under soldr#2996's directive cook is the ONLY durable cache, so
+      # "never saved" and "working" must stop looking identical. This reports;
+      # it deliberately does not fail. Turning a silent degrade into a red
+      # lane is a separate decision, and ci.yml:70-88 records what happens
+      # when a gate is made red before it is made trustworthy.
+      - name: Report cook outcome
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          COOK_RAN: ${{ steps.cook.outputs.ran }}
+          COOK_HIT: ${{ steps.cook.outputs.cache-hit }}
+          COOK_LAYER: ${{ steps.cook.outputs.save-layer }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/report_cook_outcome.py \
+            --target '${{ inputs.target }}'
 
       - name: Clean cooked first-party stubs
         shell: bash
@@ -463,8 +564,19 @@ jobs:
             test "$(dd if="$binary" bs=1 count=2 2>/dev/null)" = "MZ"
           fi
 
+      # soldr#2996: main CI already builds a ci-bootstrap soldr from this same
+      # SHA in `e2e-cross-bootstrap-soldr`, fans it out as an artifact, and
+      # exports SOLDR_BINARY pointing at it -- so rebuilding it here produced a
+      # byte-equivalent binary at ~87 s per GNU lane. ci.yml:606-610 added that
+      # fan-out precisely so a cache miss would not become several identical
+      # ~5 minute compiles; both GNU lanes were reintroducing the cost they
+      # were meant to avoid.
+      #
+      # Manual callers that omit `bootstrap_artifact_name` receive no artifact
+      # and never reach the "Expose bootstrap soldr on PATH" step, so they
+      # still build the proof driver locally.
       - name: Build current Soldr GNU proof driver
-        if: contains(inputs.target, 'unknown-linux-gnu')
+        if: contains(inputs.target, 'unknown-linux-gnu') && inputs.bootstrap_artifact_name == ''
         shell: bash
         env:
           RUSTC_WRAPPER: ""
@@ -483,8 +595,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The fanned-out bootstrap artifact is this SHA's ci-bootstrap soldr.
+          # Manual callers without that artifact fall back to the copy the
+          # step above builds in-tree.
+          proof_driver="${SOLDR_BINARY:-target/x86_64-unknown-linux-gnu/ci-bootstrap/soldr}"
+          test -x "$proof_driver"
           python3 .github/scripts/gnu_linux_toolchain_e2e.py \
-            --soldr target/x86_64-unknown-linux-gnu/ci-bootstrap/soldr \
+            --soldr "$proof_driver" \
             --target '${{ inputs.target }}' \
             --repo "$GITHUB_WORKSPACE"
 
@@ -625,9 +742,10 @@ jobs:
           # ci-nextest preserves soldr#1168's line-table-only debug info
           # so archived-test failures still have file:line backtraces.
           # soldr#1703 established that coverage is never deleted; soldr#2931
-          # bounds how it ships. The archive must preserve complete coverage —
-          # the union of replay partitions executes every test — inside an
-          # explicit byte budget. Size regressions are handled by cutting
+          # bounds how it ships. The archive must preserve the complete test
+          # inventory; target-native runners positively select the reviewed
+          # host-sensitive subset and their replay partitions must cover every
+          # selected test. Size regressions are handled by cutting
           # duplicate static links (test-target consolidation, soldr#2934) and
           # pruning image contents, NOT by compression/sharding alone: sharding
           # multiplies transport (every shard downloads the full archive), and
@@ -641,8 +759,12 @@ jobs:
             --archive-format tar-zst
           ls -la "$archive"
 
+      # soldr#3121: this archive-phase probe costs ~127 s and exercises the
+      # same soldr logic on both MSVC targets. aarch64 is the critical-path
+      # lane, so it keeps only the cheaper binary-phase probe above; x64
+      # keeps this one.
       - name: Validate warm Windows cache restoration (nextest archive)
-        if: contains(inputs.target, 'pc-windows-msvc')
+        if: inputs.target == 'x86_64-pc-windows-msvc'
         shell: bash
         run: |
           python3 .github/scripts/windows_msvc_cache_roundtrip.py \

@@ -19,7 +19,16 @@ hex = { workspace = true }
 interprocess = { version = "2", features = ["tokio"] }
 prost = { workspace = true }
 
-running-process = { version = "=4.10.6", default-features = false, features = ["client"] }
+# Library use only (soldr#3038): reads `mimalloc_pprof::prof::stats()` from
+# the RSS-ceiling watchdog (`daemon::rss_ceiling`) to attach the allocator's
+# own exact `heap.committed`/`heap.detailed` counters to an RSS reading, so a
+# ceiling breach records "was this live data or allocator retention" instead
+# of a bare byte count. The `#[global_allocator]` itself is declared exactly
+# once, in `soldr-cli`'s facade crate — see that crate's `Cargo.toml` for the
+# version-unification rationale. Same exact pin, so Cargo resolves one copy.
+mimalloc-pprof = { version = "=0.9.5" }
+
+running-process = { version = "=4.10.9", default-features = false, features = ["client"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -31,11 +40,11 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 console-subscriber = { workspace = true, optional = true }
-zccache = { version = "=1.13.14", default-features = false, features = ["cli"] }
+zccache = { version = "=1.13.22", default-features = false, features = ["cli"] }
 
 [dev-dependencies]
 filetime = { workspace = true }
-zccache = { version = "=1.13.14", default-features = false, features = ["test-support"] }
+zccache = { version = "=1.13.22", default-features = false, features = ["test-support"] }
 
 [features]
 # Opt-in tokio-console support for the daemon and embedded zccache

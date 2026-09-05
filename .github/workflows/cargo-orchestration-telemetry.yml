@@ -1,0 +1,84 @@
+name: Cargo orchestration telemetry
+
+# soldr#2878: this is controlled evidence collection, not a PR/push gate.
+# It intentionally runs only when an operator dispatches it, because N=8 may
+# reproduce the pre-compiler resource failure under investigation.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cold-matrix:
+    name: cold N=1, N=2, N=8 Cargo orchestration matrix
+    runs-on: ubuntu-24.04
+    # Three cases each have a 30-minute diagnostic timeout. Leave enough room
+    # for all three plus the one-time source build and the always() upload.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+
+      - name: Set up telemetry Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Enlarge swap for the controlled raised-count reproduction
+        shell: bash
+        run: bash .github/scripts/setup_ci_swap.sh
+
+      # The published binary is only the bootstrap compiler. setup-soldr
+      # installs the pinned Cargo/rustup toolchain before the source build and
+      # before the telemetry runner isolates each case's cache/target trees.
+      - name: Prepare pinned Rust and Cargo toolchain
+        uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90
+        with:
+          version: 0.9.13
+          toolchain: 1.95.0
+          cache: false
+          build-cache: false
+          target-cache: false
+          cargo-registry-cache: false
+          soldr-mini-cache: false
+          solo-toolchain-cache: false
+
+      - name: Build the source Soldr telemetry driver
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/soldr-2878-source-target
+        run: soldr cargo build -p soldr-cli --bin soldr
+
+      - name: Stop setup-soldr builder cache before source telemetry
+        uses: zackees/setup-soldr/cleanup@bb28e96d2dc32c058242f56722297caf1efcbd90
+
+      - name: Retire the bootstrap broker before source telemetry
+        shell: bash
+        run: soldr broker remove
+
+      - name: Run fixed cold Cargo orchestration matrix
+        shell: bash
+        env:
+          SOLDR_RUSTC_WRAPPER: ${{ runner.temp }}/soldr-2878-source-target/debug/soldr
+        run: >-
+          python3
+          ci/run_cargo_orchestration_telemetry_matrix.py
+          --source-soldr "${{ runner.temp }}/soldr-2878-source-target/debug/soldr"
+          --evidence-root "${{ runner.temp }}/soldr-2878-telemetry"
+
+      - name: Upload Cargo orchestration telemetry evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cargo-orchestration-telemetry-${{ github.run_id }}
+          # Evidence is the compact report plus causal logs. The per-case
+          # target and compiler-cache trees are cold-build inputs, not
+          # evidence; uploading them produced a 1.30 GB artifact in run
+          # 33446589675 without adding any diagnostic information.
+          path: |
+            ${{ runner.temp }}/soldr-2878-telemetry/telemetry.json
+            ${{ runner.temp }}/soldr-2878-telemetry/cases/jobs-*/command.log
+          if-no-files-found: warn
+          retention-days: 14

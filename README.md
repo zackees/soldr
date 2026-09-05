@@ -46,20 +46,133 @@ Current release line:
 - the supported external integration boundary remains the `soldr` executable, not the internal Rust crates; see [docs/API_BOUNDARY.md](./docs/API_BOUNDARY.md)
 - practical integration examples for local builds and GitHub Actions live in [INTEGRATION.md](./INTEGRATION.md)
 
-## Install from npm
+## Quick start
 
 ```bash
-npm install -g @zackees/soldr
-soldr --version
+# 1. Install or upgrade (same command)
+uv tool install --upgrade soldr
+
+# 2. Put `soldr` in front of every Rust command
+soldr cargo build --release
+soldr cargo test
+soldr cargo clippy --workspace
+
+# 3. See what the cache is doing
+soldr status
 ```
 
-The npm package is a small launcher that downloads the matching `soldr` GitHub
-Release binary for your OS and architecture during install, verifies it against
-the published `SHA256SUMS` file, and exposes the `soldr` command.
+That is the whole integration. The first cacheable compile starts the
+`soldr-daemon` sidecar, pins the toolchain from `rust-toolchain.toml`, and
+every later build on any branch or worktree hits the shared cache.
+
+<details>
+<summary><b>Command reference</b></summary>
+
+### Everyday
+
+| Command | What it does |
+|---|---|
+| `soldr cargo <args>` | Run cargo through the cache with the pinned toolchain |
+| `soldr build --target <triple\|alias>` | Blessed cross-compile with a managed SDK (`win-x64`, `mac-arm64`, `linux-x64-musl`, ...) |
+| `soldr cc` / `soldr c++` | Compile C / C++ with a catalogue-backed toolchain |
+| `soldr lint` | Unified Rust and dependency lint suites |
+| `soldr ci-test` | **The supported way to test soldr-built projects.** The prescribed host-validation DAG used in CI — see [Testing strategy](#testing-strategy) |
+| `soldr <tool>` | Fetch and run a pre-built ecosystem tool: `nextest`, `deny`, `audit`, `mdbook`, `just`, ... |
+
+### Testing strategy
+
+**Use `soldr ci-test`.** It is the supported long-term testing path and the
+fastest one available: a frozen DAG that maximizes sharing by compile domain, so
+stable host Clippy subsumes `cargo check`, nextest test-profile compilation
+completes before execution overlaps the Dylint branch, and doctests join both.
+Hand-rolled sequences of `cargo fmt` + `cargo clippy` + `cargo nextest` + doctests
+recompile the same crates several times over and drift apart from what CI runs.
+
+```bash
+soldr ci-test                                # the whole host-validation DAG
+soldr ci-test --explain-plan --format json   # inspect the plan, no compiler work
+soldr ci-test --package soldr-core           # host-scope narrowing
+```
+
+**Know the one boundary.** `ci-test` validates on the *host* and deliberately
+**rejects** `--target`, `--toolchain` and `--profile` rather than silently
+creating a different compile domain. So it is not the tool for *executing*
+binaries built for another platform. For that, build a nextest archive on the
+cross-build lane and replay it on the target:
+
+```bash
+soldr cargo nextest archive --target <triple> --archive-file tests.tar.zst
+# then, on (or emulating) the target:
+cargo-nextest nextest run --archive-file tests.tar.zst --workspace-remap <checkout>
+```
+
+Two things bite consumers here, both observed rather than hypothesised:
+
+* `cargo-nextest` is a **cargo subcommand shim**. Invoked as `cargo-nextest run`
+  it proxies to cargo, which replies `unrecognized subcommand 'run'` — an error
+  that reads like a broken archive. The `nextest` verb is required.
+* A replay needs the **project source**, because the archive records its
+  workspace root. Without it: `error: workspace root manifest at ... does not
+  exist`. `--workspace-remap` must point at a real checkout.
+
+A blessed `--execution container` mode that does all of this for you is proposed
+in soldr#3084.
+
+And a caution soldr learned the hard way (soldr#2945): **a green CI lane only
+proves the verb CI runs.** When a tool has more than one entry point, check that
+they resolve their inputs through one implementation, or expect them to drift.
+
+### Toolchain
+
+| Command | What it does |
+|---|---|
+| `soldr rustc`, `rustfmt`, `clippy-driver`, `rustdoc` | Pinned-toolchain passthroughs |
+| `soldr rustup <args>` | Passthrough to rustup, toolchain-aware |
+| `soldr toolchain ensure` | Bootstrap rustup, install the pinned channel, components, and targets |
+| `soldr toolchain link --shim-dir <dir>` | Write PATH shims that re-enter soldr |
+| `soldr doctor` | Report drift between `rust-toolchain.toml` and rustup |
+| `soldr rust-analyzer`, `rust-gdb`, `rust-lldb` | Language server and debuggers |
+
+### Cache
+
+| Command | What it does |
+|---|---|
+| `soldr status` | Cache status and active toolchain |
+| `soldr cache` | Inspect compilation cache entries |
+| `soldr cook` | Prebuild dependencies via bundled cargo-chef |
+| `soldr save` / `soldr load` | Bundle a build cache to `.tar.zst` and restore it on a fresh checkout |
+| `soldr gc` | Review reclaimable cargo `target/` directories |
+| `soldr clean` / `soldr purge` | Clear the build cache / purge every soldr-managed artifact |
+| `soldr config` | Show or set configuration in `~/.soldr/config.toml` |
+
+### Ops
+
+| Command | What it does |
+|---|---|
+| `soldr daemon start\|stop` | Manage the long-lived `soldr-daemon` process |
+| `soldr optimize` | Platform-specific hot-cache tuning |
+| `soldr defender-exclusions` | Manage Windows Defender exclusions for soldr caches |
+| `soldr help <command>` | Full help for any command |
+
+</details>
+
+Also on npm as `@zackees/soldr`: a small launcher that downloads the matching
+GitHub Release binary during install and verifies it against the published
+`SHA256SUMS` file.
 
 Published npm archives and PyPI wheels support both Intel (`x86_64`) and Apple
-Silicon (`arm64`) macOS. Intel artifacts are cross-built through soldr's
-blessed Apple SDK path and smoke-tested on an Intel macOS runner before release.
+Silicon (`arm64`) macOS. Both are cross-built through soldr's blessed Apple
+SDK path on Linux; Intel artifacts are then smoke-tested inside a
+[zackees/docker-mac-x64](https://github.com/zackees/docker-mac-x64) macOS
+Recovery guest hosted on an ordinary Linux runner before release (no GitHub
+Actions job runs on a native macOS runner). The same Recovery guest also
+replays the real `x86_64-apple-darwin` nextest archive -- toolchain
+provisioning included -- on every pull request and again at the release
+commit before publish, so Intel macOS gets the same positively-owned native
+test coverage every other cross-built target gets, without a native macOS
+runner anywhere in the pipeline. Apple Silicon artifacts are cross-built the
+same way but are not executed anywhere in CI until a follow-up issue
+re-enables that before release.
 
 ## GitHub Actions setup
 
@@ -75,6 +188,8 @@ The current GitHub Actions entry point is the public `setup-soldr` action:
 ```
 
 That action:
+
+> **Deprecated (soldr#2996).** soldr no longer implements a target cache, so the `target-cache` / `target-cache-mode` / `target-dir` inputs and the `target-cache-hit` / `target-cache-mode` outputs are inert: nothing on the soldr side reads the environment they export. They remain listed because the pinned action still declares them; retiring the inputs themselves is an upstream change. Use `soldr cook`, which is the only durable compiler cache.
 
 - installs `soldr`
 - bootstraps `rustup` into the cached runner-local root when the runner does not already have it

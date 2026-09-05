@@ -39,6 +39,27 @@ per-test timeouts come from cargo-nextest (`.config/nextest.toml`), and the
 workspace guard in `crates/soldr-cli/tests/guards/no_timed_test_guard.rs` keeps
 the removed `timed_test!` watchdog from returning (soldr#2493).
 
+### Broker/runtime ownership boundary
+
+Generic process substrate conformance belongs to the exact `running-process`
+dependency, not to Soldr's host suite. At running-process 4.10.9 the canonical
+coverage is:
+
+| Generic contract | Authoritative running-process test |
+| --- | --- |
+| singleton refusal and real concurrent starters | `broker::server::singleton_bind::tests::bind_singleton_binds_once_and_refuses_a_second_bind`; `broker::broker_v2_scaffold_accepts_connection::concurrent_starters_yield_exactly_one_singleton_survivor` |
+| serialized stale-endpoint recovery | `broker::server::singleton_bind::tests::stale_endpoint_n_way_recovery_has_exactly_one_winner` |
+| broker restart and live-route adoption | `broker::lifecycle_process_conformance::broker_restart_re_adopts_live_backend_and_serves_next_client` |
+| dead-route replacement, single flight, and other-route isolation | `broker::lifecycle_process_conformance::backend_crash_concurrent_reconnects_launch_one_replacement_without_disturbing_other_instance` |
+| child and descendant termination | `core::containment_test::test_contained_group_kills_grandchildren`; `core::containment_test::test_local_kill_tree_kills_root_and_grandchildren` |
+
+Soldr retains adapter acceptance only where its own contract is observable:
+the already-bound CLI diagnostic/exit code; Soldr route claims and daemon-image
+replacement; cache warmth/durability across daemon restart; wire/session
+bridging; service-definition generation; and root/config isolation. The
+`cli_kill_matrix` source inventory guard prevents generic multi-route and
+restart-storm cases from being silently added back beside the upstream suite.
+
 On Unix hosts, Nextest runs each test through
 `.github/scripts/nextest_timeout_wrapper.py`. When Nextest's per-test timeout
 sends SIGTERM, the wrapper terminates the isolated child process group and
@@ -101,10 +122,39 @@ lanes carry them through this path:
 
 1. `.github/workflows/_ci-cross-build-linux.yml` creates a target-specific,
    complete `--workspace` nextest archive.
-2. `.github/workflows/_ci-target-run.yml` replays that archive without test or
-   package filters on a native runner.
+2. `.github/workflows/_ci-target-run.yml` inventories the complete archive,
+   verifies every positive selector in `ci/target-run-ownership.json`, then
+   replays only the owned host-sensitive tests on a native runner.
 3. `.github/workflows/ci.yml` connects the producer and consumer. Windows uses
    the existing `windows-2025` x64 and `windows-11-arm` ARM64 runners.
+
+The ownership file is an allowlist, not an exclusion filter. Its
+`source_classifications` say whether each host-sensitive integration source is
+validated once on canonical Linux or needs native target replay. Classification
+never selects tests by itself. Separate `replay_selectors` positively name an
+exact test or module-qualified test-ID prefix, and a platform-only contract
+lists the exact target triples where it applies. The target-run helper fails if
+an applicable selector matches zero tests in the complete archive, selectors
+overlap, a replay classification lacks a selector, or the target union is
+empty. Its inverse source guard fails when a new integration module uses real
+process, filesystem, IPC, host, or platform facilities without an explicit
+classification. This makes classification and selector decay red CI failures
+instead of silently losing native coverage (soldr#2999).
+
+When adding a host-sensitive test, add or update its source classification in
+the same change and state the concrete native facility in `reason`. Add a
+positive replay selector only when the behavior must execute on each applicable
+native target. Portable parsing, planning, source-policy, and data-shape tests
+are classified `native-linux-once`: the canonical Linux host suite already
+executes them once.
+
+Schema v2 was checked against the complete x86_64 Darwin inventory from Actions
+run 33343932713: **113 of 2,863 discovered tests** are selected for native replay
+(a 96.1% reduction in executed inventory before ignored tests). Every
+target-run writes both the complete and selected inventories to its diagnostics
+artifact and reports the live counts in the job
+summary; those runtime inventories, not these baseline numbers, are the
+coverage authority.
 
 A target only gets step 2 when the replay lands on a runner that is **native
 to that target**. `x86_64-unknown-linux-gnu` and `x86_64-unknown-linux-musl`
@@ -113,7 +163,44 @@ build-only lanes (`kind: cross-build` in `ci/canonical-targets.json`) — a
 replay there would re-run the suite on the image it was built on, which is the
 degenerate split soldr#1978 item 3 removed. Their artifact-level invariants are
 checked in the build lane instead (`verify_static_link.py`,
-`verify_glibc_baseline.py`). Every cross-arch target keeps its target-run.
+`verify_glibc_baseline.py`).
+
+Owner mandate (2026-09-02, soldr#3071): no GitHub Actions job may run on a
+`macos-*` runner. `x86_64-apple-darwin` keeps a target-run, but "native to
+that target" now means a
+[zackees/docker-mac-x64](https://github.com/zackees/docker-mac-x64) macOS
+**Recovery** guest (KVM) hosted on an `ubuntu-24.04` runner rather than a
+native macOS runner — see `ci/macos_recovery_run.py` and the
+`target_execution: x86_64-recovery` contract in
+`.github/workflows/_ci-target-run.yml` (soldr#3076; this replaced soldr#3071's
+hand-baked dockur/macos guest, whose image was never published and whose ssh
+secret was never set, so it failed at preflight on every run). Recovery boots
+fresh per script with no toolchain of its own and no per-command exec, so
+soldr#3078 packs the same positively-owned nextest partition every other
+target-run lane replays into that one guest script instead: the guest formats
+and mounts the action's blank disk for scratch space, provisions a managed
+rustup toolchain via `soldr toolchain ensure`/`link`, and runs `nextest list`
++ `nextest run` against the packaged archive, same as the native path just
+without per-step exec. The ownership filter is precomputed Linux-side with
+`target_run_ownership.py --filter-only` (the guest has no inventory to
+validate it against before it boots) and the inventory/coverage validation
+that would normally gate the filter runs afterward, against the guest's own
+`nextest list` output, in `ci/macos_recovery_run.py`'s `verify-collected`
+mode. That replay is not on the pull-request critical path: soldr#3116 moved
+it from `ci.yml` into `.github/workflows/macos-recovery-replay.yml`, which
+runs nightly against `main`, on `workflow_dispatch`, and on pull requests
+labelled `macos-replay` (the lane had produced no green result in 25 CI runs
+and a wedged guest set the run's wall clock; soldr#3088 holds the criteria
+for restoring it). `release-auto.yml` runs the same replay again at release
+time (`e2e_macos_x64_build` / `e2e_macos_x64_replay`), pinned to the release
+commit. That release-time replay is advisory: soldr#3088 removed it from
+`publish`'s gate after it blocked v0.9.12 twice on harness bugs without
+ever having been green.
+`aarch64-apple-darwin` is a third build-only
+lane alongside the two above: it is still cross-built and release-included,
+but has no execution environment (real or virtualized) anywhere in CI until
+soldr#3071 re-enables it before release, so "every cross-arch target keeps
+its target-run" no longer holds for it specifically.
 
 Linux-runnable contract tests in `tests/test_cross_compile_workflows.py` protect
 that route from silently dropping native tests. Add a new runner only when the
@@ -130,8 +217,9 @@ When a change relies on host behavior:
 - gate the complete integration-test binary for the host it requires;
 - run the suite with `soldr cargo nextest run` and avoid unbounded
   environmental waits;
-- preserve complete target-run coverage — the union of replay partitions must
-  still execute every test — within the archive's explicit byte/disk budget
+- preserve complete **owned** target-run coverage — every positive selector
+  must match the full archive and the union of replay partitions must execute
+  every selected test — within the archive's explicit byte/disk budget
   (soldr#2931: linked test products are ephemeral transport, never cached, and
   the bundle must stay compact and single-extraction); and
 - validate host failures by test name — now `<category_binary>::<module>::<test_name>`

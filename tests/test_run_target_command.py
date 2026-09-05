@@ -1,0 +1,54 @@
+"""Execution-architecture contract for packaged target commands (#2968, #3076)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from conftest import load_script_module
+
+SCRIPT = Path(__file__).parents[1] / ".github" / "scripts" / "run_target_command.py"
+runner = load_script_module(SCRIPT, "run_target_command")
+
+
+def test_native_execution_leaves_packaged_target_command_unchanged() -> None:
+    assert runner.command_argv("native", ["/artifact/soldr", "--version"]) == [
+        "/artifact/soldr",
+        "--version",
+    ]
+
+
+def test_rosetta_execution_prefixes_every_packaged_target_command() -> None:
+    assert runner.command_argv("x86_64-rosetta", ["/artifact/soldr", "--version"]) == [
+        "arch",
+        "-x86_64",
+        "/artifact/soldr",
+        "--version",
+    ]
+
+
+def test_recovery_execution_has_no_static_argv_rewrite() -> None:
+    with pytest.raises(ValueError, match="ci/macos_recovery_run.py"):
+        runner.command_argv("x86_64-recovery", ["/artifact/soldr"])
+
+
+def test_only_argparse_leading_delimiter_is_removed_from_target_command() -> None:
+    assert runner.strip_remainder_delimiter(
+        ["--", "/artifact/soldr", "--", "--json"]
+    ) == [
+        "/artifact/soldr",
+        "--",
+        "--json",
+    ]
+
+
+@pytest.mark.parametrize("execution", ["unknown", "arm64-rosetta", "x86_64-dockur"])
+def test_unknown_execution_mode_fails_explicitly(execution: str) -> None:
+    with pytest.raises(ValueError, match="unsupported target execution mode"):
+        runner.command_argv(execution, ["/artifact/soldr"])
+
+
+def test_execution_modes_no_longer_include_dockur() -> None:
+    assert runner.EXECUTION_MODES == frozenset(
+        {"native", "x86_64-rosetta", "x86_64-recovery"}
+    )

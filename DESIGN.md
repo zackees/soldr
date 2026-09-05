@@ -37,11 +37,20 @@ the per-rustc cache; `ci-test` only fixes the order, scope, target directories,
 and compatibility boundaries between them.
 
 Compatible stable host work shares one target tree. Clippy subsumes a separate
-`soldr cargo check`, and Nextest performs the sole test-profile build before
-running tests. The frozen resource policy defaults Cargo and Soldr compiler
-work to one job and one Nextest test process; callers
-may override those three explicit limits with `CARGO_BUILD_JOBS`, `SOLDR_JOBS`,
-and `NEXTEST_TEST_THREADS`. Doctests remain a rustdoc execution family. Dylint is the
+`soldr cargo check`, and Nextest performs the sole test-profile build through
+`--no-run` before the Dylint branch begins. The corresponding Fresh Nextest
+execution then overlaps the serial Dylint libraries -> workspace analysis ->
+UI-test branch; doctests are the explicit join and dependency policy follows
+them. Unset `CARGO_BUILD_JOBS` and `SOLDR_JOBS` remain unset so Cargo and the
+canonical Soldr compiler admission gate retain their normal parallelism.
+Explicit values are preserved byte-for-byte. Only `NEXTEST_TEST_THREADS`
+defaults to one test process. Nextest compilation completes before the fork,
+but individual tests intentionally launch nested Cargo/compiler fixtures.
+Those compiles and Dylint share the daemon's canonical shared/exclusive
+admission; their dynamic child-jobserver count is not converted into a global
+Cargo cap. Host/cgroup memory remains observational telemetry, never an
+applied global Cargo job cap. Doctests remain a rustdoc execution family.
+Dylint is the
 explicit exception: its exact pinned nightly uses separate nightly-keyed
 library, workspace-analysis, and UI-test trees and never contaminates the
 stable project target. The Dylint domain self-provisions the catalogue-pinned
@@ -141,6 +150,16 @@ standalone `zccache-daemon` or `zccache-download-daemon` process is ever
 spawned, and nothing in soldr may reach the upstream lazy-spawn entry
 points (enforced by `crates/soldr-cli/tests/guards/no_standalone_spawn_lint.rs`).
 
+Compiler resource admission has one owner (soldr#2932): embedded zccache owns
+both the capacity semaphore and the fair shared/exclusive gate, in that order.
+Admission happens only after cache lookup, so a cache hit never drains active
+compiler work or waits for an oversized-unit barrier. zccache owns the generic
+C/C++ size/name predicate and its published Rust amalgamation names; Soldr adds
+only product-specific Rust classification (currently `kernal_api`) through the
+embedded host-admission classifier. Soldr must not put another general compiler
+gate around `ZccacheService::compile`, because that would move admission ahead
+of hit/miss knowledge and recreate two schedulers with different predicates.
+
 Compiler shims are named `rustc`, `clippy-driver`, or `zccache-soldr`, but a
 long-lived daemon process must never inherit one of those executable
 identities. The Cargo front door passes a canonical `soldr-daemon` multicall
@@ -176,9 +195,15 @@ publication; a pass holds the exclusive side from its first decision through
 its last deletion. Daemon startup and explicit orphan-root maintenance also
 share a version-blind root-owner lock. Shutdown waits for a pass that already
 started before publishing the root as unowned.
-Default daemon lifetime is unbounded so age retention continues without new
-CLI invocations; a nonzero explicit idle timeout opts back into auto-exit. No
-operating-system scheduler is installed.
+Default daemon lifetime is bounded at 30 minutes of inactivity. Retention does
+not depend on residency: the maintenance loop runs its first tick immediately
+and treats an absent or overdue full marker as a catch-up, and the markers are
+persisted under the root, so a restarted daemon resumes the schedule. An
+unbounded default was tried (soldr#1782) and reverted, because a broker route
+is keyed on the soldr root and so every throwaway root earned a daemon that
+never exited. A caller may still pass an explicit idle timeout, and a caller
+that owns a throwaway root may name itself with `--owner-pid` so its daemon
+exits when it does. No operating-system scheduler is installed.
 
 `soldr doctor` reports leftovers from pre-embedded installs or direct
 zccache CLI use: running `zccache-daemon*` processes and stale per-launch

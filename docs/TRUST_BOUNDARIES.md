@@ -39,7 +39,7 @@ Based on the committed release workflow in `.github/workflows/release-auto.yml`:
 - the workflow does not explicitly download and repackage third-party release binaries into the published `soldr` archives
 - the release path still depends on external services and package sources such as GitHub-hosted runners, `rustup`, crates.io, and GitHub APIs
 - the live `apt` install and pinned bootstrap fixture checkout are part of release-gating validation, not packaged release contents
-- the managed `zccache` download path is runtime behavior in `soldr`, not an input to building the published `soldr` release artifacts
+- zccache is an exact crates.io dependency compiled into `soldr-daemon`; there is no managed zccache download or standalone zccache release asset
 
 ## E2E Validation External Dependencies
 
@@ -123,7 +123,7 @@ As of the `0.6.x` line, `soldr` enforces integrity on every third-party fetch:
 - users can pin per-asset SHA-256 values in a TOML file at the path named by `SOLDR_CHECKSUMS_FILE`; any pin mismatch is a hard error regardless of mode
 - `SOLDR_TRUST_MODE=strict` refuses to install any tool that does not have a matching pin
 - `SOLDR_TRUST_MODE=permissive` (the default) installs and emits a `trust: unverified` warning when no pin is available; this preserves the convenience/bootstrap path while making the trust state legible
-- the managed `zccache` download goes through the same verification path as any other fetch
+- zccache is not fetched by the runtime tool resolver; Cargo verifies and builds the exact dependency recorded in `Cargo.lock`, and release archives contain only the embedded implementation
 
 Example pin file layout:
 

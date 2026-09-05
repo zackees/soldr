@@ -126,3 +126,27 @@ fn offline_event_prune_requires_and_releases_root_ownership() {
         Some(0)
     );
 }
+
+#[test]
+fn sweeper_spawn_declares_the_soldr_identity_and_the_self_spawn_edge() {
+    // A cargo-named multicall hardlink must not re-enter as `cargo gc`.
+    let cmd = sweeper_command(std::path::PathBuf::from("/shims/v1/abc/cargo"));
+    let args: Vec<_> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(args, ["gc", "auto-sweep"]);
+    let env = |key: &str| {
+        cmd.get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new(key))
+            .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    };
+    assert_eq!(
+        env(crate::multicall::SHIM_ARGV0_ENV).as_deref(),
+        Some("soldr")
+    );
+    assert_eq!(
+        env(soldr_core::self_relocate::SELF_SPAWN_EDGE_ENV_VAR).as_deref(),
+        Some("1")
+    );
+}

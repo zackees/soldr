@@ -141,12 +141,35 @@ fn test_stall_timeout() -> Duration {
         Duration::from_millis(500)
     }
 }
+/// The safety ceiling for tests whose contract is the *stall* timeout.
+///
+/// Five of the six callers pass this as the ceiling that must **not** fire --
+/// they assert that steady or quiet-but-active work survives
+/// [`test_stall_timeout`]. The ceiling's exact value is therefore not the
+/// thing under test; it only has to sit far enough above the fixture's real
+/// runtime that host speed cannot decide the outcome.
+///
+/// It used to be 5s off Windows, against a `steady_progress_command` fixture
+/// that spawns `sh` and runs 16 sleep-and-print cycles -- about 2.4s of
+/// nominal work, so barely 2x of headroom. soldr#2968 moved the x86_64 macOS
+/// replay onto `macos-15` under Rosetta, where every one of those ~48
+/// emulated process operations costs several times more: the fixture took
+/// 5.895s and tripped the ceiling
+/// (`category=safety-ceiling total_elapsed=5s safety_ceiling=5s`), failing
+/// `steady_progress_can_outlast_the_old_deadline` for a reason that has
+/// nothing to do with the watchdog's behaviour.
+///
+/// The host branch is gone rather than given a third arm: emulation is only
+/// the slowest case we happen to have measured, and a ceiling picked to be
+/// unreachable does not need to know which host it is on. A genuinely hung
+/// installer is still caught -- by this ceiling at 30s, and long before that
+/// by the 500ms stall timeout that these tests actually exercise.
+///
+/// The sixth caller, `safety_ceiling_wins_even_when_work_keeps_progressing`,
+/// passes this as the *stall* timeout behind a 45ms ceiling; a larger value
+/// there only sharpens its assertion that the ceiling wins.
 fn test_safety_timeout() -> Duration {
-    if is_windows_test_host() {
-        Duration::from_secs(30)
-    } else {
-        Duration::from_secs(5)
-    }
+    Duration::from_secs(30)
 }
 fn test_short_safety_timeout() -> Duration {
     if is_windows_test_host() {

@@ -50,6 +50,21 @@ retention. A same-run transport bundle carrying cross-built test products to a
 native runner is legal -- that is how `_ci-cross-build-linux.yml` reaches
 `_ci-target-run.yml`. Its size budget is owned by those lanes, not here.
 
+## Why a budget, not just a ceiling
+
+soldr#3047 (Phase B of soldr#3039) found the repository's GitHub Actions cache
+at 44.23 GiB against a 10 GB total-cache ceiling, evicted by LRU whenever it is
+exceeded. Under LRU eviction against a hard ceiling, a persisted store is
+only as reliable as the budget disciplining what lands in it -- a cache that
+is full starts evicting whatever it feels like, including entries a healthy
+lane depends on. A budget any producer can grow just by writing to a new key
+is not a budget, it is a suggestion. `budget` in the manifest is the
+enforced allocation: every family that may persist something declares its
+own byte ceiling and the ids it owns, the family ceilings must not exceed
+the total, and nothing may be added without being registered under a
+family. That is what stops an unregistered producer from quietly consuming
+another family's allocation.
+
 ## Rules
 
 R1  The manifest (`ci/cache-ownership.json`) parses, declares
@@ -65,6 +80,11 @@ R4  In a non-exempt workflow, no job may restore a broad `target/` snapshot
     *after* a cook restore in the same job.
 R5  A manifest entry tiered `same-run-transport` must use an artifact
     mechanism, and a durable-cache mechanism may not claim that tier.
+R6  The manifest declares a 'budget' whose per-family max_bytes sum to at
+    most total_max_bytes, whose key_prefixes are disjoint across families,
+    and whose fields are well typed.
+R7  Every durable manifest entry in a non-experiment workflow is claimed
+    by exactly one budget family, and every id a family claims exists.
 
 Usage:
     python .github/scripts/check_cache_ownership.py
@@ -106,7 +126,7 @@ EXPERIMENT_WORKFLOWS: frozenset[str] = frozenset(
         "parent-cache-bench.yml",
         "perf-cold-warm.yml",
         "perf-matrix.yml",
-        "thin-v2-verify.yml",
+        "stable-cook-acceptance.yml",
     }
 )
 
@@ -382,6 +402,217 @@ def manifest_problems(manifest: dict) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# R6 -- the budget: schema, per-family typing, disjoint key_prefixes
+# --------------------------------------------------------------------------
+
+
+def budget_problems(manifest: dict) -> list[str]:
+    """Schema and typing failures in `manifest['budget']` (R6).
+
+    A family with a bad shape is still recorded (with an empty key_prefixes
+    / omitted max_bytes) so the disjointness and sum checks below can run
+    against whatever the other families declare, rather than bailing out on
+    the first malformed entry.
+    """
+    problems: list[str] = []
+
+    budget = manifest.get("budget")
+    if not isinstance(budget, dict):
+        problems.append("R6 manifest must declare an object-valued 'budget'")
+        return problems
+
+    total_max_bytes = budget.get("total_max_bytes")
+    if not isinstance(total_max_bytes, int) or isinstance(total_max_bytes, bool):
+        problems.append(
+            f"R6 budget.total_max_bytes must be an int, got {total_max_bytes!r}"
+        )
+        total_max_bytes = None
+
+    fail_total_bytes = budget.get("fail_total_bytes")
+    if not isinstance(fail_total_bytes, int) or isinstance(fail_total_bytes, bool):
+        problems.append(
+            f"R6 budget.fail_total_bytes must be an int, got {fail_total_bytes!r}"
+        )
+        fail_total_bytes = None
+
+    if (
+        total_max_bytes is not None
+        and fail_total_bytes is not None
+        and fail_total_bytes < total_max_bytes
+    ):
+        problems.append(
+            f"R6 budget.fail_total_bytes ({fail_total_bytes}) must be >= "
+            f"budget.total_max_bytes ({total_max_bytes}); fail is the hard "
+            "ceiling that must sit at or above the soft one."
+        )
+
+    families = budget.get("families")
+    if not isinstance(families, dict) or not families:
+        problems.append("R6 budget.families must be a non-empty object")
+        return problems
+
+    max_bytes_by_family: dict[str, int] = {}
+    prefixes_by_family: dict[str, list[str]] = {}
+    for family_id, family in families.items():
+        if not isinstance(family, dict):
+            problems.append(f"R6 budget.families[{family_id!r}] is not an object")
+            continue
+
+        key_prefixes = family.get("key_prefixes")
+        if (
+            not isinstance(key_prefixes, list)
+            or not key_prefixes
+            or not all(isinstance(p, str) for p in key_prefixes)
+        ):
+            problems.append(
+                f"R6 budget.families[{family_id!r}].key_prefixes must be a "
+                "non-empty list of strings"
+            )
+            key_prefixes = []
+        else:
+            seen_prefixes: set[str] = set()
+            for prefix in key_prefixes:
+                if prefix in seen_prefixes:
+                    problems.append(
+                        f"R6 budget.families[{family_id!r}] declares duplicate "
+                        f"key_prefix {prefix!r}"
+                    )
+                seen_prefixes.add(prefix)
+        prefixes_by_family[family_id] = key_prefixes
+
+        max_bytes = family.get("max_bytes")
+        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool):
+            problems.append(
+                f"R6 budget.families[{family_id!r}].max_bytes must be an int, "
+                f"got {max_bytes!r}"
+            )
+        else:
+            max_bytes_by_family[family_id] = max_bytes
+
+        entries = family.get("entries")
+        if not isinstance(entries, list) or not all(
+            isinstance(e, str) for e in entries
+        ):
+            problems.append(
+                f"R6 budget.families[{family_id!r}].entries must be a list of "
+                "strings"
+            )
+
+        if not str(family.get("rationale", "")).strip():
+            problems.append(
+                f"R6 budget.families[{family_id!r}] is missing a 'rationale'"
+            )
+
+    if max_bytes_by_family and total_max_bytes is not None:
+        total = sum(max_bytes_by_family.values())
+        if total > total_max_bytes:
+            problems.append(
+                f"R6 budget family max_bytes sum to {total}, over "
+                f"budget.total_max_bytes ({total_max_bytes}).\n"
+                "     Lower a family's max_bytes or raise total_max_bytes -- the "
+                "sum is the enforceable ceiling, not an aspiration."
+            )
+
+    family_ids = sorted(prefixes_by_family)
+    for i, family_a in enumerate(family_ids):
+        for family_b in family_ids[i + 1 :]:
+            for prefix_a in prefixes_by_family[family_a]:
+                for prefix_b in prefixes_by_family[family_b]:
+                    if prefix_a.startswith(prefix_b) or prefix_b.startswith(prefix_a):
+                        problems.append(
+                            f"R6 key_prefix {prefix_a!r} (family {family_a!r}) "
+                            f"overlaps {prefix_b!r} (family {family_b!r}).\n"
+                            "     Grouping is longest-match, so overlapping "
+                            "prefixes across families make attribution "
+                            "ambiguous. Narrow one prefix or merge the families."
+                        )
+    return problems
+
+
+# --------------------------------------------------------------------------
+# R7 -- the budget: every claim resolves, every durable entry is claimed once
+# --------------------------------------------------------------------------
+
+
+def budget_coverage_problems(manifest: dict) -> list[str]:
+    """Family/entry claim resolution and durable-entry coverage (R7).
+
+    Skipped when `budget.families` itself is malformed -- `budget_problems`
+    already reported that, and there is nothing coherent to cross-check
+    against here.
+    """
+    problems: list[str] = []
+
+    entries = [e for e in manifest.get("entries") or [] if isinstance(e, dict)]
+    entries_by_id = {str(e.get("id", "")): e for e in entries}
+
+    budget = manifest.get("budget")
+    families = budget.get("families") if isinstance(budget, dict) else None
+    if not isinstance(families, dict):
+        return problems
+
+    claims: dict[str, list[str]] = {}
+    for family_id, family in families.items():
+        if not isinstance(family, dict):
+            continue
+        claimed = family.get("entries")
+        if not isinstance(claimed, list):
+            continue
+        if not claimed and not family.get("reserved"):
+            problems.append(
+                f"R7 budget.families[{family_id!r}] claims no entries and is "
+                "not marked 'reserved'.\n"
+                "     An empty family is only legal as a deliberate future "
+                'allocation -- set "reserved": true, or claim at least one '
+                "entry."
+            )
+        for entry_id in claimed:
+            if not isinstance(entry_id, str):
+                continue
+            if entry_id not in entries_by_id:
+                problems.append(
+                    f"R7 budget.families[{family_id!r}] claims {entry_id!r}, "
+                    "which no manifest entry defines."
+                )
+                continue
+            claims.setdefault(entry_id, []).append(family_id)
+
+    multiply_claimed: set[str] = set()
+    for entry_id, claiming_families in claims.items():
+        if len(claiming_families) > 1:
+            multiply_claimed.add(entry_id)
+            problems.append(
+                f"R7 entry {entry_id!r} is claimed by more than one budget "
+                f"family: {sorted(claiming_families)}.\n"
+                "     Each id may belong to exactly one family, or its bytes "
+                "would be double-counted against the budget."
+            )
+
+    for entry in entries:
+        entry_id = str(entry.get("id", ""))
+        if entry_id in multiply_claimed:
+            continue
+        workflow = str(entry.get("workflow", ""))
+        mechanism = str(entry.get("mechanism", ""))
+        durable = mechanism in DURABLE_MECHANISMS or mechanism.startswith(
+            "setup-soldr:"
+        )
+        if not durable or workflow in EXPERIMENT_WORKFLOWS:
+            continue
+        claimants = claims.get(entry_id, [])
+        if len(claimants) != 1:
+            problems.append(
+                f"R7 entry {entry_id!r} (mechanism {mechanism!r}) is a durable "
+                "store in a non-experiment workflow but is claimed by "
+                f"{len(claimants)} budget families; it must be claimed by "
+                "exactly one.\n"
+                "     Add its id to the entries list of the family that owns "
+                "its bytes."
+            )
+    return problems
+
+
+# --------------------------------------------------------------------------
 # R2 -- coverage, in both directions
 # --------------------------------------------------------------------------
 
@@ -511,6 +742,24 @@ def load_manifest(path: pathlib.Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _budget_families_gib(manifest: dict) -> float:
+    """Sum of every family's `max_bytes`, in GiB.
+
+    Only called once `budget_problems` has already come back clean, so every
+    family present is well typed and `max_bytes` is safe to sum directly.
+    """
+    budget = manifest.get("budget")
+    families = budget.get("families") if isinstance(budget, dict) else None
+    if not isinstance(families, dict):
+        return 0.0
+    total_bytes = sum(
+        family.get("max_bytes", 0)
+        for family in families.values()
+        if isinstance(family, dict)
+    )
+    return total_bytes / (1024**3)
+
+
 def check(manifest_path: pathlib.Path, workflow_dir: pathlib.Path) -> list[str]:
     """Every policy failure, as actionable lines. Empty means the tree is clean."""
     try:
@@ -521,6 +770,8 @@ def check(manifest_path: pathlib.Path, workflow_dir: pathlib.Path) -> list[str]:
         return [f"R1 {manifest_path} must contain a JSON object"]
 
     problems = manifest_problems(manifest)
+    problems += budget_problems(manifest)
+    problems += budget_coverage_problems(manifest)
     steps = collect_steps(workflow_dir)
     problems += coverage_problems(manifest, steps)
     problems += banned_product_problems(steps)
@@ -559,9 +810,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    manifest = load_manifest(args.manifest)
     print(
         "check_cache_ownership: every persisted store is classified; no test "
-        "products in cross-run stores."
+        "products in cross-run stores; budget families sum to "
+        f"{_budget_families_gib(manifest):.2f} GiB."
     )
     return 0
 

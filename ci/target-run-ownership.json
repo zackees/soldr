@@ -1,0 +1,717 @@
+{
+  "schema_version": 2,
+  "policy_issue": "soldr#2999",
+  "source_classifications": [
+    {
+      "id": "platform-target-replay",
+      "package": "soldr-platform",
+      "binary": "soldr_platform",
+      "disposition": "target-replay",
+      "reason": "The platform leaf contains the target-selected filesystem, executable, IPC, process, and host-resource implementations."
+    },
+    {
+      "id": "broker-linux-once",
+      "package": "soldr-cli",
+      "binary": "broker",
+      "modules": [
+        "cli_broker_routes",
+        "cli_broker_status",
+        "cli_build_alias_parity",
+        "cli_build_fetch_overlap",
+        "cli_jobs_routing"
+      ],
+      "disposition": "native-linux-once",
+      "reason": "These modules launch real processes but assert portable CLI schema, argument routing, and prefetch policy already covered by canonical Linux validation."
+    },
+    {
+      "id": "broker-target-replay",
+      "package": "soldr-cli",
+      "binary": "broker",
+      "modules": [
+        "broker_identity_pipe",
+        "broker_identity_unix",
+        "cli_broker_resurrection",
+        "cli_broker_single_instance",
+        "cli_broker_stop",
+        "cli_kill_matrix",
+        "isolated_daemon_shared_copy"
+      ],
+      "disposition": "target-replay",
+      "reason": "Endpoint identity, singleton leases, executable replacement, signals, process-tree kills, and broker resurrection depend on native host semantics."
+    },
+    {
+      "id": "cache-gc-linux-once",
+      "package": "soldr-cli",
+      "binary": "cache_gc",
+      "modules": [
+        "cli_cache",
+        "cli_cache_prune",
+        "cli_cache_trim",
+        "cli_gc",
+        "cli_gc_auto_sweep",
+        "cli_gc_extras",
+        "cli_gc_git_checkouts",
+        "cli_gc_registry_src",
+        "cli_gc_report_only",
+        "cli_gc_target",
+        "cook_auto_gc"
+      ],
+      "disposition": "native-linux-once",
+      "reason": "These tests use temporary files and child commands to validate portable cache policy and traversal logic; platform-specific delete semantics have their own replay source."
+    },
+    {
+      "id": "cache-gc-target-replay",
+      "package": "soldr-cli",
+      "binary": "cache_gc",
+      "modules": [
+        "agent_worktree_share",
+        "windows_delete_semantics"
+      ],
+      "disposition": "target-replay",
+      "reason": "Cross-worktree process sharing and Windows locked-file deletion exercise observable host filesystem and process behavior."
+    },
+    {
+      "id": "cargo-front-linux-once",
+      "package": "soldr-cli",
+      "binary": "cargo_front_door",
+      "modules": [
+        "cli_cargo_strip_failure",
+        "cli_cargo_trampoline_workspace",
+        "cli_dispatch",
+        "cli_dylint_wrapper",
+        "cli_reentrancy_guard",
+        "cli_reentrancy_guard_canary",
+        "cli_wrapper_perf"
+      ],
+      "disposition": "native-linux-once",
+      "reason": "These modules use subprocess fixtures for portable dispatch, policy, failure propagation, and source-fingerprint contracts rather than distinct target APIs."
+    },
+    {
+      "id": "cargo-front-target-replay",
+      "package": "soldr-cli",
+      "binary": "cargo_front_door",
+      "modules": [
+        "cli_cargo_basic",
+        "cli_cargo_doc_routes",
+        "cli_cargo_linker",
+        "cli_cargo_native_cc",
+        "cli_cargo_run_trampoline",
+        "cli_cargo_wrappers",
+        "cli_exec",
+        "cli_front_door_cold_start",
+        "cli_wrapper",
+        "cli_wrapper_identity",
+        "zccache_trampoline_gate"
+      ],
+      "disposition": "target-replay",
+      "reason": "These sources cross native executable, linker, compiler-wrapper, rustdoc, process-tree, shim, and binary-identity boundaries."
+    },
+    {
+      "id": "cook-dylint-linux-once",
+      "package": "soldr-cli",
+      "binary": "cook_dylint",
+      "modules": [
+        "cli_cook",
+        "cli_dylint_cook",
+        "cook_hydrate_preflight",
+        "cook_writes_index",
+        "daemon_cook_index"
+      ],
+      "disposition": "native-linux-once",
+      "reason": "Cook uses real files and child tools to validate content-addressed portable policy; its target-produced artifacts are covered by dedicated cross-build lanes."
+    },
+    {
+      "id": "daemon-linux-once",
+      "package": "soldr-cli",
+      "binary": "daemon",
+      "modules": [
+        "cli_daemon_builds"
+      ],
+      "disposition": "native-linux-once",
+      "reason": "Build-history queries use a real daemon but assert portable database ownership, filtering, and JSON contracts."
+    },
+    {
+      "id": "daemon-target-replay",
+      "package": "soldr-cli",
+      "binary": "daemon",
+      "modules": [
+        "cli_daemon_flush_caches",
+        "cli_daemon_lifecycle",
+        "cli_daemon_single_instance",
+        "cli_daemon_target_touch",
+        "cli_debug_trace_observer",
+        "daemon_cache_maintenance",
+        "daemon_fast_sigterm",
+        "daemon_restart_warmth",
+        "daemon_rss_ceiling",
+        "daemon_stall_harness",
+        "inherited_stdio_spawns_mark_spoke"
+      ],
+      "disposition": "target-replay",
+      "reason": "Daemon stop/flush, singleton, IPC, process observation, pipe leases, restart, stall, RSS-ceiling watchdog sampling, fast SIGTERM exit, and inherited-stdio behavior depend on native runtime primitives."
+    },
+    {
+      "id": "fetch-tools-linux-once",
+      "package": "soldr-cli",
+      "binary": "fetch_tools",
+      "modules": [
+        "cli_build_from_source",
+        "cli_global_upgrade",
+        "cli_maturin",
+        "cli_rust_analyzer",
+        "fetch_crgx"
+      ],
+      "disposition": "native-linux-once",
+      "reason": "These sources use file and process fixtures to assert portable resolution, upgrade, and command-line policy."
+    },
+    {
+      "id": "fetch-tools-target-replay",
+      "package": "soldr-cli",
+      "binary": "fetch_tools",
+      "modules": [
+        "cli_cc",
+        "cli_wheel"
+      ],
+      "disposition": "target-replay",
+      "reason": "The standalone compiler surface executes native toolchains, while wheel output and host tagging select OS-specific paths."
+    },
+    {
+      "id": "guards-linux-once",
+      "package": "soldr-cli",
+      "binary": "guards",
+      "modules": [
+        "canonical_targets_parity",
+        "cli_ci_test",
+        "cli_lint",
+        "cli_startup_smoke",
+        "daemon_console_policy_guard",
+        "msrv_doc_matches_manifest",
+        "multicall_bin_layout",
+        "no_panicking_argv_collection",
+        "no_timed_test_guard"
+      ],
+      "disposition": "native-linux-once",
+      "reason": "Repository guards read source files or launch fixture commands to enforce platform-independent policy and should run once in canonical validation."
+    },
+    {
+      "id": "toolchain-linux-once",
+      "package": "soldr-cli",
+      "binary": "toolchain_env",
+      "modules": [
+        "cli_save",
+        "doctor_standalone_zccache",
+        "python_compat_sysroot",
+        "save_bench"
+      ],
+      "disposition": "native-linux-once",
+      "reason": "These modules use temporary files and fake subprocesses for portable archive, compatibility-sysroot, and CLI contracts."
+    },
+    {
+      "id": "toolchain-target-replay",
+      "package": "soldr-cli",
+      "binary": "toolchain_env",
+      "modules": [
+        "cli_doctor",
+        "cli_optimize",
+        "cli_toolchain",
+        "cli_toolchain_doctor",
+        "msvc_host_discovery_windows",
+        "rustup_child_exit_guard",
+        "save_auto_defender_exclude",
+        "save_roundtrip"
+      ],
+      "disposition": "target-replay",
+      "reason": "Host probes, optimization, rustup/shims, MSVC discovery, child exit, Defender, archive permissions, and symlinks cross native OS boundaries."
+    },
+    {
+      "id": "cache-executable-bit-target-replay",
+      "package": "soldr-cache",
+      "binary": "cook_archive_executable_bit",
+      "disposition": "target-replay",
+      "reason": "Executable-mode preservation is a native Unix filesystem contract."
+    },
+    {
+      "id": "daemon-windows-pipe-target-replay",
+      "package": "soldr-daemon",
+      "binary": "daemon_windows_pipe_peer",
+      "disposition": "target-replay",
+      "reason": "Named-pipe peer identity and attribution are Windows-native IPC behavior."
+    },
+    {
+      "id": "daemon-embedded-target-replay",
+      "package": "soldr-daemon",
+      "binary": "daemon_zccache_embedded",
+      "disposition": "target-replay",
+      "reason": "The Unix-only embedded-cache tests exercise links, permissions, executable probes, and child processes."
+    }
+  ],
+  "replay_selectors": [
+    {
+      "id": "platform-native-modules",
+      "source_id": "platform-target-replay",
+      "test_prefix": "platform",
+      "reason": "Replay the target-selected platform modules plus shared platform primitives."
+    },
+    {
+      "id": "broker-windows-pipe-identity",
+      "source_id": "broker-target-replay",
+      "test_prefix": "broker_identity_pipe::",
+      "targets": [
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-gnu",
+        "aarch64-pc-windows-msvc"
+      ],
+      "reason": "Windows endpoint spelling, sanitization, and overflow are Windows target contracts."
+    },
+    {
+      "id": "broker-unix-endpoint-identity",
+      "source_id": "broker-target-replay",
+      "test_prefix": "broker_identity_unix::",
+      "targets": [
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl"
+      ],
+      "reason": "Unix socket placement, symlink canonicalization, and path overflow use the native filesystem."
+    },
+    {
+      "id": "broker-resurrection-known-bad",
+      "source_id": "broker-target-replay",
+      "test_name": "cli_broker_resurrection::issue_2920_known_bad_older_broker_is_retired_once_with_a_structured_outcome",
+      "reason": "Exercise one complete native retirement and replacement transaction."
+    },
+    {
+      "id": "broker-resurrection-sigstop",
+      "source_id": "broker-target-replay",
+      "test_name": "cli_broker_resurrection::issue_2476_sigstop_owner_is_fenced_after_lease_expiry",
+      "targets": [
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl"
+      ],
+      "reason": "SIGSTOP fencing is a Unix process-lifecycle contract."
+    },
+    {
+      "id": "broker-singleton",
+      "source_id": "broker-target-replay",
+      "test_name": "cli_broker_single_instance::already_bound_endpoint_reports_cli_diagnostic_and_exit_75",
+      "reason": "Prove native already-bound refusal and the Soldr-owned CLI diagnostic on each target."
+    },
+    {
+      "id": "broker-stop",
+      "source_id": "broker-target-replay",
+      "test_name": "cli_broker_stop::broker_stop_terminates_running_broker",
+      "reason": "Prove native broker termination and endpoint cleanup."
+    },
+    {
+      "id": "broker-kill-recovery",
+      "source_id": "broker-target-replay",
+      "test_name": "cli_kill_matrix::broker_kill_is_recovered_by_the_next_front_door_with_one_replacement",
+      "reason": "One full broker kill/replacement case covers native process-tree recovery."
+    },
+    {
+      "id": "daemon-kill-recovery",
+      "source_id": "broker-target-replay",
+      "test_name": "cli_kill_matrix::daemon_kill_invalidates_only_its_route_and_one_replacement_launches",
+      "reason": "One full daemon kill case covers native route invalidation and replacement."
+    },
+    {
+      "id": "isolated-daemon-copy",
+      "source_id": "broker-target-replay",
+      "test_prefix": "isolated_daemon_shared_copy::",
+      "reason": "Executable publication and replacement differ on locked-file and Unix filesystems."
+    },
+    {
+      "id": "worktree-process-share",
+      "source_id": "cache-gc-target-replay",
+      "test_prefix": "agent_worktree_share::",
+      "reason": "Replay cross-worktree cache sharing through target-native child processes."
+    },
+    {
+      "id": "windows-delete-semantics",
+      "source_id": "cache-gc-target-replay",
+      "test_prefix": "windows_delete_semantics::",
+      "targets": [
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-gnu",
+        "aarch64-pc-windows-msvc"
+      ],
+      "reason": "Replay only on targets with Windows locked-file deletion semantics."
+    },
+    {
+      "id": "cargo-timeout-process-tree",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_basic::cargo_explicit_timeout_kills_and_reaps_descendants",
+      "reason": "Timeout descendant cleanup uses target-native process-tree termination."
+    },
+    {
+      "id": "cargo-windows-worktree-relocation",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_basic::windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed",
+      "targets": [
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-gnu",
+        "aarch64-pc-windows-msvc"
+      ],
+      "reason": "Windows executable relocation must prove the original directory is removable."
+    },
+    {
+      "id": "bare-doc-route-deadline",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_doc_routes::bare_doc_route_deadline_kills_rustdoc_hold_tree",
+      "reason": "Exercise native rustdoc descendant termination through the bare shorthand."
+    },
+    {
+      "id": "cargo-doc-route-deadline",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_doc_routes::cargo_doc_route_deadline_kills_wrapper_hold_tree",
+      "reason": "Exercise native wrapper descendant termination through soldr cargo doc."
+    },
+    {
+      "id": "cargo-linker-native",
+      "source_id": "cargo-front-target-replay",
+      "test_prefix": "cli_cargo_linker::",
+      "reason": "All four tests distinguish default, mold, and rust-lld target linker behavior."
+    },
+    {
+      "id": "cargo-native-cc",
+      "source_id": "cargo-front-target-replay",
+      "test_prefix": "cli_cargo_native_cc::",
+      "reason": "The compact module covers target-native CC/CXX injection and opt-outs."
+    },
+    {
+      "id": "cargo-run-trampoline-cold",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_run_trampoline::cold_invocation_writes_sidecar_and_runs_binary",
+      "reason": "Prove a target-native executable and sidecar are materialized and run."
+    },
+    {
+      "id": "cargo-run-trampoline-binary-swap",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_run_trampoline::binary_swap_with_matching_mtime_size_is_detected",
+      "reason": "Binary identity and mtime behavior differ across native filesystems."
+    },
+    {
+      "id": "cargo-clippy-wrapper",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_wrappers::cargo_clippy_routes_workspace_clippy_driver_through_zccache",
+      "reason": "Prove target-native clippy-driver resolution and wrapper routing."
+    },
+    {
+      "id": "cargo-fmt-wrapper",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_wrappers::cargo_fmt_routes_rustfmt_through_zccache_formatter",
+      "reason": "Prove target-native rustfmt resolution and formatter routing."
+    },
+    {
+      "id": "rustc-wrapper-passthrough",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_wrappers::rustc_wrapper_mode_passes_through_to_rustc",
+      "reason": "Compact smoke for direct target-native rustc wrapper mode."
+    },
+    {
+      "id": "rustfmt-file-wrapper",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_wrappers::rustfmt_file_invocation_routes_through_zccache_formatter",
+      "reason": "Compact smoke for direct target-native rustfmt routing."
+    },
+    {
+      "id": "rustfmt-child-environment",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_wrappers::embedded_rustfmt_preserves_child_environment_and_exact_exit_code",
+      "reason": "Child environment and exit propagation are OS process contracts."
+    },
+    {
+      "id": "toolchain-home-boundary",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_wrappers::explicit_toolchain_home_env_vars_win_over_repo_local_homes",
+      "reason": "Environment and native path precedence must hold on every target."
+    },
+    {
+      "id": "no-cache-wrapper-bypass",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_wrappers::no_cache_bypasses_wrapper_and_zccache",
+      "reason": "Prove target-native child dispatch bypasses both wrapper layers."
+    },
+    {
+      "id": "exec-child-shims",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_exec::exec_cargo_build_routes_through_child_shims",
+      "reason": "The exec surface crosses native process replacement and shim paths."
+    },
+    {
+      "id": "front-door-cold-start",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_front_door_cold_start::front_door_cold_start_spawns_exactly_one_broker",
+      "reason": "Prove native cold-start singleton creation."
+    },
+    {
+      "id": "wrapper-msvc-polluted-path",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path",
+      "targets": [
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc"
+      ],
+      "reason": "MSVC target selection is specific to native Windows MSVC targets."
+    },
+    {
+      "id": "wrapper-stdin-exit",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_wrapper::wrapper_mode_stdin_source_propagates_nonzero_exit_code",
+      "reason": "Stdin and exact process exit propagation are native wrapper behavior."
+    },
+    {
+      "id": "wrapper-identity",
+      "source_id": "cargo-front-target-replay",
+      "test_prefix": "cli_wrapper_identity::",
+      "reason": "Owned wrapper identity depends on executable and environment paths."
+    },
+    {
+      "id": "zccache-stop-trampoline",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "zccache_trampoline_gate::stop_targets_soldr_daemon_and_leaves_no_upstream_runtime_copy",
+      "reason": "Prove native daemon termination through the embedded zccache compatibility surface."
+    },
+    {
+      "id": "daemon-lifecycle-native",
+      "source_id": "daemon-target-replay",
+      "test_prefix": "cli_daemon_lifecycle::",
+      "reason": "The compact lifecycle module contains host-specific start, stop, status, and service-definition cases."
+    },
+    {
+      "id": "daemon-flush-exit",
+      "source_id": "daemon-target-replay",
+      "test_name": "cli_daemon_flush_caches::daemon_stop_does_not_return_before_process_exit",
+      "reason": "Stop must observe real process exit before returning."
+    },
+    {
+      "id": "daemon-cache-shutdown",
+      "source_id": "daemon-target-replay",
+      "test_name": "cli_daemon_flush_caches::cache_shutdown_stops_soldr_daemon_and_waits_for_exit",
+      "reason": "Cache shutdown combines checkpointing with native daemon termination."
+    },
+    {
+      "id": "daemon-singleton",
+      "source_id": "daemon-target-replay",
+      "test_name": "cli_daemon_single_instance::two_daemons_against_one_root_never_coexist",
+      "reason": "Prove native daemon singleton exclusion."
+    },
+    {
+      "id": "daemon-target-touch-ipc",
+      "source_id": "daemon-target-replay",
+      "test_name": "cli_daemon_target_touch::daemon_path_writes_via_ipc_when_available",
+      "reason": "Exercise the target-native IPC and file-write route."
+    },
+    {
+      "id": "daemon-debug-descendants",
+      "source_id": "daemon-target-replay",
+      "test_name": "cli_debug_trace_observer::debug_build_records_the_direct_child_and_a_descendant",
+      "reason": "Process descendant observation is target-native behavior."
+    },
+    {
+      "id": "daemon-maintenance-pipe-lease",
+      "source_id": "daemon-target-replay",
+      "test_name": "daemon_cache_maintenance::delegated_pep517_pipe_lease_defers_maintenance_and_releases_on_eof",
+      "reason": "Pipe EOF and lease release are native IPC semantics."
+    },
+    {
+      "id": "daemon-restart-warmth",
+      "source_id": "daemon-target-replay",
+      "test_prefix": "daemon_restart_warmth::",
+      "reason": "Replay graceful and hard-kill restart continuity on every target."
+    },
+    {
+      "id": "daemon-fast-sigterm",
+      "source_id": "daemon-target-replay",
+      "test_prefix": "daemon_fast_sigterm::",
+      "reason": "The fast SIGTERM exit path is delivered through per-OS signal primitives, so the bounded exit and its lifecycle marker must be proven on every target."
+    },
+    {
+      "id": "daemon-rss-ceiling",
+      "source_id": "daemon-target-replay",
+      "test_prefix": "daemon_rss_ceiling::",
+      "reason": "Resident-set sampling reads /proc, ps, or Win32 process-memory APIs, so the reader must be proven correct per target OS, not just on Linux."
+    },
+    {
+      "id": "daemon-stall-ipc",
+      "source_id": "daemon-target-replay",
+      "test_prefix": "daemon_stall_harness::",
+      "reason": "A connected native endpoint that never replies must classify as wedged."
+    },
+    {
+      "id": "daemon-inherited-stdio",
+      "source_id": "daemon-target-replay",
+      "test_prefix": "inherited_stdio_spawns_mark_spoke::",
+      "reason": "Inherited stdio and child spoke tracking depend on process launch semantics."
+    },
+    {
+      "id": "standalone-native-cc",
+      "source_id": "fetch-tools-target-replay",
+      "test_prefix": "cli_cc::",
+      "reason": "Compile both direct and CMake projects through the target-native compiler surface."
+    },
+    {
+      "id": "wheel-native-host",
+      "source_id": "fetch-tools-target-replay",
+      "test_prefix": "cli_wheel::",
+      "reason": "The four compact wheel tests cover native host defaults, aliases, tags, and argument forwarding."
+    },
+    {
+      "id": "doctor-native-host",
+      "source_id": "toolchain-target-replay",
+      "test_prefix": "cli_doctor::",
+      "reason": "Doctor reads target-native components, targets, broker state, and host probes."
+    },
+    {
+      "id": "optimize-native-host",
+      "source_id": "toolchain-target-replay",
+      "test_prefix": "cli_optimize::",
+      "reason": "Optimization selects platform-specific host integrations and Defender behavior."
+    },
+    {
+      "id": "rustup-target-add",
+      "source_id": "toolchain-target-replay",
+      "test_name": "cli_toolchain::rustup_passthrough_injects_toolchain_for_target_add",
+      "reason": "Prove target-native rustup invocation and pinned-toolchain injection."
+    },
+    {
+      "id": "toolchain-link-shims",
+      "source_id": "toolchain-target-replay",
+      "test_name": "cli_toolchain::toolchain_link_writes_every_routed_tool_into_shim_dir",
+      "reason": "Shim contents and executable paths vary by target OS."
+    },
+    {
+      "id": "toolchain-doctor-native",
+      "source_id": "toolchain-target-replay",
+      "test_prefix": "cli_toolchain_doctor::",
+      "reason": "Toolchain doctor reports target-native host and filesystem probes."
+    },
+    {
+      "id": "msvc-host-discovery",
+      "source_id": "toolchain-target-replay",
+      "test_prefix": "msvc_host_discovery_windows::",
+      "targets": [
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc"
+      ],
+      "reason": "MSVC discovery is meaningful only on native Windows MSVC targets."
+    },
+    {
+      "id": "rustup-child-exit",
+      "source_id": "toolchain-target-replay",
+      "test_prefix": "rustup_child_exit_guard::",
+      "reason": "Exact child exit behavior must survive native process launch."
+    },
+    {
+      "id": "defender-save-exclusion",
+      "source_id": "toolchain-target-replay",
+      "test_prefix": "save_auto_defender_exclude::",
+      "targets": [
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-gnu",
+        "aarch64-pc-windows-msvc"
+      ],
+      "reason": "Defender exclusion behavior is Windows-specific."
+    },
+    {
+      "id": "save-executable-bit",
+      "source_id": "toolchain-target-replay",
+      "test_name": "save_roundtrip::load_restores_executable_bit_for_cache_files",
+      "targets": [
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl"
+      ],
+      "reason": "Executable mode preservation is a Unix filesystem contract."
+    },
+    {
+      "id": "save-symlink-roundtrip",
+      "source_id": "toolchain-target-replay",
+      "test_name": "save_roundtrip::symlinks::cache_symlinks_roundtrip_into_fresh_root",
+      "targets": [
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl"
+      ],
+      "reason": "Symlink recreation and target identity differ across Unix filesystems."
+    },
+    {
+      "id": "save-long-native-path",
+      "source_id": "toolchain-target-replay",
+      "test_name": "save_roundtrip::save_and_delta_support_long_cache_paths",
+      "reason": "Long path handling must be exercised on each native filesystem."
+    },
+    {
+      "id": "save-mtime-precision",
+      "source_id": "toolchain-target-replay",
+      "test_name": "save_roundtrip::cache_mtimes_restore_nanosecond_precision",
+      "reason": "Timestamp precision and restoration depend on the native filesystem."
+    },
+    {
+      "id": "cook-archive-executable-bit",
+      "source_id": "cache-executable-bit-target-replay",
+      "test_name": "extract_preserves_executable_bit",
+      "targets": [
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl"
+      ],
+      "reason": "Cook archive extraction must retain executable mode on Unix targets."
+    },
+    {
+      "id": "windows-pipe-peer",
+      "source_id": "daemon-windows-pipe-target-replay",
+      "test_name": "accepted_pipe_reports_the_os_observed_client",
+      "targets": [
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-gnu",
+        "aarch64-pc-windows-msvc"
+      ],
+      "reason": "Validate Windows named-pipe peer identity on each Windows target."
+    },
+    {
+      "id": "embedded-cache-unix",
+      "source_id": "daemon-embedded-target-replay",
+      "test_prefix": "working_fake_compiler_probe",
+      "targets": [
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl"
+      ],
+      "reason": "Exercise target-native executable probing through the embedded compiler service."
+    },
+    {
+      "id": "embedded-cache-unreadable-link",
+      "source_id": "daemon-embedded-target-replay",
+      "test_name": "legacy_sweep_retains_version_with_unreadable_linked_tree",
+      "targets": [
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl"
+      ],
+      "reason": "Unreadable symlinked cache trees use Unix permissions and link semantics."
+    }
+  ]
+}

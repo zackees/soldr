@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-
 SCRIPT = Path(__file__).parents[1] / ".github" / "scripts" / "ensure_linux_docker.py"
 WORKFLOW = (
     Path(__file__).parents[1] / ".github" / "workflows" / "docker-linux-cross-smoke.yml"

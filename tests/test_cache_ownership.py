@@ -39,7 +39,10 @@ WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 CACHE_ACTION = "actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809"
 RUST_CACHE = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-COOK_ACTION = "zackees/setup-soldr/cook@5f1f68dcb8377818413c28ce52214261ae8ff771"
+COOK_ACTION = "zackees/setup-soldr/cook@bb28e96d2dc32c058242f56722297caf1efcbd90"
+
+
+FIXTURE_FAMILY_ID = "fixture-family"
 
 
 def minimal_manifest(entries: list[dict]) -> dict:
@@ -48,7 +51,22 @@ def minimal_manifest(entries: list[dict]) -> dict:
     `experiment_workflows` is taken from the guard's own frozen constant
     because R1 requires the two to agree -- a fixture that hard-coded the list
     would start failing for a reason unrelated to what each test is about.
+
+    `budget` is a single minimal family that claims exactly the ids of
+    `entries` (or is `reserved` when there are none): R6/R7 are unconditional
+    once budget_problems/budget_coverage_problems run, so every manifest this
+    helper builds must already satisfy them, or every existing test that has
+    nothing to do with the budget would start failing for an unrelated reason.
     """
+    ids = [str(e.get("id", "")) for e in entries]
+    family: dict = {
+        "key_prefixes": ["fixture-"],
+        "max_bytes": 100,
+        "entries": ids,
+        "rationale": "fixture",
+    }
+    if not ids:
+        family["reserved"] = True
     return {
         "schema_version": 1,
         "tiers": {"cook": "d", "zccache-unit": "d", "none": "d"},
@@ -61,6 +79,11 @@ def minimal_manifest(entries: list[dict]) -> dict:
             "bootstrap-driver-binary": "d",
         },
         "experiment_workflows": sorted(guard.EXPERIMENT_WORKFLOWS),
+        "budget": {
+            "total_max_bytes": 1_000,
+            "fail_total_bytes": 1_000,
+            "families": {FIXTURE_FAMILY_ID: family},
+        },
         "entries": entries,
     }
 
@@ -113,6 +136,18 @@ jobs:
 
 def test_clean_tree_passes() -> None:
     assert guard.check(MANIFEST, WORKFLOW_DIR) == []
+
+
+def test_real_budget_is_internally_consistent() -> None:
+    """R6/R7 hold for the real manifest, sitting beside test_clean_tree_passes.
+
+    `check()` already runs both against the real tree via `test_clean_tree_
+    passes`; this is the direct-call version so a budget-only regression
+    reports as "the budget", not as an undifferentiated `check()` failure.
+    """
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    assert guard.budget_problems(manifest) == []
+    assert guard.budget_coverage_problems(manifest) == []
 
 
 def test_manifest_parses_and_is_schema_valid() -> None:
@@ -356,6 +391,111 @@ def test_a_cache_may_not_claim_same_run_transport() -> None:
     )
     problems = guard.manifest_problems(manifest)
     assert any(p.startswith("R5") for p in problems), problems
+
+
+# --------------------------------------------------------------------------
+# R6 -- the budget: schema, per-family typing, disjoint key_prefixes
+# --------------------------------------------------------------------------
+
+
+def test_overlapping_key_prefixes_across_families_fails_r6() -> None:
+    manifest = minimal_manifest([])
+    manifest["budget"]["families"] = {
+        "a": {
+            "key_prefixes": ["ws-dev-"],
+            "max_bytes": 10,
+            "entries": [],
+            "rationale": "fixture",
+            "reserved": True,
+        },
+        "b": {
+            "key_prefixes": ["ws-dev-linux"],
+            "max_bytes": 10,
+            "entries": [],
+            "rationale": "fixture",
+            "reserved": True,
+        },
+    }
+    problems = guard.budget_problems(manifest)
+    assert any(p.startswith("R6") and "overlaps" in p for p in problems), problems
+
+
+def test_family_max_bytes_over_total_fails_r6() -> None:
+    manifest = minimal_manifest([])
+    manifest["budget"]["total_max_bytes"] = 100
+    manifest["budget"]["fail_total_bytes"] = 100
+    manifest["budget"]["families"] = {
+        "a": {
+            "key_prefixes": ["a-"],
+            "max_bytes": 60,
+            "entries": [],
+            "rationale": "fixture",
+            "reserved": True,
+        },
+        "b": {
+            "key_prefixes": ["b-"],
+            "max_bytes": 60,
+            "entries": [],
+            "rationale": "fixture",
+            "reserved": True,
+        },
+    }
+    problems = guard.budget_problems(manifest)
+    assert any(p.startswith("R6") and "sum to" in p for p in problems), problems
+
+
+# --------------------------------------------------------------------------
+# R7 -- the budget: claim resolution and durable-entry coverage
+# --------------------------------------------------------------------------
+
+
+def test_family_entry_id_that_does_not_exist_fails_r7() -> None:
+    manifest = minimal_manifest([])
+    manifest["budget"]["families"][FIXTURE_FAMILY_ID]["entries"] = ["ghost"]
+    manifest["budget"]["families"][FIXTURE_FAMILY_ID]["reserved"] = False
+    problems = guard.budget_coverage_problems(manifest)
+    assert any(
+        p.startswith("R7") and "ghost" in p and "no manifest entry defines" in p
+        for p in problems
+    ), problems
+
+
+def test_unclaimed_durable_entry_in_non_experiment_workflow_fails_r7() -> None:
+    durable_entry = entry("ci.yml", "cook", mechanism="actions/cache")
+    manifest = minimal_manifest([durable_entry])
+    manifest["budget"]["families"][FIXTURE_FAMILY_ID]["entries"] = []
+    manifest["budget"]["families"][FIXTURE_FAMILY_ID]["reserved"] = True
+    problems = guard.budget_coverage_problems(manifest)
+    assert any(
+        p.startswith("R7") and durable_entry["id"] in p for p in problems
+    ), problems
+
+
+def test_entry_claimed_by_two_families_fails_r7() -> None:
+    shared = entry("ci.yml", "none")
+    manifest = minimal_manifest([shared])
+    manifest["budget"]["families"]["other-family"] = {
+        "key_prefixes": ["other-"],
+        "max_bytes": 10,
+        "entries": [shared["id"]],
+        "rationale": "fixture",
+    }
+    problems = guard.budget_coverage_problems(manifest)
+    assert any(
+        p.startswith("R7") and "claimed by more than one" in p for p in problems
+    ), problems
+
+
+def test_empty_family_without_reserved_fails_r7() -> None:
+    manifest = minimal_manifest([])
+    manifest["budget"]["families"][FIXTURE_FAMILY_ID]["reserved"] = False
+    problems = guard.budget_coverage_problems(manifest)
+    assert any(p.startswith("R7") and "reserved" in p for p in problems), problems
+
+
+def test_empty_family_with_reserved_passes_r7() -> None:
+    manifest = minimal_manifest([])
+    assert guard.budget_coverage_problems(manifest) == []
 
 
 def test_main_reports_zero_on_the_real_tree(capsys: pytest.CaptureFixture) -> None:

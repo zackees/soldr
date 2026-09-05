@@ -117,10 +117,15 @@ pub(crate) async fn ensure_known_subcommand_tool(
                     validate_dylint_path_binary(&link, "dylint-link", version)?;
                 }
             }
-            eprintln!(
-                "soldr: deferring to {exe_name} on PATH at {} (set SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 to override)",
-                path.display()
-            );
+            // Informational; on GitHub Actions it repeats once per nested
+            // invocation (a Dylint cook runs dozens) and the override it
+            // advertises is a workflow-level decision, not a per-line one.
+            if !foreign_env_flag("GITHUB_ACTIONS") {
+                eprintln!(
+                    "soldr: deferring to {exe_name} on PATH at {} (set SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 to override)",
+                    path.display()
+                );
+            }
             // Even when cargo-zigbuild is provided by the host, it
             // still shells out to `zig`. Run the transitive bootstrap
             // before returning so the deferred-on-PATH branch doesn't
@@ -147,7 +152,15 @@ pub(crate) async fn ensure_known_subcommand_tool(
         .map(|v| VersionSpec::Exact(v.to_string()))
         .unwrap_or(VersionSpec::Latest);
 
-    eprintln!("soldr: fetching {}...", spec.crate_name);
+    // Progress chatter for a human at a terminal only (soldr#3099): under
+    // `soldr ci-test` and the Dylint cook these lines repeated once per
+    // nested invocation into the CI log. A real download still reports
+    // itself below. Same rule as the External-tool path in
+    // `soldr_main_dispatch`.
+    let chatty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    if chatty {
+        eprintln!("soldr: fetching {}...", spec.crate_name);
+    }
     let result = match crate::fetch::fetch_tool_for_host_with_paths(
         spec.crate_name,
         &version,
@@ -167,10 +180,12 @@ pub(crate) async fn ensure_known_subcommand_tool(
     };
 
     if result.cached {
-        eprintln!(
-            "soldr: using cached {} v{}",
-            spec.crate_name, result.version
-        );
+        if chatty {
+            eprintln!(
+                "soldr: using cached {} v{}",
+                spec.crate_name, result.version
+            );
+        }
     } else {
         eprintln!("soldr: downloaded {} v{}", spec.crate_name, result.version);
     }
@@ -207,7 +222,10 @@ async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, S
         .and_then(|spec| spec.pinned_version)
         .ok_or_else(|| SoldrError::Other("dylint-link must have a registry pin".into()))?;
     let version = VersionSpec::Exact(pinned_version.to_string());
-    eprintln!("soldr: fetching dylint-link...");
+    let chatty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    if chatty {
+        eprintln!("soldr: fetching dylint-link...");
+    }
     match crate::fetch::fetch_tool_for_host_with_paths("dylint-link", &version, paths).await {
         Ok(result) => {
             if let Err(error) = validated_dylint_link_prebuilt(&result) {
@@ -218,7 +236,9 @@ async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, S
                 ));
             }
             if result.cached {
-                eprintln!("soldr: using cached dylint-link v{}", result.version);
+                if chatty {
+                    eprintln!("soldr: using cached dylint-link v{}", result.version);
+                }
             } else {
                 eprintln!("soldr: downloaded dylint-link v{}", result.version);
             }
@@ -276,7 +296,12 @@ fn validate_dylint_path_binary(
             command.env("RUSTUP_TOOLCHAIN", format!("nightly-{}", host.triple()));
         }
         suppress_windows_console_window(&mut command);
-        let mut child = match command.spawn() {
+        // soldr#3098: spawns share, staged writes exclude.
+        let spawned = {
+            let _spawn = crate::core::spawn_exclusion::spawn_shared();
+            command.spawn()
+        };
+        let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {
                 failures.push(format!("{argument} could not start: {error}"));

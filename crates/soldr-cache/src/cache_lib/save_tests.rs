@@ -776,3 +776,137 @@ fn every_jwalk_walker_in_this_module_selects_its_own_pool() {
          found {walkers} walkers but {pooled} parallelism() calls"
     );
 }
+
+#[test]
+fn cook_profile_keeps_the_dependency_graph_and_drops_linked_products() {
+    use std::path::Path;
+
+    // Kept: the dependency closure a warm compile actually needs.
+    for kept in [
+        "debug/deps/libserde-1234.rlib",
+        "debug/deps/libserde-1234.rmeta",
+        "debug/deps/libproc_macro_hack-9.dylib",
+        "debug/deps/libplugin-7.so",
+        "debug/deps/plugin-7.dll",
+        "debug/.fingerprint/serde-1234/lib-serde",
+        // Build scripts are dependency payload even though they are
+        // extensionless executables; Cargo needs them to rematerialize.
+        "debug/build/libz-sys-abc/build-script-build",
+        "debug/build/libz-sys-abc/out/libz.a",
+    ] {
+        assert!(
+            !cook_profile_excludes_cache_path(Path::new(kept)),
+            "cook profile must keep {kept}"
+        );
+    }
+
+    // Dropped: everything a build adds on top, which is tier 3.
+    for dropped in [
+        // Linked test executables -- the 1.62 GB in zackees/setup-soldr#499.
+        "debug/deps/cargo_front_door-8f2a1c",
+        "debug/deps/cargo_front_door-8f2a1c.exe",
+        "debug/soldr",
+        "debug/soldr.exe",
+        "debug/incremental/soldr-abc/x.bin",
+        "debug/examples/demo",
+        "debug/deps/soldr-1234.pdb",
+        "debug/deps/soldr-1234.dwp",
+    ] {
+        assert!(
+            cook_profile_excludes_cache_path(Path::new(dropped)),
+            "cook profile must drop {dropped}"
+        );
+    }
+}
+
+#[test]
+fn cook_profile_parses_and_round_trips_its_name() {
+    assert_eq!(SaveProfile::parse("cook"), Some(SaveProfile::Cook));
+    assert_eq!(SaveProfile::parse("COOK"), Some(SaveProfile::Cook));
+    assert_eq!(SaveProfile::Cook.as_str(), "cook");
+    // The existing spellings must keep resolving where they did.
+    assert_eq!(SaveProfile::parse("full"), Some(SaveProfile::Full));
+    assert_eq!(SaveProfile::parse("minimal"), Some(SaveProfile::Ci));
+}
+
+#[test]
+fn cook_profile_excludes_are_narrower_than_a_full_save() {
+    use std::path::Path;
+
+    // A guard against the predicate degenerating into "drop everything":
+    // the rlib that makes a warm build possible must survive.
+    let rlib = Path::new("release/deps/libtokio-9f.rlib");
+    assert!(!cook_profile_excludes_cache_path(rlib));
+    assert!(cook_profile_excludes_cache_path(Path::new(
+        "release/deps/tokio_test-9f"
+    )));
+}
+
+#[test]
+fn cook_profile_walk_archives_the_dep_graph_of_a_real_target_tree() {
+    // Exercises the walk itself, not just the path predicate, on a tree
+    // shaped like the one zackees/setup-soldr#499 measured: a cook slice
+    // with a completed build layered on top.
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path();
+    for dir in [
+        "debug/deps",
+        "debug/.fingerprint/serde-1234",
+        "debug/build/libz-sys-abc/out",
+        "debug/incremental/soldr-abc",
+        "debug/examples",
+    ] {
+        std::fs::create_dir_all(target.join(dir)).unwrap();
+    }
+
+    // Cook's payload.
+    let rlib = target.join("debug/deps/libserde-1234.rlib");
+    let rmeta = target.join("debug/deps/libserde-1234.rmeta");
+    let fingerprint = target.join("debug/.fingerprint/serde-1234/lib-serde");
+    let build_script = target.join("debug/build/libz-sys-abc/build-script-build");
+    let build_out = target.join("debug/build/libz-sys-abc/out/libz.a");
+    for kept in [&rlib, &rmeta, &fingerprint, &build_script, &build_out] {
+        std::fs::write(kept, b"dep").unwrap();
+    }
+
+    // What the build added afterwards -- tier 3, and the bulk of the bytes.
+    for dropped in [
+        "debug/soldr",
+        "debug/deps/cargo_front_door-8f2a1c",
+        "debug/incremental/soldr-abc/state.bin",
+        "debug/examples/demo",
+    ] {
+        std::fs::write(target.join(dropped), b"linked product").unwrap();
+    }
+
+    let walk = walk_cache_files_for_profile(target, None, SaveProfile::Cook).unwrap();
+    let mut included = walk
+        .included_paths
+        .iter()
+        .map(|p| {
+            p.strip_prefix(target)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect::<Vec<_>>();
+    included.sort();
+
+    assert_eq!(
+        included,
+        vec![
+            "debug/.fingerprint/serde-1234/lib-serde",
+            "debug/build/libz-sys-abc/build-script-build",
+            "debug/build/libz-sys-abc/out/libz.a",
+            "debug/deps/libserde-1234.rlib",
+            "debug/deps/libserde-1234.rmeta",
+        ]
+    );
+    assert_eq!(walk.excluded_files, 4);
+
+    // The same tree under the historical profile keeps everything, which is
+    // the behaviour that produced the oversized entry.
+    let full = walk_cache_files_for_profile(target, None, SaveProfile::Full).unwrap();
+    assert_eq!(full.included_paths.len(), 9);
+    assert_eq!(full.excluded_files, 0);
+}

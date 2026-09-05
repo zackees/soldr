@@ -36,17 +36,31 @@ fn configure_dylint_identity(command: &mut Command) {
 /// identity.  The exact host stable toolchain remains observable: hard-coding
 /// it here would hide a real domain-selection regression whenever the
 /// repository pin moves.
-fn explain_plan(extra: &[&str]) -> Output {
+fn explain_plan_with_limits(
+    extra: &[&str],
+    cargo_build_jobs: Option<&str>,
+    soldr_jobs: Option<&str>,
+) -> Output {
     let mut command = isolated_soldr_command();
     command
         .current_dir(workspace_root())
         .args(["ci-test", "--explain-plan", "--format", "json"])
         .args(extra)
-        .env_remove("CARGO_BUILD_JOBS")
-        .env_remove("SOLDR_JOBS")
         .env_remove("NEXTEST_TEST_THREADS");
+    match cargo_build_jobs {
+        Some(value) => command.env("CARGO_BUILD_JOBS", value),
+        None => command.env_remove("CARGO_BUILD_JOBS"),
+    };
+    match soldr_jobs {
+        Some(value) => command.env("SOLDR_JOBS", value),
+        None => command.env_remove("SOLDR_JOBS"),
+    };
     configure_dylint_identity(&mut command);
     command.output().expect("run soldr ci-test --explain-plan")
+}
+
+fn explain_plan(extra: &[&str]) -> Output {
+    explain_plan_with_limits(extra, None, None)
 }
 
 fn plan_json(extra: &[&str]) -> Value {
@@ -104,7 +118,7 @@ fn ci_test_is_a_native_builtin_with_a_versioned_complete_plan_schema() {
     let plan = plan_json(&[]);
 
     assert_eq!(
-        plan["schema_version"], 1,
+        plan["schema_version"], 3,
         "the explain-plan schema is a public contract"
     );
     assert_eq!(plan["command"], "ci-test");
@@ -131,8 +145,8 @@ fn ci_test_is_a_native_builtin_with_a_versioned_complete_plan_schema() {
     assert!(plan.get("scope").and_then(Value::as_object).is_some());
     assert!(plan.get("cook").is_some());
     let resource_limits = object(&plan, "resource_limits");
-    assert_eq!(resource_limits["cargo_build_jobs"], "1");
-    assert_eq!(resource_limits["soldr_jobs"], "1");
+    assert_eq!(resource_limits["cargo_build_jobs"], Value::Null);
+    assert_eq!(resource_limits["soldr_jobs"], Value::Null);
     assert_eq!(resource_limits["nextest_test_threads"], "1");
     let dylint_target_trees = object(&plan, "dylint_target_trees");
     for field in ["libraries", "analysis", "tests"] {
@@ -219,6 +233,21 @@ fn ci_test_is_a_native_builtin_with_a_versioned_complete_plan_schema() {
 }
 
 #[test]
+fn ci_test_preserves_explicit_job_limits_exactly() {
+    let output = explain_plan_with_limits(&[], Some("02"), Some("7"));
+    assert!(
+        output.status.success(),
+        "ci-test explain-plan failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let plan: Value = serde_json::from_slice(&output.stdout).expect("JSON plan");
+    let resource_limits = object(&plan, "resource_limits");
+    assert_eq!(resource_limits["cargo_build_jobs"], "02");
+    assert_eq!(resource_limits["soldr_jobs"], "7");
+}
+
+#[test]
 fn no_cache_explain_plan_reports_the_effective_disabled_wrapper() {
     let mut command = isolated_soldr_command();
     command.current_dir(workspace_root()).args([
@@ -267,6 +296,7 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
             "dylint-test-ban_raw_ipc_transport",
             "dylint-test-ban_platform_cfg_outside_boundary",
             "dylint-test-ban_raw_env_flag",
+            "nextest-compile",
             "nextest",
             "doctests",
             "cargo-deny-bans",
@@ -276,15 +306,16 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
         "the prescribed host-validation order is a frozen native-ci contract"
     );
 
-    let nextest = find_stage(&plan, "nextest");
-    assert_eq!(nextest["domain"], "stable");
+    let nextest_compile = find_stage(&plan, "nextest-compile");
+    assert_eq!(nextest_compile["domain"], "stable");
     assert_eq!(
-        nextest["command"],
+        nextest_compile["command"],
         serde_json::json!([
             "soldr",
             "cargo",
             "nextest",
             "run",
+            "--no-run",
             "--workspace",
             "--lib",
             "--tests",
@@ -293,9 +324,47 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
             "--test-threads",
             "1"
         ]),
-        "the sole test-profile compile feeds nextest; do not insert a dev-profile warm-up"
+        "the sole test-profile compile feeds Nextest execution; do not insert a dev-profile warm-up"
     );
-    assert_eq!(nextest["executes_compiler"], true);
+    assert_eq!(nextest_compile["executes_compiler"], true);
+    assert_eq!(
+        nextest_compile["depends_on"],
+        serde_json::json!(["clippy"]),
+        "Nextest compilation must become ready immediately after Clippy"
+    );
+    let nextest = find_stage(&plan, "nextest");
+    assert_eq!(nextest["domain"], "stable");
+    assert_eq!(nextest["executes_compiler"], false);
+    assert_eq!(
+        nextest["depends_on"],
+        serde_json::json!(["nextest-compile"])
+    );
+    let run_args = nextest["command"].as_array().expect("Nextest run argv");
+    let compile_args = nextest_compile["command"]
+        .as_array()
+        .expect("Nextest compile argv");
+    let compile_without_no_run: Vec<_> = compile_args
+        .iter()
+        .filter(|arg| arg.as_str() != Some("--no-run"))
+        .cloned()
+        .collect();
+    // soldr#3100: the run stage alone carries `--no-fail-fast`; strip it so
+    // the binary selection is still compared verbatim.
+    assert!(run_args
+        .iter()
+        .any(|arg| arg.as_str() == Some("--no-fail-fast")));
+    assert!(!compile_args
+        .iter()
+        .any(|arg| arg.as_str() == Some("--no-fail-fast")));
+    let run_args: Vec<_> = run_args
+        .iter()
+        .filter(|arg| arg.as_str() != Some("--no-fail-fast"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        compile_without_no_run, run_args,
+        "Nextest execution must select exactly the binaries compiled by nextest-compile"
+    );
     assert!(
         !array(&plan, "stages").iter().any(|stage| {
             stage.get("kind").and_then(Value::as_str) == Some("compiler-and-test")
@@ -328,8 +397,57 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
     );
     let dylint = find_stage(&plan, "dylint-workspace");
     assert_eq!(dylint["domain"], "dylint-analysis");
+    let libraries = [
+        "dylint-library-ban_raw_process_creation",
+        "dylint-library-ban_raw_network_access",
+        "dylint-library-ban_raw_local_socket_name",
+        "dylint-library-ban_raw_ipc_transport",
+        "dylint-library-ban_platform_cfg_outside_boundary",
+        "dylint-library-ban_raw_env_flag",
+    ];
+    for (index, stage_name) in libraries.iter().enumerate() {
+        let expected = if index == 0 {
+            "clippy"
+        } else {
+            libraries[index - 1]
+        };
+        assert_eq!(
+            find_stage(&plan, stage_name)["depends_on"],
+            serde_json::json!([expected]),
+            "Dylint libraries share one target tree and must remain serial"
+        );
+    }
+    assert_eq!(
+        dylint["depends_on"],
+        serde_json::json!([libraries[libraries.len() - 1]])
+    );
+    let ui_tests = [
+        "dylint-test-ban_raw_process_creation",
+        "dylint-test-ban_raw_network_access",
+        "dylint-test-ban_raw_local_socket_name",
+        "dylint-test-ban_raw_ipc_transport",
+        "dylint-test-ban_platform_cfg_outside_boundary",
+        "dylint-test-ban_raw_env_flag",
+    ];
+    for (index, stage_name) in ui_tests.iter().enumerate() {
+        let expected = if index == 0 {
+            "dylint-workspace"
+        } else {
+            ui_tests[index - 1]
+        };
+        assert_eq!(
+            find_stage(&plan, stage_name)["depends_on"],
+            serde_json::json!([expected]),
+            "Dylint UI tests share one target tree and must remain serial"
+        );
+    }
     let doctests = find_stage(&plan, "doctests");
     assert_eq!(doctests["domain"], "rustdoc");
+    assert_eq!(
+        doctests["depends_on"],
+        serde_json::json!(["nextest", ui_tests[ui_tests.len() - 1]]),
+        "doctests consume the join after both compiler-bearing branches"
+    );
     assert_eq!(
         doctests["command"],
         serde_json::json!([
@@ -342,6 +460,13 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
             host
         ])
     );
+    for policy in ["cargo-deny-bans", "cargo-audit", "cargo-machete"] {
+        assert_eq!(
+            find_stage(&plan, policy)["depends_on"],
+            serde_json::json!(["nextest", ui_tests[ui_tests.len() - 1]]),
+            "{policy} consumes the same join as doctests so the independent tail can overlap"
+        );
+    }
 
     for stage in array(&plan, "stages") {
         assert!(
@@ -374,7 +499,13 @@ fn ci_test_preserves_scope_and_exposes_incompatible_overrides_as_domains_or_erro
     );
     assert_eq!(scope.get("all_features"), Some(&Value::Bool(true)));
     assert_eq!(scope.get("no_default_features"), Some(&Value::Bool(false)));
-    for stage_name in ["clippy", "nextest", "doctests", "dylint-workspace"] {
+    for stage_name in [
+        "clippy",
+        "nextest-compile",
+        "nextest",
+        "doctests",
+        "dylint-workspace",
+    ] {
         let command = find_stage(&scoped, stage_name)["command"]
             .as_array()
             .expect("scoped stage command");
@@ -456,7 +587,7 @@ fn ci_test_human_explain_plan_renders_the_same_named_domains_and_stages() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     for required in [
-        "soldr ci-test plan v1",
+        "soldr ci-test plan v3",
         "stable",
         "dylint-libraries",
         "dylint-analysis",

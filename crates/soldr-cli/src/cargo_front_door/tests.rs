@@ -619,6 +619,11 @@ fn aborted_build_cleanup_removes_incremental_dirs() {
 
 #[test]
 fn aborted_build_cleanup_prunes_rmetas_and_incremental_dirs() {
+    // soldr#2996: the sweep used to hang off a target cache plan, so it only
+    // ran for callers who had opted into the cache -- never on a default
+    // build, which is exactly when a failed build strands an rmeta. It now
+    // resolves the target directory from the cargo args like every other
+    // hook, which is what this test drives via `--target-dir`.
     let root = tempfile::tempdir().expect("temp root");
     let target = root.path().join("target");
     let deps = target.join("debug").join("deps");
@@ -628,22 +633,14 @@ fn aborted_build_cleanup_prunes_rmetas_and_incremental_dirs() {
     let orphan_rmeta = deps.join("libstale.rmeta");
     std::fs::write(&orphan_rmeta, b"stale").expect("orphan rmeta");
 
-    let plan = crate::rust_plan::RustArtifactPlanContext {
-        path: root.path().join("plan.json"),
-        cache_dir: root.path().join("cache"),
-        zccache_daemon_cache_dir: root.path().join("daemon-cache"),
-        zccache_daemon_cache_dir_env: false,
-        zccache_daemon_name: None,
-        session_id: "test-session".to_string(),
-        journal_path: root.path().join("journal.jsonl"),
-        backend: "local".to_string(),
-        cache_profile: None,
-        plan_inputs_hash: "hash".to_string(),
-        target_dir: target.display().to_string(),
-    };
-    let cache_plan = CargoCachePlan::for_test_with_rust_artifact_plan(plan);
+    let cache_plan = CargoCachePlan::for_test_without_wrapper();
+    let args = [
+        String::from("build"),
+        String::from("--target-dir"),
+        target.display().to_string(),
+    ];
 
-    let cleanup = cleanup_after_aborted_cargo_run(&cache_plan, &[String::from("build")], true);
+    let cleanup = cleanup_after_aborted_cargo_run(&cache_plan, &args, true);
 
     assert_eq!(cleanup.orphan_rmetas_pruned, 1);
     assert_eq!(cleanup.incremental_dirs_removed, 1);
@@ -2526,13 +2523,13 @@ fn write_build_log_reflects_seeded_compile_session_events() {
         exit_code: 0,
         compile_journal_path: None,
         compile_journal_start_len: 0,
-        // soldr#1799: a managed-home binary must render `managed`; the
-        // origin+binary pairing is what makes the log checkable.
+        // soldr#1799: a managed-home binary must render `managed` (checkable).
         toolchain: Some(crate::build_log::ToolchainHomes {
             home_origin: "managed",
             binary: paths.root.join("cargo").join("bin").join("cargo"),
         }),
         wrapper: None,
+        fingerprint_dirty: Vec::new(),
     };
 
     let path = crate::build_log::write_build_log_with_history_for_test(&request, &events)

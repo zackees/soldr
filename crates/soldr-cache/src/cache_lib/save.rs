@@ -190,6 +190,16 @@ pub enum SaveProfile {
     /// runtime binaries, and soldr managed binary/toolchain trees that
     /// do not participate in rustc hits.
     Ci,
+    /// Cook payload (soldr#2996): archive the dependency graph of a cargo
+    /// target directory while excluding the linked products tier 3 forbids.
+    ///
+    /// `soldr cook`'s own output is a dependency tree, but the setup-soldr
+    /// cook layer archives the target dir from a *post* step -- by which
+    /// point the real build has written its binaries and test executables
+    /// into the same tree. On one measured run that turned an 83 MiB cook
+    /// slice into a 1.62 GB entry (zackees/setup-soldr#499). This profile
+    /// drops what the build added and keeps what cook produced.
+    Cook,
 }
 
 impl SaveProfile {
@@ -197,6 +207,7 @@ impl SaveProfile {
         match self {
             Self::Full => "full",
             Self::Ci => "ci",
+            Self::Cook => "cook",
         }
     }
 
@@ -204,6 +215,7 @@ impl SaveProfile {
         match raw.trim().to_ascii_lowercase().as_str() {
             "" | "full" | "default" | "complete" => Some(Self::Full),
             "ci" | "minimal" => Some(Self::Ci),
+            "cook" => Some(Self::Cook),
             _ => None,
         }
     }
@@ -283,3 +295,7 @@ include!("load_replay.rs");
 #[cfg(test)]
 #[path = "save_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "load_extract_tests.rs"]
+mod load_extract_tests;

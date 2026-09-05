@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,25 +18,6 @@ ROOT = Path(__file__).parents[1]
 SCRIPTS = ROOT / ".github" / "scripts"
 PUBLISHED_WORKFLOW = ROOT / ".github" / "workflows" / "published-dylint-smoke.yml"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release-auto.yml"
-PUBLISHED_SMOKE_TRIGGER_PATHS = (
-    "Cargo.toml",
-    "ci/smoke_published_dylint.py",
-    "ci/canonical-targets.json",
-    "dylints/**",
-    "crates/soldr-cli/src/dylint_*.rs",
-    "crates/soldr-cli/src/cli_args.rs",
-    "crates/soldr-cli/src/soldr_main.rs",
-    "crates/soldr-cli/src/soldr_main_dispatch.rs",
-    "crates/soldr-cli/src/cargo_front_door/**",
-    "crates/soldr-fetch/src/fetch/known_tools.rs",
-    "crates/soldr-fetch/src/fetch/toolchain_packaged.rs",
-    ".github/scripts/catalogue_http.py",
-    ".github/scripts/check_dylint_driver_assets.py",
-    ".github/scripts/toolchain_asset_query.py",
-    ".github/workflows/published-dylint-smoke.yml",
-    ".github/workflows/release-auto.yml",
-    "tests/test_smoke_published_dylint.py",
-)
 load_script_module(SCRIPTS / "catalogue_http.py", "catalogue_http")
 load_script_module(SCRIPTS / "toolchain_asset_query.py", "toolchain_asset_query")
 load_script_module(
@@ -222,23 +202,10 @@ def test_smoke_rejects_wrong_binary_version_or_channel(
 def test_windows_monitor_and_release_gate_orchestrate_the_tested_script() -> None:
     monitor = PUBLISHED_WORKFLOW.read_text(encoding="utf-8")
     release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    for trigger in (
-        "branches: [main]",
-        "pull_request:",
-        "schedule:",
-        "workflow_dispatch:",
-    ):
+    for trigger in ("schedule:", "workflow_dispatch:"):
         assert trigger in monitor
-    for trigger in ("push", "pull_request"):
-        match = re.search(
-            rf"^  {trigger}:\n(?:    branches: \[main\]\n)?    paths:\n(?P<paths>(?:      - '[^']+'\n)+)",
-            monitor,
-            flags=re.MULTILINE,
-        )
-        assert match is not None, f"{trigger} must path-filter the published smoke"
-        assert tuple(re.findall(r"'([^']+)'", match.group("paths"))) == (
-            PUBLISHED_SMOKE_TRIGGER_PATHS
-        )
+    assert "  push:" not in monitor
+    assert "  pull_request:" not in monitor
     assert "runs-on: windows-2025" in monitor
     assert "ci/smoke_published_dylint.py" in monitor
     assert "python-version: '3.13'" in monitor

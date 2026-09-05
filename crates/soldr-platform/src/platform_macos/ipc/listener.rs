@@ -114,7 +114,7 @@ pub fn bind_owner_only_listener(
 ) -> io::Result<interprocess::local_socket::tokio::Listener> {
     use interprocess::local_socket::ListenerOptions;
     use running_process::broker::server::singleton_bind::{
-        is_already_bound_error, unix_socket_path_is_stale, wrap_socket_name,
+        bind_singleton_with, BindSingletonError, wrap_socket_name,
     };
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -122,20 +122,18 @@ pub fn bind_owner_only_listener(
         running_process::broker::secure_dir::ensure_private_dir(parent)?;
     }
 
-    let bind = |path: &str| {
+    let listener = bind_singleton_with(socket_path, || {
         ListenerOptions::new()
-            .name(wrap_socket_name(path).map_err(io::Error::other)?)
+            .name(wrap_socket_name(socket_path).map_err(io::Error::other)?)
             .reclaim_name(false)
             .create_tokio()
-    };
-    let listener = match bind(socket_path) {
-        Ok(listener) => listener,
-        Err(err) if is_already_bound_error(&err) && unix_socket_path_is_stale(socket_path) => {
-            let _ = std::fs::remove_file(socket_path);
-            bind(socket_path)?
+    })
+    .map_err(|error| match error {
+        BindSingletonError::InvalidName(message) => {
+            io::Error::new(io::ErrorKind::InvalidInput, message)
         }
-        Err(err) => return Err(err),
-    };
+        BindSingletonError::AlreadyBound(error) | BindSingletonError::Other(error) => error,
+    })?;
     std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
     Ok(listener)
 }

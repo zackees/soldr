@@ -12,7 +12,9 @@ REPO_ROOT = Path(__file__).parents[1]
 SCRIPTS = REPO_ROOT / ".github" / "scripts"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-auto.yml"
 
-bundle = load_script_module(SCRIPTS / "verify_release_bundle.py", "verify_release_bundle")
+bundle = load_script_module(
+    SCRIPTS / "verify_release_bundle.py", "verify_release_bundle"
+)
 
 
 def write_bundle(package: Path, target: str) -> list[Path]:
@@ -38,12 +40,16 @@ def test_collects_every_unix_executable_in_bundle_order(tmp_path: Path) -> None:
     assert bundle.bundled_binaries(package, "aarch64-unknown-linux-musl") == expected
 
 
-def test_missing_bundle_fails_with_the_observed_package_contents(tmp_path: Path) -> None:
+def test_missing_bundle_fails_with_the_observed_package_contents(
+    tmp_path: Path,
+) -> None:
     package = tmp_path / "package"
     package.mkdir()
     (package / "manifest.json").write_text("{}", encoding="utf-8")
 
-    with pytest.raises(bundle.BundleVerificationError, match="no bundled binaries") as error:
+    with pytest.raises(
+        bundle.BundleVerificationError, match="no bundled binaries"
+    ) as error:
         bundle.bundled_binaries(package, "x86_64-unknown-linux-gnu")
 
     assert "manifest.json" in str(error.value)
