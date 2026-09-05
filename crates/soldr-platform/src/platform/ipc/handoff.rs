@@ -10,7 +10,7 @@
 
 pub use crate::platform_imp::ipc::handoff::{
     close_received_fd, named_pipe_stream_from_handle_value, receive_unix_descriptor,
-    session_stream_from_received_fd,
+    send_test_handoff_descriptor, session_stream_from_received_fd,
 };
 
 /// A file descriptor received from the broker, held opaque so the

@@ -326,9 +326,10 @@ pub fn handoff_endpoint_path(session_endpoint: &str) -> String {
     sibling_endpoint(session_endpoint, ".handoff.sock")
 }
 
-pub(crate) fn resolve_handoff_listener(paths: &SoldrPaths) -> io::Result<SessionListener> {
+/// The handoff endpoint the control plane binds for `paths`' SESSION endpoint.
+pub(crate) fn resolve_handoff_endpoint(paths: &SoldrPaths) -> io::Result<String> {
     let session_endpoint = resolved_session_endpoint_path(paths)?;
-    bind_session_listener(&handoff_endpoint_path(&session_endpoint))
+    Ok(handoff_endpoint_path(&session_endpoint))
 }
 
 /// Resolve the SESSION endpoint listener the daemon serves.
@@ -415,16 +416,55 @@ pub(crate) async fn serve_session_endpoint_with_readiness(
     }
 }
 
+/// The daemon's dedicated handoff control plane (soldr#3102).
+///
+/// The broker gives the daemon [`DEFAULT_HANDOFF_ACK_DEADLINE`] (5 s) to
+/// acknowledge a passed connection and, on expiry, relinquishes the client
+/// connection ("abandoned at AwaitAck stage"). The handoff tasks used to run
+/// on the compile runtime, whose workers the embedded compile service parks
+/// in synchronous store-lock waits and artifact materialization on the
+/// cache-hit path. When every worker was parked, a freshly accepted handoff
+/// could not write its ACK inside the budget: the broker dropped the
+/// connection, the daemon logged `rejected broker connection handoff: Broken
+/// pipe`, and the wrapper failed with `Connection reset by peer` -- with
+/// broker, daemon, and client all alive. Serving the handoff endpoint on its
+/// own single-threaded runtime makes ACK latency independent of compile
+/// runtime saturation; only the *serving* of an adopted connection is
+/// scheduled onto the compile runtime.
+///
+/// [`DEFAULT_HANDOFF_ACK_DEADLINE`]: running_process::broker::server::DEFAULT_HANDOFF_ACK_DEADLINE
+pub(crate) struct HandoffControlPlane {
+    shutdown: Arc<tokio::sync::Notify>,
+}
+
+impl HandoffControlPlane {
+    /// Stop accepting handoffs. Named like `JoinHandle::abort` so callers
+    /// tear the SESSION and handoff endpoints down with one idiom.
+    pub(crate) fn abort(&self) {
+        self.shutdown.notify_one();
+    }
+}
+
+/// Bind the handoff endpoint on its own control-plane runtime and start the
+/// SESSION accept loop on the current (compile) runtime.
+///
+/// Returns the bind error synchronously: the handoff endpoint is bound
+/// before the SESSION task is spawned, so a failed bind leaves nothing
+/// running, exactly as when both listeners were bound up front.
 pub(crate) fn spawn_session_endpoint_servers(
     session_listener: SessionListener,
-    handoff_listener: SessionListener,
+    handoff_endpoint: String,
     readiness: CompileServiceReadiness,
     paths: SoldrPaths,
     mux: Arc<SessionMux>,
-) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
-    let handoff_readiness = readiness.clone();
-    let handoff_paths = paths.clone();
-    let handoff_mux = Arc::clone(&mux);
+) -> io::Result<(tokio::task::JoinHandle<()>, HandoffControlPlane)> {
+    let handoff = spawn_handoff_control_plane(
+        handoff_endpoint,
+        readiness.clone(),
+        paths.clone(),
+        Arc::clone(&mux),
+        tokio::runtime::Handle::current(),
+    )?;
     let session = tokio::spawn(async move {
         if let Err(error) =
             serve_session_endpoint_with_readiness(session_listener, readiness, paths, mux).await
@@ -432,28 +472,86 @@ pub(crate) fn spawn_session_endpoint_servers(
             tracing::warn!(target: "soldr::daemon", "SESSION endpoint serve ended: {error}");
         }
     });
-    let handoff = tokio::spawn(async move {
-        if let Err(error) = serve_handoff_endpoint_with_readiness(
-            handoff_listener,
-            handoff_readiness,
-            handoff_paths,
-            handoff_mux,
-        )
-        .await
-        {
-            tracing::warn!(target: "soldr::daemon", "handoff endpoint serve ended: {error}");
-        }
-    });
-    (session, handoff)
+    Ok((session, handoff))
 }
 
-/// Accept broker-to-daemon connection handoffs and dispatch every accepted
-/// client connection through the same SESSION handler as the proxy path.
+/// Start the handoff control plane: a dedicated thread running a
+/// single-threaded tokio runtime that binds `handoff_endpoint`, receives
+/// every broker handoff, acknowledges it, and schedules the adopted
+/// connection onto `compile_runtime` for serving.
+///
+/// Blocks until the endpoint is bound so the caller sees bind errors
+/// synchronously.
+pub(crate) fn spawn_handoff_control_plane(
+    handoff_endpoint: String,
+    service: CompileServiceReadiness,
+    paths: SoldrPaths,
+    mux: Arc<SessionMux>,
+    compile_runtime: tokio::runtime::Handle,
+) -> io::Result<HandoffControlPlane> {
+    let shutdown = Arc::new(tokio::sync::Notify::new());
+    let stop = Arc::clone(&shutdown);
+    let (bound_tx, bound_rx) = std::sync::mpsc::channel::<io::Result<()>>();
+    std::thread::Builder::new()
+        .name("soldr-daemon-handoff".to_owned())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    let _ = bound_tx.send(Err(error));
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                let listener = match bind_session_listener(&handoff_endpoint) {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        let _ = bound_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let _ = bound_tx.send(Ok(()));
+                tokio::select! {
+                    result = serve_handoff_endpoint_with_readiness(
+                        listener,
+                        service,
+                        paths,
+                        mux,
+                        compile_runtime,
+                    ) => {
+                        if let Err(error) = result {
+                            tracing::warn!(
+                                target: "soldr::daemon",
+                                "handoff endpoint serve ended: {error}"
+                            );
+                        }
+                    }
+                    () = stop.notified() => {}
+                }
+            });
+        })?;
+    bound_rx.recv().map_err(|_| {
+        io::Error::other("handoff control plane exited before binding its endpoint")
+    })??;
+    Ok(HandoffControlPlane { shutdown })
+}
+
+/// Accept broker-to-daemon connection handoffs on the current (control-plane)
+/// runtime, acknowledge each one, and dispatch the adopted client connection
+/// through the same SESSION handler as the proxy path on `compile_runtime`.
+///
+/// Nothing on this loop waits for the compile service: the receive, offer
+/// verification, and ACK complete here, and `compile_runtime` only receives
+/// the acknowledged connection. That is the property soldr#3102 depends on.
 pub(crate) async fn serve_handoff_endpoint_with_readiness(
     listener: SessionListener,
     service: CompileServiceReadiness,
     paths: SoldrPaths,
     mux: Arc<SessionMux>,
+    compile_runtime: tokio::runtime::Handle,
 ) -> io::Result<()> {
     use interprocess::local_socket::tokio::prelude::*;
 
@@ -475,14 +573,26 @@ pub(crate) async fn serve_handoff_endpoint_with_readiness(
         let paths = paths.clone();
         let mux = Arc::clone(&mux);
         let expected_service_name = expected_service_name.clone();
+        let compile_runtime = compile_runtime.clone();
         tokio::spawn(async move {
             match receive_handed_off_session(control, &expected_service_name).await {
                 Ok(client) => {
-                    if let Err(error) =
-                        serve_session_connection(client, &service, &paths, &mux).await
-                    {
-                        eprintln!("soldr-daemon: handed-off SESSION ended: {error}");
-                    }
+                    compile_runtime.spawn(async move {
+                        let client = match client.into_stream() {
+                            Ok(client) => client,
+                            Err(error) => {
+                                eprintln!(
+                                    "soldr-daemon: handed-off SESSION could not be adopted: {error}"
+                                );
+                                return;
+                            }
+                        };
+                        if let Err(error) =
+                            serve_session_connection(client, &service, &paths, &mux).await
+                        {
+                            eprintln!("soldr-daemon: handed-off SESSION ended: {error}");
+                        }
+                    });
                 }
                 Err(error) => {
                     eprintln!("soldr-daemon: rejected broker connection handoff: {error}");
@@ -588,10 +698,36 @@ async fn read_envelope_body(
     Ok(body)
 }
 
+/// A client connection the broker passed to the daemon: acknowledged on the
+/// control plane, not yet registered with the runtime that will serve it.
+///
+/// The conversion into a tokio stream happens on the compile runtime so the
+/// SESSION I/O registers with the reactor that polls it. The control
+/// connection itself never leaves the control-plane runtime.
+enum HandedOffClient {
+    /// Unix: the `SCM_RIGHTS` descriptor, verified against the framed offer.
+    Descriptor(crate::platform::ipc::handoff::ReceivedFd),
+    /// Windows: the `DuplicateHandle` value carried by the offer.
+    HandleValue(u64),
+}
+
+impl HandedOffClient {
+    fn into_stream(self) -> io::Result<interprocess::local_socket::tokio::Stream> {
+        match self {
+            Self::Descriptor(fd) => {
+                crate::platform::ipc::handoff::session_stream_from_received_fd(fd)
+            }
+            Self::HandleValue(value) => {
+                crate::platform::ipc::handoff::named_pipe_stream_from_handle_value(value)
+            }
+        }
+    }
+}
+
 async fn receive_handed_off_session(
     control: interprocess::local_socket::tokio::Stream,
     expected_service_name: &str,
-) -> io::Result<interprocess::local_socket::tokio::Stream> {
+) -> io::Result<HandedOffClient> {
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         // DuplicateHandle transport: the offer carries the duplicated
         // pipe handle directly.
@@ -603,12 +739,10 @@ async fn receive_handed_off_session(
                 "DuplicateHandle offer carried a null handle",
             ));
         }
-        let stream =
-            crate::platform::ipc::handoff::named_pipe_stream_from_handle_value(offer.handle_value)?;
-        // A positive ACK transfers ownership. Do not send it until the
-        // duplicated handle is a usable Tokio SESSION stream.
+        // A positive ACK transfers ownership; the handle becomes a tokio
+        // stream on the compile runtime that serves it.
         accept_handoff_offer_async(&mut control, &offer).await?;
-        Ok(stream)
+        Ok(HandedOffClient::HandleValue(offer.handle_value))
     } else {
         // SCM_RIGHTS transport: receive the descriptor (with its token
         // prelude) on the blocking pool, then verify the token against
@@ -632,15 +766,14 @@ async fn receive_handed_off_session(
                 "SCM_RIGHTS token did not match the framed handoff offer",
             ));
         }
-        let stream =
-            match crate::platform::ipc::handoff::session_stream_from_received_fd(received_fd) {
-                Ok(stream) => stream,
-                Err(error) => return Err(error),
-            };
-        // A positive ACK transfers ownership. Do not send it until the
-        // received descriptor is a usable Tokio SESSION stream.
-        accept_handoff_offer_async(&mut control, &offer).await?;
-        Ok(stream)
+        // A positive ACK transfers ownership. The descriptor becomes a
+        // tokio stream on the compile runtime that serves it; an ACK the
+        // broker no longer wants closes the descriptor here.
+        if let Err(error) = accept_handoff_offer_async(&mut control, &offer).await {
+            crate::platform::ipc::handoff::close_received_fd(received_fd);
+            return Err(error);
+        }
+        Ok(HandedOffClient::Descriptor(received_fd))
     }
 }
 

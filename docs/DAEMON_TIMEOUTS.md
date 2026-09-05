@@ -156,3 +156,21 @@ Do not work around it by starting one broker per root.
 All broker, daemon, transport, version-skew, retirement, initialization, and
 protocol failures are hard failures for cacheable compiler work. There is no
 rollout gate and no direct-daemon or direct-compiler fallback.
+
+## `broker SESSION compile failed: Connection reset by peer` with every process alive (soldr#3102)
+
+Signature: a wrapper fails with `Connection reset by peer (os error 104)`,
+`daemon-spawn.log` ends with `rejected broker connection handoff: Broken pipe
+(os error 32)` and shows no panic or `SIGTERM received`, and the daemon still
+answers `soldr cache shutdown` at the end of the job. Nothing died: the broker
+gave the daemon 5 s (`DEFAULT_HANDOFF_ACK_DEADLINE`) to acknowledge a passed
+connection, the acknowledgement was late, and the broker relinquished the
+connection (`~/.soldr/broker/broker-spawn.log`: `handoff fallback: abandoned
+at AwaitAck stage`). The daemon then hit `EPIPE` writing the ACK and closed its
+copy, which is what the wrapper saw as a reset.
+
+Since soldr#3102 the daemon acknowledges handoffs on a dedicated control-plane
+runtime, so compile-runtime workers parked in the embedded cache's synchronous
+hit path (store-lock waits, artifact materialization) no longer delay the ACK.
+If the signature reappears, the broker log above says which side was late.
+
