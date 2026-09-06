@@ -7,8 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::{SoldrError, TargetTriple};
-
-pub(crate) const TOOLCHAIN_CHANNEL_MANIFEST: &str = "lib/rustlib/multirust-channel-manifest.toml";
+use crate::toolchain_readiness::{classify_toolchain_dir, ToolchainReadiness};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DylintToolchainReadiness {
@@ -64,28 +63,20 @@ pub(crate) fn dylint_toolchain_readiness_at(
         .and_then(|name| name.to_str())
         .unwrap_or(channel)
         .to_string();
-    let compiler = directory
-        .join("bin")
-        .join(crate::platform::executable::name::native("rustc"));
-    let manifest = directory.join(TOOLCHAIN_CHANNEL_MANIFEST);
-    let mut missing = Vec::new();
-    if !manifest.is_file() {
-        missing.push(TOOLCHAIN_CHANNEL_MANIFEST);
-    }
-    if !compiler.is_file() {
-        missing.push("bin/rustc");
-    }
-    if missing.is_empty() {
-        DylintToolchainReadiness::Ready {
+    match classify_toolchain_dir(&directory) {
+        ToolchainReadiness::Ready => DylintToolchainReadiness::Ready {
             qualified,
             directory,
-        }
-    } else {
-        DylintToolchainReadiness::Partial {
+        },
+        ToolchainReadiness::Partial(missing) => DylintToolchainReadiness::Partial {
             qualified,
             directory,
-            missing,
-        }
+            missing: missing.paths(),
+        },
+        // The candidate was selected only after `is_dir`; a deletion race is
+        // indistinguishable from no installed selected toolchain and must not
+        // be reclassified as ready.
+        ToolchainReadiness::Missing => DylintToolchainReadiness::Missing,
     }
 }
 

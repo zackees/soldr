@@ -9,4 +9,3 @@ mod events;
 mod journal_hygiene;
 mod pid_liveness;
 mod root_acquire;
-mod spawn_log;

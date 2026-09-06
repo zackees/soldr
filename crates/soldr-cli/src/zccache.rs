@@ -2,14 +2,10 @@
 //! Extracted from `main.rs` as part of issue #339.
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::zccache_lifecycle::ZccachePrivateEnv;
 use crate::{non_empty_env_path, RUSTC_WRAPPER_OVERRIDE_ENV_VAR};
 use std::ffi::OsStr;
 
-pub(crate) use crate::zccache_lifecycle::{
-    command_stderr, run_zccache_command_strings_in_cache_dir_with_daemon_name, ZccacheBuildSession,
-    ZCCACHE_DAEMON_NAMESPACE_ENV_VAR,
-};
+pub(crate) use crate::build_cache_session::BuildCacheSession;
 
 pub(crate) const SOLDR_CACHE_LIFECYCLE_ENV_VAR: &str = "SOLDR_CACHE_LIFECYCLE";
 pub(crate) const SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR: &str =
@@ -244,23 +240,6 @@ impl ZccacheChildEnv {
             cargo.env(crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR, root);
         }
     }
-
-    pub(crate) fn private_env_assignments(&self) -> Vec<ZccachePrivateEnv> {
-        let mut entries = Vec::new();
-        if let Some(value) = self.path_remap {
-            entries.push(ZccachePrivateEnv::new(
-                crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR,
-                value,
-            ));
-        }
-        if let Some(root) = self.worktree_root.as_ref() {
-            entries.push(ZccachePrivateEnv::new(
-                crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR,
-                root.display().to_string(),
-            ));
-        }
-        entries
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -272,7 +251,7 @@ pub(crate) struct ManagedZccacheWrapperPlan {
     /// save/restore (rust_plan.rs) and native-C caching (native_cc.rs)
     /// need. `wrapper_path` is a compiler-named soldr multicall shim so the
     /// wrapper contract cannot be confused with a different multicall verb.
-    pub(crate) session: ZccacheBuildSession,
+    pub(crate) session: BuildCacheSession,
     pub(crate) child_env: ZccacheChildEnv,
     pub(crate) wrapper_path: std::path::PathBuf,
     /// Canonically named daemon image inherited by compiler shims. A wrapper's
@@ -299,7 +278,7 @@ impl RustcWrapperPlan {
         matches!(self, Self::ManagedZccache(_))
     }
 
-    pub(crate) fn session(&self) -> Option<&ZccacheBuildSession> {
+    pub(crate) fn session(&self) -> Option<&BuildCacheSession> {
         match self {
             Self::ManagedZccache(plan) => Some(&plan.session),
             Self::Custom { .. } | Self::Disabled => None,
@@ -330,7 +309,6 @@ impl RustcWrapperPlan {
                 cargo.env_remove(crate::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR);
                 remove_managed_zccache_env(cargo);
                 cargo.env_remove(SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR);
-                cargo.env_remove(ZCCACHE_DAEMON_NAMESPACE_ENV_VAR);
                 plan.child_env.apply_to_command(cargo);
             }
             Self::Custom {
@@ -451,17 +429,15 @@ async fn prepare_zccache_build(
     } else {
         None
     };
-    let cache_dir_env = explicit_zccache_cache_dir.is_some() || private_override.is_some();
     let zccache_dir = explicit_zccache_cache_dir
         .or(private_override)
         .unwrap_or(zccache_base_dir);
     std::fs::create_dir_all(&zccache_dir)?;
     std::fs::create_dir_all(zccache_dir.join("logs"))?;
 
-    let session = ZccacheBuildSession {
+    let session = BuildCacheSession {
         // Retained for struct compatibility only — nothing spawns it now.
         cache_dir: zccache_dir.clone(),
-        cache_dir_env,
         session_id: synthetic_build_session_id(),
         session_log_path: crate::cache_lib::session_log_path(&zccache_dir),
         journal_path: crate::cache_lib::session_journal_path(&zccache_dir),
@@ -521,99 +497,6 @@ fn synthetic_build_session_id() -> String {
     hasher.update(&std::process::id().to_le_bytes());
     hasher.update(&nanos.to_le_bytes());
     hex::encode(&hasher.finalize().as_bytes()[..12])
-}
-
-pub(crate) fn private_zccache_cache_dir(
-    base_dir: &std::path::Path,
-    daemon_name: &str,
-) -> std::path::PathBuf {
-    base_dir.join("private").join(daemon_name)
-}
-
-pub(crate) fn resolve_private_zccache_daemon_name(
-    override_name: Option<&str>,
-    soldr_binary: &std::path::Path,
-    zccache_binary: &std::path::Path,
-    base_cache_dir: &std::path::Path,
-) -> String {
-    if let Some(name) = override_name.and_then(sanitize_zccache_daemon_name) {
-        return name;
-    }
-
-    let mut hasher = zccache::hash::StreamHasher::new();
-    hasher.update(b"soldr-private-zccache-v1\0");
-    hash_path_component(&mut hasher, soldr_binary);
-    let zccache_identity = zccache_binary_identity_path(zccache_binary, base_cache_dir);
-    hash_path_component(&mut hasher, zccache_identity.as_ref());
-    let digest = hasher.finalize();
-    let hex = digest.to_hex();
-    format!("soldr-dev-{}", &hex[..16])
-}
-
-fn zccache_binary_identity_path<'a>(
-    zccache_binary: &'a std::path::Path,
-    base_cache_dir: &'a std::path::Path,
-) -> std::borrow::Cow<'a, std::path::Path> {
-    if let Some(root) = soldr_root_from_zccache_base_dir(base_cache_dir) {
-        if let Ok(relative) = zccache_binary.strip_prefix(&root) {
-            return std::borrow::Cow::Owned(relative.to_path_buf());
-        }
-    }
-    std::borrow::Cow::Borrowed(zccache_binary)
-}
-
-fn soldr_root_from_zccache_base_dir(
-    base_cache_dir: &std::path::Path,
-) -> Option<std::path::PathBuf> {
-    if !path_file_name_eq(base_cache_dir, "zccache") {
-        return None;
-    }
-    let cache_dir = base_cache_dir.parent()?;
-    if !path_file_name_eq(cache_dir, "cache") {
-        return None;
-    }
-    cache_dir.parent().map(std::path::Path::to_path_buf)
-}
-
-fn path_file_name_eq(path: &std::path::Path, expected: &str) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.eq_ignore_ascii_case(expected))
-}
-
-fn hash_path_component(hasher: &mut zccache::hash::StreamHasher, path: &std::path::Path) {
-    let value = path.display().to_string();
-    let value =
-        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-            value.to_ascii_lowercase()
-        } else {
-            value
-        };
-    hasher.update(value.as_bytes());
-    hasher.update(b"\0");
-}
-
-pub(crate) fn sanitize_zccache_daemon_name(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let sanitized: String = trimmed
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if sanitized.len() <= 32 {
-        return Some(sanitized);
-    }
-    let prefix: String = sanitized.chars().take(23).collect();
-    let short = zccache::hash::hash_bytes(trimmed.as_bytes()).to_hex();
-    Some(format!("{prefix}-{}", &short[..8]))
 }
 
 pub(crate) fn managed_zccache_cache_dir(
@@ -780,93 +663,6 @@ mod tests {
         assert_eq!(
             resolve_worktree_root_env(Some(OsStr::new("/custom/root")), cwd),
             None
-        );
-    }
-
-    #[test]
-    fn child_env_private_assignments_match_generated_zccache_env() {
-        let env = ZccacheChildEnv {
-            path_remap: Some("auto"),
-            worktree_root: Some(std::path::PathBuf::from("/repo")),
-        };
-        let entries = env.private_env_assignments();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].key, crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR);
-        assert_eq!(entries[0].value, "auto");
-        assert_eq!(
-            entries[1].key,
-            crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR
-        );
-        assert_eq!(entries[1].value, "/repo");
-    }
-
-    #[test]
-    fn private_daemon_name_is_stable_sanitized_and_short() {
-        let generated = resolve_private_zccache_daemon_name(
-            None,
-            std::path::Path::new("/repo/target/debug/soldr"),
-            std::path::Path::new("/repo/target/debug/zccache"),
-            std::path::Path::new("/tmp/cache/zccache"),
-        );
-        assert!(generated.starts_with("soldr-dev-"));
-        assert!(generated.len() <= 32);
-        assert_eq!(
-            generated,
-            resolve_private_zccache_daemon_name(
-                None,
-                std::path::Path::new("/repo/target/debug/soldr"),
-                std::path::Path::new("/repo/target/debug/zccache"),
-                std::path::Path::new("/tmp/cache/zccache"),
-            )
-        );
-        assert_eq!(
-            generated,
-            resolve_private_zccache_daemon_name(
-                None,
-                std::path::Path::new("/repo/target/debug/soldr"),
-                std::path::Path::new("/repo/target/debug/zccache"),
-                std::path::Path::new("/tmp/restored-cache/zccache"),
-            ),
-            "save/load restores into a new SOLDR_CACHE_DIR must reuse the same private subtree",
-        );
-        assert_eq!(
-            resolve_private_zccache_daemon_name(
-                None,
-                std::path::Path::new("/repo/target/debug/soldr"),
-                std::path::Path::new("/tmp/cache-cold/bin/zccache-1.12.12/zccache"),
-                std::path::Path::new("/tmp/cache-cold/cache/zccache"),
-            ),
-            resolve_private_zccache_daemon_name(
-                None,
-                std::path::Path::new("/repo/target/debug/soldr"),
-                std::path::Path::new("/tmp/cache-warm/bin/zccache-1.12.12/zccache"),
-                std::path::Path::new("/tmp/cache-warm/cache/zccache"),
-            ),
-            "managed zccache binaries under different SOLDR_CACHE_DIR roots must hash by runtime identity, not absolute path",
-        );
-        assert_ne!(
-            resolve_private_zccache_daemon_name(
-                None,
-                std::path::Path::new("/repo/target/debug/soldr"),
-                std::path::Path::new("/tmp/cache/bin/zccache-local-abc/zccache"),
-                std::path::Path::new("/tmp/cache/cache/zccache"),
-            ),
-            resolve_private_zccache_daemon_name(
-                None,
-                std::path::Path::new("/repo/target/debug/soldr"),
-                std::path::Path::new("/tmp/cache/bin/zccache-local-def/zccache"),
-                std::path::Path::new("/tmp/cache/cache/zccache"),
-            ),
-            "different local zccache runtime labels should still get distinct private daemons",
-        );
-        assert_eq!(
-            resolve_private_zccache_daemon_name(
-                Some(" team/dev soldr "),
-                std::path::Path::new("/ignored/soldr"),
-                std::path::Path::new("/ignored/zccache"),
-                std::path::Path::new("/ignored/cache"),
-            ),
-            "team_dev_soldr"
         );
     }
 

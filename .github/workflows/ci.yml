@@ -814,6 +814,7 @@ jobs:
       # is the only place the GNU lifecycle can be prepared on the host shape
       # it targets.
       assert_native_gnu_prepare: true
+      require_wasm32_wasip1_threads_materialization: true
 
   # ---------- Linux x64 (musl) ----------
   # soldr#1978 item 3. This lane had a paired `target-run` on `ubuntu-24.04`
@@ -863,6 +864,7 @@ jobs:
       runs_on: ubuntu-24.04-arm
       target: aarch64-unknown-linux-musl
       artifact_name: soldr-ci-e2e-linux-arm64-musl
+      require_wasm32_wasip1_threads_materialization: true
 
   # ---------- macOS x64 ----------
   # Owner mandate (2026-09-02): no GitHub Actions job may run on a macos-*
@@ -942,6 +944,7 @@ jobs:
       # critical-path tail by ~8 min. Neither lane enables
       # `run_pep517_smoke`, so `run_followup: false` drops nothing.
       replay_partitions: '[{"label":"1-of-3","value":"hash:1/3","run_followup":false},{"label":"2-of-3","value":"hash:2/3","run_followup":false},{"label":"3-of-3","value":"hash:3/3","run_followup":false}]'
+      require_wasm32_wasip1_threads_materialization: true
 
   # ---------- Windows x64 (GNU) ----------
   # soldr#2336: the Linux-hosted MinGW bundle is a blessed canonical target.
@@ -969,6 +972,7 @@ jobs:
       # The full native GNU archive replay needs more than the shared 30-minute
       # target-run default after cold Cargo front doors are serialized (#2701).
       extended_replay: true
+      require_wasm32_wasip1_threads_materialization: true
       # Fixture-local cache roots persist for a test process lifetime. Three
       # fresh workers keep each shard below hosted Windows disk capacity while
       # hash partitioning still covers the complete archive exactly once (#2704).
@@ -1002,6 +1006,7 @@ jobs:
       # critical-path tail by ~8 min. Neither lane enables
       # `run_pep517_smoke`, so `run_followup: false` drops nothing.
       replay_partitions: '[{"label":"1-of-3","value":"hash:1/3","run_followup":false},{"label":"2-of-3","value":"hash:2/3","run_followup":false},{"label":"3-of-3","value":"hash:3/3","run_followup":false}]'
+      require_wasm32_wasip1_threads_materialization: true
 
   # ---------- `soldr wheel` cross-verification (soldr#2139 acceptance) ----------
   #

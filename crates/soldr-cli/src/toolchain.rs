@@ -56,6 +56,7 @@ struct ToolchainIdentity {
     toolchain_dir: PathBuf,
     rustup_binary: FileIdentity,
     rustc_binary: FileIdentity,
+    channel_manifest: FileIdentity,
     components_manifest: FileIdentity,
 }
 
@@ -119,11 +120,13 @@ pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, S
     };
     std::fs::create_dir_all(&cache_root)?;
     let cwd = std::env::current_dir()?;
-    zccache::cli::commands::run_embedded_rustfmt_with_runner(
+    // soldr#2899: the daemon-free `formatter` API, not the CLI dispatcher.
+    // Soldr keeps ownership of child-process policy through the runner.
+    zccache::formatter::run_rustfmt_cached_with_runner(
         &rustfmt,
         args,
         &cwd,
-        &cache_root,
+        Some(&cache_root),
         |command| {
             crate::binaries::apply_resolved_toolchain_homes(command, &rustfmt);
             apply_zccache_child_env(command)
@@ -526,12 +529,21 @@ fn toolchain_identity(
     key: &CargoPrepareMemoKey,
     toolchain_dir: &Path,
 ) -> Option<ToolchainIdentity> {
+    if !matches!(
+        crate::toolchain_readiness::classify_toolchain_dir(toolchain_dir),
+        crate::toolchain_readiness::ToolchainReadiness::Ready
+    ) {
+        return None;
+    }
     let rustc = rustc_binary_path(toolchain_dir)?;
+    let channel_manifest =
+        toolchain_dir.join(crate::toolchain_readiness::TOOLCHAIN_CHANNEL_MANIFEST);
     let components = toolchain_dir.join("lib").join("rustlib").join("components");
     Some(ToolchainIdentity {
         toolchain_dir: normalize_existing_path(toolchain_dir),
         rustup_binary: file_identity(&key.rustup_binary, false)?,
         rustc_binary: file_identity(&rustc, false)?,
+        channel_manifest: file_identity(&channel_manifest, true)?,
         components_manifest: file_identity(&components, true)?,
     })
 }

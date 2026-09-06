@@ -67,6 +67,15 @@ on:
           instead replays the same positively-owned partition inside one
           guest script via ci/macos_recovery_run.py (soldr#3078); see the
           dedicated step group near the end of this job.
+      require_wasm32_wasip1_threads_materialization:
+        type: boolean
+        required: false
+        default: false
+        description: >-
+          Provision wasm32-wasip1-threads through the packaged Soldr binary
+          and make the #2919 managed materialization regression fail if it is
+          unavailable. Native Linux and Windows archive replays opt in;
+          ordinary local runs may safely skip without mutating rustup state.
       replay_partitions:
         type: string
         required: false
@@ -111,6 +120,7 @@ jobs:
       # tools into hundreds of fixture roots (soldr#2704). Dedicated managed-
       # tooling tests remove this escape hatch before asserting injection.
       SOLDR_USE_SYSTEM_CMAKE: "1"
+      SOLDR_REQUIRE_WASM32_WASIP1_THREADS_MATERIALIZATION: ${{ inputs.require_wasm32_wasip1_threads_materialization && '1' || '0' }}
       REPLAY_PARTITION: ${{ matrix.replay.value }}
       REPLAY_PARTITION_LABEL: ${{ matrix.replay.label }}
     steps:
@@ -267,6 +277,21 @@ jobs:
             echo "RUSTC=$rustc_bin"
             echo "RUSTUP_TOOLCHAIN=$channel"
           } >> "$GITHUB_ENV"
+
+      # soldr#2919: this is deliberately lane-local rather than a global
+      # rust-toolchain.toml target. The source-only Wasm regression compiles
+      # under the native packaged Soldr while replaying this complete archive,
+      # so its standard library must be installed in the exact channel the
+      # preceding `toolchain ensure` just verified. Keep the command in a
+      # tested helper: workflow YAML only provides orchestration.
+      - name: Provision Wasm target for materialization regression (soldr#2919)
+        if: ${{ inputs.require_wasm32_wasip1_threads_materialization }}
+        shell: bash
+        run: >-
+          python .github/scripts/target_run_add_target.py
+          --soldr "$SOLDR_BIN"
+          --channel "$RUSTUP_TOOLCHAIN"
+          --target wasm32-wasip1-threads
 
       - name: Verify pinned Rust toolchain
         if: ${{ inputs.target_execution != 'x86_64-recovery' }}

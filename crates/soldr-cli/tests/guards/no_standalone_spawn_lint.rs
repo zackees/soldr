@@ -21,6 +21,24 @@ const FORBIDDEN_ENTRY_POINTS: &[&str] = &[
 const FORBIDDEN_EXTERNAL_ZCCACHE_BINARY_ENV_VARS: &[&str] =
     &["SOLDR_TEST_ZCCACHE_BIN", "SOLDR_ZCCACHE_BIN"];
 
+/// The one place `SOLDR_ZCCACHE_BIN` is allowed to appear as a literal.
+///
+/// It is a documented legacy compatibility name (docs/API.md) that Soldr
+/// *scrubs* from child processes rather than honouring — `zccache.rs` calls
+/// `env_remove` on it — so the constant has to be spelled somewhere. Widening
+/// this lint to every workspace crate (soldr#2901) brought that declaration
+/// into scope for the first time; allowing the declaration line, rather than
+/// dropping the name from the list, keeps every *use* site still forbidden.
+const ALLOWED_BINARY_ENV_VAR_DECLARATION: &str = "pub const ZCCACHE_BINARY_ENV_VAR: &str =";
+
+/// soldr#2899 removed the last `zccache::cli::*` call site (the rustfmt
+/// adapter now uses the daemon-free `zccache::formatter` API) and soldr#2901
+/// dropped the `cli` feature, so the module no longer compiles into Soldr at
+/// all. Naming the module prefix — not just the five entry points above —
+/// makes a re-entry a source-lint failure rather than a link error at the
+/// bottom of a CI log.
+const FORBIDDEN_ZCCACHE_CLI_MODULE: &str = "zccache::cli";
+
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -49,9 +67,19 @@ fn code_lines(body: &str) -> impl Iterator<Item = (usize, &str)> {
 
 #[test]
 fn soldr_never_enters_the_upstream_zccache_cli() {
-    let root = common::crate_root();
+    // soldr#2901: scan every workspace crate, not just soldr-cli. The three
+    // crates that depended on zccache could each have re-entered the CLI.
+    let crate_root = common::crate_root();
+    let root = crate_root
+        .parent()
+        .expect("soldr-cli crate root lies under workspace crates/");
     let mut files = Vec::new();
-    collect_rs_files(&root.join("src"), &mut files);
+    for crate_dir in fs::read_dir(root)
+        .expect("read workspace crates directory")
+        .flatten()
+    {
+        collect_rs_files(&crate_dir.path().join("src"), &mut files);
+    }
     assert!(!files.is_empty(), "lint found no source files");
 
     let mut offenders = Vec::new();
@@ -60,8 +88,8 @@ fn soldr_never_enters_the_upstream_zccache_cli() {
             continue;
         };
         let relative = file
-            .strip_prefix(&root)
-            .expect("source file lies under crate root")
+            .strip_prefix(root)
+            .expect("source file lies under the workspace crates directory")
             .to_string_lossy()
             .replace('\\', "/");
         for (index, line) in code_lines(&body) {
@@ -69,6 +97,15 @@ fn soldr_never_enters_the_upstream_zccache_cli() {
                 if line.contains(forbidden) {
                     offenders.push(format!("{relative}:{}: references {forbidden}", index + 1));
                 }
+            }
+            if line.contains(FORBIDDEN_ZCCACHE_CLI_MODULE) {
+                offenders.push(format!(
+                    "{relative}:{}: references {FORBIDDEN_ZCCACHE_CLI_MODULE}",
+                    index + 1
+                ));
+            }
+            if line.contains(ALLOWED_BINARY_ENV_VAR_DECLARATION) {
+                continue;
             }
             for env_var in FORBIDDEN_EXTERNAL_ZCCACHE_BINARY_ENV_VARS {
                 if line.contains(env_var) {
