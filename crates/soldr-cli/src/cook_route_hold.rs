@@ -67,7 +67,7 @@ pub(crate) fn hold_daemon_route_for_cook() -> Result<String, SoldrError> {
     )
     .map_err(|err| {
         SoldrError::Other(format!(
-            "soldr-daemon route {service_name} was published but did not become status-ready for soldr cook: {err:?}"
+            "soldr-daemon route {service_name} was published but did not become status-ready for soldr cook: {err}"
         ))
     })?;
     Ok(service_name)

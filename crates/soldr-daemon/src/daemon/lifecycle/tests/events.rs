@@ -314,6 +314,110 @@ mod status_retry_tests {
         );
     }
 
+    // soldr#3126. The negotiated path is entered only after the broker has
+    // told the caller the route is published, and the daemon writes its route
+    // claim part-way through `run_server` -- after hashing its own image and
+    // binding the session listener. So the first probes legitimately land in a
+    // window where the claim is not readable yet and `client::status` returns
+    // its 2 s reply deadline as `WouldBlock`. Gating the retry on
+    // `expected.is_some()` made that first probe terminal and burned none of
+    // the 30 s budget.
+    #[test]
+    fn a_negotiated_start_retries_before_the_route_claim_is_readable() {
+        let mut attempts = 0;
+        let mut identity_reads = 0;
+        let result = status_with_retiring_retry(
+            || {
+                attempts += 1;
+                if attempts <= 3 {
+                    Err(ClientError::Io(Error::new(
+                        ErrorKind::WouldBlock,
+                        "the daemon accepted but has not replied yet",
+                    )))
+                } else {
+                    Ok(status(42))
+                }
+            },
+            || {
+                identity_reads += 1;
+                // The claim only becomes readable once the daemon gets far
+                // enough through start-up to publish it.
+                (identity_reads > 3).then_some((42, 7))
+            },
+            Duration::from_secs(5),
+            true,
+        )
+        .expect("the budget must cover a daemon that is still publishing its claim");
+        assert_eq!(result.pid, 42);
+        assert!(
+            attempts > 1,
+            "the first pre-claim WouldBlock must not be terminal; attempts={attempts}"
+        );
+    }
+
+    // The same platform deadline surfaces as `TimedOut` rather than
+    // `WouldBlock` on some transports (`client::is_deadline_error` treats both
+    // as deadline expiry), so both spellings must be retried.
+    #[test]
+    fn a_negotiated_start_treats_timed_out_as_a_not_yet_answer() {
+        let mut attempts = 0;
+        let result = status_with_retiring_retry(
+            || {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(ClientError::Io(Error::new(
+                        ErrorKind::TimedOut,
+                        "named pipe read deadline",
+                    )))
+                } else {
+                    Ok(status(42))
+                }
+            },
+            || Some((42, 7)),
+            Duration::from_secs(5),
+            true,
+        )
+        .expect("a pipe read deadline is not a terminal transport fault");
+        assert_eq!(result.pid, 42);
+        assert_eq!(attempts, 2);
+    }
+
+    // The budget is the contract: a negotiated start that never sees a claim
+    // must still spend the whole timeout before reporting failure, otherwise
+    // the caller-visible wait is the 2 s reply deadline rather than the 30 s
+    // readiness budget it asked for.
+    #[test]
+    fn a_negotiated_start_spends_its_whole_budget_before_failing() {
+        let timeout = Duration::from_millis(200);
+        let started = std::time::Instant::now();
+        let mut attempts = 0;
+        let result = status_with_retiring_retry(
+            || {
+                attempts += 1;
+                Err(ClientError::Io(Error::new(
+                    ErrorKind::WouldBlock,
+                    "never becomes ready",
+                )))
+            },
+            || None,
+            timeout,
+            true,
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            result.is_err(),
+            "it must still fail once the budget is gone"
+        );
+        assert!(
+            elapsed >= timeout,
+            "must not give up early: waited {elapsed:?} of {timeout:?}"
+        );
+        assert!(
+            attempts > 1,
+            "the budget must be spent on retries; attempts={attempts}"
+        );
+    }
+
     #[test]
     fn shutdown_diagnostic_reports_the_latest_phase_for_the_responder() {
         let temp = tempfile::TempDir::new().expect("tempdir");

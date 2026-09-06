@@ -20,8 +20,8 @@ pub use journal_hygiene::{detect_unclean_shutdown, rotate_lifecycle_journal};
 #[cfg(test)]
 pub(crate) use readiness::status_with_retiring_retry;
 pub use readiness::{
-    status_after_negotiated_route, status_after_route_ready, START_STATUS_READY_TIMEOUT,
-    STATUS_RETIRING_RETRY_TIMEOUT,
+    status_after_negotiated_route, status_after_route_ready, NegotiatedRouteError,
+    START_STATUS_READY_TIMEOUT, STATUS_RETIRING_RETRY_TIMEOUT,
 };
 pub use root_ownership::{RootAcquireOutcome, RootOwnershipGuard};
 #[cfg(test)]
