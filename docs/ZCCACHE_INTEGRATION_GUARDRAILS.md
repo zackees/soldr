@@ -63,6 +63,14 @@ gh workflow run perf-matrix.yml -f platforms=linux -f fixtures=medium -f scenari
   requests use the service embedded in soldr-daemon, `soldr zccache` enters the
   vendored CLI only through its gated in-process surface, and no soldr source
   may reach a standalone zccache-daemon spawn path.
+- `embedded-compiler-admission`: zccache owns the sole compiler capacity and
+  shared/exclusive scheduler, in its capacity-then-resource-lock order. Soldr
+  contributes only its product-specific Rust predicate -- `kernal_api` and the
+  measured heavy `soldr_cli` / `soldr_daemon` units -- through zccache's
+  post-hit host-classifier hook, so cache hits bypass both the hook and
+  compiler admission. This is the ownership decision for soldr#2781 and #2932;
+  it does not introduce an external zccache executable, download, or fallback
+  (soldr#2903).
 - `embedded-session-env`: locks the cargo child environment and embedded
   compile-stat session summaries. `RUSTC_WRAPPER` routes through soldr,
   external zccache binary/session variables are cleared, and
