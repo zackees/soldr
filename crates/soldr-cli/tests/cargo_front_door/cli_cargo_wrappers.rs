@@ -1168,8 +1168,21 @@ fn no_cache_bypasses_wrapper_and_zccache() {
         !log.contains("zccache start"),
         "no-cache front door should not start zccache: {log}"
     );
+    // Parse the wrapper slot instead of substring-matching the soldr binary
+    // path against the whole log: on the Recovery guest SOLDR_BIN is
+    // /tmp/soldr and the fixture temp dirs live under
+    // /Volumes/Work/tmp/soldr-..., so every log line contains the binary
+    // path as a substring even though `wrapper=` is empty (soldr#3135).
+    let wrapper_slots_empty = log
+        .lines()
+        .filter(|line| line.contains("wrapper="))
+        .all(|line| {
+            line.split_once("wrapper=")
+                .and_then(|(_, rest)| rest.split(' ').next())
+                .is_none_or(str::is_empty)
+        });
     assert!(
-        !log.contains(common::soldr_bin().to_string_lossy().as_ref()),
+        wrapper_slots_empty,
         "no-cache front door should not set soldr as wrapper: {log}"
     );
     assert!(
