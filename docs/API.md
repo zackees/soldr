@@ -1175,9 +1175,31 @@ automatically before launching the child build. A successful preparation is
 memoized under the Soldr cache, so an unchanged warm invocation launches no
 Rustup subprocesses. The memo is invalidated when the channel, profile,
 component or target requirements, explicit `+toolchain`, effective Rustup
-home/binary, or installed toolchain identity changes. Failed preparation is
-never memoized. `soldr toolchain prepare` and `ensure` remain explicit,
-unconditional orchestrators and also handle `[soldr.plugins]`.
+home/binary, or installed toolchain identity changes. That identity includes
+Rustup's authoritative `lib/rustlib/multirust-channel-manifest.toml` and the
+`lib/rustlib/components` manifest, in addition to the native compiler binary.
+Failed preparation is never memoized. `soldr toolchain prepare` and `ensure`
+remain explicit, unconditional orchestrators and also handle `[soldr.plugins]`.
+
+#### Toolchain readiness and recovery
+
+Soldr uses one filesystem contract before Dylint, blessed target setup, or a
+Cargo preparation memo may reuse a selected toolchain directory:
+
+| State | Directory | Channel manifest | Native `rustc` | Action |
+|---|---|---|---|---|
+| Missing | absent | n/a | n/a | install may create it |
+| Partial | present | either/both absent | either/both absent | never reuse or memoize it |
+| Ready | present | present | present | callers may perform their additional checks |
+
+Cargo additionally requires `lib/rustlib/components` before it writes or
+accepts its preparation memo. A partial directory under a caller-selected
+`RUSTUP_HOME` is fail-closed: Soldr reports the missing evidence and exact
+directory, but does not uninstall or reinstall shared user state. Recover with
+`soldr rustup toolchain uninstall <channel>` followed by `soldr toolchain
+install`, or repair the stated directory using the caller's toolchain manager.
+Soldr-managed private homes may retain their existing automatic interrupted-
+install recovery.
 
 Plugin installs are bootstrap/dev-tool acquisition, not project compilation.
 They invoke the directly resolved cargo binary and clear inherited

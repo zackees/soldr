@@ -15,30 +15,61 @@
 //! later run kept failing the same way: a permanent wedge.
 //!
 //! This module makes the install explicit and sequential
-//! ([`ensure_pinned_toolchain_installed`]), and self-heals the wedged
-//! partial state left behind by older soldr versions or an interrupted
-//! bootstrap (uninstall + reinstall when the toolchain directory exists
-//! without a rustc). The probe, the install, and
+//! ([`ensure_pinned_toolchain_installed`]), and recovers a wedged partial
+//! state only in Soldr-managed private homes. Caller-selected shared homes
+//! fail closed with explicit recovery guidance instead of automatic removal.
+//! The probe, the install, and
 //! [`crate::prepare_cmd::rustup_add_target`] all force the same
 //! `RUSTUP_HOME` (caller env if set, soldr-managed otherwise), so the
 //! toolchain the probe inspects is the toolchain the install writes and
 //! the target add mutates.
+//!
+//! ## Shared filesystem contract (soldr#2977)
+//!
+//! All callers classify a selected directory with the same evidence: `Missing`
+//! means the directory is absent; `Ready` requires both
+//! `lib/rustlib/multirust-channel-manifest.toml` and native `bin/rustc`; and
+//! `Partial` means the directory exists but either or both files are absent.
+//! Cargo's preparation memo additionally requires and fingerprints its
+//! `lib/rustlib/components` manifest. A caller-selected `RUSTUP_HOME` is never
+//! destructively repaired automatically: the error names the exact directory
+//! and explicit recovery command.
 
 use crate::core::{run_installer_command, InstallerWatchdogConfig, SoldrError, SoldrPaths};
 use std::path::{Path, PathBuf};
 
+pub(crate) const TOOLCHAIN_CHANNEL_MANIFEST: &str = "lib/rustlib/multirust-channel-manifest.toml";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MissingToolchainEvidence {
+    pub(crate) channel_manifest: bool,
+    pub(crate) native_rustc: bool,
+}
+
+impl MissingToolchainEvidence {
+    pub(crate) fn paths(self) -> Vec<&'static str> {
+        let mut paths = Vec::new();
+        if self.channel_manifest {
+            paths.push(TOOLCHAIN_CHANNEL_MANIFEST);
+        }
+        if self.native_rustc {
+            paths.push("bin/rustc");
+        }
+        paths
+    }
+}
+
 /// Where the pinned toolchain stands in the effective `RUSTUP_HOME`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolchainReadiness {
-    /// rustc is present — the toolchain is usable.
+    /// Both authoritative base evidence files are present and reusable.
     Ready,
     /// No toolchain directory at all — plain install.
     Missing,
-    /// Toolchain directory exists but has no rustc: the signature of an
-    /// interrupted or raced install. Requires uninstall + reinstall,
-    /// because rustup proxies treat directory-exists as installed and
-    /// will never repair it on their own.
-    Partial,
+    /// Toolchain directory exists but lacks one or both base evidence files.
+    /// It must never be reused; caller-owned state gets recovery guidance,
+    /// while Soldr-managed private state may be repaired.
+    Partial(MissingToolchainEvidence),
 }
 
 /// Directory name rustup gives a toolchain: bare channels
@@ -52,11 +83,22 @@ pub(crate) fn toolchain_dir_name(channel: &str, host: &str) -> String {
     }
 }
 
-pub(crate) fn classify(dir_exists: bool, rustc_exists: bool) -> ToolchainReadiness {
-    match (dir_exists, rustc_exists) {
-        (_, true) => ToolchainReadiness::Ready,
-        (true, false) => ToolchainReadiness::Partial,
-        (false, false) => ToolchainReadiness::Missing,
+pub(crate) fn classify(
+    dir_exists: bool,
+    channel_manifest_exists: bool,
+    rustc_exists: bool,
+) -> ToolchainReadiness {
+    if !dir_exists {
+        return ToolchainReadiness::Missing;
+    }
+    let missing = MissingToolchainEvidence {
+        channel_manifest: !channel_manifest_exists,
+        native_rustc: !rustc_exists,
+    };
+    if missing.channel_manifest || missing.native_rustc {
+        ToolchainReadiness::Partial(missing)
+    } else {
+        ToolchainReadiness::Ready
     }
 }
 
@@ -66,6 +108,22 @@ fn rustc_filename() -> &'static str {
     } else {
         "rustc"
     }
+}
+
+pub(crate) fn native_rustc_path(toolchain_dir: &Path) -> PathBuf {
+    toolchain_dir.join("bin").join(rustc_filename())
+}
+
+/// Filesystem-only classification of one already-selected toolchain
+/// directory. Selection policy belongs to the caller; readiness does not.
+pub(crate) fn classify_toolchain_dir(toolchain_dir: &Path) -> ToolchainReadiness {
+    let channel_manifest = toolchain_dir.join(TOOLCHAIN_CHANNEL_MANIFEST);
+    let rustc = native_rustc_path(toolchain_dir);
+    classify(
+        toolchain_dir.is_dir(),
+        channel_manifest.is_file(),
+        rustc.is_file(),
+    )
 }
 
 /// Filesystem-only probe against an explicit home — no process spawns, so
@@ -78,8 +136,7 @@ pub(crate) fn probe_toolchain_state(
     let dir = rustup_home
         .join("toolchains")
         .join(toolchain_dir_name(channel, host));
-    let rustc = dir.join("bin").join(rustc_filename());
-    classify(dir.is_dir(), rustc.is_file())
+    classify_toolchain_dir(&dir)
 }
 
 /// The `RUSTUP_HOME` that [`crate::prepare_cmd::rustup_add_target`] forces
@@ -121,12 +178,24 @@ pub(crate) fn ensure_pinned_toolchain_installed() -> Result<(), SoldrError> {
             }
             run_pinned_rustup(&["toolchain", "install", &channel], "toolchain-install")
         }
-        ToolchainReadiness::Partial => {
+        ToolchainReadiness::Partial(missing) => {
+            if std::env::var_os(crate::core::RUSTUP_HOME_ENV_VAR)
+                .is_some_and(|home| !home.is_empty())
+            {
+                let directory = rustup_home.join("toolchains").join(toolchain_dir_name(
+                    &channel,
+                    crate::pyo3_detect::host_triple(),
+                ));
+                return Err(shared_home_partial_toolchain_error(
+                    &channel, &directory, missing,
+                ));
+            }
             if !crate::core::quiet::diagnostics_suppressed() {
                 eprintln!(
                     "soldr: pinned toolchain {channel} is partially installed \
                      (no rustc — an earlier install was interrupted); \
-                     reinstalling it (soldr#2618)"
+                     reinstalling it (soldr#2618); missing {}",
+                    missing.paths().join(", ")
                 );
             }
             // Best-effort cleanup: the partial directory is unusable, and
@@ -135,6 +204,22 @@ pub(crate) fn ensure_pinned_toolchain_installed() -> Result<(), SoldrError> {
             run_pinned_rustup(&["toolchain", "install", &channel], "toolchain-install")
         }
     }
+}
+
+fn shared_home_partial_toolchain_error(
+    channel: &str,
+    directory: &Path,
+    missing: MissingToolchainEvidence,
+) -> SoldrError {
+    let manager = ["rust", "up"].concat();
+    SoldrError::Other(format!(
+        "Rust toolchain {channel} is partial at {}: missing {}. This is caller-selected \
+         RUSTUP_HOME state, so Soldr will not uninstall or reinstall it automatically. \
+         Run `soldr {manager} toolchain uninstall {channel}` then `soldr toolchain install`, \
+         or repair that exact directory with your toolchain manager before retrying.",
+        directory.display(),
+        missing.paths().join(", "),
+    ))
 }
 
 /// Run a rustup subcommand under the same forced homes as

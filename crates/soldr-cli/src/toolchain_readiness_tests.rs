@@ -30,12 +30,29 @@ fn empty_host_keeps_bare_channel() {
 
 #[test]
 fn classification_matrix() {
-    assert_eq!(classify(true, true), ToolchainReadiness::Ready);
-    // rustc present without its directory cannot happen on a real
-    // filesystem, but Ready must win any inconsistent read.
-    assert_eq!(classify(false, true), ToolchainReadiness::Ready);
-    assert_eq!(classify(true, false), ToolchainReadiness::Partial);
-    assert_eq!(classify(false, false), ToolchainReadiness::Missing);
+    assert_eq!(classify(false, false, false), ToolchainReadiness::Missing);
+    assert_eq!(
+        classify(true, false, false),
+        ToolchainReadiness::Partial(MissingToolchainEvidence {
+            channel_manifest: true,
+            native_rustc: true,
+        })
+    );
+    assert_eq!(
+        classify(true, false, true),
+        ToolchainReadiness::Partial(MissingToolchainEvidence {
+            channel_manifest: true,
+            native_rustc: false,
+        })
+    );
+    assert_eq!(
+        classify(true, true, false),
+        ToolchainReadiness::Partial(MissingToolchainEvidence {
+            channel_manifest: false,
+            native_rustc: true,
+        })
+    );
+    assert_eq!(classify(true, true, true), ToolchainReadiness::Ready);
 }
 
 #[test]
@@ -50,7 +67,7 @@ fn probe_reports_missing_partial_and_ready() {
     );
 
     // The wedge signature from soldr#2618: component manifests landed,
-    // rustc never did.
+    // but neither channel manifest nor rustc did.
     let toolchain = home
         .join("toolchains")
         .join("1.95.0-x86_64-unknown-linux-gnu");
@@ -65,7 +82,10 @@ fn probe_reports_missing_partial_and_ready() {
     .expect("write manifest");
     assert_eq!(
         probe_toolchain_state(home, "1.95.0", host),
-        ToolchainReadiness::Partial
+        ToolchainReadiness::Partial(MissingToolchainEvidence {
+            channel_manifest: true,
+            native_rustc: true,
+        })
     );
 
     let bin = toolchain.join("bin");
@@ -79,6 +99,45 @@ fn probe_reports_missing_partial_and_ready() {
     std::fs::write(&rustc, b"").expect("write rustc");
     assert_eq!(
         probe_toolchain_state(home, "1.95.0", host),
+        ToolchainReadiness::Partial(MissingToolchainEvidence {
+            channel_manifest: true,
+            native_rustc: false,
+        })
+    );
+    std::fs::write(
+        toolchain.join(TOOLCHAIN_CHANNEL_MANIFEST),
+        b"manifest-version = '2'\n",
+    )
+    .expect("write channel manifest");
+    assert_eq!(
+        probe_toolchain_state(home, "1.95.0", host),
         ToolchainReadiness::Ready
     );
+}
+
+#[test]
+fn caller_selected_partial_toolchain_has_non_destructive_recovery_guidance() {
+    let directory = Path::new("/shared-rustup/toolchains/1.95.0-host");
+    let error = shared_home_partial_toolchain_error(
+        "1.95.0",
+        directory,
+        MissingToolchainEvidence {
+            channel_manifest: true,
+            native_rustc: false,
+        },
+    )
+    .to_string();
+
+    assert!(error.contains(TOOLCHAIN_CHANNEL_MANIFEST), "{error}");
+    assert!(error.contains(&directory.display().to_string()), "{error}");
+    assert!(
+        error.contains("will not uninstall or reinstall it automatically"),
+        "{error}"
+    );
+    let manager = ["rust", "up"].concat();
+    assert!(
+        error.contains(&format!("soldr {manager} toolchain uninstall 1.95.0")),
+        "{error}"
+    );
+    assert!(error.contains("soldr toolchain install"), "{error}");
 }

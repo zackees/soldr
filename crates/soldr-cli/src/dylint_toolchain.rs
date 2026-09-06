@@ -19,12 +19,12 @@ use crate::core::{
     command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
 };
 use crate::dylint_libraries::is_dated_nightly;
-#[cfg(test)]
-use crate::dylint_toolchain_readiness::TOOLCHAIN_CHANNEL_MANIFEST;
 use crate::dylint_toolchain_readiness::{
     dylint_toolchain_readiness_at, ensure_dylint_toolchain_ready_at,
     partial_dylint_toolchain_error, DylintToolchainReadiness,
 };
+#[cfg(test)]
+use crate::toolchain_readiness::TOOLCHAIN_CHANNEL_MANIFEST;
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary_for_channel, rustup_binary};
 
 pub(crate) const TOOLCHAIN_ENV_VAR: &str = "SOLDR_DYLINT_TOOLCHAIN";
