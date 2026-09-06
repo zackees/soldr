@@ -9,8 +9,9 @@
 //! pinned nightly toolchain, network access to crates.io, and minutes of
 //! compile time, none of which belong in a unit test. What is tested here
 //! is everything that does not require a toolchain: the pure marker key,
-//! the on-disk marker contract, the lock's exclusivity, and the two
-//! env-var-driven decisions (fallback on/off, strict trust refusal).
+//! the on-disk marker contract, the lock's exclusivity, the two
+//! env-var-driven decisions (fallback on/off, strict trust refusal), and
+//! the probe verdict that decides whether tier 2 is even reachable.
 //!
 //! Env-var mutations use the crate's shared [`crate::TEST_PROCESS_ENV_LOCK`]
 //! barrier via [`crate::EnvVarGuard`] rather than a private mutex:
@@ -351,4 +352,98 @@ fn loader_wrapper_script_execs_the_real_binary_for_the_named_channel() {
     assert!(script.starts_with("#!/bin/sh"));
     assert!(script.contains("nightly-2026-05-28-x86_64-unknown-linux-gnu/lib"));
     assert!(script.contains("exec \"$dir/dylint-driver-real\" \"$@\""));
+}
+
+// ---------------------------------------------------------------------
+// soldr#2436 vs. soldr#2349: the probe verdict decides whether tier 2
+// may run at all.
+//
+// A missing (or wrong-identity) driver is what the fetch and local-build
+// tiers exist to cure. A driver that blew the bounded `-V` deadline is
+// not: the binary is there and was executing, and building another one
+// cannot make an unresponsive host answer -- it only turns soldr#2436's
+// deliberately bounded failure into a `rustup component add` plus a full
+// `rustc_private` compile before reporting the same verdict.
+// ---------------------------------------------------------------------
+
+#[test]
+fn missing_driver_verdict_permits_the_local_build_fallback() {
+    assert!(local_build_fallback_applies(
+        DriverProbeVerdict::NoUsableDriver
+    ));
+}
+
+#[test]
+fn timed_out_probe_verdict_refuses_the_local_build_fallback() {
+    assert!(!local_build_fallback_applies(
+        DriverProbeVerdict::ProbeTimedOut
+    ));
+}
+
+#[test]
+fn absent_driver_probes_as_no_usable_driver() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _unset = crate::EnvVarGuard::remove("DYLINT_DRIVER_PATH");
+    let temp = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(temp.path().join("soldr"));
+    let plan = sample_plan();
+
+    let (verdict, _error) =
+        probe_prebuilt_driver(&plan, &paths).expect_err("no driver exists on disk");
+    assert_eq!(verdict, DriverProbeVerdict::NoUsableDriver);
+    assert!(
+        local_build_fallback_applies(verdict),
+        "a genuinely missing driver must still reach the local-build fallback"
+    );
+}
+
+#[test]
+fn hanging_driver_probes_as_timed_out_and_stays_bounded() {
+    // The fixture is a `sleep` shell script, so this is Unix-only; the
+    // Windows probe path is covered by the shared verdict tests above.
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        return;
+    }
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _unset = crate::EnvVarGuard::remove("DYLINT_DRIVER_PATH");
+    let temp = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(temp.path().join("soldr"));
+    let plan = sample_plan();
+
+    // `apply_driver_runtime_environment` resolves the plan's rustc to
+    // derive the driver's loader path; point it at a stand-in so the probe
+    // itself -- not toolchain resolution -- is what this test measures.
+    let fake_rustc = temp.path().join("toolchain").join("bin").join("rustc");
+    std::fs::create_dir_all(fake_rustc.parent().unwrap()).unwrap();
+    std::fs::write(&fake_rustc, b"").unwrap();
+    let _rustc = crate::EnvVarGuard::set(crate::TEST_RUSTC_BIN_ENV_VAR, &fake_rustc);
+
+    let driver_dir = sample_driver_dir(&paths, &plan);
+    std::fs::create_dir_all(&driver_dir).unwrap();
+    let driver = driver_dir.join("dylint-driver");
+    std::fs::write(&driver, b"#!/bin/sh\nsleep 60\n").unwrap();
+    crate::platform::fs::permissions::make_executable(&driver).expect("chmod hung driver");
+
+    let started = std::time::Instant::now();
+    let (verdict, error) =
+        probe_prebuilt_driver(&plan, &paths).expect_err("a hung driver must not probe clean");
+    let elapsed = started.elapsed();
+
+    assert_eq!(verdict, DriverProbeVerdict::ProbeTimedOut);
+    assert!(
+        !local_build_fallback_applies(verdict),
+        "a hung probe must not escalate to a local driver build"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("version probe exceeded the 2-second deadline"),
+        "unexpected probe error: {error}"
+    );
+    // The probe deadline is 2s; 30s leaves a wide scheduler margin while
+    // still proving the classification did not wait out the 60s sleep.
+    assert!(
+        elapsed < std::time::Duration::from_secs(30),
+        "probe classification must stay bounded, took {elapsed:?}"
+    );
 }

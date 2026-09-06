@@ -80,6 +80,39 @@ use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths, Targe
 use crate::dylint_toolchain::{is_fully_qualified_nightly, DylintToolchainPlan};
 use crate::resolve_toolchain_binary_for_channel;
 
+/// Why the bounded `-V` probe did not hand back a usable driver.
+///
+/// The distinction exists because the two verdicts want opposite responses
+/// (soldr#2436 vs. soldr#2349). `NoUsableDriver` means the driver soldr
+/// needs is not on this host in a form it can use — exactly the condition
+/// a fetch or a build cures. `ProbeTimedOut` means a driver binary *is* there and was
+/// executing, and soldr had to kill it to stay inside the deadline; the
+/// host, not the artifact, is what failed to answer, and producing another
+/// artifact cannot make it answer. Each escalation attempted on that
+/// verdict is pure added latency on top of a failure soldr#2436 requires to
+/// be bounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DriverProbeVerdict {
+    /// No driver binary at the expected path, one that could not be
+    /// spawned at all, or one that answered `-V` with a nonzero exit,
+    /// unreadable output, or the wrong version.
+    NoUsableDriver,
+    /// A driver binary exists and ran, but did not complete the `-V` probe
+    /// inside its deadline (or the wait itself failed), so soldr killed and
+    /// reaped it.
+    ProbeTimedOut,
+}
+
+/// Whether a failed probe should escalate to the tier-2 local driver build
+/// (soldr#2349). See [`DriverProbeVerdict`] for why a timed-out probe must
+/// not.
+pub(crate) fn local_build_fallback_applies(verdict: DriverProbeVerdict) -> bool {
+    match verdict {
+        DriverProbeVerdict::NoUsableDriver => true,
+        DriverProbeVerdict::ProbeTimedOut => false,
+    }
+}
+
 /// Refuse to launch cargo-dylint unless its exact toolchain driver already
 /// exists and answers the bounded version probe. Upstream cargo-dylint builds
 /// this driver automatically when it is absent or stale; preflighting the same
@@ -89,13 +122,27 @@ pub(crate) fn require_prebuilt_driver(
     plan: &DylintToolchainPlan,
     paths: &SoldrPaths,
 ) -> Result<PathBuf, SoldrError> {
-    let driver_dir = driver_root(paths).join(qualified_driver_channel(plan)?);
+    probe_prebuilt_driver(plan, paths).map_err(|(_, error)| error)
+}
+
+/// [`require_prebuilt_driver`] plus the [`DriverProbeVerdict`] its callers
+/// need to decide whether escalating to a fetch or a build can help.
+pub(crate) fn probe_prebuilt_driver(
+    plan: &DylintToolchainPlan,
+    paths: &SoldrPaths,
+) -> Result<PathBuf, (DriverProbeVerdict, SoldrError)> {
+    let unusable = |error: SoldrError| (DriverProbeVerdict::NoUsableDriver, error);
+    let driver_dir = driver_root(paths).join(qualified_driver_channel(plan).map_err(unusable)?);
     let driver = ["dylint-driver", "dylint-driver.exe", "dylint-driver.cmd"]
         .into_iter()
         .map(|name| driver_dir.join(name))
         .find(|candidate| candidate.is_file())
         .ok_or_else(|| {
-            unavailable_driver_error(plan, &driver_dir, "no driver binary at that path")
+            unusable(unavailable_driver_error(
+                plan,
+                &driver_dir,
+                "no driver binary at that path",
+            ))
         })?;
 
     let mut command = std::process::Command::new(&driver);
@@ -103,7 +150,7 @@ pub(crate) fn require_prebuilt_driver(
         .arg("-V")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    apply_driver_runtime_environment(&mut command, plan)?;
+    apply_driver_runtime_environment(&mut command, plan).map_err(unusable)?;
     suppress_windows_console_window(&mut command);
     // soldr#3098: spawns share, staged writes exclude.
     let spawned = {
@@ -111,60 +158,74 @@ pub(crate) fn require_prebuilt_driver(
         command.spawn()
     };
     let mut child = spawned.map_err(|error| {
-        unavailable_driver_error(
+        unusable(unavailable_driver_error(
             plan,
             &driver_dir,
             &format!("version probe could not start: {error}"),
-        )
+        ))
     })?;
+    // Both non-`Ok(Some(_))` arms below terminate a *running* driver, which
+    // is what makes them `ProbeTimedOut` rather than "no driver": the
+    // binary is present and was executing, so nothing soldr could fetch or
+    // build would change the outcome.
     let status = match child.wait_timeout(Duration::from_secs(2)) {
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(unavailable_driver_error(
-                plan,
-                &driver_dir,
-                &format!("version probe failed: {error}"),
+            return Err((
+                DriverProbeVerdict::ProbeTimedOut,
+                unavailable_driver_error(
+                    plan,
+                    &driver_dir,
+                    &format!("version probe failed: {error}"),
+                ),
             ));
         }
         Ok(Some(status)) => status,
         Ok(None) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(unavailable_driver_error(
-                plan,
-                &driver_dir,
-                "version probe exceeded the 2-second deadline",
+            return Err((
+                DriverProbeVerdict::ProbeTimedOut,
+                unavailable_driver_error(
+                    plan,
+                    &driver_dir,
+                    "version probe exceeded the 2-second deadline",
+                ),
             ));
         }
     };
     let mut stdout = String::new();
     if let Some(mut pipe) = child.stdout.take() {
         pipe.read_to_string(&mut stdout).map_err(|error| {
-            unavailable_driver_error(
+            unusable(unavailable_driver_error(
                 plan,
                 &driver_dir,
                 &format!("version probe output failed: {error}"),
-            )
+            ))
         })?;
     }
     if !status.success() {
-        return Err(unavailable_driver_error(
+        return Err(unusable(unavailable_driver_error(
             plan,
             &driver_dir,
             &format!("version probe exited with {status}"),
-        ));
+        )));
     }
     let expected = crate::fetch::known_tools::lookup_by_crate("cargo-dylint")
         .and_then(|spec| spec.pinned_version)
-        .ok_or_else(|| SoldrError::Other("cargo-dylint must have a registry pin".into()))?;
+        .ok_or_else(|| {
+            unusable(SoldrError::Other(
+                "cargo-dylint must have a registry pin".into(),
+            ))
+        })?;
     let actual = dylint_driver_version(&stdout);
     if actual != Some(expected) {
-        return Err(unavailable_driver_error(
+        return Err(unusable(unavailable_driver_error(
             plan,
             &driver_dir,
             &format!("driver version is {actual:?}, expected {expected:?}"),
-        ));
+        )));
     }
     Ok(driver)
 }
@@ -262,8 +323,23 @@ pub(crate) async fn ensure_prebuilt_driver(
     plan: &DylintToolchainPlan,
     paths: &SoldrPaths,
 ) -> Result<(), SoldrError> {
-    if require_prebuilt_driver(plan, paths).is_ok() {
-        return Ok(());
+    // soldr#2436 vs. soldr#2349: classify the entry probe, because the two failure
+    // verdicts want opposite responses. A driver that is missing (or
+    // answers with the wrong identity) is what the fetch + build tiers
+    // below exist to cure. A driver that blew the bounded `-V` deadline is
+    // not: the binary is present and was executing, soldr killed it, and
+    // neither re-downloading the same asset nor compiling a fresh one makes
+    // an unresponsive host answer. Each escalation only extends a failure
+    // soldr#2436 requires to be bounded — the local build tier alone costs
+    // a `rustup component add` of `rustc-dev` plus a full `rustc_private`
+    // compile. So a timed-out probe is terminal, and the caller sees the
+    // hung-probe diagnostic instead of waiting minutes for the same verdict.
+    let (verdict, probe_error) = match probe_prebuilt_driver(plan, paths) {
+        Ok(_) => return Ok(()),
+        Err(failure) => failure,
+    };
+    if !local_build_fallback_applies(verdict) {
+        return Err(probe_error);
     }
     let version = crate::fetch::known_tools::lookup_by_crate("cargo-dylint")
         .and_then(|spec| spec.pinned_version)
@@ -271,17 +347,23 @@ pub(crate) async fn ensure_prebuilt_driver(
     let root = driver_root(paths);
     let fetched = crate::fetch::ensure_dylint_driver(paths, version, &plan.channel, &root).await;
     let catalogue_outcome = match fetched {
-        Ok(_) => require_prebuilt_driver(plan, paths).map(|_| ()),
+        Ok(_) => probe_prebuilt_driver(plan, paths).map(|_| ()),
         // A catalogue/transport failure is just as much "no driver" as a
         // catalogue miss, and both fall through to the local-build fallback
         // below the same way they used to fall straight through to the
         // opt-in.
-        Err(error) => Err(error),
+        Err(error) => Err((DriverProbeVerdict::NoUsableDriver, error)),
     };
-    let catalogue_error = match catalogue_outcome {
+    let (verdict, catalogue_error) = match catalogue_outcome {
         Ok(()) => return Ok(()),
-        Err(error) => error,
+        Err(failure) => failure,
     };
+    // Same terminal verdict, now for a driver the catalogue just installed:
+    // a freshly staged binary that hangs its own probe is still a hung
+    // host, not a build input the local tier can improve on.
+    if !local_build_fallback_applies(verdict) {
+        return Err(catalogue_error);
+    }
 
     // Tier 2 (soldr#2349): the catalogue has no asset for this nightly +
     // host — routine on macOS/Windows, where the catalogue does not
