@@ -538,7 +538,7 @@
       "id": "daemon-rss-ceiling",
       "source_id": "daemon-target-replay",
       "test_prefix": "daemon_rss_ceiling::",
-      "reason": "Resident-set sampling reads /proc, ps, or Win32 process-memory APIs, so the reader must be proven correct per target OS, not just on Linux."
+      "reason": "Resident-set sampling reads /proc, ps, or Win32 process-memory APIs, so the reader must be proven correct per target OS, not just on Linux. soldr#3128 added the module's fixture-guard tests here too: process-tree termination and pipe-EOF semantics differ per host, and the Windows lanes are exactly where the unbounded collection hung."
     },
     {
       "id": "daemon-stall-ipc",
