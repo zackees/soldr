@@ -12,6 +12,9 @@
 /// `TEST_PROCESS_ENV_LOCK`.
 pub(crate) mod catalogue_env;
 pub(crate) mod isolated_daemon;
+/// soldr#3128 — a fixture child whose deadline covers its whole process
+/// tree and whose output collection is bounded on every OS.
+pub(crate) mod tracked_child;
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};

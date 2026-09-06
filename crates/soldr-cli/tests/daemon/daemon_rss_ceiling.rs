@@ -23,14 +23,26 @@
 //! soldr#3057 reversed the original soldr#3038 "record and keep running"
 //! decision: on breach, the daemon now dumps its memory state and exits
 //! non-zero immediately (`soldr_cli::daemon::rss_ceiling::die_on_breach`,
-//! private to that module -- reached through `run_watchdog`). Two tests
-//! live in this file: [`daemon_stays_under_the_512mib_target_while_serving_a_chained_build`]
+//! private to that module -- reached through `run_watchdog`).
+//! [`daemon_stays_under_the_512mib_target_while_serving_a_chained_build`]
 //! is the "must not breach in ordinary use" regression gate, and
 //! [`daemon_dies_and_dumps_memory_when_the_ceiling_is_breached`] is the
 //! "when it does breach, the failure must be legible" gate --
 //! [`assert_build_succeeded_or_report_breach`] is the shared helper both
 //! could use that checks for a breach dump *before* trusting a transport
 //! error to mean anything.
+//! [`daemon_rss_retention_rate_per_compile_stays_within_budget`] is the
+//! `#[ignore]`d rate instrument for soldr#3059.
+//!
+//! soldr#3128 added two more, which test this fixture rather than the daemon:
+//! [`a_timed_out_fixture_child_is_reaped_with_its_tree_and_its_output`] and
+//! [`a_fixture_child_that_exits_on_its_own_reports_status_and_output`]. They
+//! exist because the gates above can only report what they observe, and their
+//! own deadline used to be unenforceable -- `Child::kill()` ends one process
+//! while the whole build tree holds the pipes, so `wait_with_output()` never
+//! returned and the panic carrying the diagnostic never ran. On the Windows
+//! target-run lanes that turned every failure of this file into a bare
+//! `TIMEOUT [> 300s]` with empty output. See `common::tracked_child`.
 //!
 //! `SOLDR_*` variables are forwarded wholesale into a broker-spawned daemon
 //! (`crate::daemon::lifecycle::spawn_env::FORWARDED_ENV_PREFIX`), so setting
@@ -46,9 +58,8 @@ use soldr_cli::core::SoldrPaths;
 use soldr_cli::daemon::rss_ceiling::{self, RssCeilingStatus};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use wait_timeout::ChildExt;
 
 /// The owner's stated target steady state (soldr#3038): "the daemon should
 /// operate below half a gigabyte of RAM."
@@ -344,8 +355,6 @@ fn run_soldr_build_with_ceiling(
     common::scrub_outer_soldr_env(&mut cmd);
     cmd.args(args)
         .current_dir(current_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
         .env("SOLDR_CACHE_DIR", cache_root)
         .env("HOME", home_root)
         .env("USERPROFILE", home_root)
@@ -353,7 +362,30 @@ fn run_soldr_build_with_ceiling(
             soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR,
             common::isolated_daemon::isolated_daemon_executable(&daemon_bin(), cache_root),
         )
-        .env("SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS", "10000");
+        .env("SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS", "10000")
+        // soldr#3128: keep the front door's cargo descendant in THIS
+        // fixture's process group instead of a fresh one of its own, so the
+        // deadline path below can signal the whole build tree on Unix. The
+        // front door consumes the marker one hop deep
+        // (`cargo_front_door::INHERIT_PARENT_PROCESS_GROUP_ENV`); rustc and
+        // the shims inherit the group from cargo without further plumbing.
+        .env("SOLDR_INTERNAL_INHERIT_PROCESS_GROUP", "1")
+        // soldr#3128: a compiler shim whose daemon exited mid-compile (which
+        // is precisely what this file's breach test provokes) waits for a
+        // SESSION reply that can never arrive. The wrapper does fail
+        // immediately on EOF -- but on Windows the broker relays the session
+        // through `copy_bidirectional` over a local socket whose
+        // `poll_shutdown` is a no-op, so the daemon's EOF is never forwarded
+        // and the wrapper's only remaining bound is this backstop: 30 minutes
+        // by default, i.e. 18x this test's whole nextest budget. Bounding it
+        // here turns that state into a named SESSION-timeout failure inside
+        // the per-build deadline instead of a bare nextest TIMEOUT. It does
+        // not repair the relay (that is `running-process`'s contract, see
+        // soldr#3128) -- it makes the symptom reportable.
+        .env(
+            soldr_cli::daemon::client::REPLY_TIMEOUT_ENV,
+            COMPILE_REPLY_TIMEOUT_SECS.to_string(),
+        );
     match ceiling_bytes {
         Some(bytes) => {
             cmd.env(rss_ceiling::RSS_CEILING_ENV_VAR, bytes.to_string());
@@ -363,48 +395,77 @@ fn run_soldr_build_with_ceiling(
         }
     }
 
-    let mut child = cmd.spawn().expect("spawn soldr");
-    if child
-        .wait_timeout(timeout)
-        .expect("wait for soldr")
-        .is_none()
-    {
-        let _ = child.kill();
-        let output = child.wait_with_output().expect("collect timed-out output");
+    let child = common::tracked_child::spawn_tracked(&mut cmd).expect("spawn soldr");
+    let pid = child.pid();
+    let started = Instant::now();
+    let result = child.wait_bounded(timeout);
+    if result.timed_out {
+        // Both diagnostics below are now reachable: the tree is dead and the
+        // pipes were drained from spawn time, so nothing between here and the
+        // panic can block (soldr#3128).
         if let Some(summary) = newest_breach_summary(cache_root, home_root) {
             panic!(
-                "soldr {args:?} timed out after {timeout:?}, but this is a memory-ceiling \
-                 breach, not a hang: {}",
+                "soldr {args:?} (pid {pid}) timed out after {timeout:?}, but this is a \
+                 memory-ceiling breach, not a hang [{}]: {}",
+                result.disposition(),
                 rss_ceiling::legible_breach_message(&summary)
             );
         }
         panic!(
-            "soldr {args:?} timed out after {timeout:?}\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
+            "soldr {args:?} (pid {pid}) timed out after {timeout:?} (waited {:?}) [{}]\
+             \nstdout:\n{}\nstderr:\n{}",
+            started.elapsed(),
+            result.disposition(),
+            result.stdout_lossy(),
+            result.stderr_lossy(),
         );
     }
-    child.wait_with_output().expect("collect soldr output")
+    result.into_output()
 }
 
+/// Per-compile SESSION reply backstop for every `soldr` this fixture spawns.
+/// Deliberately well under the 100 s per-build deadline so a wedged compile
+/// is reported by the wrapper, naming the compile and the env var, before the
+/// fixture's own deadline fires -- and both of those before nextest's 300 s.
+/// See `run_soldr_build_with_ceiling` for why the default (1800 s) cannot
+/// bound this test.
+const COMPILE_REPLY_TIMEOUT_SECS: u64 = 45;
+
+/// Best-effort teardown, bounded (soldr#3128).
+///
+/// `soldr daemon stop` waits up to 300 s for a shutdown acknowledgement, and
+/// this runs from `Drop` -- including while a panic unwinds. An unbounded
+/// `.output()` here can therefore outlive nextest's remaining budget and take
+/// the already-generated panic diagnostic down with it, which is one of the
+/// several ways this fixture could hide its own failure.
 fn stop_daemon(cache_root: &Path, home_root: &Path) {
-    let mut cmd = Command::new(common::soldr_bin());
-    common::scrub_outer_soldr_env(&mut cmd);
-    let _ = cmd
-        .args(["daemon", "stop"])
-        .env("SOLDR_CACHE_DIR", cache_root)
-        .env("HOME", home_root)
-        .env("USERPROFILE", home_root)
-        .output();
-    let mut broker_cmd = Command::new(common::soldr_bin());
-    common::scrub_outer_soldr_env(&mut broker_cmd);
-    let _ = broker_cmd
-        .args(["broker", "stop"])
-        .env("SOLDR_CACHE_DIR", cache_root)
-        .env("HOME", home_root)
-        .env("USERPROFILE", home_root)
-        .output();
+    for args in [["daemon", "stop"], ["broker", "stop"]] {
+        let mut cmd = Command::new(common::soldr_bin());
+        common::scrub_outer_soldr_env(&mut cmd);
+        cmd.args(args)
+            .env("SOLDR_CACHE_DIR", cache_root)
+            .env("HOME", home_root)
+            .env("USERPROFILE", home_root);
+        match common::tracked_child::spawn_tracked(&mut cmd) {
+            Ok(child) => {
+                let result = child.wait_bounded(CLEANUP_TIMEOUT);
+                if result.timed_out {
+                    // Never a panic: teardown must not replace the failure
+                    // the test is reporting. Printed so a stuck stop is
+                    // visible in the same captured output.
+                    println!(
+                        "soldr#3128 cleanup: `soldr {args:?}` exceeded {CLEANUP_TIMEOUT:?} [{}]",
+                        result.disposition()
+                    );
+                }
+            }
+            Err(error) => println!("soldr#3128 cleanup: spawning `soldr {args:?}` failed: {error}"),
+        }
+    }
 }
+
+/// Budget for each teardown command in [`stop_daemon`].
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(45);
 
 struct DaemonCleanup {
     cache_root: PathBuf,
@@ -906,13 +967,23 @@ fn daemon_dies_and_dumps_memory_when_the_ceiling_is_breached() {
     // build and carrying its stdout/stderr -- rather than by nextest's
     // bare TIMEOUT line.
     let trivial = write_trivial_crate(&cache_root_a);
-    run_soldr_build_with_ceiling(
+    let priming = run_soldr_build_with_ceiling(
         &["cargo", "build", "--quiet"],
         &cache_root_a,
         &home_root,
         &trivial,
         None,
         Duration::from_secs(100),
+    );
+    // soldr#3128: assert it. A failed priming build does not prove an
+    // un-watched broker exists, and every later assertion in this test is
+    // premised on one -- so a silent failure here turns the whole test into a
+    // coin flip over which process breaches first.
+    assert_build_succeeded_or_report_breach(
+        &["cargo", "build", "--quiet"],
+        &cache_root_a,
+        &home_root,
+        &priming,
     );
 
     // Build 2: the real workload, with the ceiling, against a fresh route
@@ -986,4 +1057,118 @@ fn daemon_dies_and_dumps_memory_when_the_ceiling_is_breached() {
 
     drop(cleanup_a);
     drop(cleanup_b);
+}
+
+/// A child that outlives its parent and keeps the inherited pipes open --
+/// the exact shape of a `soldr cargo build` fixture whose rustc/shim
+/// grandchildren survive a `Child::kill()` on the root.
+///
+/// Unix: `sh` backgrounds `sleep` and waits, so `sleep` is a real grandchild
+/// rather than an `exec` of the shell itself (shells `exec` the final command
+/// of a `-c` string, which would collapse the tree to one process and stop
+/// this fixture from modelling anything).
+///
+/// Windows: `cmd.exe` -> `ping.exe`, soldr#2605's observed shape.
+fn lingering_grandchild_command() -> Command {
+    if is_windows_host() {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "echo", "hi", "&", "ping", "-n", "60", "127.0.0.1"]);
+        cmd
+    } else {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "echo hi; sleep 60 & wait"]);
+        cmd
+    }
+}
+
+/// Host selection is a runtime question here, not a `#[cfg]` one: soldr#2493
+/// keeps host `#[cfg]` inside `soldr-platform` (enforced by
+/// `.github/scripts/platform_cfg_boundary_ratchet.py`), and both branches
+/// above compile everywhere regardless.
+fn is_windows_host() -> bool {
+    matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    )
+}
+
+/// soldr#3128, the regression this file's own guard needed.
+///
+/// Before the fix, `run_soldr_build_with_ceiling`'s timeout path was
+/// `child.kill()` followed by `child.wait_with_output()`. `kill` ends one
+/// process; the grandchildren inherit the piped stdout/stderr, so the pipe
+/// never reaches EOF and `wait_with_output` blocks forever -- taking the
+/// panic on the next line, the one carrying the build's output, with it. On
+/// the Windows target-run lanes that surfaced as a bare nextest
+/// `TIMEOUT [> 300s]` with empty captured output, which names neither the
+/// build nor the stall.
+///
+/// This test asserts the two properties that make the fixture's own
+/// diagnostic reachable, against a child that deliberately leaves a
+/// pipe-holding descendant behind: the wait returns well inside its own
+/// bound, and the output captured before the deadline is still there.
+#[test]
+fn a_timed_out_fixture_child_is_reaped_with_its_tree_and_its_output() {
+    let mut cmd = lingering_grandchild_command();
+    let child = common::tracked_child::spawn_tracked(&mut cmd).expect("spawn lingering fixture");
+    let started = Instant::now();
+    let result = child.wait_bounded(Duration::from_secs(2));
+    let elapsed = started.elapsed();
+
+    assert!(
+        result.timed_out,
+        "a 60s sleeper must not settle inside a 2s deadline [{}]",
+        result.disposition()
+    );
+    // The descendant would hold the pipes for a further ~58s. Returning
+    // inside 30s is the property: the wait is bounded by the helper's own
+    // budget (deadline + reap + drain grace), not by the survivor.
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "wait_bounded took {elapsed:?}, which means collection waited on the surviving \
+         descendant rather than on its own budget [{}]",
+        result.disposition()
+    );
+    assert!(
+        result.stdout_lossy().contains("hi"),
+        "output written before the deadline must survive the timeout path; got stdout={:?} \
+         stderr={:?} [{}]",
+        result.stdout_lossy(),
+        result.stderr_lossy(),
+        result.disposition()
+    );
+    assert!(
+        result.pipes_closed,
+        "the whole tree must be gone, so both pipes reach EOF -- a still-open pipe means a \
+         descendant survived the tree kill [{}]",
+        result.disposition()
+    );
+}
+
+/// The ordinary path is unchanged: a child that exits on its own reports its
+/// real status and its complete output. (The normal-exit branch used to call
+/// the same unbounded `wait_with_output`, so it needed the same fix.)
+#[test]
+fn a_fixture_child_that_exits_on_its_own_reports_status_and_output() {
+    let mut cmd = if is_windows_host() {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "echo", "done"]);
+        cmd
+    } else {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "echo done"]);
+        cmd
+    };
+    let child = common::tracked_child::spawn_tracked(&mut cmd).expect("spawn quick fixture");
+    let result = child.wait_bounded(Duration::from_secs(30));
+    assert!(!result.timed_out, "[{}]", result.disposition());
+    assert!(result.pipes_closed, "[{}]", result.disposition());
+    assert!(
+        result.stdout_lossy().contains("done"),
+        "stdout={:?} [{}]",
+        result.stdout_lossy(),
+        result.disposition()
+    );
+    let output = result.into_output();
+    assert!(output.status.success());
 }
