@@ -119,11 +119,13 @@ pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, S
     };
     std::fs::create_dir_all(&cache_root)?;
     let cwd = std::env::current_dir()?;
-    zccache::cli::commands::run_embedded_rustfmt_with_runner(
+    // soldr#2899: the daemon-free `formatter` API, not the CLI dispatcher.
+    // Soldr keeps ownership of child-process policy through the runner.
+    zccache::formatter::run_rustfmt_cached_with_runner(
         &rustfmt,
         args,
         &cwd,
-        &cache_root,
+        Some(&cache_root),
         |command| {
             crate::binaries::apply_resolved_toolchain_homes(command, &rustfmt);
             apply_zccache_child_env(command)

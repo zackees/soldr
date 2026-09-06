@@ -620,7 +620,7 @@ mod tests {
             ShutdownMode, ZccacheConfig, ZccacheService, ZccacheStartOptions,
         };
 
-        let Some(compiler) = zccache::test_support::find_on_path("cc") else {
+        let Some(compiler) = crate::test_support::find_on_path("cc") else {
             return;
         };
         let temp = tempfile::tempdir().expect("tempdir");
@@ -657,7 +657,7 @@ mod tests {
                 AuditId::new("soldr-host-policy-run").expect("run id"),
                 AuditId::new("soldr-host-policy-trace").expect("trace id"),
             ),
-            compiler,
+            compiler: compiler.into(),
             args: vec![
                 "-c".into(),
                 source.display().to_string(),
@@ -700,7 +700,7 @@ mod tests {
             ShutdownMode, ZccacheConfig, ZccacheService, ZccacheStartOptions,
         };
 
-        let Some(compiler) = zccache::test_support::find_rustc() else {
+        let Some(compiler) = crate::test_support::find_on_path("rustc") else {
             return;
         };
         let current_dir = std::env::current_dir().expect("resolve current directory");
@@ -749,7 +749,7 @@ mod tests {
                 AuditId::new("soldr-rustc-host-policy-run").expect("run id"),
                 AuditId::new("soldr-rustc-host-policy-trace").expect("trace id"),
             ),
-            compiler,
+            compiler: compiler.into(),
             args: vec![
                 "--edition=2021".into(),
                 "--crate-name=soldr_daemon".into(),

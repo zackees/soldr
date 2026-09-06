@@ -11,7 +11,6 @@ mod legacy_endpoint;
 mod readiness;
 mod root_ownership;
 mod shutdown_wait;
-mod spawn;
 mod spawn_env;
 pub(crate) use displacement_policy::{displacement_drain_timeout, ephemeral_displacement_blocked};
 pub use displacement_policy::{
@@ -28,7 +27,6 @@ pub use root_ownership::{RootAcquireOutcome, RootOwnershipGuard};
 #[cfg(test)]
 pub(crate) use shutdown_wait::latest_shutdown_phase;
 pub use shutdown_wait::{wait_for_shutdown_responder, GRACEFUL_SHUTDOWN_WAIT_TIMEOUT};
-pub(crate) use spawn::*;
 pub(crate) use spawn_env::*;
 
 use crate::cache_lib::{daemon_lifecycle_log_path, soldr_daemon_dir};

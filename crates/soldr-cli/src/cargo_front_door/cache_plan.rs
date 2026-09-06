@@ -1,7 +1,8 @@
+use crate::build_cache_session::BuildCacheSession;
 use crate::cargo_front_door::profile_debug::CargoProfileDebugDefault;
 use crate::core::{SoldrError, SoldrPaths};
 use crate::native_cc;
-use crate::zccache::{prepare_rustc_wrapper_plan, RustcWrapperPlan, ZccacheBuildSession};
+use crate::zccache::{prepare_rustc_wrapper_plan, RustcWrapperPlan};
 
 pub(crate) struct CargoCachePlan {
     cache_enabled_for_cargo: bool,
@@ -218,7 +219,7 @@ impl CargoCachePlan {
         Ok(())
     }
 
-    pub(crate) fn zccache_session(&self) -> Option<&ZccacheBuildSession> {
+    pub(crate) fn zccache_session(&self) -> Option<&BuildCacheSession> {
         self.rustc_wrapper
             .as_ref()
             .and_then(RustcWrapperPlan::session)
@@ -273,10 +274,9 @@ mod tests {
             .map(|(_, value)| value.map(OsString::from))
     }
 
-    fn fake_session() -> ZccacheBuildSession {
-        ZccacheBuildSession {
+    fn fake_session() -> BuildCacheSession {
+        BuildCacheSession {
             cache_dir: std::path::PathBuf::from("/tmp/soldr-zccache"),
-            cache_dir_env: true,
             session_id: "session-1".into(),
             session_log_path: std::path::PathBuf::from("/tmp/soldr-zccache/log"),
             journal_path: std::path::PathBuf::from("/tmp/soldr-zccache/journal"),

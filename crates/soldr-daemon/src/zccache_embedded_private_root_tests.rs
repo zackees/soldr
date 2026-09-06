@@ -372,13 +372,11 @@ async fn real_rustc_hit_survives_full_and_ci_save_load_relocation() {
         .expect("read repository rust-toolchain.toml")
         .channel
         .expect("repository rust-toolchain.toml must declare a channel");
-    let rustc = zccache::test_support::find_rustc()
-        .expect("Rust compiler prerequisite failed: no compiler found on PATH");
-    let compiler_version =
-        probe_working_compiler(rustc.as_path()).unwrap_or_else(|error| panic!("{error}"));
+    let rustc = crate::test_support::rustc_from_env_or_path();
+    let compiler_version = probe_working_compiler(&rustc).unwrap_or_else(|error| panic!("{error}"));
     eprintln!(
         "using verified compiler {}: {}",
-        rustc.as_path().display(),
+        rustc.display(),
         compiler_version.lines().next().unwrap_or("unknown version")
     );
     let temp = tempfile::tempdir().expect("tempdir");
@@ -391,7 +389,7 @@ async fn real_rustc_hit_survives_full_and_ci_save_load_relocation() {
     .expect("write source");
 
     let rustc_args = vec![
-        rustc.as_path().display().to_string(),
+        rustc.display().to_string(),
         "--edition".into(),
         "2021".into(),
         "--crate-type".into(),

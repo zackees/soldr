@@ -395,6 +395,15 @@ jobs:
           unset CARGO_BUILD_JOBS SOLDR_JOBS
           soldr cargo build --profile dev -p soldr-cli --bin soldr \
             --target ${{ inputs.target }}
+
+      # soldr#2901: the manifests and the RESOLVED feature tree must both
+      # agree that zccache's `cli` (and everything it expands to) is off. A
+      # source lint cannot see this -- unification and transitive requests
+      # restore a feature without touching a `.rs` file.
+      - name: Verify embedded zccache feature graph (soldr#2901)
+        shell: bash
+        run: python3 ci/check_zccache_feature_graph.py
+
       # The broker is intentionally a stable singleton and never replaces
       # itself across Soldr images. The setup action started the released
       # bootstrap generation; retire it explicitly before the source wrapper
