@@ -11,7 +11,19 @@ pub const STATUS_RETIRING_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Explicit start waits longer than an ordinary status query because a route
 /// can pass the broker's session-endpoint probe before its control endpoint is
 /// accepting requests on a heavily loaded host.
-pub const START_STATUS_READY_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// 120 s, not 30 s. The route claim is published *before* the daemon's own
+/// heavyweight startup finishes: `run_server` writes the claim, then awaits
+/// SQLite init on the blocking pool, then awaits the embedded compile service,
+/// and only then spawns the control accept loop — so every status probe in
+/// that window lands in the listener backlog and burns its full 2 s reply
+/// budget without an answer. A cold debug-build daemon measured 31 s of that
+/// on a runner shared with a concurrent release matrix (the status probe one
+/// second after the failure succeeded), which is the same "budget clipping
+/// real, bounded work" shape that raised `DAEMON_START_ROUTE_BUDGET` to 180 s
+/// (soldr#2883). The wait returns on the first matching status, so the larger
+/// budget costs nothing when healthy and only bounds the loaded-host case.
+pub const START_STATUS_READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Transport faults that mean "this endpoint is not answering *yet*", as
 /// opposed to "this endpoint answered and said no".
