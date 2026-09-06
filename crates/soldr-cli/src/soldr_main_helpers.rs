@@ -219,7 +219,7 @@ pub(crate) async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), 
             )
             .map_err(|err| {
                 SoldrError::Other(format!(
-                    "broker route was published but soldr-daemon did not become status-ready: {err:?}"
+                    "broker route was published but soldr-daemon did not become status-ready: {err}"
                 ))
             })?;
             println!("soldr-daemon: broker route ready");
