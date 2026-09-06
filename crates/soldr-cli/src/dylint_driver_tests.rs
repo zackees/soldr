@@ -21,6 +21,7 @@
 
 use super::*;
 use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
+use fs2::FileExt;
 
 fn sample_plan() -> DylintToolchainPlan {
     DylintToolchainPlan::identity(
