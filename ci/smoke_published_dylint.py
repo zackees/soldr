@@ -40,9 +40,7 @@ class DriverAssetHelpers(Protocol):
     def library_nightly(self, manifests: dict[str, str]) -> str: ...
 
 
-driver_assets = cast(
-    DriverAssetHelpers, importlib.import_module("check_dylint_driver_assets")
-)
+driver_assets = cast(DriverAssetHelpers, importlib.import_module("check_dylint_driver_assets"))
 
 PYPI_PROJECT = "soldr"
 PYPI_JSON = f"https://pypi.org/pypi/{PYPI_PROJECT}/json"
@@ -76,15 +74,9 @@ def latest_pypi_version(fetch: Callable[[str], bytes] = fetch_pypi_bytes) -> str
         raise PublishedDylintSmokeError(
             f"could not query latest {PYPI_PROJECT} on PyPI: {exc}"
         ) from exc
-    version = (
-        (payload.get("info") or {}).get("version")
-        if isinstance(payload, dict)
-        else None
-    )
+    version = (payload.get("info") or {}).get("version") if isinstance(payload, dict) else None
     if not isinstance(version, str) or not normalized_version(version):
-        raise PublishedDylintSmokeError(
-            f"PyPI response has no latest {PYPI_PROJECT} version"
-        )
+        raise PublishedDylintSmokeError(f"PyPI response has no latest {PYPI_PROJECT} version")
     return normalized_version(version)
 
 
@@ -124,9 +116,7 @@ def isolated_environment(root: Path) -> dict[str, str]:
     """Fresh, inspectable state for this one published-binary proof."""
 
     home = root / "home"
-    inherited_cargo_home = Path(
-        os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))
-    ).resolve()
+    inherited_cargo_home = Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))).resolve()
     inherited_cargo_bin = str(inherited_cargo_home / "bin").casefold()
     environment = os.environ.copy()
     # This must inspect the *published* binary's own resolution. Scrub every
@@ -166,18 +156,40 @@ def isolated_environment(root: Path) -> dict[str, str]:
 
 
 def run(
-    command: list[str], *, env: dict[str, str], cwd: Path
+    command: list[str], *, env: dict[str, str], cwd: Path, timeout: float | None = None
 ) -> subprocess.CompletedProcess[str]:
-    """Run a probe with output retained in the failure explaining it."""
+    """Run a probe with output retained in the failure explaining it.
 
-    completed = subprocess.run(
-        command, cwd=cwd, env=env, text=True, capture_output=True, check=False
-    )
-    if completed.returncode:
+    ``timeout`` bounds the command so a stall surfaces as a named failure
+    instead of a silent job-level timeout. The job cap (60 min) minus the
+    healthy baseline (~23 min on a cold Windows host) is the budget the
+    per-phase bounds below are sized from.
+    """
+
+    try:
+        completed = subprocess.run(
+            command, cwd=cwd, env=env, text=True, capture_output=True, check=False, timeout=timeout
+        )
+    except subprocess.TimeoutExpired as exc:
         output = "\n".join(
             part
-            for part in (completed.stdout.strip(), completed.stderr.strip())
+            for part in (
+                exc.stdout.decode(errors="replace").strip()
+                if isinstance(exc.stdout, bytes)
+                else (exc.stdout or "").strip(),
+                exc.stderr.decode(errors="replace").strip()
+                if isinstance(exc.stderr, bytes)
+                else (exc.stderr or "").strip(),
+            )
             if part
+        )
+        raise PublishedDylintSmokeError(
+            f"published Dylint probe timed out after {timeout}s "
+            f"({' '.join(command)}):\n{output or 'no output'}"
+        ) from exc
+    if completed.returncode:
+        output = "\n".join(
+            part for part in (completed.stdout.strip(), completed.stderr.strip()) if part
         )
         raise PublishedDylintSmokeError(
             f"published Dylint probe failed ({' '.join(command)}):\n{output or 'no output'}"
@@ -186,7 +198,7 @@ def run(
 
 
 def installed_version(soldr: Path, *, env: dict[str, str], cwd: Path) -> str:
-    output = run([str(soldr), "version", "--json"], env=env, cwd=cwd).stdout
+    output = run([str(soldr), "version", "--json"], env=env, cwd=cwd, timeout=120).stdout
     try:
         payload = json.loads(output)
     except json.JSONDecodeError as exc:
@@ -195,9 +207,7 @@ def installed_version(soldr: Path, *, env: dict[str, str], cwd: Path) -> str:
         ) from exc
     version = payload.get("soldr_version") if isinstance(payload, dict) else None
     if not isinstance(version, str):
-        raise PublishedDylintSmokeError(
-            "published soldr version --json omitted soldr_version"
-        )
+        raise PublishedDylintSmokeError("published soldr version --json omitted soldr_version")
     return normalized_version(version)
 
 
@@ -247,7 +257,7 @@ def smoke(*, version: str, repo_root: Path, venv: Path, state_root: Path) -> Non
 
     expected_channel = authoritative_channel(repo_root)
     env = isolated_environment(state_root)
-    run(["uv", "venv", "--clear", str(venv)], env=env, cwd=repo_root)
+    run(["uv", "venv", "--clear", str(venv)], env=env, cwd=repo_root, timeout=300)
     run(
         [
             "uv",
@@ -260,6 +270,7 @@ def smoke(*, version: str, repo_root: Path, venv: Path, state_root: Path) -> Non
         ],
         env=env,
         cwd=repo_root,
+        timeout=600,
     )
     soldr = published_console_script(venv)
     observed_version = installed_version(soldr, env=env, cwd=repo_root)
@@ -268,7 +279,7 @@ def smoke(*, version: str, repo_root: Path, venv: Path, state_root: Path) -> Non
             f"published binary provenance mismatch: requested soldr=={version}, got {observed_version} at {soldr}"
         )
 
-    prepared = run([str(soldr), "dylint", "prepare"], env=env, cwd=repo_root)
+    prepared = run([str(soldr), "dylint", "prepare"], env=env, cwd=repo_root, timeout=900)
     prepared_output = prepared.stdout + prepared.stderr
     if expected_channel not in prepared_output:
         raise PublishedDylintSmokeError(
@@ -279,6 +290,7 @@ def smoke(*, version: str, repo_root: Path, venv: Path, state_root: Path) -> Non
         driver_probe_command(soldr, repo_root=repo_root, manifest=manifest),
         env=env,
         cwd=repo_root,
+        timeout=1500,
     )
     print(
         f"published Dylint smoke passed: soldr {version}, channel {expected_channel}, binary {soldr}"
@@ -294,9 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     parser.add_argument("--venv", type=Path, default=Path(".published-dylint-venv"))
-    parser.add_argument(
-        "--state-root", type=Path, default=Path(".published-dylint-state")
-    )
+    parser.add_argument("--state-root", type=Path, default=Path(".published-dylint-state"))
     args = parser.parse_args(argv)
     try:
         smoke(

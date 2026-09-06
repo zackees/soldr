@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,9 +21,7 @@ PUBLISHED_WORKFLOW = ROOT / ".github" / "workflows" / "published-dylint-smoke.ym
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release-auto.yml"
 load_script_module(SCRIPTS / "catalogue_http.py", "catalogue_http")
 load_script_module(SCRIPTS / "toolchain_asset_query.py", "toolchain_asset_query")
-load_script_module(
-    SCRIPTS / "check_dylint_driver_assets.py", "check_dylint_driver_assets"
-)
+load_script_module(SCRIPTS / "check_dylint_driver_assets.py", "check_dylint_driver_assets")
 smoke = load_script_module(
     SCRIPTS.parent.parent / "ci" / "smoke_published_dylint.py", "smoke_published_dylint"
 )
@@ -31,10 +30,7 @@ smoke = load_script_module(
 def test_selected_version_prefers_exact_pin_and_can_monitor_pypi_latest() -> None:
     assert smoke.selected_version("v0.9.11") == "0.9.11"
 
-    assert (
-        smoke.selected_version("", lambda _url: b'{"info":{"version":"0.9.12"}}')
-        == "0.9.12"
-    )
+    assert smoke.selected_version("", lambda _url: b'{"info":{"version":"0.9.12"}}') == "0.9.12"
 
 
 def test_isolated_environment_overrides_all_user_tool_homes(
@@ -42,9 +38,7 @@ def test_isolated_environment_overrides_all_user_tool_homes(
 ) -> None:
     inherited_cargo = tmp_path / "inherited-cargo"
     monkeypatch.setenv("CARGO_HOME", str(inherited_cargo))
-    monkeypatch.setenv(
-        "PATH", os.pathsep.join([str(inherited_cargo / "bin"), "system-bin"])
-    )
+    monkeypatch.setenv("PATH", os.pathsep.join([str(inherited_cargo / "bin"), "system-bin"]))
     for name in (
         "SOLDR_CACHE_DIR",
         "SOLDR_DYLINT_TOOLCHAIN",
@@ -95,9 +89,7 @@ def test_smoke_installs_exact_wheel_and_proves_version_channel_and_driver(
     repo = tmp_path / "repo"
     manifest = repo / "dylints" / "one" / "rust-toolchain.toml"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text(
-        '[toolchain]\nchannel = "nightly-2026-05-28"\n', encoding="utf-8"
-    )
+    manifest.write_text('[toolchain]\nchannel = "nightly-2026-05-28"\n', encoding="utf-8")
     venv = tmp_path / "venv"
     state = tmp_path / "state"
     calls: list[list[str]] = []
@@ -114,9 +106,7 @@ def test_smoke_installs_exact_wheel_and_proves_version_channel_and_driver(
             raise AssertionError("published cargo-dylint 6 rejects deprecated --list")
         if command == ["uv", "venv", "--clear", str(venv)]:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if command == uv_pip_install_command(
-            venv, "--only-binary=:all:", "soldr==0.9.11"
-        ):
+        if command == uv_pip_install_command(venv, "--only-binary=:all:", "soldr==0.9.11"):
             write_fake_soldr_console(venv, windows=True)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if command == [str(soldr), "version", "--json"]:
@@ -124,9 +114,7 @@ def test_smoke_installs_exact_wheel_and_proves_version_channel_and_driver(
                 returncode=0, stdout=json.dumps({"soldr_version": "0.9.11"}), stderr=""
             )
         if command == [str(soldr), "dylint", "prepare"]:
-            return SimpleNamespace(
-                returncode=0, stdout="", stderr="channel nightly-2026-05-28"
-            )
+            return SimpleNamespace(returncode=0, stdout="", stderr="channel nightly-2026-05-28")
         if command == probe:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         raise AssertionError(f"unexpected published-Dylint command: {command}")
@@ -134,9 +122,7 @@ def test_smoke_installs_exact_wheel_and_proves_version_channel_and_driver(
     monkeypatch.setattr(smoke.subprocess, "run", fake_run)
     smoke.smoke(version="0.9.11", repo_root=repo, venv=venv, state_root=state)
     assert calls[0] == ["uv", "venv", "--clear", str(venv)]
-    assert calls[1] == uv_pip_install_command(
-        venv, "--only-binary=:all:", "soldr==0.9.11"
-    )
+    assert calls[1] == uv_pip_install_command(venv, "--only-binary=:all:", "soldr==0.9.11")
     assert calls[-1] == [
         str(soldr),
         "dylint",
@@ -176,9 +162,7 @@ def test_smoke_rejects_wrong_binary_version_or_channel(
     repo = tmp_path / "repo"
     manifest = repo / "dylints" / "one" / "rust-toolchain.toml"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text(
-        '[toolchain]\nchannel = "nightly-2026-05-28"\n', encoding="utf-8"
-    )
+    manifest.write_text('[toolchain]\nchannel = "nightly-2026-05-28"\n', encoding="utf-8")
     venv = tmp_path / "venv"
 
     def fake_run(command, **_kwargs):
@@ -187,16 +171,45 @@ def test_smoke_rejects_wrong_binary_version_or_channel(
             binary.parent.mkdir(parents=True)
             binary.write_bytes(b"")
         if command[-2:] == ["version", "--json"]:
-            return SimpleNamespace(
-                returncode=0, stdout='{"soldr_version":"0.0.1"}', stderr=""
-            )
+            return SimpleNamespace(returncode=0, stdout='{"soldr_version":"0.0.1"}', stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(smoke.subprocess, "run", fake_run)
     with pytest.raises(smoke.PublishedDylintSmokeError, match="provenance mismatch"):
-        smoke.smoke(
-            version="0.9.11", repo_root=repo, venv=venv, state_root=tmp_path / "state"
-        )
+        smoke.smoke(version="0.9.11", repo_root=repo, venv=venv, state_root=tmp_path / "state")
+
+
+def test_smoke_times_out_a_stalled_probe_with_a_named_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stall must surface as a named probe failure, not a silent job kill."""
+
+    repo = tmp_path / "repo"
+    manifest = repo / "dylints" / "one" / "rust-toolchain.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('[toolchain]\nchannel = "nightly-2026-05-28"\n', encoding="utf-8")
+    venv = tmp_path / "venv"
+    binary = venv / "Scripts" / "soldr.exe"
+
+    def fake_run(command, timeout=None, **_kwargs):
+        if command == ["uv", "venv", "--clear", str(venv)]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:2] == ["uv", "pip"]:
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[-2:] == ["version", "--json"]:
+            return SimpleNamespace(returncode=0, stdout='{"soldr_version":"0.9.11"}', stderr="")
+        if command == [str(binary), "dylint", "prepare"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="channel nightly-2026-05-28")
+        assert timeout is not None, "every probe needs a timeout budget"
+        raise subprocess.TimeoutExpired(command, timeout, output=None)
+
+    monkeypatch.setattr(smoke.subprocess, "run", fake_run)
+    with pytest.raises(
+        smoke.PublishedDylintSmokeError, match="timed out after 1500s.*soldr.exe.*dylint"
+    ):
+        smoke.smoke(version="0.9.11", repo_root=repo, venv=venv, state_root=tmp_path / "state")
 
 
 def test_windows_monitor_and_release_gate_orchestrate_the_tested_script() -> None:
