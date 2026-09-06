@@ -110,9 +110,7 @@ def fixture_roots(root: Path, prefixes: tuple[str, ...]) -> list[Path]:
     except OSError:
         return []
     return [
-        entry
-        for entry in entries
-        if entry.is_dir() and entry.name.startswith(prefixes)
+        entry for entry in entries if entry.is_dir() and entry.name.startswith(prefixes)
     ]
 
 
@@ -197,7 +195,9 @@ def collect(
                 except OSError as error:
                     skipped.append({"path": str(source), "reason": str(error)})
                     continue
-                total += int(record["bytes"])
+                bytes_copied = record["bytes"]
+                if isinstance(bytes_copied, int):
+                    total += bytes_copied
                 copied.append({"path": str(relative), **record})
 
     index = {
@@ -214,6 +214,11 @@ def collect(
         json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return index
+
+
+def _count(value: object) -> int:
+    """Length of an index list, tolerating a missing or non-list entry."""
+    return len(value) if isinstance(value, list) else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -246,10 +251,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"fixture diagnostics collection failed: {error}", file=sys.stderr)
         return 1 if args.strict else 0
 
+    fixture_root_count = _count(index.get("fixture_roots"))
+    copied_count = _count(index.get("copied"))
     print(
         "fixture diagnostics: "
-        f"{len(index['fixture_roots'])} fixture roots, "
-        f"{len(index['copied'])} files, {index['total_bytes']} bytes -> {args.output}"
+        f"{fixture_root_count} fixture roots, "
+        f"{copied_count} files, {index['total_bytes']} bytes -> {args.output}"
     )
     return 0
 
