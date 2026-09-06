@@ -1456,9 +1456,13 @@ pub(crate) fn seed_fake_toolchain_dir(
     fs::create_dir_all(&bin).expect("create fake toolchain bin");
     fs::create_dir_all(&rustlib).expect("create fake toolchain rustlib");
     fs::write(bin.join("rustc"), rustc_contents).expect("seed fake rustc identity");
-    if cfg!(windows) {
-        // `classify_toolchain_dir` looks for the host-native filename.
-        fs::write(bin.join("rustc.exe"), rustc_contents).expect("seed fake rustc.exe identity");
+    // `classify_toolchain_dir` looks for the host-native filename. `EXE_SUFFIX`
+    // is ".exe" on Windows and empty elsewhere, which keeps this helper inside
+    // the soldr#2493 platform-cfg boundary without a cfg.
+    let suffix = std::env::consts::EXE_SUFFIX;
+    if !suffix.is_empty() {
+        fs::write(bin.join(format!("rustc{suffix}")), rustc_contents)
+            .expect("seed fake host-native rustc identity");
     }
     fs::write(rustlib.join("components"), components_contents)
         .expect("seed fake component identity");
