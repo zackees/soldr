@@ -611,10 +611,12 @@ jobs:
   # gated Windows now gates the macOS pairs and the non-x64 Linux lanes, via
   # `run_platform_e2e`.
   #
-  # The gate is fail-open by construction: pushes, an absent label, an empty
-  # diff, and any path it cannot classify all run everything. Only a
-  # fast-build PR whose every changed path is documentation or repository
-  # metadata skips.
+  # The gate is fail-open by construction: pushes, an empty diff, and any
+  # path it cannot classify all run everything. A documentation/metadata-only
+  # PR skips without needing the fast-build label -- the same filter
+  # `paths-ignore` applies at the trigger level, extended to the re-runs
+  # (`labeled`/`unlabeled`) where trigger filters cannot be trusted. For
+  # every other PR the fast-build label remains the request channel.
   #
   # The separate PEP 517 platform smoke remains label-gated as a pair.
   e2e-linux-x64:
