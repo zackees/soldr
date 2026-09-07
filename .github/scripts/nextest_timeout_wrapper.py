@@ -251,7 +251,9 @@ def run(command: list[str]) -> int:
         if termination_started is not None:
             remaining = child_exit_grace - (time.monotonic() - termination_started)
             if remaining <= 0:
-                _write_stderr("nextest timeout: child ignored termination; forcing exit\n")
+                _write_stderr(
+                    "nextest timeout: child ignored termination; forcing exit\n"
+                )
                 _signal_child_tree(child, signal.SIGKILL)
                 forced = True
                 break

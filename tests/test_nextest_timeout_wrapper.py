@@ -4,6 +4,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -565,11 +566,7 @@ def test_a_trivial_child_is_reaped_well_under_the_old_fifty_millisecond_floor(
     has ~40x headroom over the intended behaviour.
     """
 
-    import subprocess
-    import sys
-    import time
-
-    wrapper = Path(__file__).resolve().parents[1] / ".github/scripts/nextest_timeout_wrapper.py"
+    wrapper = REPO_ROOT / ".github/scripts/nextest_timeout_wrapper.py"
     started = time.monotonic()
     completed = subprocess.run(
         [sys.executable, str(wrapper), sys.executable, "-c", "pass"],
@@ -593,9 +590,7 @@ def test_the_wait_loop_does_not_flat_poll(tmp_path) -> None:
     child-wait loop is the regression.
     """
 
-    source = (
-        Path(__file__).resolve().parents[1] / ".github/scripts/nextest_timeout_wrapper.py"
-    ).read_text(encoding="utf-8")
+    source = WRAPPER.read_text(encoding="utf-8")
     # Inspect code, not prose: the module comment explaining this fix quotes the
     # very pattern being banned, so a naive substring check matches its own
     # documentation.
@@ -607,6 +602,6 @@ def test_the_wait_loop_does_not_flat_poll(tmp_path) -> None:
         "the child-wait loop must block in Popen.wait, which returns the instant "
         "the child exits and backs off from 0.5 ms rather than sleeping a flat 50 ms"
     )
-    assert "while child.poll() is None:" not in code, (
-        "the flat-poll wait loop is the soldr#3144 regression"
-    )
+    assert (
+        "while child.poll() is None:" not in code
+    ), "the flat-poll wait loop is the soldr#3144 regression"
