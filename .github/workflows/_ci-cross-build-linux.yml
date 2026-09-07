@@ -78,15 +78,35 @@ jobs:
       # window can push a lane into the `cargo install zccache` fallback
       # (~700 s of source compile) — observed in run 28731872479.
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
-      # soldr#2453: these lanes deliberately disable every build-cache layer,
-      # so Stage C can have four memory-heavy rustc/clang children plus the
-      # embedded cache's resident artifact state on a 4-vCPU hosted runner.
-      # The resulting Unix signal exits moved between unrelated crates and
-      # platforms. Bound both Cargo's producer queue and zccache's admission
-      # gate at one: the published zccache crate is a single large compilation
-      # unit and needs exclusive service access on the hosted runner.
-      CARGO_BUILD_JOBS: "1"
-      SOLDR_JOBS: "1"
+      # soldr#3138: the job-wide `CARGO_BUILD_JOBS: "1"` / `SOLDR_JOBS: "1"`
+      # that used to live here has moved to the two true-bootstrap steps that
+      # actually need it (the `RUSTC_WRAPPER: ""` steps below).
+      #
+      # The original reasoning (soldr#2453/#2781) was sound for its time: these
+      # lanes disable every build-cache layer, so an all-miss Stage C can have
+      # several memory-heavy rustc/clang children resident at once on a 4-vCPU
+      # runner, and the published zccache crate is a single enormous
+      # compilation unit. But these two variables size the *shared* ceiling
+      # that Cargo's producer queue and the embedded zccache admission gate
+      # both draw from, so pinning them at one serialized every small unit as
+      # well -- roughly 560 s of wrapped compile work in this lane (catalogue
+      # lifecycle 200 s, target clippy 185 s, nextest archive 115 s, cross-build
+      # 60 s) running one child at a time.
+      #
+      # What replaced it: since zccache 1.13.11 the embedded service grants
+      # amalgamation crates and measured heavy links *exclusive* admission
+      # (`crates/soldr-daemon/src/amalgamation.rs`), so the one huge unit still
+      # compiles alone while ordinary units run N-wide. That is strictly better
+      # than a global cap -- it protects the same unit without serializing the
+      # rest. The swap headroom below is the other half, and this workflow's
+      # own history already recorded which of the two actually closed the
+      # signal-kill: "Bounding CARGO_BUILD_JOBS/SOLDR_JOBS (above) narrowed but
+      # did not close the signal-kill; the swap headroom is the safety valve
+      # that does."
+      #
+      # Exclusive admission requires the wrapper. The two `RUSTC_WRAPPER: ""`
+      # bootstrap steps below run with no zccache at all, so the gate cannot
+      # engage there and they keep the cap explicitly.
       # Keep the developer-facing profile default responsive while reducing
       # LLVM worker fan-out for this memory-constrained CI-only build.
       CARGO_PROFILE_CI_NEXTEST_CODEGEN_UNITS: "4"
@@ -293,6 +313,15 @@ jobs:
           # Keep the throwaway bootstrap uncached while still routing the
           # Rust toolchain through soldr.
           RUSTC_WRAPPER: ""
+          # soldr#3138: with no wrapper there is no embedded service, so the
+          # exclusive-admission gate that protects the amalgamated zccache
+          # unit everywhere else cannot engage here. Per-crate
+          # `codegen-units = 1` (see `[profile.ci-bootstrap.package.zccache]`,
+          # whose comment states this same reason) plus this cap are the only
+          # protection on this step. Scoped to the step rather than the job so
+          # the wrapped compiles in this lane are not serialized with it.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: |
           set -euo pipefail
           # soldr#1282 — --profile ci-bootstrap drops LTO + codegen-units=1
@@ -580,6 +609,11 @@ jobs:
         shell: bash
         env:
           RUSTC_WRAPPER: ""
+          # soldr#3138: same reason as the bootstrap step above -- this one
+          # additionally sets ZCCACHE_DISABLE=1, so there is definitively no
+          # admission gate to rely on. Keep the cap here, not job-wide.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: |
           set -euo pipefail
           ZCCACHE_DISABLE=1 soldr cargo build --profile ci-bootstrap \
