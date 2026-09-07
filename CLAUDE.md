@@ -154,6 +154,98 @@ Anything not registered falls through the generic External subcommand, which res
 - **One canonical toolchain-home pair per execution, chosen by where the binary lives** (soldr#1799/#1768): soldr keeps private managed `RUSTUP_HOME`/`CARGO_HOME` for dylint's nightly, and they are applied **only** when the resolved binary physically lives inside those managed homes (`binaries::apply_resolved_toolchain_homes`). A host-resolved `cargo`/`rustc`/`rustfmt`/`clippy` always executes under the caller's own homes — never by ambient env leakage. This matters because the failure is silent: flipping homes between runs changes which rustc is used, which invalidates cargo's fingerprints and zccache's keys, so a warm build recompiles the world and is merely 10-50x slower, indefinitely. Every build log records `home_origin` (`caller` | `managed` | `repo-local`) beside the resolved `binary`, and `.github/scripts/check_toolchain_homes.py` fails CI when a row claims `managed` for a binary outside a managed root.
 - **All Rust toolchain commands go through soldr**: `cargo`, `rustup`, `rustc`, `rustfmt`, `clippy-driver`, `cargo-clippy`, `cargo-fmt`, `rustdoc`, `rust-gdb`, `rust-lldb`, and `rust-analyzer` must be invoked as `soldr <tool> ...` (or `uv run soldr <tool> ...`). This includes invocations with leading env-var assignments — `RUSTUP_TOOLCHAIN=... cargo build` is the same policy violation as `cargo build`. clud enforces this in agent shell tools (see Dogfooding below — the in-repo hook is no longer the enforcement point); the helper script `bench/build_local_zccache.sh` and any documented workflow must follow the same rule. Env-vars prefixed before `soldr` are fine — the policy is about routing the tool, not forbidding env overrides.
 
+## Concurrency caps are a last resort — reach for exclusive access first (soldr#3138)
+
+**When the answer looks like "set jobs/threads/concurrency to 1", the question to
+ask instead is: which specific unit of work needs exclusive access to the build
+system, and how do we grant it that?**
+
+A global cap is the wrong shape of fix almost every time. `CARGO_BUILD_JOBS`,
+`SOLDR_JOBS`, and `[jobs] max_parallel_compiles` all size the *same shared
+ceiling* — Cargo's producer queue and the embedded zccache admission gate both
+resolve through `soldr-core/src/core/jobs.rs`. Setting it to 1 to protect one
+enormous compilation unit also serializes every small one, so a lane pays the
+cost across its whole graph to fix a problem that lives in a single unit. It is
+a whole-system setting used to express a per-unit property.
+
+Exclusive admission expresses the actual constraint. The embedded service can
+grant one compiler child sole access while everything else keeps running N-wide:
+soldr's classifier is `SoldrHostAdmissionClassifier` in
+`crates/soldr-daemon/src/amalgamation.rs`, combined with zccache's own built-in
+C/C++ and Rust predicates before zccache takes its capacity semaphore and fair
+resource lock. That is strictly better than a cap — same protection for the heavy
+unit, no penalty for the rest.
+
+### The ladder
+
+Work down it. Stop at the first rung that actually fits the problem.
+
+1. **Make the unit itself cheaper.** `codegen-units = 1`, `debug = false`,
+   `lto = false`, a smaller profile. See `[profile.*.package.zccache]`.
+2. **Grant that unit exclusive admission.** Add it to the classifier. Prefer a
+   predicate over a name (see below).
+3. **Give the machine headroom.** `.github/scripts/setup_ci_swap.sh` — 14 GB of
+   swap for <1 s. Note that soldr#2453's own workflow comment records which rung
+   did the work: "Bounding CARGO_BUILD_JOBS/SOLDR_JOBS narrowed but did not close
+   the signal-kill; the swap headroom is the safety valve that does."
+4. **Cap concurrency.** Only when the rungs above genuinely cannot apply — and
+   then say *why* they cannot, in a comment, next to the cap.
+
+The one honest reason to land on rung 4 is that **exclusive admission requires
+the wrapper**. A step running `RUSTC_WRAPPER=""`, `ZCCACHE_DISABLE=1`, or
+`--no-cache` has no embedded service, so there is no gate to ask. Those steps
+keep their cap and should carry it at *step* scope, never job scope — a
+`GITHUB_ENV` write or a job-level `env:` block applies to every subsequent step
+and silently serializes unrelated work.
+
+### Recognise the shape, not the name
+
+`amalgamation.rs` already states the right principle for C/C++, and its reasoning
+generalises:
+
+> Deliberately measures the file rather than trusting the name: the point is to
+> recognise the *shape* of the work, and a private amalgamation nobody added to
+> `KNOWN_AMALGAMATIONS` is exactly the case a name table misses.
+
+A size threshold catches the next amalgamation automatically; a name list catches
+only the ones someone remembered. Where a name list is unavoidable, treat every
+addition to it as evidence the predicate is wrong, and expect the list to drift
+silently — a missing entry produces no error, just a slow build or an OOM whose
+cause is three layers away.
+
+### Diagnosing before capping
+
+An OOM is a scheduling defect, not a signal to lower global parallelism —
+`crates/soldr-cli/src/cli_args.rs` already says so on the `--jobs` surface:
+
+> An OOM is a scheduling/admission defect to diagnose from compiler and cgroup
+> telemetry, not a signal for Soldr to silently lower Cargo's global parallelism.
+
+Two traps when gathering that telemetry:
+
+- **cgroup OOM counters are not sufficient.** `amalgamation.rs` records that the
+  kills which motivated `SOLDR_HEAVY_TEST_LINKS` — `soldr_cli --test` dying twice
+  above 5 GiB — did **not** increment them. Measure **peak RSS per compiler
+  child**.
+- **The diagnostics exist but are not visible.** The daemon logs its resolved
+  limit (`compile_limit.rs` `resolve_and_announce`) and each exclusive-access
+  request (`amalgamation.rs`) to its own stderr, which is redirected to the daemon
+  log file and never reaches the CI job log. Absence of those lines from a job log
+  is not evidence they did not happen. `soldr status` reports the applied limit
+  and compares it to what the CLI would resolve now (soldr#2023).
+
+### Current rung-4 exceptions, and why
+
+| Site | Why a cap, not exclusive access |
+|---|---|
+| `_ci-cross-build-linux.yml` bootstrap steps | `RUSTC_WRAPPER: ""` (one also `ZCCACHE_DISABLE=1`). No service, no gate. Step-scoped. |
+| `ci.yml` `wheel-cross-verify` | Bootstrap-shaped build (soldr#2469). |
+| `.github/scripts/cross_build_resources.py` | **Under review — see soldr#3150.** The archive's heavy links are the eight consolidated integration-test binaries (`broker`, `daemon`, `cargo_front_door`, …), and none of those names is in `SOLDR_HEAVY_TEST_LINKS`, which lists only `soldr_daemon` / `soldr_cli` (the *lib* unit-test links). This lane is wrapped, so rung 2 should apply and does not. |
+| `cook-size-gate.yml`, `release-auto.yml`, `perf-matrix.yml` | No swapfile — rung 3 is not in place yet. |
+
+Every entry names a reason. A cap with no reason beside it is a bug report
+waiting to be written.
+
 ## Agent Development Environment Rule (issue #1105)
 
 **For all changes, develop and debug in the local Docker Linux scripts.** Cross-compile to Windows/macOS later, do not let the cross-compile story block feature work.
