@@ -76,6 +76,42 @@ slow-timeout = { period = "60s", terminate-after = 2, grace-period = "30s" }
 [test-groups.soldr-runtime]
 max-threads = 1
 
+# soldr#3138: same membership, two threads, Linux only.
+#
+# `max-threads = 1` above is NOT an OOM crutch. Classifying all 15 documented
+# incidents (soldr#2336/#2517/#2624/#2696/#2697/#2720/#2729/#2737/#2867/#2883/
+# #2934/#2944/#3038/#3059/#3096) found none memory-related, and two concurrent
+# daemon lifecycles at the 512 MiB `daemon_rss_ceiling` target are trivial on a
+# 16 GB runner carrying 14 GB of swap. What it protects is a *threshold*: a cold
+# start slowed by contention crossing `BrokerDeadlines::route_ceiling`, a FIXED
+# 120s wall-clock deadline (`crates/soldr-cli/src/broker_deadlines.rs`).
+#
+# Two facts make raising it on Linux the right trade:
+#
+#   1. Every one of those incidents was on windows-gnu/msvc, ARM/GNU, or
+#      macOS-Rosetta, where cold start is already several times slower. None was
+#      on the Linux gate. Those lanes keep `max-threads = 1` through the
+#      ungated override that follows each Linux-gated one below.
+#   2. The ceiling is not the hang detector. `first_response` (2s) and
+#      `progress_silence` (5s) catch a dead or stalled broker; `route_ceiling`
+#      fires only on "alive, progressing, but slow" -- exactly the contention
+#      this introduces. `continuous_progress_is_still_bounded_by_route_ceiling`
+#      (crates/soldr-cli/src/session_transport.rs) pins that semantics, which is
+#      why `_build-and-test.yml` raises SOLDR_ROUTE_ACQUIRE_CEILING_MS alongside
+#      this change: it gives up "slow" vs "very slow" discrimination and keeps
+#      hang detection at 5s.
+#
+# Measured contention is ~1.7x per test (63-78s in isolation reaching 121s when
+# racing, per the entries below), so 2x concurrency is a net ~1.18x throughput
+# win rather than a loss. The 68 members sum to 961s of serial work inside a
+# 1046s stage -- they ARE the stage's floor -- so this is the only lever that
+# lowers that floor instead of repacking around it.
+#
+# Deliberately 2, not more: the measurement supports one additional concurrent
+# cold start, not an uncapped group. `soldr-cargo-cold-builds` stays at 1.
+[test-groups.soldr-runtime-linux]
+max-threads = 2
+
 # soldr#3138 -- scheduling was investigated here and REJECTED. Do not retry it
 # without new evidence.
 #
@@ -98,6 +134,11 @@ max-threads = 1
 # the stage, so no reordering can beat it -- the only lever that moves this
 # number is making each of those 68 tests cheaper (broker/daemon cold start),
 # which needs the per-child instrumentation soldr#3152 asks for.
+
+[[profile.default.overrides]]
+filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_rss_ceiling|daemon_stall_harness)::/))'
+platform = { target = 'cfg(target_os = "linux")' }
+test-group = 'soldr-runtime-linux'
 
 [[profile.default.overrides]]
 filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_rss_ceiling|daemon_stall_harness)::/))'
@@ -139,6 +180,11 @@ slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
 # lists stay explicit rather than collapsing to a bare `binary(daemon)`.
 [[profile.default.overrides]]
 filter = '(binary(broker) & test(/^(cli_broker_resurrection|cli_broker_routes|cli_broker_single_instance|cli_broker_status|cli_broker_stop|cli_build_alias_parity|cli_build_fetch_overlap|cli_jobs_routing|cli_kill_matrix)::/)) + test(=cli_gc::gc_list_json_reports_built_project_target_dir)'
+platform = { target = 'cfg(target_os = "linux")' }
+test-group = 'soldr-runtime-linux'
+
+[[profile.default.overrides]]
+filter = '(binary(broker) & test(/^(cli_broker_resurrection|cli_broker_routes|cli_broker_single_instance|cli_broker_status|cli_broker_stop|cli_build_alias_parity|cli_build_fetch_overlap|cli_jobs_routing|cli_kill_matrix)::/)) + test(=cli_gc::gc_list_json_reports_built_project_target_dir)'
 test-group = 'soldr-runtime'
 
 # soldr#2336: these three drive `isolated_soldr_command`, which scrubs every
@@ -149,6 +195,11 @@ test-group = 'soldr-runtime'
 # route-start path, `gc_list_json_reports_built_project_target_dir` died at 63s
 # on soldr's own "broker route start timed out" -- a starvation failure no
 # nextest budget can fix, because the deadline that expired was soldr's.
+[[profile.default.overrides]]
+filter = 'test(=cli_toolchain::toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=cli_toolchain::toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cli_toolchain::toolchain_link_emits_schema_v1_json_payload) + test(=cli_toolchain::toolchain_link_force_overwrites_user_modified_shim) + test(=cli_toolchain_home_boundary::cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
+platform = { target = 'cfg(target_os = "linux")' }
+test-group = 'soldr-runtime-linux'
+
 [[profile.default.overrides]]
 filter = 'test(=cli_toolchain::toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=cli_toolchain::toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cli_toolchain::toolchain_link_emits_schema_v1_json_payload) + test(=cli_toolchain::toolchain_link_force_overwrites_user_modified_shim) + test(=cli_toolchain_home_boundary::cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
 test-group = 'soldr-runtime'
