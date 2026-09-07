@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
 """Decide whether a pull request may skip platform E2E validation.
 
-The ``fast-build`` label is only a request.  It is honored when every changed
-path is documentation or repository metadata that cannot affect a shipped
-binary.  Pushes, empty diffs, and any unclassified path fail safe by running
+A pull request whose every changed path is documentation or repository
+metadata that cannot affect a shipped binary skips the platform fan-out
+outright.  For everything else the ``fast-build`` label is the request
+channel, honored only when the diff is otherwise unclassifiable as safe.
+Pushes, empty diffs, and any unclassified path fail safe by running
 everything.
+
+The docs-only rule exists so documentation changes never pay for the test
+flow: ``ci.yml``'s ``paths-ignore`` already keeps markdown-only PRs from
+triggering the workflow on ``opened``/``synchronize``/``reopen``, and this
+classification extends the same filter to the runs that still happen --
+notably ``labeled``/``unlabeled`` re-runs, where trigger-level path
+filters cannot be trusted.
 
 Emits two outputs from one classification (soldr#3018):
 
@@ -65,17 +74,22 @@ def decide_windows_e2e(
 ) -> Decision:
     if event_name != "pull_request":
         return Decision(True, f"{event_name or 'non-PR'} events always run Windows E2E")
-    if FAST_BUILD_LABEL not in labels:
-        return Decision(True, "fast-build label is absent")
     if not changed_paths:
         return Decision(True, "empty diff cannot be classified safely")
 
+    # A documentation/metadata-only PR skips the platform fan-out without
+    # needing the fast-build label. ci.yml's own `paths-ignore` already
+    # keeps markdown-only PRs from triggering the workflow at all; this
+    # rule gives the *same* filter to the runs that still happen --
+    # notably `labeled`/`unlabeled` re-runs, where trigger-level path
+    # filters are unreliable. The label remains the request channel for
+    # everything else.
     sensitive = [path for path in changed_paths if not is_low_risk_path(path)]
-    if sensitive:
-        return Decision(True, f"platform-sensitive path changed: {sensitive[0]}")
-    return Decision(
-        False, "fast-build accepted for low-risk documentation/metadata only"
-    )
+    if not sensitive:
+        return Decision(False, "documentation/metadata-only change skips platform E2E")
+    if FAST_BUILD_LABEL not in labels:
+        return Decision(True, "fast-build label is absent")
+    return Decision(True, f"platform-sensitive path changed: {sensitive[0]}")
 
 
 def _pull_request_paths(event: dict[str, object]) -> list[str]:

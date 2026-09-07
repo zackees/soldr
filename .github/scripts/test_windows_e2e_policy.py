@@ -18,17 +18,30 @@ def test_pushes_always_run_windows_e2e() -> None:
     assert "push" in decision.reason
 
 
-def test_unlabelled_pull_request_runs_windows_e2e() -> None:
+def test_unlabelled_docs_only_pull_request_skips_without_fast_build() -> None:
+    """Docs-only PRs skip regardless of the label (ci.yml paths-ignore parity)."""
+
     decision = policy.decide_windows_e2e(
         event_name="pull_request",
         labels=[],
         changed_paths=["docs/diagram.png"],
     )
+    assert decision.run is False
+    assert "documentation" in decision.reason
+    assert "fast-build" not in decision.reason
+
+
+def test_unlabelled_code_pull_request_runs_windows_e2e() -> None:
+    decision = policy.decide_windows_e2e(
+        event_name="pull_request",
+        labels=[],
+        changed_paths=["crates/soldr-cli/src/blessed_build.rs"],
+    )
     assert decision.run is True
     assert "fast-build" in decision.reason
 
 
-def test_fast_build_skips_docs_and_repository_metadata_only() -> None:
+def test_docs_and_repository_metadata_only_skips() -> None:
     decision = policy.decide_windows_e2e(
         event_name="pull_request",
         labels=["fast-build"],
@@ -39,7 +52,7 @@ def test_fast_build_skips_docs_and_repository_metadata_only() -> None:
         ],
     )
     assert decision.run is False
-    assert "low-risk" in decision.reason
+    assert "documentation" in decision.reason
 
 
 def test_fast_build_cannot_skip_windows_sensitive_code() -> None:
