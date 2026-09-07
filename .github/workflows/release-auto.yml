@@ -155,7 +155,7 @@ jobs:
       - name: Install pinned Soldr and prepare target environment
         id: setup_soldr
         continue-on-error: ${{ matrix.setup_target != '' }}
-        uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90
+        uses: zackees/setup-soldr@d6a0844c40b94f62cf104377b4cc90403c96f6ce
         with:
           enable: true
           version: 0.9.13
