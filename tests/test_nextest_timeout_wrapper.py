@@ -282,6 +282,41 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     ]
     assert len(cold_overrides) == 1
     cold_override = cold_overrides[0]
+
+    # soldr#3138: the Linux twin (`soldr-cargo-cold-builds-linux`,
+    # max-threads = 2) must carry the SAME membership as the 1-thread group it
+    # shadows, or a module added to one platform would silently escape the
+    # reservation on the other -- the drift this file exists to prevent.
+    linux_overrides = [
+        block
+        for block in config.split("[[profile.default.overrides]]")[1:]
+        if "test-group = 'soldr-cargo-cold-builds-linux'" in block
+    ]
+    assert len(linux_overrides) == 1, "expected exactly one Linux cold-builds override"
+    assert 'target_os = "linux"' in linux_overrides[0], (
+        "the two-thread cold-builds group must stay platform-gated to Linux; "
+        "every documented incident it protects against was on windows-gnu/msvc, "
+        "ARM/GNU or macOS-Rosetta"
+    )
+
+    def _first_filter(block: str) -> str:
+        # Compare each block's OWN filter line. The final override in the file
+        # extends to EOF when split on the table header, so it trails the
+        # `[[profile.default.scripts]]` section's `filter = "all()"` with it.
+        for line in block.splitlines():
+            if line.startswith("filter = "):
+                return line
+        raise AssertionError("override block has no filter line")
+
+    assert _first_filter(linux_overrides[0]) == _first_filter(cold_override), (
+        "the Linux cold-builds twin and the 1-thread group must name identical "
+        "members; they diverged, so one platform is no longer reserving what "
+        "the other does"
+    )
+    assert "priority =" not in linux_overrides[0], (
+        "soldr#3024 attempt 2 regressed Fresh Nextest 18m11 -> 26m14 by giving "
+        "this group priority; the two-thread change is capacity, not ordering"
+    )
     cold_filter = _filter_expressions(cold_override)
     # Per member, not as one contiguous literal. The literal also pinned the
     # order and pinned that nothing sat between the terms, so soldr#2887 broke
