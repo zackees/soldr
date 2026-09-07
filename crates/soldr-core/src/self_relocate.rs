@@ -460,7 +460,7 @@ fn ensure_relocated_exe_in_with_progress(
         std::process::id()
     ));
     let _ = fs::remove_file(&temp);
-    copy_file_with_progress(current_exe, &temp, progress)?;
+    link_or_copy_with_progress(current_exe, &temp, progress)?;
     let permissions = fs::metadata(current_exe)?.permissions();
     fs::set_permissions(&temp, permissions)?;
 
@@ -627,6 +627,55 @@ fn hash_file_with_progress(
         progress(stage, completed, total);
     }
     Ok(to_hex(&hasher.finalize()))
+}
+
+/// Stage `source` at `target`, preferring a hardlink over a byte copy.
+///
+/// soldr#3138: this path materializes the daemon runtime image, and it is
+/// ~105 MB for a debug build. Every route that has not seen this exact image
+/// before paid a full read + write of that, which is invisible on a developer
+/// box (the source is in page cache, ~110 ms measured) and expensive on a CI
+/// runner, where it is a cold read of 105 MB followed by a 105 MB write. It is
+/// also I/O-bound rather than CPU-bound, so concurrent cold starts contend
+/// rather than overlap -- consistent with the +24% total test-seconds measured
+/// when the gate's test groups went two-wide (soldr#3161/#3162).
+///
+/// A hardlink is safe here specifically because this destination is
+/// content-addressed and immutable:
+///
+/// * `dest_dir` is keyed on `identity.dir_name`, which carries the image hash,
+///   and the caller re-verifies with `exe_hash_matches_with_progress`. A link
+///   can only ever be published under the hash of the bytes it points at.
+/// * The staged image is executed, never written in place. The publish is
+///   write-temp-then-rename, so the inode is never mutated after linking.
+/// * `set_permissions` on the link would also apply to the source, but the
+///   value being set is read *from* the source immediately above, so it is a
+///   no-op rather than a mutation.
+/// * A later rebuild of the source writes a new file and renames over it,
+///   which leaves this inode intact -- the correct outcome, since a running
+///   daemon must keep the image it started from.
+///
+/// Falls back to the byte copy whenever the link cannot be made: a different
+/// filesystem (`EXDEV`, the common case when the build tree and the runtime
+/// root live on separate volumes -- soldr#1831 notes that layout explicitly),
+/// a filesystem without hardlinks, or a permissions refusal. The fallback is
+/// the previous behaviour exactly, so the worst case is unchanged.
+///
+/// This mirrors what `soldr-cli`'s `shim_materialize` already does for shims,
+/// which is why fixture shims cost nothing while this path cost a full copy.
+fn link_or_copy_with_progress(
+    source: &Path,
+    target: &Path,
+    progress: &mut dyn FnMut(&'static str, u64, u64),
+) -> Result<(), SoldrError> {
+    if fs::hard_link(source, target).is_ok() {
+        // Report the whole image as completed so a caller rendering progress
+        // sees a finished unit of work rather than a silent gap.
+        let total = fs::metadata(target).map(|meta| meta.len()).unwrap_or(0);
+        progress("link", total, total);
+        return Ok(());
+    }
+    copy_file_with_progress(source, target, progress)
 }
 
 fn copy_file_with_progress(
