@@ -402,12 +402,12 @@ pub(crate) fn reap_orphaned_routes(
 pub(crate) async fn run_route_reaper(
     route_owners: Arc<Mutex<RouteOwnership>>,
     registry: Arc<Mutex<BackendRegistry>>,
-    shutdown: Arc<tokio::sync::Notify>,
+    shutdown: Arc<crate::daemon::shutdown_signal::ShutdownSignal>,
 ) {
     let grace = DEFAULT_GRACE;
     loop {
         tokio::select! {
-            _ = shutdown.notified() => return,
+            () = shutdown.wait() => return,
             _ = tokio::time::sleep(REAP_SWEEP_INTERVAL) => {}
         }
         // The sweep signals other processes, so keep it off the async worker.

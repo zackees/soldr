@@ -355,7 +355,14 @@ async fn serve_loop(
     peer_policy: Arc<PeerCredentialPolicy>,
     endpoint: String,
 ) -> io::Result<()> {
-    let shutdown = Arc::new(tokio::sync::Notify::new());
+    // soldr#3158: a broadcast, latching signal — not a bare `Notify`.
+    // Three loops park on this one signal (this accept loop, the route
+    // reaper, the RSS watchdog), and `Notify::notify_one()` wakes exactly
+    // one of them. The reaper registers first, so it consumed every
+    // cooperative SHUTDOWN and the accept loop below never broke: each
+    // `soldr broker stop` burned its full drain deadline and force-killed
+    // a broker that had accepted the request and simply never heard it.
+    let shutdown = Arc::new(crate::daemon::shutdown_signal::ShutdownSignal::default());
     let reaper = tokio::spawn(crate::broker_reaper::run_route_reaper(
         Arc::clone(&state.route_owners),
         Arc::clone(&state.registry),
@@ -389,7 +396,7 @@ async fn serve_loop(
     let rss_watchdog = rss_ceiling_bytes.map(|ceiling_bytes| {
         let watchdog_paths = crate::daemon::service_definition::broker_owned_paths();
         let watchdog_shutdown = Arc::clone(&shutdown);
-        tokio::spawn(crate::daemon::rss_ceiling::run_watchdog_notify(
+        tokio::spawn(crate::daemon::rss_ceiling::run_watchdog(
             watchdog_paths,
             watchdog_shutdown,
             ceiling_bytes,
@@ -400,7 +407,7 @@ async fn serve_loop(
     loop {
         tokio::select! {
             biased;
-            _ = shutdown.notified() => break,
+            () = shutdown.wait() => break,
             accepted = listener.accept() => {
                 let stream = accepted?;
                 let peer = match running_process::broker::server::connection::peer_identity_from_tokio_stream(&stream) {
@@ -458,7 +465,7 @@ async fn handle_connection(
     mut stream: interprocess::local_socket::tokio::Stream,
     peer: running_process::broker::server::PeerIdentity,
     state: Arc<BrokerState>,
-    shutdown: Arc<tokio::sync::Notify>,
+    shutdown: Arc<crate::daemon::shutdown_signal::ShutdownSignal>,
 ) -> io::Result<()> {
     let deadlines = BrokerDeadlines::from_env();
     let body = tokio::time::timeout(deadlines.first_response, read_frame_async(&mut stream))
@@ -653,12 +660,18 @@ async fn handle_connection(
     running_process::broker::session_relay::relay_session(stream, &negotiated.backend_pipe).await
 }
 
-/// Wake the broker's single accept-loop shutdown waiter. `notify_one` retains
-/// a permit when the handler wins the scheduling race and signals before the
-/// accept loop begins polling `notified()`; `notify_waiters` would lose that
-/// early notification and leave `broker stop` waiting for its kill deadline.
-fn request_shutdown(shutdown: &tokio::sync::Notify) {
-    shutdown.notify_one();
+/// Latch the stop request and wake every loop parked on it (soldr#3158).
+///
+/// Both hazards are real here and pull in opposite directions, which is why
+/// this goes through [`ShutdownSignal`] rather than a bare `Notify`: the
+/// broker has several waiters, so `notify_one()` reaches only one of them,
+/// while a handler that wins the scheduling race can signal before a loop
+/// first polls, which `notify_waiters()` alone would drop. The latched flag
+/// covers the second, broadcasting covers the first.
+///
+/// [`ShutdownSignal`]: crate::daemon::shutdown_signal::ShutdownSignal
+fn request_shutdown(shutdown: &crate::daemon::shutdown_signal::ShutdownSignal) {
+    shutdown.request();
 }
 
 async fn handle_daemon_control_tunnel(
