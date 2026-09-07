@@ -76,6 +76,29 @@ slow-timeout = { period = "60s", terminate-after = 2, grace-period = "30s" }
 [test-groups.soldr-runtime]
 max-threads = 1
 
+# soldr#3138 -- scheduling was investigated here and REJECTED. Do not retry it
+# without new evidence.
+#
+# The measurement is real: the 68 `soldr-runtime` members sum to 961s of
+# strictly serial work inside a 1046s stage, nextest reaches them late, and the
+# last 300s of a gate run executes 32 tests totalling 483 test-seconds --
+# effective concurrency 1.6 on a 4-thread runner, with the longest test
+# (`daemon_rss_ceiling::daemon_dies_...`, 45.9s) starting at t+963 of t+1048.
+# Longest-job-last is genuinely the worst order for a serial chain, and
+# `priority` (nextest >= 0.9.91; this repo runs 0.9.143) would reorder it.
+#
+# It has been tried and it lost. soldr#3024 attempt 2 promoted the cold-builds
+# group to priority 100 and Fresh Nextest regressed from an 18m11 median to
+# 26m14 -- front-loading the constrained tests makes them contend with cold
+# nested builds from the very start, and that costs more than the idle tail
+# saves. `tests/test_nextest_timeout_wrapper.py` guards against reintroducing
+# it, which is how this attempt was caught.
+#
+# The idle tail is therefore a symptom, not the bug. The 961s chain is 92% of
+# the stage, so no reordering can beat it -- the only lever that moves this
+# number is making each of those 68 tests cheaper (broker/daemon cold start),
+# which needs the per-child instrumentation soldr#3152 asks for.
+
 [[profile.default.overrides]]
 filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_rss_ceiling|daemon_stall_harness)::/))'
 test-group = 'soldr-runtime'
@@ -244,10 +267,25 @@ slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 filter = 'test(=cli_cargo_wrappers::cargo_front_door_invalidates_toolchain_preparation_memo) + test(=cli_toolchain::rustup_passthrough_forwards_args_unchanged_for_unscoped_subcommands) + test(=daemon_cache_maintenance::prod_dev_daemons_and_manual_orphan_maintenance_are_isolated)'
 slow-timeout = { period = "60s", terminate-after = 3, grace-period = "30s" }
 
+# soldr#3138: this entry used to also carry `threads-required = "num-cpus"`,
+# reserving the ENTIRE runner for one test. It was the only tuning decision in
+# this file with no comment saying why, and it was measured costing 25.1s of
+# whole-runner idle on the Linux gate (t+88s..t+113s of a 1046s stage) -- three
+# of four threads parked.
+#
+# Removed rather than documented, because the reservation does not buy this test
+# anything the group already gives it. It is a member of `soldr-runtime`
+# (`binary(broker) & test(/^cli_broker_resurrection::/)` above), so it already
+# never runs beside another broker/daemon lifecycle test. What it measures is a
+# SIGSTOPped owner's lease *expiring*, which is wall-clock: unrelated CPU load
+# on other threads does not shorten or lengthen a lease.
+#
+# If this does turn out to need more than group isolation, the fix is to say so
+# here -- an uncommented whole-runner reservation is how 25s went missing
+# unnoticed in the first place.
 [[profile.default.overrides]]
 filter = 'test(=cli_broker_resurrection::issue_2476_sigstop_owner_is_fenced_after_lease_expiry)'
 slow-timeout = { period = "60s", terminate-after = 3, grace-period = "30s" }
-threads-required = "num-cpus"
 
 # 240s: two complete isolated-HOME soldr runs back to back (the cargo-fmt and
 # bare-fmt labels), each paying a cold broker start with a full executable

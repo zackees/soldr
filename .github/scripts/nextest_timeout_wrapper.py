@@ -19,6 +19,28 @@ CHILD_EXIT_GRACE_SECS = 8
 CHILD_EXIT_GRACE_ENV = "SOLDR_NEXTEST_CHILD_EXIT_GRACE_SECS"
 
 
+# How long to block waiting for the child before looping to re-check state.
+#
+# soldr#3144/#3138: this loop used to be `while child.poll() is None: time.sleep(0.05)`,
+# which put a hard ~50 ms floor under EVERY test on Linux -- the wrapper runs
+# for all of them (`filter = "all()"` in `.config/nextest.toml`). The floor was
+# visible in CI: across 2,023 timed tests in one gate run the FASTEST was
+# 0.066 s and not one landed under 0.06 s, for a suite where ~1,700 tests are
+# sub-0.2 s unit tests.
+#
+# `Popen.wait(timeout=...)` returns the instant the child exits and, on POSIX,
+# backs off exponentially from 0.5 ms rather than sleeping a flat 50 ms, so a
+# short-lived test is reaped in about a millisecond.
+#
+# Why not `wait(timeout=None)`, which blocks in `waitpid` with no polling at
+# all: PEP 475 restarts the syscall after a signal handler runs, so once
+# `handle_termination` fires we would go straight back to blocking forever and
+# never reach the `child_exit_grace` force-kill below. The bounded slice is what
+# keeps that escape hatch reachable. While terminating, the slice narrows to the
+# remaining grace so the deadline stays exact.
+_IDLE_WAIT_SLICE_SECONDS = 1.0
+
+
 def _write_stderr(message: str) -> None:
     sys.stderr.write(message)
     sys.stderr.flush()
@@ -225,16 +247,24 @@ def run(command: list[str]) -> int:
         signal.signal(signal.SIGINT, handle_termination)
 
     forced = False
-    while child.poll() is None:
-        if (
-            termination_started is not None
-            and time.monotonic() - termination_started >= child_exit_grace
-        ):
-            _write_stderr("nextest timeout: child ignored termination; forcing exit\n")
-            _signal_child_tree(child, signal.SIGKILL)
-            forced = True
+    while True:
+        if termination_started is not None:
+            remaining = child_exit_grace - (time.monotonic() - termination_started)
+            if remaining <= 0:
+                _write_stderr(
+                    "nextest timeout: child ignored termination; forcing exit\n"
+                )
+                _signal_child_tree(child, signal.SIGKILL)
+                forced = True
+                break
+            wait_slice = remaining
+        else:
+            wait_slice = _IDLE_WAIT_SLICE_SECONDS
+        try:
+            child.wait(timeout=wait_slice)
             break
-        time.sleep(0.05)
+        except subprocess.TimeoutExpired:
+            continue
     returncode = child.wait()
     while any(pump.is_alive() for pump in pumps):
         if termination_started is not None:
