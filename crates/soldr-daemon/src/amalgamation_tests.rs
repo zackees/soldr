@@ -503,8 +503,7 @@ async fn pinned_embedded_hook_runs_after_cache_hit_classification() {
     let temp = tempfile::tempdir().expect("tempdir");
     let source = temp.path().join("host-policy.c");
     let output = temp.path().join("host-policy.o");
-    std::fs::write(&source, "int soldr_host_policy(void) { return 1; }\n")
-        .expect("source fixture");
+    std::fs::write(&source, "int soldr_host_policy(void) { return 1; }\n").expect("source fixture");
     let calls = Arc::new(AtomicUsize::new(0));
     let service = ZccacheService::start_with_options_and_host_admission_classifier(
         ZccacheConfig {
