@@ -264,10 +264,50 @@ test-group = 'soldr-runtime'
 [test-groups.soldr-cargo-cold-builds]
 max-threads = 1
 
+# soldr#3138 follow-up to #3161: same membership, two threads, Linux only.
+#
+# After #3161 raised `soldr-runtime` on Linux, THIS group became the gate's
+# serial tail. Measured on run 34086777738: t+812..t+983 of a 983s stage ran
+# at concurrency 1 -- 171s, one test at a time -- and every member cost a
+# near-identical ~15.7s (15.87 / 15.37 / 15.48 / 15.82 / 15.62 / 15.67 / 15.77
+# / 15.83). That uniformity is the cold broker+daemon start itself, now that
+# soldr#2521/#2996 made the executable image hash a cache hit; it is real work,
+# not a stall, and it is the same shape #3161 addressed one group over.
+#
+# Two things make raising it here specifically safe:
+#
+#   1. This file already records that Linux is the less constrained platform
+#      for this group -- "Linux does not need that full-runner reservation:
+#      retaining it there left the second CI test thread idle for 708 measured
+#      test-seconds and made Fresh Nextest take 26m57s". The full-runner
+#      reservation was already relaxed on Linux for exactly this reason; this
+#      continues that, and the Windows reservation above is untouched.
+#   2. soldr#3024 attempt 2's regression (18m11 -> 26m14) was `priority` on this
+#      group -- a DISPATCH-ORDER change that front-loaded these tests against
+#      cold nested builds. This is a CAPACITY change and adds no reordering;
+#      `priority` remains absent and guarded.
+#
+# Paired with the same SOLDR_ROUTE_ACQUIRE_CEILING_MS raise #3161 added to
+# `_build-and-test.yml`, for the same reason: two concurrent cold starts slow
+# each other, and the 120s `route_ceiling` is a threshold rather than a hang
+# detector.
+#
+# Expect less than half the 171s back. #3161 measured total test-seconds rising
+# 19% when its group went two-wide -- the contention tax is real and partly
+# cancels the packing win. This is worth doing anyway because the tail is
+# strictly serial today, but it is not a 2x.
+[test-groups.soldr-cargo-cold-builds-linux]
+max-threads = 2
+
 [[profile.default.overrides]]
 filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + (binary(cargo_front_door) & test(/^cli_cargo_doc_routes::(cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct|bare_doc_keeps_rustc_wrapped_but_rustdoc_direct|cargo_doc_route_deadline_kills_wrapper_hold_tree|bare_doc_route_deadline_kills_rustdoc_hold_tree|cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct|rustdoc_path_shim_reenters_direct_passthrough_without_zccache)$/)) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
 platform = { target = 'cfg(target_os = "windows")' }
 threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + (binary(cargo_front_door) & test(/^cli_cargo_doc_routes::(cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct|bare_doc_keeps_rustc_wrapped_but_rustdoc_direct|cargo_doc_route_deadline_kills_wrapper_hold_tree|bare_doc_route_deadline_kills_rustdoc_hold_tree|cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct|rustdoc_path_shim_reenters_direct_passthrough_without_zccache)$/)) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
+platform = { target = 'cfg(target_os = "linux")' }
+test-group = 'soldr-cargo-cold-builds-linux'
 
 [[profile.default.overrides]]
 filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + (binary(cargo_front_door) & test(/^cli_cargo_doc_routes::(cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct|bare_doc_keeps_rustc_wrapped_but_rustdoc_direct|cargo_doc_route_deadline_kills_wrapper_hold_tree|bare_doc_route_deadline_kills_rustdoc_hold_tree|cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct|rustdoc_path_shim_reenters_direct_passthrough_without_zccache)$/)) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
