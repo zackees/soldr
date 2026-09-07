@@ -4,15 +4,18 @@ use crate::cache_lib::gc::{self, GcOptions};
 use crate::cache_lib::target_registry::TargetRegistry;
 use crate::core::SoldrPaths;
 use crate::daemon::{db, history_gc};
+
+/// The shared cooperative shutdown primitive, re-exported at its original
+/// path (soldr#3158 moved it to `daemon::shutdown_signal` when the broker
+/// began sharing it).
+pub use crate::daemon::shutdown_signal::ShutdownSignal;
 use crate::zccache_embedded::{
     EmbeddedDiskMaintenanceReport, EmbeddedDiskPolicy, SoldrZccacheService,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::Notify;
 
 pub const PRESSURE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 pub const FULL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -29,49 +32,6 @@ pub struct MaintenanceContext {
     pub db_path: PathBuf,
     pub compile_service: Arc<SoldrZccacheService>,
     pub shutdown: Arc<ShutdownSignal>,
-}
-
-#[derive(Default)]
-pub struct ShutdownSignal {
-    requested: AtomicBool,
-    notify: Notify,
-}
-
-impl ShutdownSignal {
-    pub fn request(&self) {
-        self.requested.store(true, Ordering::Release);
-        self.notify.notify_waiters();
-    }
-
-    pub fn is_requested(&self) -> bool {
-        self.requested.load(Ordering::Acquire)
-    }
-
-    pub async fn wait(&self) {
-        loop {
-            // Register with the Notify BEFORE re-checking the flag.
-            //
-            // `notify_waiters()` stores no permit: a `Notified` future
-            // snapshots the waiter generation when it is *enabled*, so the
-            // naive `while !is_requested() { notified().await }` loses the
-            // wakeup for this interleaving and parks forever —
-            //
-            //   waiter:    is_requested() -> false
-            //   requester: store(true); notify_waiters()
-            //   waiter:    notified().await   <- missed it, never re-checks
-            //
-            // Enabling first means a `request()` landing anywhere after this
-            // point either sets the flag we are about to read, or wakes the
-            // future we already registered.
-            let notified = self.notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if self.is_requested() {
-                return;
-            }
-            notified.await;
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

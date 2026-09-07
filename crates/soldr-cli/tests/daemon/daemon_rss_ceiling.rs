@@ -915,8 +915,8 @@ const GUARANTEED_BREACH_CEILING_BYTES: u64 = 32 * 1024 * 1024;
 ///    placing a fresh daemon image can exceed a tight ceiling before the
 ///    daemon ever gets a sample) -- a real demonstration of the exact same
 ///    contract, but not a targeted one, and it left the daemon's own
-///    `run_watchdog` breach arm (as opposed to the broker's
-///    `run_watchdog_notify`) with no integration coverage of its own.
+///    `run_watchdog` breach arm (as opposed to the broker's use of the
+///    same loop) with no integration coverage of its own.
 /// 2. The real 12-crate chained build against a SECOND, fresh
 ///    `cache_root_b` -- a distinct route, so a brand new daemon is
 ///    launched for it -- with the ceiling set. `SOLDR_*` env vars forward

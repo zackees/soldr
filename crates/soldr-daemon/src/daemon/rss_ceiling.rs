@@ -412,7 +412,7 @@ pub fn legible_breach_message(summary: &BreachSummary) -> String {
 /// compile-service, each of which allocates) is exactly the wrong thing to
 /// do first. The dump is the artifact that matters; nothing else does.
 ///
-/// Split out of [`run_watchdog`]/[`run_watchdog_notify`] so the substantial
+/// Split out of [`run_watchdog`] so the substantial
 /// logic -- [`write_breach_dump`] -- stays unit-testable without an
 /// `std::process::exit` call tearing down the test process along with it.
 fn die_on_breach(
@@ -528,46 +528,6 @@ pub async fn run_watchdog(
         }
         if shutdown.is_requested() {
             return;
-        }
-        match sample_tick(pid, ceiling_bytes, &mut status) {
-            Tick::Unreadable => continue,
-            Tick::Continue => {
-                let _ = write_status(&paths, &status);
-            }
-            Tick::Breach {
-                rss_bytes,
-                peak_rss_bytes,
-            } => {
-                let _ = write_status(&paths, &status);
-                die_on_breach(&paths, role, pid, ceiling_bytes, rss_bytes, peak_rss_bytes);
-            }
-        }
-    }
-}
-
-/// Same loop as [`run_watchdog`], for a caller whose shutdown signal is a
-/// bare `tokio::sync::Notify` rather than [`ShutdownSignal`] -- the shape
-/// `broker_server.rs`'s `serve_loop` already uses for its own
-/// `run_route_reaper` task. Duplicated rather than made generic over the
-/// shutdown type: the two shutdown primitives are not part of the same
-/// trait anywhere in this codebase, and the loop body is fifteen lines.
-pub async fn run_watchdog_notify(
-    paths: SoldrPaths,
-    shutdown: Arc<tokio::sync::Notify>,
-    ceiling_bytes: u64,
-    role: ProcessRole,
-) {
-    let pid = std::process::id();
-    let mut status = RssCeilingStatus {
-        schema_version: SCHEMA_VERSION,
-        pid,
-        ceiling_bytes,
-        ..Default::default()
-    };
-    loop {
-        tokio::select! {
-            _ = shutdown.notified() => return,
-            _ = tokio::time::sleep(RSS_SAMPLE_INTERVAL) => {}
         }
         match sample_tick(pid, ceiling_bytes, &mut status) {
             Tick::Unreadable => continue,
@@ -703,7 +663,7 @@ mod tests {
         );
 
         // The second tick must not re-report a breach: `!status.breached`
-        // in `run_watchdog`/`run_watchdog_notify` guards `die_on_breach`
+        // in `run_watchdog` guards `die_on_breach`
         // from being invoked twice for the same watchdog's lifetime.
         let second = sample_tick(pid, 1, &mut status);
         assert!(

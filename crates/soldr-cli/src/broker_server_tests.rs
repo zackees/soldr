@@ -5,7 +5,7 @@ use super::*;
 
 #[test]
 fn shutdown_signal_survives_before_accept_loop_waits() {
-    let shutdown = tokio::sync::Notify::new();
+    let shutdown = crate::daemon::shutdown_signal::ShutdownSignal::default();
     request_shutdown(&shutdown);
 
     tokio::runtime::Builder::new_current_thread()
@@ -13,10 +13,55 @@ fn shutdown_signal_survives_before_accept_loop_waits() {
         .build()
         .expect("runtime")
         .block_on(async {
-            tokio::time::timeout(std::time::Duration::from_millis(100), shutdown.notified())
+            tokio::time::timeout(std::time::Duration::from_millis(100), shutdown.wait())
                 .await
-                .expect("an early shutdown signal must retain a permit");
+                .expect("an early shutdown signal must survive until someone waits");
         });
+}
+
+/// soldr#3158: `serve_loop` fans one signal out to the accept loop, the route
+/// reaper, and the RSS watchdog. Signalling it with `Notify::notify_one()`
+/// reached exactly one of them -- the reaper, which registers first -- so the
+/// accept loop that owns the process exit never broke and every
+/// `soldr broker stop` fell through to its force-kill deadline.
+#[test]
+fn shutdown_request_reaches_every_serve_loop_waiter() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let shutdown = Arc::new(crate::daemon::shutdown_signal::ShutdownSignal::default());
+    let woken = Arc::new(AtomicUsize::new(0));
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            // One per loop `serve_loop` parks on this signal.
+            let waiters: Vec<_> = ["accept", "route-reaper", "rss-watchdog"]
+                .into_iter()
+                .map(|_| {
+                    let shutdown = Arc::clone(&shutdown);
+                    let woken = Arc::clone(&woken);
+                    tokio::spawn(async move {
+                        shutdown.wait().await;
+                        woken.fetch_add(1, Ordering::Release);
+                    })
+                })
+                .collect();
+            tokio::task::yield_now().await;
+
+            request_shutdown(&shutdown);
+
+            for waiter in waiters {
+                tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+                    .await
+                    .expect("one shutdown request must reach every serve_loop waiter")
+                    .expect("waiter task must not panic");
+            }
+        });
+
+    assert_eq!(woken.load(std::sync::atomic::Ordering::Acquire), 3);
 }
 
 #[test]
