@@ -81,6 +81,31 @@ jobs:
       # lines. soldr#3024 now measures 4 threads after compiler-admission and
       # Cargo-orchestration OOM fixes; an OOM is a Soldr scheduling defect.
       NEXTEST_TEST_THREADS: "4"
+      # soldr#3138 -- paired with `[test-groups.soldr-runtime-linux]
+      # max-threads = 2` in `.config/nextest.toml`. The two must move together.
+      #
+      # Raising that group to two concurrent members lets two broker/daemon cold
+      # starts overlap, and the measured effect of overlap is ~1.7x on each
+      # (63-78s in isolation reaching 121s when racing). Against the FIXED 120s
+      # `BrokerDeadlines::route_ceiling` that is a threshold breach, not a
+      # slowdown -- which is the entire reason the group was serial.
+      #
+      # This raises the ceiling so the extra concurrency cannot manufacture a
+      # failure. It is safe because the ceiling is NOT the hang detector:
+      # `first_response` (2s) and `progress_silence` (5s) catch a dead or
+      # stalled broker and are untouched, while `route_ceiling` fires only on
+      # "alive, progressing, but slow" -- pinned by
+      # `continuous_progress_is_still_bounded_by_route_ceiling` in
+      # `crates/soldr-cli/src/session_transport.rs`. What is given up is the
+      # ability to distinguish "slow" from "very slow" during route
+      # acquisition, on this lane only.
+      #
+      # 300s rather than unbounded: nextest's own per-test budget (120s default,
+      # 300s for the widened entries) still bounds every test, so this stops the
+      # route ceiling being the *first* thing to fire without removing any
+      # bound. Scoped to this workflow -- no other lane and no developer machine
+      # sees it.
+      SOLDR_ROUTE_ACQUIRE_CEILING_MS: "300000"
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
