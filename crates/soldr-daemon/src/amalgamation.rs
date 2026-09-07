@@ -53,6 +53,46 @@ const KNOWN_AMALGAMATIONS: &[&str] = &["sqlite3.c", "zstd.c", "rocksdb.cc"];
 /// on a drift path even though there is now only one lock.
 const SOLDR_RUST_EXCLUSIVE_NON_LINKING_UNITS: &[&str] = &["kernal_api", "soldr_cli"];
 
+/// Summed `--extern` rlib bytes at or above which a Rust `--test` link is
+/// treated as heavy enough to need exclusive admission (soldr#3150).
+///
+/// This is the Rust analogue of [`AMALGAMATION_BYTES`], and it exists for the
+/// same reason that constant does: a name table only catches the units someone
+/// remembered to add. [`SOLDR_HEAVY_TEST_LINKS`] listed `soldr_cli` and
+/// `soldr_daemon`, which are the *lib* unit-test links -- the tests below still
+/// pin that, and both name `src/lib.rs`. But since soldr#2934 consolidated the
+/// integration tests, the heaviest links in the workspace are eight *separate*
+/// binaries (`broker`, `cache_gc`, `cargo_front_door`, `cook_dylint`, `daemon`,
+/// `fetch_tools`, `guards`, `toolchain_env`), each compiled as
+/// `--crate-name=<target> --test`, and none of those names matched. Per
+/// soldr#2931 those are precisely the binaries that "each link the full soldr
+/// graph into its own binary".
+///
+/// Measuring instead of naming fixes all eight at once and stays correct when a
+/// ninth is added or one is renamed.
+///
+/// The threshold is calibrated, not guessed. Over a real compile journal, a
+/// full-graph `--test` link sums 147-231 MB of `--extern` rlibs across 42-43
+/// externs (max single rlib 83.9 MB), while trivial test binaries carry 0-4
+/// externs and sum to a few MB. 64 MiB sits in an order-of-magnitude gap, so
+/// nothing delicate depends on the exact value.
+///
+/// Deliberately narrow: only `--test` links are measured. That is the shape the
+/// documented invariant is about ("these measured heavy links must not overlap
+/// any other compiler child") and where the observed kills happened. Ordinary
+/// `--crate-type lib` compiles list their externs without linking them and have
+/// a much flatter profile, so they keep shared admission. Widening this to real
+/// `bin` links is soldr#3152's job, with a measured estimate rather than a
+/// second threshold.
+const HEAVY_TEST_LINK_EXTERN_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Override for [`HEAVY_TEST_LINK_EXTERN_BYTES`], in bytes.
+///
+/// A machine much larger or much smaller than a hosted runner may want a
+/// different boundary, and an operator debugging an OOM needs to be able to
+/// lower it without a rebuild.
+const HEAVY_TEST_LINK_BYTES_ENV: &str = "SOLDR_HEAVY_TEST_LINK_BYTES";
+
 /// First-party test links measured to exceed the safe parallel-memory envelope.
 ///
 /// Unlike the registry amalgamations above, these are not source amalgamations:
@@ -122,13 +162,82 @@ impl HostAdmissionClassifier for SoldrHostAdmissionClassifier {
 }
 
 fn soldr_rust_crate_requires_exclusive_access(args: &[String]) -> bool {
+    soldr_rust_crate_requires_exclusive_access_with(args, file_len)
+}
+
+/// [`soldr_rust_crate_requires_exclusive_access`] with the size lookup injected.
+///
+/// Split out so the byte-threshold rule is testable without staging hundreds of
+/// megabytes of real rlibs on disk. Production passes [`file_len`].
+fn soldr_rust_crate_requires_exclusive_access_with(
+    args: &[String],
+    size_of: impl Fn(&Path) -> Option<u64>,
+) -> bool {
     let Some(name) = rust_crate_name(args) else {
         return false;
     };
 
-    (SOLDR_RUST_EXCLUSIVE_NON_LINKING_UNITS.contains(&name)
-        && rust_crate_types_are_non_linking(args))
-        || (SOLDR_HEAVY_TEST_LINKS.contains(&name) && args.iter().any(|arg| arg == "--test"))
+    if SOLDR_RUST_EXCLUSIVE_NON_LINKING_UNITS.contains(&name)
+        && rust_crate_types_are_non_linking(args)
+    {
+        return true;
+    }
+
+    if !args.iter().any(|arg| arg == "--test") {
+        return false;
+    }
+
+    if SOLDR_HEAVY_TEST_LINKS.contains(&name) {
+        return true;
+    }
+
+    extern_rlib_bytes(args, size_of) >= heavy_test_link_threshold()
+}
+
+fn heavy_test_link_threshold() -> u64 {
+    std::env::var(HEAVY_TEST_LINK_BYTES_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|bytes| *bytes > 0)
+        .unwrap_or(HEAVY_TEST_LINK_EXTERN_BYTES)
+}
+
+fn file_len(path: &Path) -> Option<u64> {
+    std::fs::metadata(path).ok().map(|meta| meta.len())
+}
+
+/// Total bytes of the rlibs named by `--extern name=/path/to/lib.rlib`.
+///
+/// Cargo always passes these as absolute paths -- verified across 3,927
+/// `--extern` arguments on `--test` lines in a real compile journal, of which
+/// zero were relative -- so no working directory is needed and this stays a
+/// pure function of the command line plus `stat`. That matters because the
+/// classifier's [`HostCompilerRequest`] exposes no cwd.
+///
+/// Bare `--extern proc_macro` (no `=path`) names a sysroot crate with nothing
+/// to measure and is skipped, as is any path that cannot be stat'd: an
+/// unmeasurable input must not be able to turn admission into an I/O error, the
+/// same rule [`measure`] follows.
+fn extern_rlib_bytes(args: &[String], size_of: impl Fn(&Path) -> Option<u64>) -> u64 {
+    extern_values(args)
+        .filter_map(|value| value.split_once('='))
+        .filter_map(|(_, path)| size_of(Path::new(path)))
+        .sum()
+}
+
+fn extern_values(args: &[String]) -> impl Iterator<Item = &str> {
+    let mut out = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--extern" {
+            if let Some(value) = iter.next() {
+                out.push(value.as_str());
+            }
+        } else if let Some(value) = arg.strip_prefix("--extern=") {
+            out.push(value);
+        }
+    }
+    out.into_iter()
 }
 
 fn rust_crate_name(args: &[String]) -> Option<&str> {
@@ -521,6 +630,131 @@ mod tests {
         ];
 
         assert!(soldr_rust_crate_requires_exclusive_access(&args));
+    }
+
+    /// The eight consolidated integration-test binaries from soldr#2934. None
+    /// is named `soldr_cli` or `soldr_daemon`, so none matched the old name
+    /// list -- and per soldr#2931 each links the full soldr graph, making them
+    /// the heaviest links in the workspace.
+    const CONSOLIDATED_TEST_BINARIES: &[&str] = &[
+        "broker",
+        "cache_gc",
+        "cargo_front_door",
+        "cook_dylint",
+        "daemon",
+        "fetch_tools",
+        "guards",
+        "toolchain_env",
+    ];
+
+    /// A `--test` link of `crate`, linking `externs` rlibs of `each` bytes.
+    fn test_link(crate_name: &str, externs: usize, each: u64) -> (Vec<String>, u64) {
+        let mut args = vec![
+            format!("--crate-name={crate_name}"),
+            "--test".to_string(),
+            format!("crates/soldr-cli/tests/{crate_name}/main.rs"),
+        ];
+        for i in 0..externs {
+            args.push("--extern".to_string());
+            args.push(format!("dep{i}=/target/debug/deps/libdep{i}.rlib"));
+        }
+        (args, each)
+    }
+
+    fn sized(each: u64) -> impl Fn(&Path) -> Option<u64> {
+        move |_| Some(each)
+    }
+
+    #[test]
+    fn consolidated_integration_test_links_get_exclusive_access_by_size() {
+        // 43 externs x 5 MB = 215 MB, matching the 147-231 MB measured for a
+        // real full-graph test link.
+        for name in CONSOLIDATED_TEST_BINARIES {
+            let (args, each) = test_link(name, 43, 5_000_000);
+            assert!(
+                soldr_rust_crate_requires_exclusive_access_with(&args, sized(each)),
+                "{name} links the full graph and must not share a compiler slot",
+            );
+        }
+    }
+
+    #[test]
+    fn the_old_name_list_would_have_missed_every_one_of_them() {
+        // The regression soldr#3150 records: these are exactly the binaries the
+        // name-based rule could not see.
+        for name in CONSOLIDATED_TEST_BINARIES {
+            assert!(
+                !SOLDR_HEAVY_TEST_LINKS.contains(name),
+                "{name} is not in the name list -- that is the bug being fixed",
+            );
+        }
+    }
+
+    #[test]
+    fn small_test_links_keep_shared_access() {
+        // Trivial test binaries carry 0-4 externs in a real journal. They must
+        // keep packing in parallel: serializing them would cost more build time
+        // than the OOMs exclusivity prevents.
+        for externs in [0_usize, 1, 2, 4] {
+            let (args, each) = test_link("tiny_probe", externs, 1_000_000);
+            assert!(
+                !soldr_rust_crate_requires_exclusive_access_with(&args, sized(each)),
+                "a {externs}-extern test link must not reserve the machine",
+            );
+        }
+    }
+
+    #[test]
+    fn a_heavy_non_test_compile_keeps_shared_access() {
+        // Only `--test` links are measured. An ordinary rlib compile lists its
+        // externs without linking them and has a much flatter memory profile.
+        let mut args = vec![
+            "--crate-name=some_lib".to_string(),
+            "--crate-type=lib".to_string(),
+            "crates/some-lib/src/lib.rs".to_string(),
+        ];
+        for i in 0..43 {
+            args.push("--extern".to_string());
+            args.push(format!("dep{i}=/target/debug/deps/libdep{i}.rlib"));
+        }
+        assert!(!soldr_rust_crate_requires_exclusive_access_with(
+            &args,
+            sized(5_000_000)
+        ));
+    }
+
+    #[test]
+    fn unmeasurable_externs_do_not_fail_admission() {
+        // An input that cannot be stat'd must not turn admission into an error
+        // or a false positive -- the rule `measure` already follows.
+        let (args, _) = test_link("broker", 43, 5_000_000);
+        assert!(!soldr_rust_crate_requires_exclusive_access_with(
+            &args,
+            |_| None
+        ));
+    }
+
+    #[test]
+    fn both_extern_spellings_are_measured() {
+        // `--extern k=v` and `--extern=k=v` both occur in real command lines.
+        let split = vec![
+            "--extern".to_string(),
+            "a=/x/liba.rlib".to_string(),
+            "--extern=b=/x/libb.rlib".to_string(),
+        ];
+        assert_eq!(extern_rlib_bytes(&split, |_| Some(10)), 20);
+    }
+
+    #[test]
+    fn bare_sysroot_externs_are_skipped() {
+        // `--extern proc_macro` names a sysroot crate with no path to measure.
+        let args = vec![
+            "--extern".to_string(),
+            "proc_macro".to_string(),
+            "--extern".to_string(),
+            "a=/x/liba.rlib".to_string(),
+        ];
+        assert_eq!(extern_rlib_bytes(&args, |_| Some(7)), 7);
     }
 
     #[test]
