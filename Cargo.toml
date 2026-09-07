@@ -182,6 +182,34 @@ debug = false
 debug = false
 codegen-units = 1
 
+# soldr#3138: blake3 must be optimized even in the dev/test profiles.
+#
+# Soldr hashes its own ~100 MB executable image on every cold broker route
+# (`broker_spawn`'s `StreamHasher` -> `zccache::hash` -> blake3). Unoptimized,
+# blake3 runs at roughly 17 MB/s, so that hash takes **6.0 seconds** --
+# measured directly with `SOLDR_STARTUP_TRACE=1` against a fresh home:
+#
+#   broker_image_hash  ms=6020
+#   broker_stage_image ms=106
+#   broker_spawn_wait  ms=55
+#
+# The hash is 98% of a cold broker bringup and dwarfs the image copy beside
+# it. Optimized, blake3 runs at GB/s and the same hash is a rounding error.
+#
+# `codegen-units = 1` above does NOT imply optimization -- `opt-level` is
+# still 0 for dev -- which is why this needs saying separately. Scoped to the
+# one crate that does the work, so the rest of the workspace keeps its fast
+# unoptimized builds and its debuggability. `constant_time_eq` and `arrayvec`
+# are blake3's hot-path dependencies and get the same treatment.
+[profile.dev.package.blake3]
+opt-level = 3
+
+[profile.dev.package.constant_time_eq]
+opt-level = 3
+
+[profile.dev.package.arrayvec]
+opt-level = 3
+
 # The host CI warm-up and nextest invocation share target/<triple>/debug.
 # Mirror dev's effective codegen settings here so their fingerprints remain
 # reusable across that handoff (soldr#2864).
@@ -194,6 +222,18 @@ debug = false
 [profile.test.package.zccache]
 debug = false
 codegen-units = 1
+
+# Same reason as `[profile.dev.package.blake3]` above. The gate's test binaries
+# build under this profile, and roughly 40 integration tests each cold-start
+# their own broker route -- so an unoptimized blake3 costs ~6 s per test.
+[profile.test.package.blake3]
+opt-level = 3
+
+[profile.test.package.constant_time_eq]
+opt-level = 3
+
+[profile.test.package.arrayvec]
+opt-level = 3
 
 [profile.release]
 # soldr#786 / linux+macOS follow-up, revised by soldr#3038: a crash or heap
