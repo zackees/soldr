@@ -182,8 +182,14 @@ Work down it. Stop at the first rung that actually fits the problem.
 
 1. **Make the unit itself cheaper.** `codegen-units = 1`, `debug = false`,
    `lto = false`, a smaller profile. See `[profile.*.package.zccache]`.
-2. **Grant that unit exclusive admission.** Add it to the classifier. Prefer a
-   predicate over a name (see below).
+2. **Size the unit's actual resource need and let admission schedule it.**
+   Exclusive access is the blunt form of this and is what exists today
+   (`SoldrHostAdmissionClassifier`). The better form — designed in soldr#3152 —
+   estimates a unit's peak memory from its command line (summed and max
+   `--extern` rlib bytes, object count, LTO mode, `codegen-units`, `--emit`) and
+   spends it against live headroom, so exclusivity becomes the emergent case for
+   a unit that genuinely needs the whole machine rather than a name on a list.
+   Prefer a measured predicate over a name in either form (see below).
 3. **Give the machine headroom.** `.github/scripts/setup_ci_swap.sh` — 14 GB of
    swap for <1 s. Note that soldr#2453's own workflow comment records which rung
    did the work: "Bounding CARGO_BUILD_JOBS/SOLDR_JOBS narrowed but did not close
@@ -245,6 +251,26 @@ Two traps when gathering that telemetry:
 
 Every entry names a reason. A cap with no reason beside it is a bug report
 waiting to be written.
+
+### Why "exclusive access" is the floor, not the ceiling
+
+Exclusivity is still a whole-machine answer to a per-unit question — it just
+scopes the blast radius to one compile instead of a whole lane. Applied too
+widely it re-creates the problem it solves: granting every first-party `--test`
+link exclusive access would serialize dozens of trivial test binaries and cost
+more wall-clock than the OOMs it prevents. The real factors are continuous, not
+categorical — LTO mode (`fat` holds the whole graph at once, `thin` is chunked,
+absent is flattest), object count, total object bytes, and largest single object
+all move peak memory independently. Measured over a real journal, `--extern`
+counts are bimodal (42-43 for genuine test links versus 0-4 for trivial ones) and
+rlib sizes span 65x between median and max, so the information needed to
+discriminate is present on the command line and merely unused.
+
+So the ladder's rung 2 has a floor and a ceiling: exclusivity today, memory-aware
+scheduling (soldr#3152) once a compiler child's peak RSS is actually measured.
+Nothing measures it now — the journal has no memory field, `rss_ceiling.rs`
+watches only the daemon's own RSS, and cgroup counters missed these exact kills.
+`wait4`'s `ru_maxrss` is free at reap time and is the missing foundation.
 
 ## Agent Development Environment Rule (issue #1105)
 
