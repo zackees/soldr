@@ -135,18 +135,48 @@ fn daemon_relocation_reports_real_byte_progress() {
         .expect("relocate with progress");
 
     assert_eq!(fs::read(relocated).expect("read relocated"), contents);
-    for stage in ["source-hash", "copy"] {
-        let stage_events: Vec<_> = events
-            .iter()
-            .filter(|(reported, _, _)| *reported == stage)
-            .collect();
-        assert!(stage_events.len() >= 2, "missing streaming {stage} events");
-        assert_eq!(
-            stage_events.last().map(|(_, done, _)| *done),
-            Some(contents.len() as u64)
+
+    // `source-hash` always streams: hashing reads every byte regardless of how
+    // the image is then published.
+    let hash_events: Vec<_> = events
+        .iter()
+        .filter(|(reported, _, _)| *reported == "source-hash")
+        .collect();
+    assert!(
+        hash_events.len() >= 2,
+        "missing streaming source-hash events"
+    );
+    assert_eq!(
+        hash_events.last().map(|(_, done, _)| *done),
+        Some(contents.len() as u64)
+    );
+    assert!(hash_events.iter().all(|(_, done, total)| done <= total));
+
+    // Publication reports either `copy` or `link` (soldr#3138). A hardlink
+    // moves no bytes, so demanding streaming `copy` events would be demanding
+    // that the slow path be taken. What must hold either way is that the stage
+    // reports the full image as completed and never overshoots the total.
+    let publish_events: Vec<_> = events
+        .iter()
+        .filter(|(reported, _, _)| *reported == "copy" || *reported == "link")
+        .collect();
+    assert!(
+        !publish_events.is_empty(),
+        "publication reported neither copy nor link progress"
+    );
+    let published_via_copy = publish_events.iter().any(|(stage, _, _)| *stage == "copy");
+    if published_via_copy {
+        assert!(
+            publish_events.len() >= 2,
+            "a byte copy must still stream its progress"
         );
-        assert!(stage_events.iter().all(|(_, done, total)| done <= total));
     }
+    assert_eq!(
+        publish_events.last().map(|(_, done, _)| *done),
+        Some(contents.len() as u64),
+        "publication must report the whole image as completed"
+    );
+    assert!(publish_events.iter().all(|(_, done, total)| done <= total));
 }
 
 // soldr#1300 — the maturin-repaired macOS wheel layout: binaries
@@ -634,4 +664,84 @@ mod reexec_hop_tests {
             "hopping to the same path would be a no-op exec"
         );
     }
+}
+
+/// soldr#3138: staging the daemon runtime image must not copy ~105 MB when a
+/// hardlink will do. The destination is content-addressed and the image is
+/// executed rather than written, so a link is safe -- see
+/// `link_or_copy_with_progress`.
+///
+/// Hardlink support is probed at runtime rather than assumed from a `cfg`:
+/// `soldr-core` is inside the platform-cfg boundary (`ban_platform_cfg_outside_
+/// boundary`), and the property under test is "did staging take the link path",
+/// which the reported progress stage states directly on every platform.
+#[test]
+fn staging_hardlinks_instead_of_copying_when_possible() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // Probe: can this filesystem hardlink at all? If not, the link path is
+    // legitimately unavailable and there is nothing to assert.
+    let probe_src = dir.path().join("probe");
+    let probe_dst = dir.path().join("probe-link");
+    fs::write(&probe_src, b"probe").expect("write probe");
+    if fs::hard_link(&probe_src, &probe_dst).is_err() {
+        return;
+    }
+
+    let source = dir.path().join("soldr-daemon");
+    fs::write(&source, b"pretend this is 105 MB of daemon").expect("write source");
+    let target = dir.path().join("staged");
+
+    let mut seen: Vec<&'static str> = Vec::new();
+    super::link_or_copy_with_progress(&source, &target, &mut |label, _done, _total| {
+        if !seen.contains(&label) {
+            seen.push(label);
+        }
+    })
+    .expect("stage the image");
+
+    assert_eq!(
+        fs::read(&source).expect("read source"),
+        fs::read(&target).expect("read target"),
+        "the staged image must have the source's bytes",
+    );
+    assert_eq!(
+        seen,
+        vec!["link"],
+        "same-filesystem staging must hardlink, not copy: a byte copy of the \
+         daemon image is ~105 MB of read plus ~105 MB of write per route",
+    );
+}
+
+/// The fallback must be the previous behaviour exactly, so a filesystem that
+/// cannot link (or a cross-device destination, `EXDEV`) is never worse off.
+#[test]
+fn staging_falls_back_to_a_byte_copy_when_the_link_cannot_be_made() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source = dir.path().join("soldr-daemon");
+    std::fs::write(&source, b"payload").expect("write source");
+
+    // An existing target makes `hard_link` fail with EEXIST, which is the same
+    // shape the caller must survive as EXDEV on a cross-volume runtime root.
+    let target = dir.path().join("staged");
+    std::fs::write(&target, b"stale").expect("seed a stale target");
+
+    let mut labels: Vec<&'static str> = Vec::new();
+    super::link_or_copy_with_progress(&source, &target, &mut |label, _d, _t| {
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    })
+    .expect("fall back to copying");
+
+    assert_eq!(
+        std::fs::read(&target).expect("read target"),
+        b"payload",
+        "the fallback must still publish the source bytes",
+    );
+    assert_eq!(
+        labels,
+        vec!["copy"],
+        "the fallback must report copy progress"
+    );
 }
