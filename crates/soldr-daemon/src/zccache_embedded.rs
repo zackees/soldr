@@ -610,38 +610,8 @@ mod disk_limit_tests {
 }
 
 #[cfg(test)]
-mod journal_migration_tests {
-    use super::*;
-
-    #[test]
-    fn startup_scrubs_live_and_rotated_pre_redaction_journals() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/zccache/compile_journal_env_security_v1.json"
-        ))
-        .unwrap();
-        let legacy = serde_json::to_string(&fixture["legacy_record"]).unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let paths = SoldrPaths::with_root(temp.path().join("owned"));
-        let current = embedded_compile_journal_path(&paths);
-        let rotated = current.with_file_name("compile_journal.jsonl.123");
-        std::fs::create_dir_all(current.parent().unwrap()).unwrap();
-        for path in [&current, &rotated] {
-            std::fs::write(path, format!("{legacy}\nnot-json-with-secret\n")).unwrap();
-        }
-
-        scrub_existing_compile_journals(&paths).unwrap();
-
-        for path in [&current, &rotated] {
-            let body = std::fs::read_to_string(path).unwrap();
-            assert!(!body.contains("legacy-full-env-token"));
-            assert!(!body.contains("UNRESTRICTED_LEGACY_VARIABLE"));
-            assert!(!body.contains("not-json-with-secret"));
-            let row: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
-            assert!(row.get("env").is_none());
-        }
-        assert!(current.starts_with(paths.cache.join("zccache/daemon-state/embedded-v1")));
-    }
-}
+#[path = "zccache_embedded_journal_tests.rs"]
+mod journal_migration_tests;
 
 fn ensure_complete_shutdown(
     report: &zccache::embedded::DetailedShutdownReport,
@@ -809,9 +779,36 @@ pub fn embedded_compile_journal_path(paths: &SoldrPaths) -> PathBuf {
         .join("compile_journal.jsonl")
 }
 
+/// Name of the marker recording that [`scrub_existing_compile_journals`] has
+/// already run against this logs directory.
+///
+/// The trailing version is the re-trigger mechanism: bump it and every store
+/// scrubs once more. Lives beside the journals, so a wiped or
+/// zccache-version-rotated store correctly loses it and re-scrubs.
+const JOURNAL_SCRUB_MARKER: &str = ".compile-journal-scrub-v1";
+
 /// Remove pre-#1149 raw environment values from live and rotated journals
 /// before zccache opens the current writer. Invalid legacy lines are dropped
 /// closed because retaining an unparseable line could retain a credential.
+///
+/// # Runs once per store, not once per daemon start (soldr#3174)
+///
+/// This is a **migration**, and it was running unconditionally on every daemon
+/// start: reading every journal into memory, `serde_json`-parsing and
+/// re-serializing every line, and rewriting every file. The cost grows with
+/// the journal, which grows with use, so it got quietly worse forever.
+///
+/// The soldr#3163 bringup breadcrumbs measured it at **73.6 s of a 77.6 s
+/// daemon cold start** on the Linux gate — 95% of the phase, and on the
+/// critical path (the gate's broker-handoff step ends the same second the
+/// daemon reports ready). soldr#3174 had guessed the time was in zccache's own
+/// start; the sub-phase split showed zccache at 3.8 s and this at 73.6 s.
+///
+/// A marker makes it run once. That is sound because the thing being migrated
+/// cannot come back: #1149 fixed the *writer*, so every line appended since is
+/// already sanitized, and rotation only ever derives `compile_journal.jsonl.N`
+/// from a file this function already cleaned. Only a store written by a
+/// pre-#1149 soldr has anything to scrub, and such a store has no marker.
 fn scrub_existing_compile_journals(paths: &SoldrPaths) -> std::io::Result<()> {
     let logs = embedded_version_root(paths).join("logs");
     match std::fs::symlink_metadata(&logs) {
@@ -819,7 +816,21 @@ fn scrub_existing_compile_journals(paths: &SoldrPaths) -> std::io::Result<()> {
         Err(error) => return Err(error),
         Ok(_) => crate::cache_lib::path_safety::validate_owned_directory(&paths.root, &logs)?,
     }
-    for entry in std::fs::read_dir(&logs)? {
+    let marker = logs.join(JOURNAL_SCRUB_MARKER);
+    if marker.exists() {
+        return Ok(());
+    }
+    scrub_journal_files(&logs)?;
+    // Best effort: a store that cannot record the marker re-scrubs next start,
+    // which is the old behaviour and is correct, just slow. Failing startup
+    // over an unwritable marker would be strictly worse.
+    let _ = std::fs::write(&marker, b"soldr#3174\n");
+    Ok(())
+}
+
+/// The scrub itself, split out so the marker check above reads as one thought.
+fn scrub_journal_files(logs: &std::path::Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(logs)? {
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
