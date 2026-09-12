@@ -137,13 +137,49 @@ fn materialize_runtime_alias(soldr: &Path, stem: &str) {
     materialized.push(pair);
 }
 
-fn files_equal(left: &Path, right: &Path) -> bool {
+/// Whether `left` and `right` already hold the same bytes.
+///
+/// # The identity short-circuit (soldr#3168)
+///
+/// `materialize_runtime_alias` creates the alias with `std::fs::hard_link`, so
+/// in the steady state these two paths are **the same file**:
+///
+/// ```text
+/// $ stat -c 'ino=%i nlink=%h %n' target/debug/soldr target/debug/soldr-daemon
+/// ino=11042743 nlink=35 target/debug/soldr
+/// ino=11042743 nlink=35 target/debug/soldr-daemon
+/// ```
+///
+/// Without the check below this reads 110 MB twice -- 220 MB -- to conclude a
+/// file equals itself, and it does so once per test **process**: the
+/// `MATERIALIZED_ALIAS_PAIRS` memo above is per-process, and nextest gives
+/// every test its own. Measured at ~24 ms per test on a warm page cache.
+///
+/// Comparing device + inode is also strictly *more* correct than the byte
+/// scan for this caller's question: two paths to one inode cannot disagree,
+/// and the scan only ever confirmed that the long way round.
+///
+/// The byte comparison stays as the fallback, which is the case it was written
+/// for -- a distinct file whose contents may or may not match.
+///
+/// # Honest scope
+///
+/// soldr#3168 first measured this as a 15.7% suite win and that was wrong: a
+/// cold-vs-warm comparison, where page-cache warming accounted for nearly all
+/// of it. A warm-vs-warm A/B/A put the real effect at ~1.4%, inside run-to-run
+/// noise on a 16-core box. It is kept because it is O(1) replacing O(size) and
+/// because a 4-vCPU CI runner is the case the local measurement flatters, not
+/// because the local number justifies it.
+pub(crate) fn files_equal(left: &Path, right: &Path) -> bool {
     let Ok(left_meta) = std::fs::metadata(left) else {
         return false;
     };
     let Ok(right_meta) = std::fs::metadata(right) else {
         return false;
     };
+    if same_file(&left_meta, &right_meta) {
+        return true;
+    }
     if left_meta.len() != right_meta.len() {
         return false;
     }
@@ -171,6 +207,25 @@ fn files_equal(left: &Path, right: &Path) -> bool {
             return true;
         }
     }
+}
+
+/// Whether two `Metadata` handles describe one file.
+///
+/// Unix compares device + inode. Windows has the equivalent through
+/// `BY_HANDLE_FILE_INFORMATION`'s volume serial + file index, but reaching it
+/// needs an open handle rather than the `Metadata` already in hand, so this
+/// answers `false` there and the byte comparison runs as before. That is the
+/// conservative direction: a wrong `false` costs the scan this avoids, while a
+/// wrong `true` would skip a real materialization.
+#[cfg(unix)]
+fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// Resolve the runtime checkout used by source-coupled archived tests.

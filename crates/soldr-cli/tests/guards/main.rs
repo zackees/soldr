@@ -23,5 +23,6 @@ mod no_standalone_spawn_lint;
 mod no_timed_test_guard;
 mod phase5_contract;
 mod process_isolation_lint;
+mod runtime_alias_identity;
 mod version_lockstep;
 mod zccache_lifecycle_retirement_lint;
