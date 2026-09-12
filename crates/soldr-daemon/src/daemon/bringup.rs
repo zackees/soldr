@@ -169,6 +169,29 @@ impl BringupRecorder {
         ));
     }
 
+    /// Report the [`COMPILE_SERVICE`] breakdown (soldr#3174).
+    ///
+    /// Lives here rather than at the call site so `server_runtime.rs` stays
+    /// under the 1,000-line production ceiling, and because knowing how a
+    /// phase decomposes is this module's job rather than the bringup
+    /// sequence's.
+    ///
+    /// [`COMPILE_SERVICE`]: phase::COMPILE_SERVICE
+    pub fn compile_service_breakdown(
+        &mut self,
+        timings: &crate::zccache_embedded::ServiceStartTimings,
+    ) {
+        self.sub_phase(phase::COMPILE_SERVICE_PREPARE_ROOT, timings.prepare_root_ms);
+        self.sub_phase(
+            phase::COMPILE_SERVICE_SCRUB_JOURNALS,
+            timings.scrub_journals_ms,
+        );
+        self.sub_phase(
+            phase::COMPILE_SERVICE_ZCCACHE_START,
+            timings.zccache_start_ms,
+        );
+    }
+
     fn append(&mut self, line: &str) {
         let Some(log) = self.log.as_mut() else {
             return;
