@@ -905,12 +905,20 @@ jobs:
           # (soldr#3102: the `handoff fallback: abandoned at AwaitAck stage`
           # line that explains a `Connection reset by peer` compile failure
           # is written there, and was never uploaded).
+          #
+          # soldr#3163 added `daemon-bringup.jsonl` beside `daemon-spawn.log`
+          # at the state root -- the daemon's half of the same per-phase
+          # cold-start timing the broker already wrote. The stderr copy rides
+          # along inside `daemon-spawn.log` either way; this pattern is what
+          # makes the machine-readable one downloadable, which is the whole
+          # point of having built it.
           path: |
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/logs/
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/logs/
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/history/**/*.json
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/history/**/*.jsonl
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/*-spawn.log
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/*-bringup.jsonl
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/broker/*.log
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/broker/*.jsonl
             ~/.soldr/broker/*.log
