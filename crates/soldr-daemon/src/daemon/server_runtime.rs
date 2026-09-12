@@ -335,6 +335,9 @@ async fn run_async_recording(
             ))));
         }
     };
+    // soldr#3174: split the one phase that dominates a gate cold start, so the
+    // next reader can see whether the time is soldr's or zccache's.
+    bringup.compile_service_breakdown(&compile_service.start_timings());
     bringup.phase(crate::daemon::bringup::phase::COMPILE_SERVICE);
 
     // L4 (issue soldr#980): start the background event-flusher BEFORE we

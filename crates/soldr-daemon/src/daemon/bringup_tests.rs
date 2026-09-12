@@ -176,3 +176,68 @@ fn resuming_counts_time_that_elapsed_before_the_recorder_existed() {
         "time before the recorder was constructed must still be attributed"
     );
 }
+
+/// soldr#3174: a sub-phase reports a breakdown of the phase still being timed,
+/// so it must NOT advance the phase clock the way `phase` does.
+#[test]
+fn a_sub_phase_does_not_consume_the_phase_it_breaks_down() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut recorder = BringupRecorder::new();
+    recorder.attach_log(dir.path());
+
+    std::thread::sleep(std::time::Duration::from_millis(25));
+    recorder.sub_phase(phase::COMPILE_SERVICE_ZCCACHE_START, 20);
+    recorder.phase(phase::COMPILE_SERVICE);
+
+    let body = std::fs::read_to_string(dir.path().join("daemon-bringup.jsonl")).expect("log");
+    let records: Vec<_> = body.lines().map(parse).collect();
+    assert_eq!(records[0]["phase"], "compile_service.zccache_start");
+    assert_eq!(
+        records[0]["phase_ms"], 20,
+        "a sub-phase reports the duration it was given, not elapsed time"
+    );
+    assert!(
+        records[1]["phase_ms"].as_u64().expect("phase_ms") >= 20,
+        "the enclosing phase must still see the whole 25ms, not have it consumed \
+         by the sub-phase before it"
+    );
+}
+
+/// The breakdown can legitimately exceed the phase that encloses it.
+///
+/// `compile_service` times the *await* of a task spawned earlier and run
+/// concurrently with the state-store open, so a task that finished while the
+/// daemon was doing something else reports ~0 ms even though its work took
+/// longer. Measured locally: aggregate 0 ms, `zccache_start` 58 ms. A reader
+/// comparing the two must not treat that as an inconsistency -- it is the
+/// concurrency working.
+#[test]
+fn a_sub_phase_may_exceed_the_phase_it_belongs_to() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut recorder = BringupRecorder::new();
+    recorder.attach_log(dir.path());
+
+    recorder.sub_phase(phase::COMPILE_SERVICE_ZCCACHE_START, 58);
+    recorder.phase(phase::COMPILE_SERVICE);
+
+    let body = std::fs::read_to_string(dir.path().join("daemon-bringup.jsonl")).expect("log");
+    let records: Vec<_> = body.lines().map(parse).collect();
+    let sub = records[0]["phase_ms"].as_u64().expect("phase_ms");
+    let aggregate = records[1]["phase_ms"].as_u64().expect("phase_ms");
+    assert!(sub > aggregate, "this is expected, not a bug");
+}
+
+/// Sub-phase labels are namespaced under the phase they decompose, so a
+/// consumer can group them without a separate table.
+#[test]
+fn sub_phase_labels_are_namespaced_under_their_phase() {
+    for label in [
+        phase::COMPILE_SERVICE_PREPARE_ROOT,
+        phase::COMPILE_SERVICE_SCRUB_JOURNALS,
+        phase::COMPILE_SERVICE_ZCCACHE_START,
+    ] {
+        let (parent, leaf) = label.split_once('.').expect("sub-phases are dotted");
+        assert_eq!(parent, phase::COMPILE_SERVICE);
+        assert!(!leaf.is_empty());
+    }
+}
