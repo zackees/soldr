@@ -335,6 +335,18 @@ async fn run_async_recording(
             ))));
         }
     };
+    {
+        // soldr#3174: split the one phase that dominates a gate cold start, so
+        // the next reader can see whether the time is soldr's or zccache's
+        // without re-deriving it.
+        let timings = compile_service.start_timings();
+        let p = crate::daemon::bringup::phase::COMPILE_SERVICE_PREPARE_ROOT;
+        bringup.sub_phase(p, timings.prepare_root_ms);
+        let p = crate::daemon::bringup::phase::COMPILE_SERVICE_SCRUB_JOURNALS;
+        bringup.sub_phase(p, timings.scrub_journals_ms);
+        let p = crate::daemon::bringup::phase::COMPILE_SERVICE_ZCCACHE_START;
+        bringup.sub_phase(p, timings.zccache_start_ms);
+    }
     bringup.phase(crate::daemon::bringup::phase::COMPILE_SERVICE);
 
     // L4 (issue soldr#980): start the background event-flusher BEFORE we

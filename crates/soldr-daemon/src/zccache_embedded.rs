@@ -80,6 +80,34 @@ pub struct SoldrZccacheService {
     cache_root: PathBuf,
     disk_policy: EmbeddedDiskPolicy,
     applied_jobs: crate::core::jobs::ResolvedJobs,
+    start_timings: ServiceStartTimings,
+}
+
+/// Where [`SoldrZccacheService::start`] spent its time, in milliseconds.
+///
+/// soldr#3174: the daemon bringup breadcrumbs added in soldr#3163 attributed
+/// **97.8 s of a 97.4 s cold start** to the single `compile_service` phase on
+/// the Linux gate -- reproducibly, and squarely on the critical path (the
+/// "Hand off bootstrap broker to source revision" step ends in the same second
+/// the daemon reports ready). That phase is one opaque `await`, which is
+/// exactly the state daemon bringup as a whole was in before soldr#3163.
+///
+/// This splits it along the one boundary that decides where a fix belongs:
+/// soldr's own cache-root preparation versus zccache's service start. Carried
+/// on the service rather than returned from `start`, so the eight call sites
+/// -- six of them tests -- are untouched.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServiceStartTimings {
+    /// `prepare_embedded_cache_root`: legacy migration, directory creation,
+    /// owned-path validation. Soldr's code.
+    pub prepare_root_ms: u64,
+    /// `scrub_existing_compile_journals`: one `read_dir` over the logs
+    /// directory. Soldr's code.
+    pub scrub_journals_ms: u64,
+    /// `ZccacheService::start_with_options_and_host_admission_classifier`:
+    /// the embedded cache's own bring-up. Upstream code -- if the time is
+    /// here, the fix is a zccache change plus a pin bump, not a local one.
+    pub zccache_start_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -161,8 +189,12 @@ impl SoldrZccacheService {
         // isolation. A fixed relative identity keeps the backend stable across
         // save/load relocation and soldr upgrades.
         let cache_root = private_zccache_cache_root(paths, &identity);
+        let prepare_started = std::time::Instant::now();
         prepare_embedded_cache_root(paths, daemon_identity, &cache_root)?;
+        let prepare_root_ms = prepare_started.elapsed().as_millis() as u64;
+        let scrub_started = std::time::Instant::now();
         scrub_existing_compile_journals(paths)?;
+        let scrub_journals_ms = scrub_started.elapsed().as_millis() as u64;
         // zccache#926 strict-validation: `AuditConfig::default()` ships
         // `mode = AuditMode::Normal` + `output_root = None`, which the
         // new audit-sink validation rejects ("audit sink requires
@@ -217,6 +249,7 @@ impl SoldrZccacheService {
         );
         let host_admission: Arc<dyn zccache::embedded::HostAdmissionClassifier> =
             compile_admission.clone();
+        let zccache_started = std::time::Instant::now();
         let svc = ZccacheService::start_with_options_and_host_admission_classifier(
             cfg,
             crate::zccache_staging::options(&cache_root, disk_limits),
@@ -224,6 +257,7 @@ impl SoldrZccacheService {
         )
         .await
         .map_err(|e| EmbeddedServiceError::Start(e.to_string()))?;
+        let zccache_start_ms = zccache_started.elapsed().as_millis() as u64;
         Ok(Self {
             inner: Arc::new(svc),
             compile_admission,
@@ -231,7 +265,17 @@ impl SoldrZccacheService {
             cache_root,
             disk_policy,
             applied_jobs: resolved_jobs,
+            start_timings: ServiceStartTimings {
+                prepare_root_ms,
+                scrub_journals_ms,
+                zccache_start_ms,
+            },
         })
+    }
+
+    /// Where [`SoldrZccacheService::start`] spent its time (soldr#3174).
+    pub fn start_timings(&self) -> ServiceStartTimings {
+        self.start_timings
     }
 
     /// The compile limit this service started with — the number now baked

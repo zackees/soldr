@@ -82,6 +82,16 @@ pub mod phase {
     pub const COMPILE_SERVICE: &str = "compile_service";
     /// Everything constructed; the daemon is serving.
     pub const READY: &str = "ready";
+
+    // Breakdown of [`COMPILE_SERVICE`] (soldr#3174). These are reported as
+    // sub-phases: they do not advance the phase clock, because together they
+    // ARE `compile_service` rather than following it.
+    /// Soldr's own cache-root preparation.
+    pub const COMPILE_SERVICE_PREPARE_ROOT: &str = "compile_service.prepare_root";
+    /// Soldr's own compile-journal scrub.
+    pub const COMPILE_SERVICE_SCRUB_JOURNALS: &str = "compile_service.scrub_journals";
+    /// zccache's own service start -- upstream code.
+    pub const COMPILE_SERVICE_ZCCACHE_START: &str = "compile_service.zccache_start";
 }
 
 /// Records how long each daemon cold-start phase took.
@@ -136,6 +146,24 @@ impl BringupRecorder {
             self.pid,
             name,
             phase_ms,
+            total_ms,
+            unix_millis(),
+        ));
+    }
+
+    /// Report a breakdown of the phase currently being timed.
+    ///
+    /// Unlike [`BringupRecorder::phase`] this does **not** reset the phase
+    /// clock: a sub-phase is part of the phase that is about to be recorded,
+    /// not a phase that follows it. `total_ms` is still the live total, so a
+    /// reader can place the sub-phase on the same timeline.
+    pub fn sub_phase(&mut self, name: &str, phase_ms: u64) {
+        let total_ms = self.started.elapsed().as_millis();
+        eprintln!("soldr-daemon: bringup phase={name} ms={phase_ms} total_ms={total_ms}");
+        self.append(&render_record(
+            self.pid,
+            name,
+            u128::from(phase_ms),
             total_ms,
             unix_millis(),
         ));
