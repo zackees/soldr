@@ -731,7 +731,7 @@ Soldr's normal compilation cache. `RUSTC_WORKSPACE_WRAPPER` and every
 `DYLINT_*` library variable are removed for this phase, so custom lint
 libraries are loaded only by the later real Dylint invocation.
 
-Outputs live under `target/dylint/target/<nightly>/` by default, matching
+Outputs live under `target/dylint/target/<nightly>-<host-triple>/` by default, matching
 Dylint 6's own workspace-check directory; `--tree tests` selects the second
 tree and changes the shape of the pass — see "Which tree" below. The pass is
 check-shaped for the default `analysis` tree and build-shaped for `tests`.
@@ -765,7 +765,7 @@ unchanged.
 
 There are two Dylint target trees and they are not interchangeable.
 `--tree analysis` (the default, and the only historical behavior) prepares
-`target/dylint/target/<nightly>/`, the tree `cargo dylint` analyses the
+`target/dylint/target/<nightly>-<host-triple>/`, the tree `cargo dylint` analyses the
 workspace in. `--tree tests` prepares
 `target/dylint/tests/<nightly>-<host-triple>/`, the dependency layer the
 Dylint UI-test stages of `soldr ci-test` compile their `trybuild`/UI

@@ -634,8 +634,10 @@ fn workspace_metadata_fingerprint(root: &Path, config: &[String]) -> Result<Stri
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-/// Shared with `dylint_cook_tree::CookTree::channel_segment` so the cook and
-/// the UI-test stage name the same directory (soldr#3042).
+/// The key every Dylint target tree is named by: the host-qualified toolchain
+/// cargo-dylint uses for `dylint/target/<toolchain>`. Shared with
+/// `dylint_cook_tree::CookTree::channel_segment` so each cook lands in the
+/// directory its stage reads (soldr#3042, soldr#3049).
 pub(crate) fn canonical_channel(channel: &str, host: &str) -> String {
     if channel.ends_with(host) {
         channel.into()

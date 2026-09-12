@@ -31,19 +31,23 @@ fn directory_and_operation_pairs() {
 }
 
 #[test]
-fn channel_segment_reuses_each_consumers_own_rule() {
+fn both_trees_use_the_ci_test_plans_channel_key() {
     let channel = "nightly-2026-05-28";
     let host = "x86_64-unknown-linux-gnu";
-    assert_eq!(
-        CookTree::Analysis.channel_segment(channel, host),
-        "nightly-2026-05-28"
-    );
-    // This is the whole point of the phase: the tests tree must land where
-    // `ci_test/plan.rs`'s UI-test stages look for it, and that directory is
-    // host-triple-suffixed while the analysis tree's is not (soldr#3042
-    // FACT 1).
-    assert_eq!(
-        CookTree::Tests.channel_segment(channel, host),
-        "nightly-2026-05-28-x86_64-unknown-linux-gnu"
-    );
+    // soldr#3049: every Dylint target tree is keyed by the host-qualified
+    // toolchain, because that is the `RUSTUP_TOOLCHAIN` cargo-dylint and the
+    // UI-test stages both name their directories by. The analysis tree used
+    // the truncated driver-identity key instead and cooked a directory that
+    // `soldr ci-test` never read.
+    for tree in [CookTree::Analysis, CookTree::Tests] {
+        assert_eq!(
+            tree.channel_segment(channel, host),
+            crate::ci_test::plan::canonical_channel(channel, host),
+            "{tree:?}"
+        );
+        assert_eq!(
+            tree.channel_segment(channel, host),
+            "nightly-2026-05-28-x86_64-unknown-linux-gnu"
+        );
+    }
 }
