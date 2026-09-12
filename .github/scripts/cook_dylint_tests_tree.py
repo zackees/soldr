@@ -22,7 +22,8 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Mapping
+import tomllib
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 
@@ -41,6 +42,40 @@ def lint_roots(repo_root: Path, lints_dir: str = "dylints") -> list[Path]:
         for entry in base.iterdir()
         if entry.is_dir() and (entry / "Cargo.toml").is_file()
     )
+
+
+def dependency_closure(lint_root: Path) -> frozenset[tuple[str, str, str | None]]:
+    """The `(name, version, checksum)` set a lint crate's lockfile resolves to.
+
+    The crate's own entry is excluded: it is the one package guaranteed to
+    differ between the six, and it contributes nothing to the third-party
+    layer this script cooks.
+    """
+    lock = tomllib.loads((lint_root / "Cargo.lock").read_text(encoding="utf-8"))
+    return frozenset(
+        (package["name"], package["version"], package.get("checksum"))
+        for package in lock.get("package", ())
+        if package["name"] != lint_root.name
+    )
+
+
+def diverging_closures(roots: Sequence[Path]) -> list[str]:
+    """Lint crates whose dependency closure differs from the first root's.
+
+    The six crates are separate cargo workspaces with separate lockfiles and
+    nothing keeping them in step, so they drift apart silently: before
+    soldr#3159 twelve shared deps had diverged (`cc` alone at 1.4.0, 1.4.1,
+    1.4.2 and 1.4.4), which made the shared tests tree compile four copies of
+    `cc` and two of `thiserror` for no reason.
+
+    `tests/test_cook_dylint_tests_tree.py` calls THIS function rather than
+    re-deriving the closure, so the guard and the definition cannot drift
+    apart the way the lockfiles did.
+    """
+    if not roots:
+        return []
+    reference = dependency_closure(roots[0])
+    return [root.name for root in roots[1:] if dependency_closure(root) != reference]
 
 
 def cook_command(soldr: Path, target_root: Path) -> list[str]:
@@ -111,16 +146,35 @@ def main(argv: list[str] | None = None) -> int:
     # `dylint_cook` takes an exclusive lock on it, so parallelism buys
     # nothing and reintroduces the contention this step exists to remove.
     #
-    # Every crate reports `miss` rather than `skip`, and that is expected
-    # rather than a broken cook. All six write into the SAME tree, so they
-    # share one `.soldr-dylint-cook-v1.json` marker, while each one's cook
-    # key hashes its own manifest+lockfile -- so crate N always finds crate
-    # N-1's marker and re-runs. The re-run is what fills the tree; cargo's
-    # own fingerprints make crates 2..6 near-no-ops once the shared
-    # third-party layer is built by the first. Do not "fix" the repeated
-    # miss by collapsing the key: the two trees and the six crates must keep
-    # distinct keys or one cook would satisfy another's marker with the
-    # wrong artifacts on disk.
+    # Every crate reports `miss` rather than `skip`. All six write into the
+    # SAME tree, so they share one `.soldr-dylint-cook-v1.json` marker, while
+    # each one's cook key hashes its own manifest+lockfile -- so crate N always
+    # finds crate N-1's marker and re-runs.
+    #
+    # This comment used to add that "cargo's own fingerprints make crates 2..6
+    # near-no-ops once the shared third-party layer is built by the first."
+    # That is measurably false and soldr#3157 caught it: the six invocations
+    # cost 207s on the Linux gate. Measured locally against an already-filled
+    # tree, crates 2..6 each re-run cargo over all 86 units --
+    #
+    #   crate 1, cold tree   37.0s  outcome=miss  Compiling=86
+    #   crate 1, again        1.2s  outcome=skip  Compiling=0
+    #   crate 2               10.1s outcome=miss  Compiling=86, zccache 335/335 HIT
+    #
+    # -- so the marker DOES short-circuit a repeat of the same crate (1.2s,
+    # cargo never invoked), and a different crate does not reuse the first
+    # crate's fingerprints even though every rustc invocation is byte-identical
+    # (hence the 100% zccache hit rate). The cost is cargo orchestration over a
+    # 200-400 unit graph, five times over, not compilation.
+    #
+    # soldr#3159 proposes cooking once and letting one crate stand in for the
+    # rest. Note before attempting it: the `Compiling=86` above means crate 1's
+    # tree is NOT fresh for crate 2, so the work relocates into the UI-test
+    # stages rather than disappearing.
+    #
+    # Do not "fix" the repeated miss by collapsing the cook KEY: the two trees
+    # and the six crates must keep distinct keys or one cook would satisfy
+    # another's marker with the wrong artifacts on disk.
     roots = lint_roots(args.repo_root, args.lints_dir)
     env = cook_env(os.environ, args.soldr)
     for lint_root in roots:
