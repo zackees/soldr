@@ -189,7 +189,8 @@
         "msrv_doc_matches_manifest",
         "multicall_bin_layout",
         "no_panicking_argv_collection",
-        "no_timed_test_guard"
+        "no_timed_test_guard",
+        "runtime_alias_identity"
       ],
       "disposition": "native-linux-once",
       "reason": "Repository guards read source files or launch fixture commands to enforce platform-independent policy and should run once in canonical validation."

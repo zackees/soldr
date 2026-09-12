@@ -155,9 +155,11 @@ fn materialize_runtime_alias(soldr: &Path, stem: &str) {
 /// `MATERIALIZED_ALIAS_PAIRS` memo above is per-process, and nextest gives
 /// every test its own. Measured at ~24 ms per test on a warm page cache.
 ///
-/// Comparing device + inode is also strictly *more* correct than the byte
-/// scan for this caller's question: two paths to one inode cannot disagree,
-/// and the scan only ever confirmed that the long way round.
+/// `soldr_platform::fs::identity::same_file` answers that in O(1) and is
+/// strictly *more* correct than the byte scan for this caller's question: two
+/// paths to one inode cannot disagree, and the scan only ever confirmed that
+/// the long way round. It already existed -- the host-specific comparison
+/// belongs behind the `soldr-platform` boundary, not in a test helper.
 ///
 /// The byte comparison stays as the fallback, which is the case it was written
 /// for -- a distinct file whose contents may or may not match.
@@ -171,15 +173,15 @@ fn materialize_runtime_alias(soldr: &Path, stem: &str) {
 /// because a 4-vCPU CI runner is the case the local measurement flatters, not
 /// because the local number justifies it.
 pub(crate) fn files_equal(left: &Path, right: &Path) -> bool {
+    if soldr_platform::fs::identity::same_file(left, right) {
+        return true;
+    }
     let Ok(left_meta) = std::fs::metadata(left) else {
         return false;
     };
     let Ok(right_meta) = std::fs::metadata(right) else {
         return false;
     };
-    if same_file(&left_meta, &right_meta) {
-        return true;
-    }
     if left_meta.len() != right_meta.len() {
         return false;
     }
@@ -207,25 +209,6 @@ pub(crate) fn files_equal(left: &Path, right: &Path) -> bool {
             return true;
         }
     }
-}
-
-/// Whether two `Metadata` handles describe one file.
-///
-/// Unix compares device + inode. Windows has the equivalent through
-/// `BY_HANDLE_FILE_INFORMATION`'s volume serial + file index, but reaching it
-/// needs an open handle rather than the `Metadata` already in hand, so this
-/// answers `false` there and the byte comparison runs as before. That is the
-/// conservative direction: a wrong `false` costs the scan this avoids, while a
-/// wrong `true` would skip a real materialization.
-#[cfg(unix)]
-fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    left.dev() == right.dev() && left.ino() == right.ino()
-}
-
-#[cfg(not(unix))]
-fn same_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
-    false
 }
 
 /// Resolve the runtime checkout used by source-coupled archived tests.

@@ -13,8 +13,12 @@ use std::fs;
 use crate::common;
 
 /// The case that actually occurs in a warm `target/`: one inode, two names.
+///
+/// No `cfg` here: `std::fs::hard_link` and
+/// `soldr_platform::fs::identity::same_file` are both cross-platform, and
+/// host selection belongs behind the `soldr-platform` boundary rather than in
+/// a test (`ban_platform_cfg_outside_boundary`).
 #[test]
-#[cfg(unix)]
 fn a_hardlinked_alias_is_recognised_without_reading_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let original = dir.path().join("soldr");
@@ -22,10 +26,8 @@ fn a_hardlinked_alias_is_recognised_without_reading_it() {
     fs::write(&original, b"pretend this is 110 MB").expect("write");
     fs::hard_link(&original, &alias).expect("hard_link");
 
-    use std::os::unix::fs::MetadataExt;
-    assert_eq!(
-        fs::metadata(&original).expect("meta").ino(),
-        fs::metadata(&alias).expect("meta").ino(),
+    assert!(
+        soldr_platform::fs::identity::same_file(&original, &alias),
         "fixture must actually be hardlinked or it proves nothing"
     );
 
