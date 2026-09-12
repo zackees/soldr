@@ -38,6 +38,10 @@ pub(crate) async fn run(
 ) -> Result<i32, SoldrError> {
     validate_executor_contract(plan)?;
     let mut factory = StageCommandFactory::new(plan, cache_enabled, trust_inherited_soldr_env)?;
+    // soldr#3143: the policy tail's tool downloads depend on nothing the DAG
+    // produces. Start them now, off the critical path, so a GitHub Releases
+    // failure surfaces at the start of the run instead of after the gate.
+    let policy_prefetch = super::policy_prefetch::PolicyPrefetch::start(&plan.stages);
     macro_rules! stop_on_failure {
         ($result:expr) => {
             let code = $result?;
@@ -69,6 +73,7 @@ pub(crate) async fn run(
         "soldr ci-test: overlapping Fresh Nextest execution with Dylint UI tests after exclusive workspace analysis"
     );
     stop_on_failure!(run_parallel_nextest_and_dylint(&factory, plan));
+    policy_prefetch.join().await;
     // All four tail stages consume the same completed Nextest + Dylint join.
     // The policy tools inspect manifests/advisories and do not compile; they
     // are independent of rustdoc's doctest compile-and-run domain.

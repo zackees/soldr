@@ -21,6 +21,32 @@ fn force_managed_cargo_subcommands() -> bool {
     }
 }
 
+/// The `cargo-<sub>` binary on `PATH` that `soldr cargo <sub>` defers to
+/// instead of fetching, if any (issue #816).
+///
+/// Shared with `ci_test`'s policy prefetch (soldr#3143) so the prefetch skips
+/// exactly the tools this bootstrap would not fetch. A copied rule would drift,
+/// and the symptom would be silent: downloads nobody reads.
+pub(crate) fn path_deferred_subcommand_tool(sub: &str) -> Option<std::path::PathBuf> {
+    if force_managed_cargo_subcommands() {
+        return None;
+    }
+    find_on_path(&format!("cargo-{sub}"))
+}
+
+/// The version `soldr cargo <sub>` fetches for a managed tool: its registry
+/// pin, else the upstream latest release.
+///
+/// Shared with `ci_test`'s policy prefetch (soldr#3143): a prefetch only helps
+/// if it lands the same cache entry the stage later resolves.
+pub(crate) fn managed_subcommand_version(
+    spec: &crate::fetch::known_tools::ToolSpec,
+) -> VersionSpec {
+    spec.pinned_version
+        .map(|v| VersionSpec::Exact(v.to_string()))
+        .unwrap_or(VersionSpec::Latest)
+}
+
 /// Walk `$PATH` looking for an executable named `tool`. Mirrors the
 /// hand-rolled lookup in `core::toolchain_resolve::path_bin_dir` —
 /// duplicated rather than re-exported to keep the cargo-front-door
@@ -107,9 +133,8 @@ pub(crate) async fn ensure_known_subcommand_tool(
     let mut extra_env: Vec<(String, String)> = Vec::new();
     let mut extra_cargo_args: Vec<String> = Vec::new();
 
-    if !force_managed_cargo_subcommands() {
+    if let Some(path) = path_deferred_subcommand_tool(sub) {
         let exe_name = format!("cargo-{sub}");
-        if let Some(path) = find_on_path(&exe_name) {
             if sub == "dylint" {
                 let version = spec.pinned_version.unwrap_or("unknown");
                 validate_dylint_path_binary(&path, "cargo-dylint", version)?;
@@ -144,13 +169,9 @@ pub(crate) async fn ensure_known_subcommand_tool(
                 env: extra_env,
                 cargo_args: extra_cargo_args,
             });
-        }
     }
 
-    let version = spec
-        .pinned_version
-        .map(|v| VersionSpec::Exact(v.to_string()))
-        .unwrap_or(VersionSpec::Latest);
+    let version = managed_subcommand_version(spec);
 
     // Progress chatter for a human at a terminal only (soldr#3099): under
     // `soldr ci-test` and the Dylint cook these lines repeated once per
