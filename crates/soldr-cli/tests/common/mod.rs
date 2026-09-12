@@ -137,7 +137,45 @@ fn materialize_runtime_alias(soldr: &Path, stem: &str) {
     materialized.push(pair);
 }
 
-fn files_equal(left: &Path, right: &Path) -> bool {
+/// Whether `left` and `right` already hold the same bytes.
+///
+/// # The identity short-circuit (soldr#3168)
+///
+/// `materialize_runtime_alias` creates the alias with `std::fs::hard_link`, so
+/// in the steady state these two paths are **the same file**:
+///
+/// ```text
+/// $ stat -c 'ino=%i nlink=%h %n' target/debug/soldr target/debug/soldr-daemon
+/// ino=11042743 nlink=35 target/debug/soldr
+/// ino=11042743 nlink=35 target/debug/soldr-daemon
+/// ```
+///
+/// Without the check below this reads 110 MB twice -- 220 MB -- to conclude a
+/// file equals itself, and it does so once per test **process**: the
+/// `MATERIALIZED_ALIAS_PAIRS` memo above is per-process, and nextest gives
+/// every test its own. Measured at ~24 ms per test on a warm page cache.
+///
+/// `soldr_platform::fs::identity::same_file` answers that in O(1) and is
+/// strictly *more* correct than the byte scan for this caller's question: two
+/// paths to one inode cannot disagree, and the scan only ever confirmed that
+/// the long way round. It already existed -- the host-specific comparison
+/// belongs behind the `soldr-platform` boundary, not in a test helper.
+///
+/// The byte comparison stays as the fallback, which is the case it was written
+/// for -- a distinct file whose contents may or may not match.
+///
+/// # Honest scope
+///
+/// soldr#3168 first measured this as a 15.7% suite win and that was wrong: a
+/// cold-vs-warm comparison, where page-cache warming accounted for nearly all
+/// of it. A warm-vs-warm A/B/A put the real effect at ~1.4%, inside run-to-run
+/// noise on a 16-core box. It is kept because it is O(1) replacing O(size) and
+/// because a 4-vCPU CI runner is the case the local measurement flatters, not
+/// because the local number justifies it.
+pub(crate) fn files_equal(left: &Path, right: &Path) -> bool {
+    if soldr_platform::fs::identity::same_file(left, right) {
+        return true;
+    }
     let Ok(left_meta) = std::fs::metadata(left) else {
         return false;
     };
