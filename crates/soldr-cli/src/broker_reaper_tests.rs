@@ -42,8 +42,8 @@ fn a_route_whose_only_requester_died_is_reaped_after_the_grace_window() {
 /// The canonical route for the user's own root is asked for by every build,
 /// and each build's process exits when it finishes. Reaping on "the last
 /// requester exited" alone would therefore kill the daemon the user actually
-/// wants resident, and a cold daemon start pays a full executable image hash
-/// (soldr#2517). A new requester inside the window must reset it.
+/// wants resident, and every cold daemon start is real spawn and bringup work
+/// (see `DEFAULT_GRACE`). A new requester inside the window must reset it.
 #[test]
 fn a_new_requester_inside_the_window_keeps_the_route() {
     let mut ownership = RouteOwnership::new();

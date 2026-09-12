@@ -105,10 +105,14 @@ pub(crate) enum RequesterKey {
 /// How long a route with no live requester is kept before it is reaped.
 ///
 /// Not zero. A build that finishes and immediately starts another would
-/// otherwise pay a daemon start each time, and a cold daemon start pays a
-/// full executable image hash (soldr#2517), which is measurable. The grace
-/// window costs an idle daemon for its duration and saves that hash for every
-/// caller that comes back inside it.
+/// otherwise pay a cold daemon start each time: process spawn, route
+/// acquisition, and daemon bringup, whose phases are recorded in
+/// `daemon-bringup.jsonl` (soldr#3163). That once included a full executable
+/// image hash per start (soldr#2517); the broker's hash is now memoized per
+/// inode (soldr#2521/#2996) and the daemon's per-start SHA-256 dropped from
+/// ~2.9s to ~0.13s (soldr#3173), so the start is cheaper than it was but still
+/// real. The grace window costs an idle daemon for its duration and saves that
+/// start for every caller that comes back inside it.
 pub(crate) const DEFAULT_GRACE: Duration = Duration::from_secs(120);
 
 /// What a route's requesters look like right now.

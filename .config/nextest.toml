@@ -379,8 +379,13 @@ filter = 'test(=cli_broker_resurrection::issue_2476_sigstop_owner_is_fenced_afte
 slow-timeout = { period = "60s", terminate-after = 3, grace-period = "30s" }
 
 # 240s: two complete isolated-HOME soldr runs back to back (the cargo-fmt and
-# bare-fmt labels), each paying a cold broker start with a full executable
-# image hash (soldr#2517). soldr#2624 observations 3-4: timed out at exactly
+# bare-fmt labels), each paying a cold broker+daemon start. When this budget
+# was set that included a full executable image hash per start (soldr#2517);
+# the broker's blake3 is now memoized per inode (soldr#2521/#2996) and the
+# daemon's per-start SHA-256 fell from ~2.9s to ~0.13s (soldr#3173), so what
+# remains is spawn, route acquisition and bringup -- per phase in
+# `daemon-bringup.jsonl` (soldr#3163). soldr#2624 observations 3-4, taken
+# before those fixes: timed out at exactly
 # 120s twice on contended windows-msvc target-runs while stub siblings in the
 # same module legitimately ran 49-85s — the length is real cold-start work
 # x2, not a hang (the second strike's retained output shows the first soldr
@@ -400,9 +405,9 @@ slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 
 # 240s: the `toolchain link` pair and the cargo-fmt home-boundary test, for
 # the same reason as `cargo_fmt_routes_rustfmt_through_zccache_formatter`
-# above -- each is a full isolated-HOME soldr run paying a cold broker start
-# with an executable image hash (soldr#2517), and the idempotency test runs
-# `toolchain link` twice.
+# above -- each is a full isolated-HOME soldr run paying a cold broker+daemon
+# start (image hashing is no longer the dominant term; see that entry), and
+# the idempotency test runs `toolchain link` twice.
 #
 # The length is measured, not assumed: on the windows-gnu replay lane
 # `toolchain_link_writes_every_routed_tool_into_shim_dir` PASSED at 116.202s
