@@ -20,8 +20,9 @@ use std::{
 /// attempts is a rounding error next to process startup. On an idle host that
 /// startup is ~60 ms (measured via `SOLDR_STARTUP_TRACE`, soldr#2571) and the
 /// budget below buys dozens of observations; on a contended windows-2025
-/// runner paying broker/daemon cold-start image hashing (soldr#2517) it buys a
-/// handful — on exactly the runner where convergence is slowest.
+/// runner paying broker/daemon cold starts (spawn, route acquisition and
+/// bringup; image hashing, soldr#2517, has since been memoized and optimized)
+/// it buys a handful — on exactly the runner where convergence is slowest.
 ///
 /// That is the soldr#2624 family's whole shape: a fixed window colliding with
 /// cold-start cost, failing on `main` where no PR can be blamed (run
