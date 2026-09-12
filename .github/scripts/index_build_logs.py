@@ -19,6 +19,8 @@ steps and the old artifact globs:
   * archived compile journals under `cache/zccache/history/<id>/`
   * `broker-spawn.log` / `daemon-spawn.log` at the soldr state root
   * `broker/broker-bringup.jsonl`, the per-phase broker cold-start timing
+  * `daemon-bringup.jsonl` at the state root, the daemon's matching
+    per-phase cold-start timing (soldr#3163)
 
 Usage:
     python3 .github/scripts/index_build_logs.py --root ~/.soldr \\

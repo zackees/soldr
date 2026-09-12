@@ -20,6 +20,13 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod backend_handle_adoption;
+/// soldr#3038 / soldr#3057 — optional `SOLDR_DAEMON_RSS_CEILING_BYTES`
+/// watchdog: samples this process's own resident set on a short interval
+/// (plus mimalloc's exact allocator counters), and on breach writes a
+/// memory dump (sampled heap profile, exact counters, `/proc` snapshot)
+/// then exits immediately -- fail-fast, not "record and keep running". Also
+/// used by `soldr-cli`'s `broker_server.rs` to watch the broker's own RSS.
+pub mod bringup;
 /// soldr#2224 — the three IPC handlers that touch `state.sqlite3`, split
 /// out of the oversized `server.rs`.
 pub mod build_session_ops;
@@ -55,12 +62,6 @@ pub mod ipc_peer;
 pub mod lifecycle;
 pub mod maintenance;
 pub mod protocol;
-/// soldr#3038 / soldr#3057 — optional `SOLDR_DAEMON_RSS_CEILING_BYTES`
-/// watchdog: samples this process's own resident set on a short interval
-/// (plus mimalloc's exact allocator counters), and on breach writes a
-/// memory dump (sampled heap profile, exact counters, `/proc` snapshot)
-/// then exits immediately -- fail-fast, not "record and keep running". Also
-/// used by `soldr-cli`'s `broker_server.rs` to watch the broker's own RSS.
 pub mod rss_ceiling;
 pub mod server;
 pub mod service_definition;
