@@ -210,6 +210,38 @@ opt-level = 3
 [profile.dev.package.arrayvec]
 opt-level = 3
 
+# soldr#3163: sha2 must be optimized in the dev/test profiles, for exactly
+# the reason blake3 above must be -- and found the same way, by measuring.
+#
+# `running-process`'s `DaemonProcess::current_process` hashes soldr's own
+# ~110 MB executable TWICE on every daemon cold start: once with BLAKE3 for
+# `exe_hash`, and again with SHA-256 for the `legacy_exe_sha256` field kept for
+# the process-probe wire contract. Timed directly against the real binary:
+#
+#   blake3=8.3ms   sha256=2871ms   host_identity=0.18ms
+#
+# BLAKE3 is already fast here -- it is optimized above AND uses
+# `update_mmap_rayon`. SHA-256 was doing 110 MB at ~38 MB/s unoptimized, and it
+# is 97% of the `daemon_identity` bringup phase, which is itself 97% of a cold
+# start. Optimized it runs in 128ms, a 22x cut, taking `soldr daemon start`
+# from 6.2s to ~1.0s end-to-end.
+#
+# This is the cost roughly forty integration tests each pay independently for
+# their own isolated root (soldr#3163), so it is test-suite wall time, not just
+# a developer-loop annoyance. `cpufeatures` is sha2's runtime CPU-detection
+# dependency and gets the same treatment for the same reason `constant_time_eq`
+# and `arrayvec` do for blake3.
+#
+# Found by the daemon bringup breadcrumbs added in the same change: the phase
+# table named `daemon_identity` immediately, after three earlier rounds of
+# hypothesising had blamed the 110 MB staging copy, zccache init, and the
+# state store -- all three measured wrong.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.cpufeatures]
+opt-level = 3
+
 # The host CI warm-up and nextest invocation share target/<triple>/debug.
 # Mirror dev's effective codegen settings here so their fingerprints remain
 # reusable across that handoff (soldr#2864).
@@ -233,6 +265,15 @@ opt-level = 3
 opt-level = 3
 
 [profile.test.package.arrayvec]
+opt-level = 3
+
+# Same reason as `[profile.dev.package.sha2]` above. The gate's test binaries
+# build under this profile, and the ~40 integration tests that cold-start their
+# own isolated daemon each pay the unoptimized SHA-256 pass.
+[profile.test.package.sha2]
+opt-level = 3
+
+[profile.test.package.cpufeatures]
 opt-level = 3
 
 [profile.release]

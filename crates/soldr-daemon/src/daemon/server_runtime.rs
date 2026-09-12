@@ -94,6 +94,10 @@ fn maybe_init_tokio_console() {
 }
 
 pub fn run(opts: ServerOptions) -> Result<(), ServerError> {
+    // soldr#3163: start the bringup clock at process entry, before anything
+    // that can be slow. The recorder has no log yet -- `SoldrPaths` is not
+    // resolved until `run_async`, and resolving it is itself a timed phase.
+    let mut bringup = crate::daemon::bringup::BringupRecorder::new();
     // Opt-in async-runtime instrumentation. Must run before the runtime
     // is built so console-subscriber's aggregator is in place.
     maybe_init_tokio_console();
@@ -118,7 +122,8 @@ pub fn run(opts: ServerOptions) -> Result<(), ServerError> {
         .worker_threads(workers)
         .enable_all()
         .build()?;
-    runtime.block_on(run_async(opts))
+    bringup.phase(crate::daemon::bringup::phase::TOKIO_RUNTIME);
+    runtime.block_on(run_async_recording(opts, bringup))
 }
 
 /// Async daemon entry point. Use this when calling from inside an
@@ -130,9 +135,25 @@ pub fn run(opts: ServerOptions) -> Result<(), ServerError> {
 /// panics with "Cannot start a runtime from within a runtime" — that
 /// was the failure on soldr#985's perf-matrix CI run.
 pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
+    run_async_recording(opts, crate::daemon::bringup::BringupRecorder::new()).await
+}
+
+/// [`run_async`] with a bringup clock already running.
+///
+/// Split out so the synchronous [`run`] entry point can time the Tokio runtime
+/// build -- which happens before any async code exists to time it -- on the
+/// same clock as everything after it (soldr#3163).
+async fn run_async_recording(
+    opts: ServerOptions,
+    mut bringup: crate::daemon::bringup::BringupRecorder,
+) -> Result<(), ServerError> {
     let paths = SoldrPaths::new()?;
     std::fs::create_dir_all(soldr_daemon_dir(&paths))?;
     init_embedded_service_file_tracing(&paths);
+    // The log lands beside `daemon-spawn.log`, which the broker's launcher
+    // already redirects this process's stderr into.
+    bringup.attach_log(&paths.root);
+    bringup.phase(crate::daemon::bringup::phase::RESOLVE_PATHS);
 
     // Bounded grace for the stop→relaunch race: the previous daemon's lock
     // is released only when its process exits, which lags the stop
@@ -159,6 +180,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
             }
         }
     };
+    bringup.phase(crate::daemon::bringup::phase::ROOT_OWNERSHIP);
 
     if let Some(existing) = existing_daemon_pid(&paths) {
         return Err(ServerError::AlreadyRunning(existing));
@@ -178,12 +200,14 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
                 &sock,
             )?)
         };
+    bringup.phase(crate::daemon::bringup::phase::CONTROL_ENDPOINT);
 
     let db_path = data_db_path(&paths);
     let start_instant = Instant::now();
     let idle_timeout_secs = u32::try_from(opts.idle_timeout.as_secs()).ok();
     let daemon_identity = current_daemon_process(&paths, idle_timeout_secs)
         .map_err(|err| ServerError::Io(std::io::Error::other(err.to_string())))?;
+    bringup.phase(crate::daemon::bringup::phase::DAEMON_IDENTITY);
 
     // Bind before heavyweight startup; SESSION payloads await compile-service publication.
     let session_listener = crate::daemon::session_endpoint::resolve_session_listener(&paths)?
@@ -193,6 +217,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
             ))
         })?;
     let handoff_endpoint = crate::daemon::session_endpoint::resolve_handoff_endpoint(&paths)?;
+    bringup.phase(crate::daemon::bringup::phase::SESSION_LISTENER);
 
     // soldr#2436 phase 2: bound the journal, attribute any un-drained
     // predecessor, then record this start with version + exe identity.
@@ -220,6 +245,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
             default_hook(info);
         }));
     }
+    bringup.phase(crate::daemon::bringup::phase::LIFECYCLE_JOURNAL);
     let mut session_identity = daemon_identity.clone();
     session_identity.ipc_endpoint.path =
         crate::daemon::session_endpoint::resolved_session_endpoint_path(&paths)?;
@@ -229,6 +255,9 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         }
     }
     crate::daemon::backend_handle_adoption::publish_broker_route_claim(&paths, &session_identity)?;
+    // The far end of soldr#3163's unattributed gap: the front door has been
+    // waiting for this claim since the broker launched this process.
+    bringup.phase(crate::daemon::bringup::phase::ROUTE_CLAIM);
     let session_mux = Arc::new(crate::daemon::session_endpoint::soldr_session_endpoint_mux(
         session_identity,
     ));
@@ -245,6 +274,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
             paths.clone(),
             session_mux,
         )?;
+    bringup.phase(crate::daemon::bringup::phase::ENDPOINT_SERVERS);
 
     // Embedded zccache initializes asynchronously. The first operation that
     // actually needs it awaits this task through `CompileServiceReadiness`;
@@ -288,6 +318,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         handoff_handle.abort();
         return Err(ServerError::Registry(error));
     }
+    bringup.phase(crate::daemon::bringup::phase::STATE_STORE);
 
     let compile_service = match compile_handle.await {
         Ok(Ok(service)) => service,
@@ -304,6 +335,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
             ))));
         }
     };
+    bringup.phase(crate::daemon::bringup::phase::COMPILE_SERVICE);
 
     // L4 (issue soldr#980): start the background event-flusher BEFORE we
     // accept any IPC traffic so the very first compile event lands on
@@ -443,6 +475,11 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
             fast_exit_on_signal(&term_paths, "SIGTERM");
         }
     });
+
+    // Every task that makes this daemon serve is spawned; `total_ms` on this
+    // line is the complete cold-start cost the front door waited through.
+    bringup.phase(crate::daemon::bringup::phase::READY);
+    drop(bringup);
 
     state.shutdown.wait().await;
     arm_shutdown_watchdog(paths.clone());
