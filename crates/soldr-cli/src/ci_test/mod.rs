@@ -9,6 +9,7 @@ mod model;
 mod nextest_resident_lease;
 mod parse;
 pub(crate) mod plan;
+mod policy_prefetch;
 mod test_targets;
 
 use crate::core::SoldrError;
