@@ -409,6 +409,44 @@ fn an_explicit_glibc_floor_on_an_unsupported_host_is_refused_not_downgraded() {
     assert!(message.contains("cross-build from an"), "{message}");
 }
 
+/// soldr#3082: an accepted glibc floor must reach the lifecycle path that
+/// enforces it. Classifying the raw `…gnu.2.17` string sent it to the
+/// custom-spec passthrough instead, so the build silently linked against the
+/// host glibc and exited 0.
+#[test]
+fn an_accepted_glibc_floor_routes_to_the_lifecycle_that_enforces_it() {
+    for target in [
+        "x86_64-unknown-linux-gnu.2.17",
+        "aarch64-unknown-linux-gnu.2.17",
+    ] {
+        assert_eq!(prep_route(target), PrepRoute::Lifecycle, "{target}");
+    }
+}
+
+/// The floor must not change the route: a suffixed target goes wherever its
+/// base triple goes, so the suffix can only ever add enforcement.
+#[test]
+fn a_glibc_floor_takes_the_same_route_as_its_base_triple() {
+    for (floored, base) in [
+        ("x86_64-unknown-linux-gnu.2.17", "x86_64-unknown-linux-gnu"),
+        (
+            "aarch64-unknown-linux-gnu.2.17",
+            "aarch64-unknown-linux-gnu",
+        ),
+    ] {
+        assert_eq!(prep_route(floored), prep_route(base), "{floored}");
+    }
+}
+
+/// Cargo's custom target-spec passthrough stays intact: a spec path is not a
+/// floor and not a classifiable triple.
+#[test]
+fn custom_target_specs_keep_the_passthrough_route() {
+    for spec in ["my-target.json", "./specs/thumbv7em-custom.json"] {
+        assert_eq!(prep_route(spec), PrepRoute::Passthrough, "{spec}");
+    }
+}
+
 #[test]
 fn the_diagnostic_names_the_host_shape_and_the_bundle_host_shape() {
     // The defect was those two being conflated, so a message that mentions

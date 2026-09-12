@@ -454,6 +454,42 @@ fn supports_link_self_contained(base_triple: &str) -> bool {
 // musl path on the legacy diagnostic override, so with that override gone it
 // was unreachable. GNU and musl are both catalogue-backed above.
 
+/// Which preparation path a requested target takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrepRoute {
+    /// A target family soldr recognizes, run through [`prepare_target`]. That
+    /// includes an accepted `<gnu-triple>.<major>.<minor>` glibc floor:
+    /// `prepare_target` is where the floor is split, checked, and enforced by
+    /// the catalogue GNU toolchain's pinned sysroot.
+    Lifecycle,
+    /// Cargo's custom target-spec passthrough (`--target my-spec.json`).
+    Passthrough,
+}
+
+/// Route `target` to lifecycle preparation or the custom-spec passthrough.
+///
+/// soldr#3082: classify the **base** triple, never the raw input. This used to
+/// call `classify_target` on the literal `--target` value, and
+/// `x86_64-unknown-linux-gnu.2.17` is not a classifiable triple -- so a floor
+/// that `reject_glibc_versioned` had just *accepted* fell into the passthrough
+/// branch and never reached `prepare_target`. The catalogue GNU toolchain was
+/// never selected, the build linked against the host's glibc, and it exited 0:
+/// the plain triple produced a binary needing GLIBC_2.16, the `.2.17` spelling
+/// one needing GLIBC_2.34. A floor request is the one case where a silent
+/// success is worse than a failure, because the artifact claims an ABI it does
+/// not have.
+///
+/// `split_glibc_floor` only matches a `-linux-gnu` base with a numeric
+/// suffix, so custom target-spec paths are never mistaken for a floor.
+pub(crate) fn prep_route(target: &str) -> PrepRoute {
+    let base = crate::target_alias::split_glibc_floor(target).map_or(target, |(base, _)| base);
+    if classify_target(base).is_ok() {
+        PrepRoute::Lifecycle
+    } else {
+        PrepRoute::Passthrough
+    }
+}
+
 /// Preserve Cargo's custom target-spec passthrough while using the unified
 /// lifecycle for every target family soldr recognizes.
 pub(crate) async fn prepare_for_invocation(
@@ -469,10 +505,10 @@ pub(crate) async fn prepare_for_invocation(
     // every prep entry so the blessed surface says the same thing.
     crate::target_alias::reject_glibc_versioned(target)
         .map_err(|error| SoldrError::Other(error.to_string()))?;
-    if classify_target(target).is_ok() {
-        prepare_target(paths, target).await
-    } else {
-        crate::blessed_build::prepare(paths, target).await
+    match prep_route(target) {
+        // Pass the target through unsplit: `prepare_target` owns the floor.
+        PrepRoute::Lifecycle => prepare_target(paths, target).await,
+        PrepRoute::Passthrough => crate::blessed_build::prepare(paths, target).await,
     }
 }
 
