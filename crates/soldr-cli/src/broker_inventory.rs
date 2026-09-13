@@ -235,31 +235,31 @@ fn env_home_of(environ: &[String]) -> Option<PathBuf> {
 fn live_process_table() -> Vec<ProcessRecord> {
     use sysinfo::{ProcessRefreshKind, System, UpdateKind};
 
+    // Two phases. A full refresh with exe/cmd/environ for every task on the
+    // host (Linux threads included: 20k on a busy build box) took 5 s; the
+    // cheap enumeration reads one `stat` per task and the detail refresh
+    // runs only for the handful whose image name starts with `soldr`.
     let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessRefreshKind::new()
-            .with_exe(UpdateKind::Always)
-            .with_cmd(UpdateKind::Always)
-            .with_environ(UpdateKind::Always),
-    );
-    system
+    system.refresh_processes_specifics(ProcessRefreshKind::new());
+    let candidates: Vec<sysinfo::Pid> = system
         .processes()
         .values()
-        .filter_map(|process| {
-            // sysinfo lists Linux threads alongside processes; a broker has
-            // dozens of them and each would count as a leaked broker.
-            if process.thread_kind().is_some() {
-                return None;
-            }
-            let exe = process.exe()?;
-            // Cheap pre-filter: only soldr images need their environment read.
-            exe.file_name()?
-                .to_str()?
-                .starts_with("soldr")
-                .then_some(())?;
+        .filter(|process| process.thread_kind().is_none())
+        .filter(|process| process.name().starts_with("soldr"))
+        .map(sysinfo::Process::pid)
+        .collect();
+    let detail = ProcessRefreshKind::new()
+        .with_exe(UpdateKind::Always)
+        .with_cmd(UpdateKind::Always)
+        .with_environ(UpdateKind::Always);
+    candidates
+        .into_iter()
+        .filter_map(|pid| {
+            system.refresh_process_specifics(pid, detail);
+            let process = system.process(pid)?;
             let record = ProcessRecord {
-                pid: process.pid().as_u32(),
-                exe: exe.to_path_buf(),
+                pid: pid.as_u32(),
+                exe: process.exe()?.to_path_buf(),
                 cmd: process.cmd().to_vec(),
                 home: env_home_of(process.environ()),
                 start_time: process.start_time(),
