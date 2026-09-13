@@ -9,6 +9,9 @@ use serde_json::Value;
 use crate::common;
 
 struct EntryEnv {
+    /// soldr#3193: first field, so it drops first -- `broker stop` runs
+    /// while the fixture HOME below still exists.
+    _broker: common::BrokerHomeGuard,
     cache_dir: tempfile::TempDir,
     home_dir: tempfile::TempDir,
     namespace: String,
@@ -16,9 +19,12 @@ struct EntryEnv {
 
 impl EntryEnv {
     fn new(tag: &str) -> Self {
+        let cache_dir = tempfile::tempdir().expect("create temp cache dir");
+        let home_dir = tempfile::tempdir().expect("create temp home dir");
         Self {
-            cache_dir: tempfile::tempdir().expect("create temp cache dir"),
-            home_dir: tempfile::tempdir().expect("create temp home dir"),
+            _broker: common::BrokerHomeGuard::new(cache_dir.path(), home_dir.path()),
+            cache_dir,
+            home_dir,
             namespace: format!("soldr-gate-{tag}-{}", std::process::id()),
         }
     }

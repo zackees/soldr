@@ -282,3 +282,14 @@ fn known_bad_retirement_diagnostic_is_machine_readable_and_complete() {
     assert_eq!(record["outcome"], "retired");
     assert_eq!(record["staged_image_removed"], true);
 }
+
+/// soldr#3193: the one opt-out from front-door spawning.
+#[test]
+fn the_autospawn_switch_is_off_only_for_an_exact_zero() {
+    use std::ffi::OsStr;
+    assert!(broker_enabled_for(None));
+    assert!(broker_enabled_for(Some(OsStr::new(""))));
+    assert!(broker_enabled_for(Some(OsStr::new("1"))));
+    assert!(broker_enabled_for(Some(OsStr::new("false"))));
+    assert!(!broker_enabled_for(Some(OsStr::new("0"))));
+}

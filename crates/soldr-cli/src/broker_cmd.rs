@@ -10,6 +10,8 @@
 //! their own module from the start, matching `daemon_entry.rs`,
 //! `cache.rs`, etc.
 
+use std::time::{Duration, Instant};
+
 use crate::core::SoldrError;
 use crate::exit_guard::{self, guarded_exit};
 
@@ -67,6 +69,21 @@ pub(crate) enum BrokerSubcommand {
     /// verified claims. With no broker bound it prints a "not running" line and
     /// exits 0.
     Remove,
+    /// Stop every soldr-broker / soldr-daemon process on this host that serves
+    /// a HOME other than the current one (soldr#3193). Test suites run soldr
+    /// under a throwaway HOME per test and leave one broker each behind; this
+    /// is the operator-driven sweep `soldr doctor` and the front-door notice
+    /// point at. The broker for the current HOME is never touched. Each
+    /// process gets a terminate request first and is force-killed only if it
+    /// is still alive after the drain deadline.
+    Purge {
+        /// List what would be stopped without signalling anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the stable schema_version=1 JSON report instead of text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub(crate) fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrError> {
@@ -76,6 +93,9 @@ pub(crate) fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrE
         BrokerSubcommand::Routes { json } => run_broker_routes(json),
         BrokerSubcommand::Stop => run_broker_stop(),
         BrokerSubcommand::Remove => run_broker_remove(),
+        BrokerSubcommand::Purge { dry_run, json } => {
+            crate::broker_purge::run_broker_purge(dry_run, json)
+        }
     }
 }
 
@@ -815,7 +835,7 @@ mod tests {
         let broker = command
             .find_subcommand("broker")
             .expect("broker subcommand registered");
-        for verb in ["serve", "status", "stop", "remove"] {
+        for verb in ["serve", "status", "stop", "remove", "purge"] {
             let command = broker
                 .find_subcommand(verb)
                 .unwrap_or_else(|| panic!("{verb} subcommand registered"));
@@ -824,6 +844,19 @@ mod tests {
                 "{verb} must use the one stable endpoint"
             );
         }
+    }
+
+    /// soldr#3193: same binding for the leak notice's remedy.
+    #[test]
+    fn the_command_named_by_the_leak_notice_is_a_real_verb() {
+        let purge_verb = crate::broker_inventory::BROKER_PURGE_COMMAND
+            .strip_prefix("soldr broker ")
+            .expect("the remedy is a `soldr broker` verb");
+        assert!(crate::cli_args::Cli::command()
+            .find_subcommand("broker")
+            .expect("broker subcommand registered")
+            .find_subcommand(purge_verb)
+            .is_some());
     }
 
     /// soldr#2549: the mismatch warning is only actionable if the command it

@@ -107,6 +107,8 @@ fn prod_dev_daemons_and_manual_orphan_maintenance_are_isolated() {
     let dev = temp.path().join(".soldr-dev");
     let custom = temp.path().join("custom");
     let standalone = temp.path().join(".zccache");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = common::BrokerHomeGuard::new(&custom, &home);
     for root in [&home, &prod, &dev, &custom, &standalone] {
         std::fs::create_dir_all(root).unwrap();
         std::fs::write(root.join("sentinel"), root.display().to_string()).unwrap();
@@ -240,6 +242,7 @@ fn delegated_pep517_pipe_lease_defers_maintenance_and_releases_on_eof() {
     let home = temp.path().join("home");
     let root = temp.path().join("delegated-root");
     std::fs::create_dir_all(&home).unwrap();
+    let _broker = common::BrokerHomeGuard::new(&root, &home);
     let mut child = Command::new(common::soldr_bin())
         .args(["gc", "hold-build-lease"])
         .env("SOLDR_CACHE_DIR", &root)

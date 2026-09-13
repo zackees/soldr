@@ -154,6 +154,17 @@ struct BrokerState {
 }
 
 impl BrokerState {
+    /// No connection open and no route owned (soldr#3193).
+    fn is_idle(&self) -> bool {
+        self.connections_open.load(Ordering::Relaxed) == 0
+            && self
+                .route_owners
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len()
+                == 0
+    }
+
     fn route(
         &self,
         frame: Frame,
@@ -377,6 +388,10 @@ async fn serve_loop(
         crate::broker_image_watch::BROKER_HOME_CHECK_INTERVAL,
         move || crate::broker_image_watch::install_directory_present(&executable),
     ));
+    // soldr#3193: a broker nobody uses for the idle window stands down.
+    let idle_state = Arc::clone(&state);
+    let idle_standdown =
+        crate::broker_idle::spawn_standdown(&shutdown, move || idle_state.is_idle());
     // soldr#3057: the broker watches its own RSS against the same
     // SOLDR_DAEMON_RSS_CEILING_BYTES ceiling the daemon uses, rather than
     // cross-checking a specific daemon's breach.
@@ -459,7 +474,7 @@ async fn serve_loop(
     home_watch.abort();
     // Same reasoning as the reaper: a retiring broker must not wait out an
     // RSS_SAMPLE_INTERVAL sleep to finish shutting down.
-    if let Some(handle) = rss_watchdog {
+    for handle in [rss_watchdog, idle_standdown].into_iter().flatten() {
         handle.abort();
     }
     crate::platform::ipc::broker::retire_endpoint(&endpoint);

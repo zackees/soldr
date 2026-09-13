@@ -105,6 +105,24 @@ one. Daemon routes are retained and re-adopted from their verified claims.
 Use `soldr broker stop` instead when you only want to cycle the broker
 process and keep its staged image.
 
+### Brokers for other HOMEs pile up
+
+Signal: `soldr doctor` lists processes under `soldr processes for other
+HOMEs:`, or an interactive invocation prints `soldr: N leaked soldr-broker
+... process(es) are running for other HOMEs` (soldr#3193). Test suites that
+run soldr under a throwaway `HOME` per test leave one broker each; a broker
+whose `HOME` directory survives is never stood down by the image watch.
+
+```
+soldr broker purge --dry-run   # list them
+soldr broker purge             # terminate, force-kill after 5 s
+```
+
+The broker for the current `HOME` is never touched. Brokers built from this
+version onward also stand themselves down after `SOLDR_BROKER_IDLE_EXIT_SECS`
+(30 min) with no connection and no route, and callers that never need a
+daemon can set `SOLDR_BROKER_AUTOSPAWN=0`.
+
 ### Daemon route does not become ready
 
 Signal: the broker cannot provide the registered service route within the

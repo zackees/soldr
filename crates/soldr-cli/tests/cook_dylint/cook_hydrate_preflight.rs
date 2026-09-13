@@ -221,6 +221,8 @@ fn pack_record_lookup_verify_extract_completes_hydrate_cycle() {
     }
     let cache_root = unique_temp_dir("hyd-e2e-cache");
     let home_root = unique_temp_dir("hyd-e2e-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 
@@ -303,6 +305,8 @@ fn sha_mismatch_quarantines_artifact_and_does_not_extract() {
     }
     let cache_root = unique_temp_dir("hyd-mismatch-cache");
     let home_root = unique_temp_dir("hyd-mismatch-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 
@@ -373,6 +377,8 @@ fn hydrate_is_additive_skip_existing_preserves_user_files() {
     }
     let cache_root = unique_temp_dir("hyd-add-cache");
     let home_root = unique_temp_dir("hyd-add-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let _daemon = DaemonProc::spawn(&cache_root, &home_root);
 
     // Source: an archive containing libfoo with content FROM_ARCHIVE.
@@ -411,6 +417,8 @@ fn cook_lookup_miss_is_silent_and_returns_cleanly() {
     }
     let cache_root = unique_temp_dir("hyd-miss-cache");
     let home_root = unique_temp_dir("hyd-miss-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 
@@ -453,6 +461,10 @@ fn feature_branch_soldr_cargo_build_hydrates_from_main_fallback() {
 
     let cache_root = unique_temp_dir("branch-fallback-cache");
     let home_root = unique_temp_dir("branch-fallback-home");
+
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 

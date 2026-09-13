@@ -163,6 +163,8 @@ fn cook_record_then_lookup_round_trips_through_daemon() {
     }
     let cache_root = unique_temp_dir("rt-cache");
     let home_root = unique_temp_dir("rt-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 
@@ -223,6 +225,8 @@ fn cook_lookup_recipe_miss_falls_back_to_newest_same_origin_artifact() {
     }
     let cache_root = unique_temp_dir("drift-cache");
     let home_root = unique_temp_dir("drift-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 
@@ -293,6 +297,8 @@ fn concurrent_cook_records_all_land_consistently() {
     }
     let cache_root = unique_temp_dir("concur-cache");
     let home_root = unique_temp_dir("concur-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 
@@ -339,6 +345,8 @@ fn per_target_safety_isolates_via_ipc() {
     }
     let cache_root = unique_temp_dir("target-cache");
     let home_root = unique_temp_dir("target-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 
@@ -437,6 +445,8 @@ fn status_reports_aggregate_cook_metrics() {
     }
     let cache_root = unique_temp_dir("status-cache");
     let home_root = unique_temp_dir("status-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 
@@ -487,6 +497,8 @@ fn cook_touch_is_fire_and_forget_and_silent_on_unknown_sha() {
     }
     let cache_root = unique_temp_dir("touch-cache");
     let home_root = unique_temp_dir("touch-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 
@@ -509,6 +521,8 @@ fn status_response_decodes_as_expected_variant() {
     }
     let cache_root = unique_temp_dir("variant-cache");
     let home_root = unique_temp_dir("variant-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
     let resp = client::submit_request(&sock, &soldr_cli::daemon::protocol::Request::Status)

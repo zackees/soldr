@@ -132,6 +132,8 @@ fn rustc_args_for(target_root: &Path, crate_name: &str) -> Vec<String> {
 fn session_compile_request_carries_lifecycle_on_compile_connection() {
     let cache_root = unique_temp_dir("compile-lifecycle-cache");
     let home_root = unique_temp_dir("compile-lifecycle-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let workspace = unique_temp_dir("compile-lifecycle-workspace");
     let _scope = EnvScope::set(&[
         ("SOLDR_CACHE_DIR", cache_root.as_path()),
@@ -180,6 +182,8 @@ fn embedded_wrapper_path_has_no_standalone_compile_telemetry_calls() {
 fn fast_path_when_no_session_id() {
     let cache_root = unique_temp_dir("perf-fast-cache");
     let home_root = unique_temp_dir("perf-fast-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let workspace = unique_temp_dir("perf-fast-workspace");
     let _scope = EnvScope::set(&[
         ("SOLDR_CACHE_DIR", cache_root.as_path()),
@@ -252,6 +256,8 @@ fn fast_path_when_no_session_id() {
 fn slow_path_when_session_id_set() {
     let cache_root = unique_temp_dir("perf-slow-cache");
     let home_root = unique_temp_dir("perf-slow-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let workspace = unique_temp_dir("perf-slow-workspace");
     let _scope = EnvScope::set(&[
         ("SOLDR_CACHE_DIR", cache_root.as_path()),
@@ -273,6 +279,8 @@ fn slow_path_when_session_id_set() {
 fn wrapper_without_a_session_never_opens_state_db_directly() {
     let cache_root = unique_temp_dir("perf-fast-write-cache");
     let home_root = unique_temp_dir("perf-fast-write-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let workspace = unique_temp_dir("perf-fast-write-workspace");
     let _scope = EnvScope::set(&[
         ("SOLDR_CACHE_DIR", cache_root.as_path()),
@@ -306,6 +314,10 @@ fn memo_path_skips_redb_when_env_matches_resolved_target() {
 
     let cache_root = unique_temp_dir("perf-memo-cache");
     let home_root = unique_temp_dir("perf-memo-home");
+
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let workspace = unique_temp_dir("perf-memo-workspace");
     // Seed the target dir so the resolver's canonicalization
     // succeeds, but DO NOT prepopulate the registry — we want to
@@ -357,6 +369,8 @@ fn memo_path_falls_through_when_env_path_does_not_match() {
     // the env var was leaked across worktrees (e.g. nested cargo).
     let cache_root = unique_temp_dir("perf-memo-mismatch-cache");
     let home_root = unique_temp_dir("perf-memo-mismatch-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let workspace = unique_temp_dir("perf-memo-mismatch-workspace");
     let unrelated = unique_temp_dir("perf-memo-mismatch-other");
     let _scope = EnvScope::set(&[
@@ -383,6 +397,8 @@ fn memo_path_falls_through_when_env_path_does_not_match() {
 fn no_target_path_when_args_lack_workspace_target() {
     let cache_root = unique_temp_dir("perf-no-target-cache");
     let home_root = unique_temp_dir("perf-no-target-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let _scope = EnvScope::set(&[
         ("SOLDR_CACHE_DIR", cache_root.as_path()),
         ("HOME", home_root.as_path()),

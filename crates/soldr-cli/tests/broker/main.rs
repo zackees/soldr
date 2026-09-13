@@ -9,6 +9,7 @@ mod common;
 
 mod broker_identity_pipe;
 mod broker_identity_unix;
+mod cli_broker_purge;
 mod cli_broker_resurrection;
 mod cli_broker_routes;
 mod cli_broker_single_instance;

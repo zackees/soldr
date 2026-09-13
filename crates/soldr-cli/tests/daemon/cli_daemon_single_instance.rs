@@ -157,6 +157,8 @@ fn stop_daemon(cache_root: &Path, child: TrackedChild) {
 fn two_daemons_against_one_root_never_coexist() {
     let cache_root = unique_temp_dir("single-instance-cache");
     let home_root = unique_temp_dir("single-instance-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
 
     // First daemon wins the root and starts serving.
     let first = spawn_daemon(&cache_root, &home_root);
@@ -227,6 +229,8 @@ fn losing_daemon_leaves_the_state_db_openable() {
     // daemon must leave the state DB exactly as openable as before.
     let cache_root = unique_temp_dir("single-instance-db-cache");
     let home_root = unique_temp_dir("single-instance-db-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
 
     let first = spawn_daemon(&cache_root, &home_root);
     assert!(

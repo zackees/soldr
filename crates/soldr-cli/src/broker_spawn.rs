@@ -42,13 +42,26 @@ const RESURRECTION_WAIT_TIMEOUT: Duration = Duration::from_secs(12);
 const EXISTING_BROKER_RETRY_TIMEOUT: Duration = Duration::from_secs(1);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Whether the broker path is enabled — **always true** (soldr#2388). The
-/// broker-fronted daemon is the only supported topology: there is no env-var
-/// opt-out and no legacy "direct client → daemon without a broker" mode to
-/// select. Kept as a named predicate so the call sites read intentionally
-/// rather than hard-coding `true`.
+/// Environment switch that stops the front door from auto-spawning a broker
+/// (soldr#3193). Set to `0` by callers that only need soldr's read-only
+/// surfaces -- a test suite running `soldr shims --json` under a throwaway
+/// `HOME` per test does not want one broker per test left on the host.
+pub(crate) const BROKER_AUTOSPAWN_ENV: &str = "SOLDR_BROKER_AUTOSPAWN";
+
+/// Whether the front door may spawn a broker. The broker-fronted daemon is
+/// the only supported topology (soldr#2388): there is no legacy "direct
+/// client → daemon without a broker" mode to select, so this is not a
+/// topology switch. It is the one opt-out, [`BROKER_AUTOSPAWN_ENV`]`=0`, for
+/// callers that will never need a daemon and would otherwise leak a broker
+/// per throwaway `HOME` (soldr#3193). A wrapper compile under such a caller
+/// still fails loudly with "soldr broker is unreachable" rather than
+/// silently running uncached.
 pub(crate) fn broker_enabled() -> bool {
-    true
+    broker_enabled_for(std::env::var_os(BROKER_AUTOSPAWN_ENV).as_deref())
+}
+
+pub(crate) fn broker_enabled_for(autospawn: Option<&std::ffi::OsStr>) -> bool {
+    autospawn != Some(std::ffi::OsStr::new("0"))
 }
 
 /// Preserve Soldr's complete identity namespace plus the authoritative
@@ -89,9 +102,14 @@ fn filter_broker_spawn_env(
 /// self-recursion-exclusion rules are unit-testable without spawning a
 /// process.
 pub(crate) fn front_door_broker_spawn_eligible(raw_args: &[String]) -> bool {
-    if !broker_enabled() {
-        return false;
-    }
+    broker_enabled() && front_door_command_shape(raw_args)
+}
+
+/// The argv half of [`front_door_broker_spawn_eligible`]: does this
+/// invocation have the shape of a command the front door serves? Shared with
+/// the soldr#3193 leak notice, which follows the same shape rules but must
+/// still fire when [`BROKER_AUTOSPAWN_ENV`] has switched the spawn off.
+pub(crate) fn front_door_command_shape(raw_args: &[String]) -> bool {
     let Some(first_positional) = first_command_positional(raw_args) else {
         return false;
     };
@@ -180,7 +198,7 @@ fn is_teardown_command(raw_args: &[String]) -> bool {
 /// stream: soldr#2554 found a caller that merges stdout+stderr to parse
 /// `soldr env --json`, and an unrelated eprintln! (the soldr#2549 broker
 /// image-mismatch warning) broke that parse.
-fn ci_endpoint_diagnostics_eligible(raw_args: &[String]) -> bool {
+pub(crate) fn ci_endpoint_diagnostics_eligible(raw_args: &[String]) -> bool {
     !raw_args.iter().any(|arg| {
         matches!(arg.as_str(), "--json" | "--github-env" | "--shell-export")
             || arg.starts_with("--github-env=")
