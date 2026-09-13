@@ -477,6 +477,9 @@ pub(crate) async fn run_cargo_front_door(
         // package-aware closure while teeing the bytes unchanged below.
         command.arg("--message-format=json");
     }
+    if build_like_cargo || cargo_args_may_compile_unmediated(args) {
+        forbid_test_suite_target(args)?;
+    }
     if build_like_cargo {
         let probe_path = cache_plan
             .target_dir_for_hooks(args)

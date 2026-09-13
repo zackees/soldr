@@ -91,6 +91,17 @@ also gives you `try_status`, `wait_for_exit` and `wait_for_stdout` for fixtures
 that poll a child or time its exit. `Command::output()` is always safe.
 `guards/piped_child_drain_lint.rs` fails the build on the undrained shape.
 
+A fixture must not build into the target directory the suite runs from
+(soldr#3203). Soldr resolves Cargo's target directory the way Cargo does, so a
+fixture that runs `soldr cargo ...` from the crate directory, the test's default
+working directory, lands in the repository's own `target/`. There the no-cache
+preflight and cleanup hooks would modify live test binaries. The wrapper
+therefore sets `SOLDR_TEST_FORBID_TARGET_CONTAINING` to the running test binary,
+and such a build fails with a `test tripwire:` diagnostic. Run the fixture in a
+temporary workspace (`.current_dir(...)`) or give it its own `CARGO_TARGET_DIR`,
+set after `common::isolated_soldr_command()` because that helper scrubs the
+outer value.
+
 ## Naming a failing test (soldr#2934)
 
 Since the category consolidation, a `crates/soldr-cli` integration test's full

@@ -54,6 +54,8 @@ fn cargo_front_door_default_linker_does_not_inject_target_env() {
         &home_root,
     );
     let mut command = isolated_soldr_command();
+    // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
+    command.current_dir(&cache_root);
     daemon.configure_client(&mut command);
     let output = command
         .args(["cargo", "build"])
@@ -92,6 +94,8 @@ fn cargo_front_door_rust_lld_injects_target_linker_env() {
         &home_root,
     );
     let mut command = isolated_soldr_command();
+    // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
+    command.current_dir(&cache_root);
     daemon.configure_client(&mut command);
     let output = command
         .args(["cargo", "build"])

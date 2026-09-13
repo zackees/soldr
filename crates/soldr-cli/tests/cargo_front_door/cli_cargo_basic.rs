@@ -233,6 +233,9 @@ fn cargo_front_door_maps_plus_toolchain_to_rustup_toolchain_env() {
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        // soldr#3203: the relative `--manifest-path` resolves under this crate,
+        // whose workspace target is the suite's own `target/`.
+        .env("CARGO_TARGET_DIR", cache_root.join("target"))
         .env_remove("RUSTUP_TOOLCHAIN")
         .output()
         .expect("failed to run soldr cargo +toolchain test");
@@ -289,6 +292,9 @@ fn cargo_multicall_shim_routes_rustc_through_cargo_front_door() {
         ])
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_CACHE_DIR", root.join("cache"))
+        // soldr#3203: from this crate Cargo's target is the repository's own
+        // `target/`, which the running suite lives in.
+        .env("CARGO_TARGET_DIR", root.join("target"))
         .env("ZCCACHE_DISABLE", "1")
         .output()
         .expect("run cargo multicall shim");
@@ -418,6 +424,8 @@ fn zthreads_retry_command(cargo: &Path, cache_root: &Path) -> Command {
         ])
         .env("SOLDR_TEST_CARGO_BIN", cargo)
         .env("SOLDR_CACHE_DIR", cache_root)
+        // soldr#3203: keep the no-cache retry out of the suite's own `target/`.
+        .env("CARGO_TARGET_DIR", cache_root.with_file_name("target"))
         .env("SOLDR_TARGET_CACHE_MODE", "inherited")
         .env(
             "SOLDR_TEST_ZTHREADS_ATTEMPT_MARKER",

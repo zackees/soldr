@@ -32,6 +32,42 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 
+/// Test-only tripwire (soldr#3203): the absolute path of the running test
+/// binary, set by the nextest wrapper for every test process.
+///
+/// Fixtures that run soldr from the crate directory used to resolve a
+/// nonexistent `crates/soldr-cli/target`, so their target hooks did nothing.
+/// Correct resolution points them at the repository's own `target/` -- the tree
+/// the suite runs out of -- where the no-cache preflight and cleanup hooks
+/// modified live test binaries mid-run. A target directory that contains the
+/// running test binary is therefore refused, naming the fixture that needs its
+/// own `CARGO_TARGET_DIR`. Never set outside tests.
+pub const FORBID_TARGET_CONTAINING_ENV_VAR: &str = "SOLDR_TEST_FORBID_TARGET_CONTAINING";
+
+/// Whether `dir` holds the running test binary named by `binary`. Pure, so it
+/// is testable without the process environment.
+pub fn target_dir_holds_test_binary(dir: &Path, binary: Option<&OsStr>) -> bool {
+    binary
+        .filter(|binary| !binary.is_empty())
+        .is_some_and(|binary| Path::new(binary).starts_with(dir))
+}
+
+/// Refuse a build whose target directory holds the running test suite.
+pub fn forbid_test_suite_target_tripwire(dir: &Path) -> Result<(), super::SoldrError> {
+    let binary = std::env::var_os(FORBID_TARGET_CONTAINING_ENV_VAR);
+    if target_dir_holds_test_binary(dir, binary.as_deref()) {
+        return Err(super::SoldrError::Other(format!(
+            "test tripwire: this build resolved Cargo target directory {}, which holds \
+             the running test binary {}; its hooks would modify the suite's own \
+             target tree. Give the fixture its own CARGO_TARGET_DIR or run it from a \
+             temporary workspace ({FORBID_TARGET_CONTAINING_ENV_VAR}, soldr#3203)",
+            dir.display(),
+            Path::new(binary.as_deref().unwrap_or_default()).display()
+        )));
+    }
+    Ok(())
+}
+
 /// Everything the resolution reads, gathered up front so the rules are testable
 /// without touching this process's environment.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -315,6 +351,31 @@ mod tests {
         .map(|arg| (*arg).to_string())
         .collect();
         assert_eq!(cli_config_target_dir(&args), Some("a".to_string()));
+    }
+
+    #[test]
+    fn only_a_target_dir_holding_the_test_binary_trips() {
+        let binary = OsStr::new("/repo/target/x86_64-unknown-linux-gnu/debug/deps/suite-1");
+        assert!(target_dir_holds_test_binary(
+            Path::new("/repo/target"),
+            Some(binary)
+        ));
+        assert!(!target_dir_holds_test_binary(
+            Path::new("/tmp/fixture/target"),
+            Some(binary)
+        ));
+        assert!(!target_dir_holds_test_binary(
+            Path::new("/repo/target-other"),
+            Some(binary)
+        ));
+        assert!(!target_dir_holds_test_binary(
+            Path::new("/repo/target"),
+            None
+        ));
+        assert!(!target_dir_holds_test_binary(
+            Path::new("/repo/target"),
+            Some(OsStr::new(""))
+        ));
     }
 
     #[test]

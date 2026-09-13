@@ -156,6 +156,15 @@ fn resolve_target_dir_for_hooks(args: &[String]) -> Option<std::path::PathBuf> {
     crate::core::cargo_target_dir::resolve_cargo_target_dir(&crate::core::cargo_target_dir::CargoTargetDirInputs::from_process(&cwd, args))
 }
 
+/// soldr#3203 test tripwire: refuse a build or unmediated compile whose target
+/// directory holds the running test binary, before any hook touches that tree.
+fn forbid_test_suite_target(args: &[String]) -> Result<(), SoldrError> {
+    match resolve_target_dir_for_hooks(args) {
+        Some(dir) => crate::core::cargo_target_dir::forbid_test_suite_target_tripwire(&dir),
+        None => Ok(()),
+    }
+}
+
 #[cfg(test)]
 fn apply_target_registry_memo(
     command: &mut std::process::Command,

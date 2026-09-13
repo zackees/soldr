@@ -101,6 +101,8 @@ fn cargo_front_door_uses_real_tool_overrides_before_path_probe() {
     );
 
     let output = isolated_soldr_command()
+        // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
+        .current_dir(&cache_root)
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_REAL_CARGO", &cargo)
@@ -163,6 +165,8 @@ fn cargo_front_door_detects_build_after_global_cargo_options() {
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
+        // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
+        .current_dir(&cache_root)
         .args(["cargo", "--manifest-path", "demo/Cargo.toml", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -194,6 +198,8 @@ fn cargo_miri_keeps_inner_rustc_wrapped_by_policy() {
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, _zccache) = install_fake_cargo_miri_toolchain(&log_path);
     let output = isolated_soldr_command()
+        // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
+        .current_dir(&cache_root)
         .args(["cargo", "miri"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -223,6 +229,8 @@ fn cargo_clippy_routes_workspace_clippy_driver_through_zccache() {
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, _zccache, _clippy_driver) = install_fake_clippy_toolchain(&log_path);
     let output = isolated_soldr_command()
+        // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
+        .current_dir(&cache_root)
         .args(["cargo", "clippy"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -814,6 +822,8 @@ fn cargo_front_door_preserves_jobserver_fds_into_managed_zccache_wrapper() {
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, _zccache) = install_fake_jobserver_toolchain(&log_path);
     let output = isolated_soldr_command()
+        // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
+        .current_dir(&cache_root)
         .args(["cargo", "test", "--no-run"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -851,6 +861,8 @@ fn cache_enabled_zccache_build_completes_under_60_seconds() {
 
     let started = Instant::now();
     let output = isolated_soldr_command()
+        // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
+        .current_dir(&cache_root)
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -890,6 +902,8 @@ fn managed_zccache_honors_explicit_cache_dir_override_when_trusted() {
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
+        // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
+        .current_dir(&cache_root)
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("ZCCACHE_CACHE_DIR", &user_zccache_dir)
@@ -923,6 +937,8 @@ fn nested_soldr_ignores_inherited_managed_zccache_cache_dir() {
     let log_path = child_cache_root.join("tool.log");
     let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
+        // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
+        .current_dir(&parent_cache_root)
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &child_cache_root)
         .env("ZCCACHE_CACHE_DIR", &parent_zccache_dir)
@@ -1002,6 +1018,9 @@ fn cargo_front_door_uses_custom_rustc_wrapper_from_env_var() {
     let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let wrapper = install_fake_wrapper(&log_path, "sccache");
     let output = isolated_soldr_command()
+        // soldr#3203: these unmediated builds need a real target to prepare, and
+        // from this crate that would be the suite's own `target/`.
+        .env("CARGO_TARGET_DIR", cache_root.join("target"))
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -1066,6 +1085,9 @@ fn custom_sccache_wrapper_preserves_caller_sccache_dir() {
     let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let wrapper = install_fake_wrapper(&log_path, "sccache");
     let output = isolated_soldr_command()
+        // soldr#3203: these unmediated builds need a real target to prepare, and
+        // from this crate that would be the suite's own `target/`.
+        .env("CARGO_TARGET_DIR", cache_root.join("target"))
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -1106,6 +1128,9 @@ fn empty_rustc_wrapper_override_disables_wrapper_injection() {
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
+        // soldr#3203: these unmediated builds need a real target to prepare, and
+        // from this crate that would be the suite's own `target/`.
+        .env("CARGO_TARGET_DIR", cache_root.join("target"))
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -1145,6 +1170,9 @@ fn no_cache_bypasses_wrapper_and_zccache() {
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
+        // soldr#3203: these unmediated builds need a real target to prepare, and
+        // from this crate that would be the suite's own `target/`.
+        .env("CARGO_TARGET_DIR", cache_root.join("target"))
         .args(["--no-cache", "cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)

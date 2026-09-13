@@ -69,6 +69,8 @@ fn exec_cargo_build_routes_through_child_shims() {
     write_fake_script(&direct_cargo, &fake_direct_rustup_cargo_script(&log_path));
 
     let output = isolated_soldr_command()
+        // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
+        .current_dir(&cache_root)
         .args(["exec", "cargo", "build"])
         .env("CARGO_HOME", &cargo_home)
         .env("SOLDR_CACHE_DIR", &cache_root)

@@ -162,6 +162,9 @@ const CASES: &[Case] = &[
 
 fn cargo_target_directory(root: &Path, cwd: &Path, case: &Case) -> Result<PathBuf, String> {
     let mut command = Command::new(common::cargo_bin());
+    // Under CI the Cargo capability is Soldr's shim; a nested entry from a test
+    // process must look like a fresh caller, not unsanctioned re-entrancy.
+    common::scrub_outer_soldr_env(&mut command);
     command
         .current_dir(cwd)
         .args([

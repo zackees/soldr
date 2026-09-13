@@ -760,3 +760,25 @@ def test_an_explicit_caller_value_overrides_the_download_guard() -> None:
     assert _wrapper_env_for(
         {"SOLDR_TEST_FORBID_TOOLCHAIN_INSTALL": "0", "RUSTUP_AUTO_INSTALL": "1"}
     ) == ["0", "1"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the wrapper runs Unix tests only")
+def test_every_test_process_names_its_binary_for_the_target_tripwire() -> None:
+    """soldr#3203: soldr refuses a fixture build whose target holds the test binary."""
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key != "SOLDR_TEST_FORBID_TARGET_CONTAINING"
+    }
+    child = "import os; print(os.environ['SOLDR_TEST_FORBID_TARGET_CONTAINING'])"
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER), sys.executable, "-c", child],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == os.path.abspath(sys.executable)
