@@ -607,14 +607,15 @@ impl SoldrBackendLauncher {
     }
 }
 
+/// The directory every broker route's staged daemon image lives under.
+pub(crate) fn routes_root() -> PathBuf {
+    crate::daemon::service_definition::broker_owned_paths()
+        .root
+        .join("routes")
+}
+
 fn route_image_paths(request: &BackendLaunchRequest<'_>) -> crate::core::SoldrPaths {
-    let broker_paths = crate::daemon::service_definition::broker_owned_paths();
-    crate::core::SoldrPaths::with_root(
-        broker_paths
-            .root
-            .join("routes")
-            .join(&request.key.service_name),
-    )
+    crate::core::SoldrPaths::with_root(routes_root().join(&request.key.service_name))
 }
 
 fn file_fingerprint(path: &std::path::Path) -> std::io::Result<FileFingerprint> {

@@ -417,11 +417,22 @@ pub(crate) async fn run_route_reaper(
         // The sweep signals other processes, so keep it off the async worker.
         let sweep_owners = Arc::clone(&route_owners);
         let sweep_registry = Arc::clone(&registry);
-        let reaped = tokio::task::spawn_blocking(move || {
-            reap_orphaned_routes(&sweep_owners, &sweep_registry, grace)
+        let (reaped, removed_images) = tokio::task::spawn_blocking(move || {
+            let reaped = reap_orphaned_routes(&sweep_owners, &sweep_registry, grace);
+            // soldr#3164: reclaim daemon images no route has run for the
+            // stale window. Each route rescans at most once a day.
+            let removed = crate::self_relocate::sweep_route_runtime_copies(
+                &crate::broker_launcher::routes_root(),
+            );
+            (reaped, removed)
         })
         .await
         .unwrap_or_default();
+        if removed_images > 0 {
+            println!(
+                "soldr broker: removed {removed_images} stale daemon image(s) from route runtimes"
+            );
+        }
         for service_name in reaped {
             println!(
                 "soldr broker: reaped route {service_name}; every process that asked for it has exited"

@@ -472,6 +472,101 @@ fn periodic_runtime_gc_deletes_stale_dirs_when_due() {
     );
 }
 
+fn seed_route_copy(routes_root: &Path, route: &str, version: &str, last_used: u64) -> PathBuf {
+    seed_runtime_dir(
+        &routes_root.join(route).join(RUNTIME_DIR).join(DAEMON_DIR),
+        version,
+        last_used,
+    )
+}
+
+// soldr#3164: every route's stale daemon copies are reclaimed, fresh ones kept.
+#[test]
+fn route_sweep_reclaims_stale_copies_across_every_route() {
+    let temp = TempDir::new().expect("tempdir");
+    let routes = temp.path().join("routes");
+    let stale_a = seed_route_copy(&routes, "soldr-daemon-a", "v0.9.11", 10);
+    let fresh_a = seed_route_copy(&routes, "soldr-daemon-a", "v0.9.14", 95);
+    let stale_b = seed_route_copy(&routes, "soldr-daemon-b", "v0.9.12", 20);
+
+    let summary = sweep_route_runtime_copies_at(&routes, 100, 10, 50);
+
+    assert_eq!(summary.removed_dirs, 2);
+    assert!(!stale_a.exists());
+    assert!(!stale_b.exists());
+    assert!(
+        fresh_a.exists(),
+        "a copy used within the stale window is kept"
+    );
+}
+
+#[test]
+fn route_sweep_honours_each_routes_gc_interval() {
+    let temp = TempDir::new().expect("tempdir");
+    let routes = temp.path().join("routes");
+    let stale = seed_route_copy(&routes, "soldr-daemon-a", "v0.9.11", 10);
+    let runtime = routes
+        .join("soldr-daemon-a")
+        .join(RUNTIME_DIR)
+        .join(DAEMON_DIR);
+    fs::write(runtime.join(GC_MARKER_FILENAME), "95").expect("recent gc marker");
+
+    let summary = sweep_route_runtime_copies_at(&routes, 100, 10, 50);
+
+    assert_eq!(summary.removed_dirs, 0);
+    assert!(
+        stale.exists(),
+        "a route swept within the interval is not rescanned"
+    );
+}
+
+#[test]
+fn route_sweep_leaves_non_route_entries_untouched() {
+    let temp = TempDir::new().expect("tempdir");
+    let routes = temp.path().join("routes");
+    fs::create_dir_all(routes.join("soldr-daemon-empty")).expect("route without runtime");
+    fs::write(routes.join("stray-file"), b"x").expect("stray file");
+
+    let summary = sweep_route_runtime_copies_at(&routes, 100, 10, 50);
+
+    assert_eq!(summary.removed_dirs, 0);
+    assert!(
+        !routes.join("soldr-daemon-empty").join(RUNTIME_DIR).exists(),
+        "a sweep must not create runtime trees"
+    );
+    assert!(routes.join("stray-file").is_file());
+    // A missing routes root is simply nothing to do.
+    let absent = sweep_route_runtime_copies_at(&temp.path().join("absent"), 100, 10, 50);
+    assert_eq!(absent.removed_dirs, 0);
+}
+
+// soldr#3164: a long-running daemon keeps its own image out of the sweep.
+#[test]
+fn running_image_ledger_is_refreshed_only_where_one_exists() {
+    let temp = TempDir::new().expect("tempdir");
+    let placed = seed_runtime_dir(temp.path(), "v0.9.14", 10);
+    let placed_exe = placed.join("soldr-daemon");
+    fs::write(&placed_exe, b"image").expect("placed image");
+    let bare = temp.path().join("target-debug");
+    fs::create_dir_all(&bare).expect("bare dir");
+    let bare_exe = bare.join("soldr-daemon");
+    fs::write(&bare_exe, b"image").expect("bare image");
+
+    refresh_running_image_ledger(&placed_exe);
+    refresh_running_image_ledger(&bare_exe);
+
+    let stamped: u64 = fs::read_to_string(placed.join(LAST_USED_FILENAME))
+        .expect("ledger")
+        .trim()
+        .parse()
+        .expect("unix seconds");
+    assert!(stamped > 10, "the running image's ledger must be refreshed");
+    assert!(
+        !bare.join(LAST_USED_FILENAME).exists(),
+        "no ledger may be created beside a binary that never had one"
+    );
+}
+
 // soldr#1495 Workstream C: the version-residue window is 48h.
 #[test]
 fn stale_runtime_threshold_is_48_hours() {
