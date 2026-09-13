@@ -290,6 +290,12 @@ jobs:
             zccache-unit-v1-${{ inputs.target }}-${{ hashFiles('Cargo.lock', 'dylints/**/Cargo.lock', 'rust-toolchain.toml', 'dylints/**/rust-toolchain.toml') }}-
             zccache-unit-v1-${{ inputs.target }}-
 
+      # soldr#3120: the cutoff for measure_zccache_working_set.py. Store files
+      # whose atime/ctime/mtime are later than this were used by this run.
+      - name: Mark Tier-2 zccache store restore time
+        shell: bash
+        run: date +%s > "${{ runner.temp }}/zccache-unit-restored-at"
+
       # soldr#1335 — removed `Enable Windows line-table debug symbols`
       # + `Upload Windows test PDBs on failure`. Both gated on
       # `runner.os == 'Windows'`; the only caller (build-linux-x64 in
@@ -835,6 +841,24 @@ jobs:
             -delete || true
           echo "object store staged for the cache save:"
           du -sh "$store" || true
+
+      # soldr#3120: report-only. How much of the store this run touched, and
+      # what a Full `gc maintain` pass under the proposed trim cap does to a
+      # real copy of it. The saved store is never modified. The copy goes on
+      # /mnt, the runner's large ephemeral disk, and costs ~70 s, so the trial
+      # runs on main only; the ~1 s walk runs on every gate.
+      - name: Measure Tier-2 zccache working set (soldr#3120)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/soldr-zccache-trial || true
+          python3 .github/scripts/measure_zccache_working_set.py \
+            --store "${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/daemon-state" \
+            --since-file "${{ runner.temp }}/zccache-unit-restored-at" \
+            --soldr "${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr" \
+            --scratch-root /mnt/soldr-zccache-trial \
+            --trial "${{ github.ref == 'refs/heads/main' }}"
 
       # soldr#1799 — surface the per-build XML logs and the JSONL compile
       # journals from CI compiles so toolchain-home leakage and warm-run
