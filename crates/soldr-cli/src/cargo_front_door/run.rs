@@ -600,7 +600,8 @@ pub(crate) async fn run_cargo_front_door(
     let compile_journal_start_len = file_len(&embedded_compile_journal_path(&paths));
     let compile_fallback_cursor = crate::compile_dispatch::compile_daemon_fallback_cursor(&paths);
     // soldr#2302: live per-unit HIT/MISS annotations (no-op for a --no-cache run).
-    let cache_state_tail = cache_states::start_tail(&cache_plan, &paths, compile_journal_start_len);
+    let cache_state_tail =
+        cache_states::start_tail(&cache_plan, &paths, compile_journal_start_len, args);
     // Everything above is pure soldr overhead the user pays before Cargo
     // starts. Emit the breakdown here so the total excludes Cargo itself.
     profile.finish_labeled("cargo front door", "pre_spawn_tail");

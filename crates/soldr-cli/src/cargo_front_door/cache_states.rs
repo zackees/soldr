@@ -21,10 +21,14 @@
 //! field is always `null` and there is no `crate_name` field (the name is
 //! derived from `--crate-name` in `args`). The journal is daemon-wide, so the
 //! only correlation available is the **byte-offset window** from build start
-//! to end. In CI — the surface this feature is validated on — each job runs its
-//! own daemon with a single build, so the window is exact. On a shared dev box
-//! running concurrent builds against one daemon, a foreign crate may appear;
-//! that is cosmetic over-inclusion, never a wrong hit/miss for a named crate.
+//! to end, and that window also holds every other build sharing the daemon: a
+//! second repository on a dev box, or `soldr ci-test`'s Dylint stages running
+//! beside `nextest-compile`. Left unfiltered those foreign lines made the
+//! per-unit stream disagree with the build-scoped summary, which read as the
+//! summary miscounting (soldr#3143). Each record's rustc `--out-dir` lies under
+//! the target directory of the build that ran it, so lines are scoped to this
+//! build's target roots -- see [`BuildScope`] and [`ScopedLines`] for why a
+//! wrong resolution can delay a line but never hide one.
 //!
 //! # Color on CI (deliberate)
 //!
@@ -142,6 +146,7 @@ pub(crate) fn start_tail(
     cache_plan: &CargoCachePlan,
     paths: &SoldrPaths,
     journal_start_offset: u64,
+    args: &[String],
 ) -> Option<CacheStateTail> {
     cache_plan.zccache_session()?;
     // Stamp with the same elapsed-seconds prefix as the relayed cargo output
@@ -157,6 +162,7 @@ pub(crate) fn start_tail(
         super::embedded_compile_journal_path(paths),
         journal_start_offset,
         stamp_from,
+        BuildScope::resolve(args),
     )
 }
 
@@ -208,20 +214,32 @@ impl Outcome {
     }
 }
 
-/// `--crate-name X` / `--crate-name=X` out of a rustc argv. The journal's
-/// ephemeral shape omits the derived `crate_name` field, so this is the only
-/// source of the name.
-fn derive_crate_name(args: &[serde_json::Value]) -> Option<String> {
+/// `FLAG X` / `FLAG=X` out of a rustc argv.
+fn rustc_arg_value(args: &[serde_json::Value], flag: &str) -> Option<String> {
     let mut iter = args.iter().filter_map(serde_json::Value::as_str);
     while let Some(arg) = iter.next() {
-        if arg == "--crate-name" {
+        if arg == flag {
             return iter.next().map(str::to_string);
         }
-        if let Some(value) = arg.strip_prefix("--crate-name=") {
+        if let Some(value) = arg
+            .strip_prefix(flag)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
             return Some(value.to_string());
         }
     }
     None
+}
+
+/// One hit/miss compile record from the journal. The journal's ephemeral shape
+/// omits the derived `crate_name` field, so the name comes from `--crate-name`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct JournalUnit {
+    crate_name: String,
+    outcome: Outcome,
+    /// rustc's `--out-dir`, which lies under the target directory of the build
+    /// that ran this compile.
+    out_dir: Option<PathBuf>,
 }
 
 /// Render one per-unit annotation line for a resolved compile.
@@ -233,14 +251,14 @@ fn render_line(crate_name: &str, outcome: Outcome, use_color: bool) -> String {
     format!("soldr[cache] {crate_name} {tag}")
 }
 
-/// Parse a chunk of compile-journal JSONL and render one annotation line per
-/// hit/miss record that carries a derivable crate name.
+/// Parse a chunk of compile-journal JSONL into the hit/miss units that carry a
+/// derivable crate name.
 ///
 /// Pure over its input so it is unit-tested with no daemon: malformed lines,
 /// non-hit/miss outcomes (`error`, `cached_error`), and records with no
 /// `--crate-name` (version probes and other uncacheable inputs) are all
 /// skipped rather than rendered as `? [MISS]`.
-pub(crate) fn render_journal_chunk(chunk: &str, use_color: bool) -> Vec<String> {
+fn parse_journal_chunk(chunk: &str) -> Vec<JournalUnit> {
     let mut out = Vec::new();
     for line in chunk.lines() {
         if line.trim().is_empty() {
@@ -259,12 +277,147 @@ pub(crate) fn render_journal_chunk(chunk: &str, use_color: bool) -> Vec<String> 
         let Some(args) = value.get("args").and_then(serde_json::Value::as_array) else {
             continue;
         };
-        let Some(crate_name) = derive_crate_name(args) else {
+        let Some(crate_name) = rustc_arg_value(args, "--crate-name") else {
             continue;
         };
-        out.push(render_line(&crate_name, outcome, use_color));
+        out.push(JournalUnit {
+            crate_name,
+            outcome,
+            out_dir: rustc_arg_value(args, "--out-dir").map(PathBuf::from),
+        });
     }
     out
+}
+
+/// The target roots this build could be writing into (soldr#3143).
+///
+/// Generous on purpose. An extra root only lets another build's line through;
+/// a missing one is caught by [`ScopedLines`]' fallback. Cargo's own
+/// resolution is not reproduced exactly -- several partial copies of it
+/// already disagree across the tree (soldr#3203) -- so this does not add a
+/// sixth that claims to be exact.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BuildScope {
+    roots: Vec<PathBuf>,
+}
+
+impl BuildScope {
+    /// An explicit `--target-dir` or `CARGO_TARGET_DIR`, plus every
+    /// [`ancestor_target_roots`] root above the manifest (`--manifest-path`,
+    /// else the working directory).
+    pub(crate) fn resolve(args: &[String]) -> Self {
+        let mut roots = Vec::new();
+        if let Some(dir) = super::disk::cargo_arg_value(args, "--target-dir") {
+            roots.push(super::disk::absolutize_path(PathBuf::from(dir)));
+        }
+        if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR").filter(|dir| !dir.is_empty()) {
+            roots.push(super::disk::absolutize_path(PathBuf::from(dir)));
+        }
+        let start = super::disk::cargo_arg_value(args, "--manifest-path")
+            .map(|manifest| super::disk::absolutize_path(PathBuf::from(manifest)))
+            .and_then(|manifest| manifest.parent().map(Path::to_path_buf))
+            .or_else(|| std::env::current_dir().ok());
+        if let Some(start) = start {
+            roots.extend(ancestor_target_roots(&start));
+        }
+        Self { roots }
+    }
+
+    fn contains(&self, out_dir: &Path) -> bool {
+        self.roots.iter().any(|root| out_dir.starts_with(root))
+    }
+}
+
+/// For `start` and each ancestor: `<dir>/target` when `<dir>` holds a
+/// `Cargo.toml` -- so a workspace root above the member being built counts --
+/// and any `[build] target-dir` its `.cargo/config.toml` sets, relative to
+/// `<dir>` as Cargo resolves it.
+fn ancestor_target_roots(start: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for dir in start.ancestors() {
+        if dir.join("Cargo.toml").is_file() {
+            roots.push(dir.join("target"));
+        }
+        for name in [".cargo/config.toml", ".cargo/config"] {
+            if let Some(configured) = configured_target_dir(&dir.join(name)) {
+                roots.push(if configured.is_absolute() {
+                    configured
+                } else {
+                    dir.join(configured)
+                });
+            }
+        }
+    }
+    roots
+}
+
+fn configured_target_dir(config: &Path) -> Option<PathBuf> {
+    let contents = std::fs::read_to_string(config).ok()?;
+    let parsed: toml::Value = toml::from_str(&contents).ok()?;
+    parsed
+        .get("build")?
+        .get("target-dir")?
+        .as_str()
+        .map(PathBuf::from)
+}
+
+/// Bound on lines held while the scope is unconfirmed.
+const MAX_HELD_LINES: usize = 4096;
+
+/// The per-unit lines of one build, filtered by [`BuildScope`] without ever
+/// losing output to a wrong resolution (soldr#3143).
+///
+/// A unit whose `--out-dir` lies under a scope root is this build's and prints
+/// at once. One that does not is *held*, not dropped, until some unit matches:
+/// that match proves the scope found this build's real target, and only then
+/// are held and later non-matching units discarded as another build's. If
+/// nothing ever matches, the scope guessed wrong -- a `target-dir` set
+/// somewhere it does not look -- and [`Self::finish`] releases everything held,
+/// which is exactly what printed before the filter existed.
+struct ScopedLines {
+    scope: BuildScope,
+    confirmed: bool,
+    held: Vec<String>,
+}
+
+impl ScopedLines {
+    fn new(scope: BuildScope) -> Self {
+        Self {
+            scope,
+            confirmed: false,
+            held: Vec::new(),
+        }
+    }
+
+    /// The line to print now for `unit`, if any.
+    fn accept(&mut self, unit: &JournalUnit, use_color: bool) -> Option<String> {
+        let line = render_line(&unit.crate_name, unit.outcome, use_color);
+        let Some(out_dir) = unit.out_dir.as_deref() else {
+            // Cannot be attributed either way: print it, as before.
+            return Some(line);
+        };
+        if self.scope.roots.is_empty() || self.scope.contains(out_dir) {
+            if !self.confirmed {
+                self.confirmed = true;
+                self.held.clear();
+            }
+            return Some(line);
+        }
+        if !self.confirmed && self.held.len() < MAX_HELD_LINES {
+            self.held.push(line);
+        }
+        None
+    }
+
+    /// Lines still owed once the build ends: the held ones, only if the scope
+    /// was never confirmed.
+    fn finish(self) -> Vec<String> {
+        if self.confirmed {
+            Vec::new()
+        } else {
+            self.held
+        }
+    }
 }
 
 /// A live tail over the compile journal that prints per-unit HIT/MISS lines to
@@ -290,6 +443,7 @@ impl CacheStateTail {
         journal_path: PathBuf,
         start_offset: u64,
         stamp_from: Option<Instant>,
+        scope: BuildScope,
     ) -> Option<Self> {
         if !enabled() {
             return None;
@@ -306,6 +460,7 @@ impl CacheStateTail {
                     use_color,
                     stamp_from,
                     &stop_thread,
+                    ScopedLines::new(scope),
                 )
             })
             .ok()?;
@@ -337,19 +492,37 @@ fn tail_loop(
     use_color: bool,
     stamp_from: Option<Instant>,
     stop: &AtomicBool,
+    mut lines: ScopedLines,
 ) {
     let mut offset = start_offset;
     let mut pending: Vec<u8> = Vec::new();
     loop {
         let stopping = stop.load(Ordering::SeqCst);
-        offset = drain_new_records(journal_path, offset, &mut pending, use_color, stamp_from);
+        offset = drain_new_records(
+            journal_path,
+            offset,
+            &mut pending,
+            use_color,
+            stamp_from,
+            &mut lines,
+        );
         if stopping {
             // Cargo has exited, but the daemon writes journal records
             // asynchronously, so the final compile's line can land a few
             // milliseconds later. Give it one grace poll and drain once more so
             // the last crate is not silently dropped from the per-unit stream.
             std::thread::sleep(TAIL_POLL);
-            let _ = drain_new_records(journal_path, offset, &mut pending, use_color, stamp_from);
+            let _ = drain_new_records(
+                journal_path,
+                offset,
+                &mut pending,
+                use_color,
+                stamp_from,
+                &mut lines,
+            );
+            for line in lines.finish() {
+                emit(&line, stamp_from);
+            }
             break;
         }
         std::thread::sleep(TAIL_POLL);
@@ -365,6 +538,7 @@ fn drain_new_records(
     pending: &mut Vec<u8>,
     use_color: bool,
     stamp_from: Option<Instant>,
+    lines: &mut ScopedLines,
 ) -> u64 {
     let Ok(mut file) = std::fs::File::open(journal_path) else {
         return offset;
@@ -390,8 +564,10 @@ fn drain_new_records(
     pending.extend_from_slice(&buf);
     if let Some(last_nl) = pending.iter().rposition(|&b| b == b'\n') {
         let complete: Vec<u8> = pending.drain(..=last_nl).collect();
-        for line in render_journal_chunk(&String::from_utf8_lossy(&complete), use_color) {
-            emit(&line, stamp_from);
+        for unit in parse_journal_chunk(&String::from_utf8_lossy(&complete)) {
+            if let Some(line) = lines.accept(&unit, use_color) {
+                emit(&line, stamp_from);
+            }
         }
     }
     offset + read
@@ -458,6 +634,13 @@ mod tests {
         "\n",
     );
 
+    fn render_journal_chunk(chunk: &str, use_color: bool) -> Vec<String> {
+        parse_journal_chunk(chunk)
+            .iter()
+            .map(|unit| render_line(&unit.crate_name, unit.outcome, use_color))
+            .collect()
+    }
+
     #[test]
     fn journal_chunk_renders_only_hit_miss_with_a_crate_name() {
         let lines = render_journal_chunk(CHUNK, false);
@@ -505,7 +688,8 @@ mod tests {
         .expect("write journal");
 
         let mut pending: Vec<u8> = Vec::new();
-        let offset = drain_new_records(&path, 0, &mut pending, false, None);
+        let mut lines = ScopedLines::new(BuildScope::default());
+        let offset = drain_new_records(&path, 0, &mut pending, false, None, &mut lines);
         // Only the complete first record is consumed for rendering; the
         // partial `beta` line stays pending, but the offset still advances past
         // all bytes read so the next poll does not re-read them.
@@ -513,5 +697,133 @@ mod tests {
         let held = String::from_utf8_lossy(&pending);
         assert!(held.contains("beta"), "partial line held: {held:?}");
         assert!(!held.contains("alpha"), "complete line drained: {held:?}");
+    }
+
+    fn unit(crate_name: &str, out_dir: Option<&str>) -> JournalUnit {
+        JournalUnit {
+            crate_name: crate_name.to_string(),
+            outcome: Outcome::Miss,
+            out_dir: out_dir.map(PathBuf::from),
+        }
+    }
+
+    fn scope(roots: &[&str]) -> BuildScope {
+        BuildScope {
+            roots: roots.iter().map(PathBuf::from).collect(),
+        }
+    }
+
+    #[test]
+    fn a_unit_carries_its_out_dir_in_either_spelling() {
+        let units = parse_journal_chunk(concat!(
+            r#"{"outcome":"miss","args":["--crate-name","a","--out-dir","/ws/target/debug/deps"]}"#,
+            "\n",
+            r#"{"outcome":"hit","args":["--crate-name=b","--out-dir=/ws/target/debug/build/b-1/out"]}"#,
+            "\n",
+        ));
+        assert_eq!(
+            units.iter().map(|u| u.out_dir.clone()).collect::<Vec<_>>(),
+            vec![
+                Some(PathBuf::from("/ws/target/debug/deps")),
+                Some(PathBuf::from("/ws/target/debug/build/b-1/out")),
+            ]
+        );
+    }
+
+    /// soldr#3143, as measured: a cold two-crate build printed a third `[MISS]`
+    /// for `running_process_platform_internal`, compiled by another repository
+    /// into its own `target/` on the same daemon, while the summary correctly
+    /// said 2 MISS.
+    #[test]
+    fn another_builds_units_are_dropped_once_this_builds_target_is_confirmed() {
+        let mut lines = ScopedLines::new(scope(&["/ws/target"]));
+        let foreign = unit(
+            "running_process_platform_internal",
+            Some("/other/target/debug/deps"),
+        );
+        assert_eq!(
+            lines.accept(&foreign, false),
+            None,
+            "held before confirmation"
+        );
+        assert_eq!(
+            lines.accept(&unit("a", Some("/ws/target/debug/deps")), false),
+            Some("soldr[cache] a [MISS]".to_string())
+        );
+        assert_eq!(
+            lines.accept(&foreign, false),
+            None,
+            "dropped after confirmation"
+        );
+        assert!(
+            lines.finish().is_empty(),
+            "held foreign lines are discarded"
+        );
+    }
+
+    /// The guarantee that makes the filter safe: a scope that never matches is
+    /// a wrong resolution, and every held line is released at the end.
+    #[test]
+    fn a_scope_that_never_matches_loses_no_lines() {
+        let mut lines = ScopedLines::new(scope(&["/ws/target"]));
+        assert_eq!(
+            lines.accept(&unit("a", Some("/elsewhere/deps")), false),
+            None
+        );
+        assert_eq!(
+            lines.accept(&unit("b", Some("/elsewhere/deps")), false),
+            None
+        );
+        assert_eq!(
+            lines.finish(),
+            vec![
+                "soldr[cache] a [MISS]".to_string(),
+                "soldr[cache] b [MISS]".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unscoped_or_unattributable_unit_prints_immediately() {
+        let mut unscoped = ScopedLines::new(BuildScope::default());
+        assert!(unscoped
+            .accept(&unit("a", Some("/anywhere/deps")), false)
+            .is_some());
+        let mut scoped = ScopedLines::new(scope(&["/ws/target"]));
+        assert!(scoped.accept(&unit("b", None), false).is_some());
+        assert!(
+            !scoped.confirmed,
+            "an unattributable unit proves nothing about the scope"
+        );
+    }
+
+    /// Building from inside a member must still count the workspace root's
+    /// `target/`, and a `[build] target-dir` resolves against its config's dir.
+    #[test]
+    fn ancestor_roots_cover_the_workspace_root_and_a_configured_target_dir() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let ws = root.path();
+        let member = ws.join("crates").join("member");
+        std::fs::create_dir_all(&member).expect("member dir");
+        std::fs::create_dir_all(ws.join(".cargo")).expect(".cargo dir");
+        std::fs::write(ws.join("Cargo.toml"), "[workspace]\n").expect("root manifest");
+        std::fs::write(member.join("Cargo.toml"), "[package]\n").expect("member manifest");
+        std::fs::write(
+            ws.join(".cargo").join("config.toml"),
+            "[build]\ntarget-dir = \"out\"\n",
+        )
+        .expect("config");
+
+        let roots = ancestor_target_roots(&member);
+        for expected in [member.join("target"), ws.join("target"), ws.join("out")] {
+            assert!(
+                roots.contains(&expected),
+                "{expected:?} missing from {roots:?}"
+            );
+        }
+        assert!(
+            !roots.contains(&ws.join("crates").join("target")),
+            "no manifest there"
+        );
     }
 }
