@@ -38,7 +38,6 @@ def test_only_the_cache_disabled_cook_keeps_a_compile_cap() -> None:
     The cook step runs with ZCCACHE_DISABLE=1, so no admission gate exists
     there and its cap stays (CLAUDE.md, concurrency ladder rung 4).
     """
-    from pathlib import Path
 
     import yaml
 
