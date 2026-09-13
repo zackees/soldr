@@ -337,7 +337,7 @@ root is `SOLDR_CACHE_DIR` when set; otherwise the backend queries the selected
 `soldr version --json` binary for its provenance-aware production (`.soldr`) or
 development (`.soldr-dev`) root, then forwards that exact root to child hooks.
 The owning daemon removes both PEP517 target namespaces and wheel-cache
-namespaces after 30 days, or once they are older than four days while the
+namespaces after 30 days, or once they are older than 72 hours while the
 root/volume is under pressure. Active build leases defer the pass.
 
 ### Mode 3: Internal Wrapper Mode
@@ -1937,7 +1937,7 @@ dynamic budget.
 
 The same coordinated pass bounds cook artifacts, trash buckets, registered
 workspace targets, PEP517 targets and wheels, daemon events, stale embedded generations,
-and `cache/zccache/history`. Build history defaults to four days and 1 GiB per
+and `cache/zccache/history`. Build history defaults to 72 hours and 1 GiB per
 root; active publishers survive, while abandoned unfinished rows do not block
 retention forever. Expired database records retain their useful metrics with
 archived paths marked unavailable. The first pass

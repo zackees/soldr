@@ -645,3 +645,20 @@ fn a_deferred_pass_persisted_over_an_older_status_file_keeps_its_usage() {
     assert_eq!(read_back.zccache_measured_at_ms, Some(100));
     assert_eq!(read_back.deferred_reason.as_deref(), Some("build_active"));
 }
+
+/// soldr#3079: the daemon's own reclamation ages are the soldr-owned
+/// staleness gate, not separate four-day copies of it. Workspace targets and
+/// build history are swept with these constants directly, so a gate changed
+/// only in the policy table would never reach them.
+#[test]
+fn daemon_reclaim_ages_are_the_shared_72h_staleness_gate() {
+    let gate = crate::cache_lib::gc_policy::STALENESS_GATE;
+    assert_eq!(gate, Duration::from_secs(72 * 60 * 60));
+    assert_eq!(PRESSURE_STALE_AGE, gate, "workspace targets / legacy roots");
+    assert_eq!(history_gc::DEFAULT_MAX_AGE, gate, "build history");
+    assert_eq!(
+        crate::cache_lib::pep517_gc::PRESSURE_MAX_AGE,
+        gate,
+        "pep517 targets and wheels"
+    );
+}
