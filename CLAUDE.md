@@ -247,7 +247,7 @@ Two traps when gathering that telemetry:
 | `_ci-cross-build-linux.yml` bootstrap steps | `RUSTC_WRAPPER: ""` (one also `ZCCACHE_DISABLE=1`). No service, no gate. Step-scoped. |
 | `ci.yml` `wheel-cross-verify` | Bootstrap-shaped build (soldr#2469). |
 | `.github/scripts/cross_build_resources.py` | **Under review — see soldr#3150.** The archive's heavy links are the eight consolidated integration-test binaries (`broker`, `daemon`, `cargo_front_door`, …), and none of those names is in `SOLDR_HEAVY_TEST_LINKS`, which lists only `soldr_daemon` / `soldr_cli` (the *lib* unit-test links). This lane is wrapped, so rung 2 should apply and does not. |
-| `cook-size-gate.yml`, `release-auto.yml`, `perf-matrix.yml` | No swapfile — rung 3 is not in place yet. |
+| `cook-size-gate.yml`, `release-auto.yml`, `perf-matrix.yml` | Swap is now in place (soldr#3148 step 1), so rung 3 exists; the caps stay until each lane is canaried. A lift is verified from the job log's `soldr: daemon compile concurrency =` line (soldr#3206). |
 
 Every entry names a reason. A cap with no reason beside it is a bug report
 waiting to be written.
