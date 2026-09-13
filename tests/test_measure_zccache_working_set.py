@@ -1,0 +1,196 @@
+"""The Tier-2 zccache working-set measurement (soldr#3120)."""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+import sys
+import time
+from pathlib import Path
+from types import SimpleNamespace
+
+from conftest import load_script_module
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+measure = load_script_module(
+    REPO_ROOT / ".github" / "scripts" / "measure_zccache_working_set.py",
+    "measure_zccache_working_set",
+)
+
+
+def _file(path: Path, size: int) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * size)
+    return path
+
+
+def _store(tmp_path: Path) -> Path:
+    store = tmp_path / "daemon-state"
+    _file(store / "embedded-v1" / "v1.13.21" / "artifacts" / "old", 300)
+    _file(store / "embedded-v1" / "v1.13.22" / "artifacts" / "hit", 100)
+    _file(store / "embedded-v1" / "v1.13.22" / "artifacts" / "cold", 50)
+    return store
+
+
+def _after_marker() -> float:
+    since = time.time()
+    time.sleep(0.05)
+    return since
+
+
+def test_only_files_touched_after_the_marker_count(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    since = _after_marker()
+    hit = store / "embedded-v1" / "v1.13.22" / "artifacts" / "hit"
+    # A hardlink materialization: the link count change bumps ctime.
+    os.link(hit, tmp_path / "target-copy")
+
+    walk = measure.walk_store(store, since)
+
+    assert (walk.total_files, walk.total_bytes) == (3, 450)
+    assert (walk.touched_files, walk.touched_bytes) == (1, 100)
+    assert walk.by_version == {"v1.13.21": [300, 0], "v1.13.22": [150, 100]}
+
+
+def test_a_hardlinked_inode_inside_the_store_counts_once(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    os.link(store / "embedded-v1" / "v1.13.22" / "artifacts" / "hit", store / "dup")
+    assert measure.walk_store(store, time.time() + 60).total_bytes == 450
+
+
+def test_verdicts_refuse_unmeasurable_walks(tmp_path: Path) -> None:
+    cap = 120
+    empty = measure.Walk()
+    none = measure.Walk(total_files=3, total_bytes=450)
+    everything = measure.Walk(
+        total_files=3, total_bytes=450, touched_files=3, touched_bytes=450
+    )
+    fits = measure.Walk(
+        total_files=3, total_bytes=450, touched_files=1, touched_bytes=100
+    )
+    over = measure.Walk(
+        total_files=3, total_bytes=450, touched_files=2, touched_bytes=150
+    )
+
+    assert "empty" in measure.working_set_verdict(empty, cap)
+    assert "unmeasurable" in measure.working_set_verdict(none, cap)
+    assert "predates the restore" in measure.working_set_verdict(everything, cap)
+    assert "fits under" in measure.working_set_verdict(fits, cap)
+    assert "exceeds" in measure.working_set_verdict(over, cap)
+
+
+def test_the_default_cap_is_the_family_allocation_minus_the_cook_reserve() -> None:
+    manifest = json.loads(
+        (REPO_ROOT / "ci" / "cache-ownership.json").read_text(encoding="utf-8")
+    )
+    family_max = manifest["budget"]["families"]["zccache-unit"]["max_bytes"]
+    assert (
+        measure.default_cap_bytes(REPO_ROOT / "ci" / "cache-ownership.json", 7)
+        == family_max - 7
+    )
+
+
+def _fake_soldr(tmp_path: Path, source_file: Path) -> Path:
+    """A `soldr` that checks it was handed a real copy, then damages that copy."""
+    record = tmp_path / "fake-soldr-record.json"
+    script = tmp_path / "soldr"
+    script.write_text(
+        f"""#!{sys.executable}
+import json, os, pathlib, sys
+root = pathlib.Path(sys.argv[sys.argv.index("--root") + 1])
+copy = root / "cache" / "zccache" / "daemon-state" / "embedded-v1" / "v1.13.22" / "artifacts" / "hit"
+source = pathlib.Path({str(source_file)!r})
+pathlib.Path({str(record)!r}).write_text(json.dumps({{
+    "argv": sys.argv[1:],
+    "cap": os.environ.get("ZCCACHE_CACHE_SIZE_BYTES"),
+    "percent": os.environ.get("ZCCACHE_CACHE_SIZE_PERCENT"),
+    "soldr_cache_dir": os.environ.get("SOLDR_CACHE_DIR"),
+    "root": str(root),
+    "real_copy": copy.stat().st_ino != source.stat().st_ino,
+}}))
+copy.unlink()
+print("noise before json")
+print(json.dumps({{"deferred_reason": None, "zccache": {{"pressure": "hard", "usage_after_bytes": 7}}}}))
+""",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    return script
+
+
+def test_the_trial_trims_a_real_copy_and_leaves_the_store_alone(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = _store(tmp_path)
+    source_hit = store / "embedded-v1" / "v1.13.22" / "artifacts" / "hit"
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("ZCCACHE_CACHE_SIZE_PERCENT", "50")
+    soldr = _fake_soldr(tmp_path, source_hit)
+
+    trial = measure.trial_trim(store, 450, soldr, 1234, scratch)
+
+    record = json.loads(
+        (tmp_path / "fake-soldr-record.json").read_text(encoding="utf-8")
+    )
+    assert (
+        record["argv"][:3] == ["gc", "maintain", "--root"]
+        and record["argv"][-1] == "--json"
+    )
+    assert record["real_copy"] is True
+    assert record["cap"] == "1234" and record["percent"] is None
+    assert record["soldr_cache_dir"] == record["root"]
+    assert trial["report"] == {"pressure": "hard", "usage_after_bytes": 7}
+    assert source_hit.read_bytes() == b"x" * 100, "the saved store must not change"
+    assert not any(scratch.iterdir()), "the copy must be removed"
+
+
+def test_the_trial_skips_when_the_copy_would_not_fit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = _store(tmp_path)
+
+    monkeypatch.setattr(
+        measure.shutil, "disk_usage", lambda _path: SimpleNamespace(free=10)
+    )
+    trial = measure.trial_trim(store, 450, tmp_path / "missing-soldr", 1, tmp_path)
+    assert "skipped" in trial and "need" in trial["skipped"]
+
+
+def test_main_reports_without_a_marker_and_writes_the_summary(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    store = _store(tmp_path)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+
+    code = measure.main(
+        [
+            "--store",
+            str(store),
+            "--since-file",
+            str(tmp_path / "absent"),
+            "--cap-bytes",
+            "100",
+        ]
+    )
+
+    assert code == 0
+    assert "no restore marker" in capsys.readouterr().out
+    assert "soldr#3120" in summary.read_text(encoding="utf-8")
+
+
+def test_main_is_quiet_about_a_missing_store(tmp_path: Path, capsys) -> None:
+    code = measure.main(
+        [
+            "--store",
+            str(tmp_path / "nope"),
+            "--since-file",
+            str(tmp_path / "x"),
+            "--cap-bytes",
+            "1",
+        ]
+    )
+    assert code == 0
+    assert "nothing to measure" in capsys.readouterr().out
