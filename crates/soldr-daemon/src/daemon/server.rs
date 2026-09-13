@@ -183,6 +183,24 @@ fn ipc_queue_capacity(listener_pool_size: usize) -> usize {
     .clamp(1, IPC_QUEUE_CAPACITY_MAX)
 }
 
+/// soldr#3169 test seam: hold a starting daemon between claiming its control
+/// endpoint and serving it, so a test can show what a client meets in that
+/// window. Debug builds only; a release daemon never reads the variable.
+#[cfg(debug_assertions)]
+async fn test_pause_before_serving_control() {
+    let Some(milliseconds) = std::env::var("SOLDR_TEST_DAEMON_SERVE_PAUSE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+    else {
+        return;
+    };
+    tokio::time::sleep(Duration::from_millis(milliseconds)).await;
+}
+
+#[cfg(not(debug_assertions))]
+async fn test_pause_before_serving_control() {}
+
 /// `[jobs].max_parallel_compiles` from `config.toml`, or `None` when
 /// the config is absent or unreadable.
 ///
@@ -673,6 +691,7 @@ async fn shutdown_compile_service(state: &Arc<State>) {
 // tokio_unstable"`; otherwise it degrades to a warning (see
 // [`maybe_init_tokio_console`]).
 include!("server_runtime.rs");
+include!("server_accept.rs");
 include!("server_dispatch.rs");
 include!("server_compile.rs");
 

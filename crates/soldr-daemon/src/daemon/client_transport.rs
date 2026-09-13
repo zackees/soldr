@@ -18,6 +18,35 @@ pub fn submit_request_with_timeout(
     }
 }
 
+/// Whether the daemon acknowledged receipt of a fire-and-forget request
+/// (soldr#2558).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReceiptAck {
+    Acknowledged,
+    /// No ack within the bounded wait; carries the transport's reason.
+    Unconfirmed(String),
+}
+
+/// [`submit_fire_and_forget`] without the stderr note: submit `req` and report
+/// whether its receipt ack arrived. Split out so the receipt contract can be
+/// asserted from a test process, where the note's stderr line cannot
+/// (soldr#3169).
+pub fn submit_awaiting_receipt(sock_path: &Path, req: &Request) -> Result<ReceiptAck, ClientError> {
+    if let Some(mut stream) = connect_through_override(sock_path, HOT_PATH_TIMEOUT)? {
+        return write_awaiting_receipt_ack(&mut stream, req);
+    }
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        submit_fire_and_forget_windows(sock_path, req)
+    } else {
+        // `connect` floors the read timeout at 200ms, which is the ack
+        // wait's bound: sub-ms on a healthy daemon (the ack precedes the
+        // store write), 200ms worst case against a wedged or pre-ack
+        // daemon.
+        let mut stream = connect(sock_path, HOT_PATH_TIMEOUT)?;
+        write_awaiting_receipt_ack(&mut stream, req)
+    }
+}
+
 /// Note a hot-path submission whose receipt ack never arrived.
 ///
 /// soldr#2785 asks which of two things happened when a target-registry row is
@@ -170,7 +199,10 @@ where
 /// store write).
 const HOT_PATH_ACK_TIMEOUT: Duration = Duration::from_millis(200);
 
-fn submit_fire_and_forget_windows(sock_path: &Path, req: &Request) -> Result<(), ClientError> {
+fn submit_fire_and_forget_windows(
+    sock_path: &Path,
+    req: &Request,
+) -> Result<ReceiptAck, ClientError> {
     use tokio::time::timeout;
 
     let sock_path = sock_path.to_path_buf();
@@ -200,22 +232,20 @@ fn submit_fire_and_forget_windows(sock_path: &Path, req: &Request) -> Result<(),
                 // made "never delivered" indistinguishable from "delivered and
                 // the write half lost it" -- the two answers that issue is
                 // trying to separate.
-                match timeout(
-                    HOT_PATH_ACK_TIMEOUT,
-                    read_frame_async::<_, Response>(&mut stream),
+                Ok::<ReceiptAck, std::io::Error>(
+                    match timeout(
+                        HOT_PATH_ACK_TIMEOUT,
+                        read_frame_async::<_, Response>(&mut stream),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => ReceiptAck::Acknowledged,
+                        Ok(Err(error)) => ReceiptAck::Unconfirmed(format!("{error}")),
+                        Err(_) => ReceiptAck::Unconfirmed(format!(
+                            "no ack within {HOT_PATH_ACK_TIMEOUT:?}"
+                        )),
+                    },
                 )
-                .await
-                {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(error)) => {
-                        note_missing_ack(&req, &format!("{error}"));
-                    }
-                    Err(_) => note_missing_ack(
-                        &req,
-                        &format!("no ack within {HOT_PATH_ACK_TIMEOUT:?}"),
-                    ),
-                }
-                Ok::<(), std::io::Error>(())
             })
         },
     )

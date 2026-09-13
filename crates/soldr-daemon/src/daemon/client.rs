@@ -213,19 +213,10 @@ impl From<std::io::Error> for ClientError {
 /// never acks just costs the bounded read and the touch is delivered on
 /// the platforms where it always was.
 pub fn submit_fire_and_forget(sock_path: &Path, req: &Request) -> Result<(), ClientError> {
-    if let Some(mut stream) = connect_through_override(sock_path, HOT_PATH_TIMEOUT)? {
-        return write_awaiting_receipt_ack(&mut stream, req);
+    if let ReceiptAck::Unconfirmed(reason) = submit_awaiting_receipt(sock_path, req)? {
+        note_missing_ack(req, &reason);
     }
-    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-        submit_fire_and_forget_windows(sock_path, req)
-    } else {
-        // `connect` floors the read timeout at 200ms, which is the ack
-        // wait's bound: sub-ms on a healthy daemon (the ack precedes the
-        // store write), 200ms worst case against a wedged or pre-ack
-        // daemon.
-        let mut stream = connect(sock_path, HOT_PATH_TIMEOUT)?;
-        write_awaiting_receipt_ack(&mut stream, req)
-    }
+    Ok(())
 }
 
 /// Write `req` on an already-connected stream and consume its receipt ack.
@@ -244,12 +235,12 @@ pub fn submit_fire_and_forget(sock_path: &Path, req: &Request) -> Result<(), Cli
 fn write_awaiting_receipt_ack<S: Read + Write>(
     stream: &mut S,
     req: &Request,
-) -> Result<(), ClientError> {
+) -> Result<ReceiptAck, ClientError> {
     write_frame_sync(stream, req)?;
-    if let Err(error) = read_frame_sync::<_, Response>(stream) {
-        note_missing_ack(req, &format!("{error}"));
-    }
-    Ok(())
+    Ok(match read_frame_sync::<_, Response>(stream) {
+        Ok(_) => ReceiptAck::Acknowledged,
+        Err(error) => ReceiptAck::Unconfirmed(format!("{error}")),
+    })
 }
 
 /// Submit `req`, wait for one `Response`, return it.

@@ -79,6 +79,17 @@ struct DaemonProc {
 
 impl DaemonProc {
     fn spawn(cache_root: &Path, home_root: &Path) -> Self {
+        Self::spawn_with_serve_pause(cache_root, home_root, None)
+    }
+
+    /// With `serve_pause`, the daemon holds between claiming its control
+    /// endpoint and serving it (soldr#3169), and this returns as soon as the
+    /// route claim is published instead of waiting for `status` to answer.
+    fn spawn_with_serve_pause(
+        cache_root: &Path,
+        home_root: &Path,
+        serve_pause: Option<Duration>,
+    ) -> Self {
         let mut cmd =
             common::isolated_daemon::isolated_daemon_command(&soldr_daemon_bin(), cache_root);
         // Capture stderr to a file: when a lane-specific failure appears (the
@@ -94,6 +105,12 @@ impl DaemonProc {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(stderr_log));
+        if let Some(pause) = serve_pause {
+            cmd.env(
+                "SOLDR_TEST_DAEMON_SERVE_PAUSE_MS",
+                pause.as_millis().to_string(),
+            );
+        }
         let child = cmd.spawn().expect("spawn soldr-daemon");
         let deadline = Instant::now() + Duration::from_secs(40);
         let pid_path = cache_root
@@ -103,7 +120,7 @@ impl DaemonProc {
         let sock = direct_sock(cache_root);
         let mut status_ok = false;
         while Instant::now() < deadline {
-            if pid_path.exists() && client::status(&sock).is_ok() {
+            if pid_path.exists() && (serve_pause.is_some() || client::status(&sock).is_ok()) {
                 status_ok = true;
                 break;
             }
@@ -309,4 +326,87 @@ fn daemon_path_writes_via_ipc_when_available() {
         daemon_stderr_tail(&cache_root)
     );
     assert_eq!(row, Some(1_700_000_000));
+}
+
+/// soldr#3169: a starting daemon is reachable -- route claim published, control
+/// endpoint claimed -- before it has built the state it serves requests with.
+/// A touch landing in that window used to wait out the client's 200 ms ack
+/// bound for an accept loop that did not exist yet, then print "delivery is
+/// unconfirmed" for a touch that was in fact delivered moments later. Receipt
+/// needs no state, so it must be acknowledged at once.
+#[test]
+fn a_touch_during_daemon_bringup_is_acknowledged_before_serving_starts() {
+    const SERVE_PAUSE: Duration = Duration::from_secs(6);
+    let cache_root = unique_temp_dir("target-touch-bringup-cache");
+    let home_root = unique_temp_dir("target-touch-bringup-home");
+    let target = cache_root.join("dev").join("workspace").join("target");
+    std::fs::create_dir_all(&target).expect("seed target dir");
+    let sock = direct_sock(&cache_root);
+
+    let _daemon = DaemonProc::spawn_with_serve_pause(&cache_root, &home_root, Some(SERVE_PAUSE));
+    let claimed = Instant::now();
+    let touch = Request::RecordTargetTouch {
+        path: target.display().to_string(),
+        unix_seconds: 1_700_000_000,
+    };
+    let receipt = loop {
+        match client::submit_awaiting_receipt(&sock, &touch) {
+            Ok(receipt) => break receipt,
+            Err(error) => {
+                assert!(
+                    claimed.elapsed() < SERVE_PAUSE,
+                    "the control endpoint never took a touch during bringup: {error:?}\n\
+                     daemon stderr:\n{}",
+                    daemon_stderr_tail(&cache_root)
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
+    let acknowledged_after = claimed.elapsed();
+    assert_eq!(
+        receipt,
+        client::ReceiptAck::Acknowledged,
+        "a touch during bringup must be acknowledged, not left to the ack bound\n\
+         daemon stderr:\n{}",
+        daemon_stderr_tail(&cache_root)
+    );
+    assert!(
+        acknowledged_after < SERVE_PAUSE,
+        "the ack came {acknowledged_after:?} after the route claim, not inside the \
+         {SERVE_PAUSE:?} bringup pause: receipt waited for the daemon to start serving"
+    );
+
+    // Receipt is not the whole contract: the touch must still be recorded once
+    // the daemon starts serving.
+    let deadline = Instant::now() + SERVE_PAUSE + Duration::from_secs(20);
+    while Instant::now() < deadline && registry_row_exists(&cache_root, &target).is_none() {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        registry_row_exists(&cache_root, &target).is_some(),
+        "an acknowledged bringup touch was never recorded\ndaemon stderr:\n{}",
+        daemon_stderr_tail(&cache_root)
+    );
+}
+
+/// soldr#3169: `CookTouch` rides the same fire-and-forget transport, which
+/// waits for a receipt ack, but the daemon never sent one -- so every cook
+/// hydrate hit paid the full ack bound and printed the missing-ack line.
+#[test]
+fn a_cook_touch_is_acknowledged() {
+    let cache_root = unique_temp_dir("cook-touch-ack-cache");
+    let home_root = unique_temp_dir("cook-touch-ack-home");
+    let sock = direct_sock(&cache_root);
+    let _daemon = DaemonProc::spawn(&cache_root, &home_root);
+
+    let receipt =
+        client::submit_awaiting_receipt(&sock, &Request::CookTouch { sha256: [0xAB; 32] })
+            .expect("submit cook touch");
+    assert_eq!(
+        receipt,
+        client::ReceiptAck::Acknowledged,
+        "the daemon must acknowledge a cook touch's receipt\ndaemon stderr:\n{}",
+        daemon_stderr_tail(&cache_root)
+    );
 }
