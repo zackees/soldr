@@ -123,8 +123,8 @@ fn a_peer_that_never_acks_is_still_a_successful_submit() {
     );
 
     assert!(
-        result.is_ok(),
-        "a missing ack must stay best-effort, not become an error: {result:?}"
+        matches!(result, Ok(ReceiptAck::Unconfirmed(_))),
+        "a missing ack must be reported as unconfirmed, not become an error: {result:?}"
     );
     assert!(
         peer.written > 0,

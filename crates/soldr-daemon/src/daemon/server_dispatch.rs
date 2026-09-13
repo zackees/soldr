@@ -1,6 +1,6 @@
 async fn handle_connection<S>(
     mut stream: S,
-    state: Arc<State>,
+    mut control: ControlContext,
     peer: crate::daemon::ipc_peer::PeerIdentity,
 ) -> std::io::Result<()>
 where
@@ -10,7 +10,7 @@ where
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::time::timeout;
 
-    let mux = soldr_backend_endpoint_mux(state.daemon_identity.clone());
+    let mux = soldr_backend_endpoint_mux(control.daemon_identity.clone());
     let mut prefix = [0_u8; CONTROL_FRAME_HEADER_BYTES];
     if !matches!(
         timeout(HANDSHAKE_READ_TIMEOUT, stream.read_exact(&mut prefix)).await,
@@ -32,6 +32,11 @@ where
                 buffered.extend_from_slice(&chunk[..read]);
             }
             Ok(MuxPoll::ProbeAnswered { reply, .. }) => {
+                // A probe is how a route is judged live, so it still waits for
+                // `State`: soldr#3169 moves receipt earlier, not readiness.
+                if control.state().await.is_none() {
+                    return Ok(());
+                }
                 let _ = timeout(HANDSHAKE_READ_TIMEOUT, stream.write_all(&reply)).await;
                 let _ = timeout(HANDSHAKE_READ_TIMEOUT, stream.flush()).await;
                 return Ok(());
@@ -68,6 +73,24 @@ where
             drain_then_close(&mut stream).await;
             return Ok(());
         }
+    };
+    // soldr#2558: fire-and-forget requests acknowledge RECEIPT before anything
+    // else. On macOS/BSD a connection the client closes before this server
+    // accepts it is discarded together with its buffered frame, so pure
+    // write-then-close lost every touch that raced the accept loop; the client
+    // now holds the connection until this ack (bounded). soldr#3169: receipt
+    // needs no state, so it also precedes waiting for `State` -- a touch that
+    // arrives during bringup is acknowledged instead of timing out the bound.
+    // A client that already closed makes this write fail, which is fine: its
+    // frame was received, which is all the ack exists to prove.
+    if matches!(
+        req,
+        Request::RecordTargetTouch { .. } | Request::CookTouch { .. }
+    ) {
+        let _ = write_frame_async(&mut stream, &Response::Ack).await;
+    }
+    let Some(state) = control.state().await else {
+        return Ok(());
     };
     state.request_count.fetch_add(1, Ordering::Relaxed);
     state.touch_activity();
@@ -173,16 +196,7 @@ where
             .await;
         }
         Request::RecordTargetTouch { path, unix_seconds } => {
-            // soldr#2558: acknowledge RECEIPT before processing. On
-            // macOS/BSD a connection the client closes before this server
-            // accepts it is discarded together with its buffered frame, so
-            // pure write-then-close fire-and-forget lost every touch that
-            // raced the accept loop. The client now holds the connection
-            // until this ack (bounded); the ack races nothing because it is
-            // sent before the store write begins. A client that already
-            // closed makes this write fail, which is fine — its frame was
-            // received, which is all the ack exists to prove.
-            let _ = write_frame_async(&mut stream, &Response::Ack).await;
+            // Receipt was acknowledged before dispatch (soldr#2558, soldr#3169).
             // Fire-and-forget for the WRITE half: errors are silent by
             // design and the client never learns the outcome.
             //
@@ -566,8 +580,9 @@ where
             }
         }
         Request::CookTouch { sha256 } => {
-            // Fire-and-forget bump of last_used_unix_ms. Silent on
-            // failure — the caller already moved on.
+            // Fire-and-forget bump of last_used_unix_ms, its receipt already
+            // acknowledged (soldr#3169). Silent on failure — the caller
+            // already moved on.
             let _ = cook_index::touch(&state.db_path, &sha256, current_unix_ms());
         }
         Request::Compile(req) => {

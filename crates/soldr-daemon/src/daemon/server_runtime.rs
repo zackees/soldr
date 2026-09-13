@@ -209,6 +209,31 @@ async fn run_async_recording(
         .map_err(|err| ServerError::Io(std::io::Error::other(err.to_string())))?;
     bringup.phase(crate::daemon::bringup::phase::DAEMON_IDENTITY);
 
+    // soldr#3169: serve the control endpoint from here rather than from the
+    // end of bringup. Requests park until `State` is published below, but
+    // receipt is acknowledged at once -- see `ControlContext`. soldr#3096: the
+    // terminate future is constructed before any accept loop can make the
+    // daemon observably ready; see the terminate hook below.
+    let terminate_signal = crate::platform::process::signal::wait_for_terminate_signal();
+    let shutdown = Arc::new(crate::daemon::maintenance::ShutdownSignal::default());
+    let (state_publisher, state_source) = tokio::sync::watch::channel(None);
+    let control = ControlContext {
+        daemon_identity: daemon_identity.clone(),
+        shutdown: Arc::clone(&shutdown),
+        state: state_source,
+    };
+    let accept_handle = AcceptTask(match control_listener {
+        Some((listener, _identity)) => tokio::spawn(async move {
+            let _ = run_accept_loop_unix(listener, control).await;
+        }),
+        None => {
+            let paths_for_accept = paths.clone();
+            tokio::spawn(async move {
+                let _ = run_accept_loop_windows(paths_for_accept, control).await;
+            })
+        }
+    });
+
     // Bind before heavyweight startup; SESSION payloads await compile-service publication.
     let session_listener = crate::daemon::session_endpoint::resolve_session_listener(&paths)?
         .ok_or_else(|| {
@@ -355,7 +380,7 @@ async fn run_async_recording(
         last_activity_ms: AtomicU64::new(0),
         exit_via_idle: AtomicBool::new(false),
         cook_hits_this_session: AtomicU64::new(0),
-        shutdown: Arc::new(crate::daemon::maintenance::ShutdownSignal::default()),
+        shutdown,
         event_batcher,
         compile_admission: CompileAdmission::new(
             ipc_queue_capacity(windows_listener_pool_size()),
@@ -366,22 +391,9 @@ async fn run_async_recording(
         compile_service,
     });
 
-    // soldr#3096: registered before the accept loop -- see the terminate
-    // hook below for why this must precede readiness.
-    let terminate_signal = crate::platform::process::signal::wait_for_terminate_signal();
-
-    let accept_state = state.clone();
-    let accept_handle = match control_listener {
-        Some((listener, _identity)) => tokio::spawn(async move {
-            let _ = run_accept_loop_unix(listener, accept_state).await;
-        }),
-        None => {
-            let paths_for_accept = paths.clone();
-            tokio::spawn(async move {
-                let _ = run_accept_loop_windows(paths_for_accept, accept_state).await;
-            })
-        }
-    };
+    test_pause_before_serving_control().await;
+    // Every control request parked since bringup began proceeds from here.
+    state_publisher.send_replace(Some(Arc::clone(&state)));
 
     let idle_handle = (opts.idle_timeout != Duration::MAX).then(|| {
         let idle_state = state.clone();
@@ -804,109 +816,6 @@ fn init_embedded_service_file_tracing(paths: &SoldrPaths) {
 
 fn embedded_service_log_dir(paths: &SoldrPaths) -> PathBuf {
     soldr_daemon_dir(paths).join("logs")
-}
-
-/// Accept loop for the Unix control endpoint. `listener` is the claimed
-/// filesystem socket from the platform listener leaf, which already
-/// resolved each peer's identity and current-user admission during
-/// accept.
-async fn run_accept_loop_unix(
-    listener: crate::platform::ipc::listener::BoxedControlListener,
-    state: Arc<State>,
-) -> std::io::Result<()> {
-    loop {
-        let accepted = match listener.accept().await {
-            Ok(accepted) => accepted,
-            Err(_) => continue,
-        };
-        if !accepted.peer.is_current_user {
-            tracing::warn!(target: "soldr::daemon", "rejected foreign daemon-control peer");
-            continue;
-        }
-        let peer = crate::daemon::ipc_peer::PeerIdentity::from_accepted_peer(&accepted.peer);
-        let state = state.clone();
-        tokio::spawn(async move {
-            let _ = handle_connection(accepted.stream, state, peer).await;
-        });
-    }
-}
-
-/// Accept loop for the Windows control endpoint: a self-replenishing
-/// named-pipe instance pool (see [`accept_windows_pipe_instance`]).
-async fn run_accept_loop_windows(paths: SoldrPaths, state: Arc<State>) -> std::io::Result<()> {
-    // soldr#1808: identity failure is fatal here — this loop *is* the
-    // endpoint. Propagating beats a fallback name no client would dial.
-    let pipe_name = crate::daemon::session_endpoint::resolved_control_endpoint_path(&paths)?
-        .to_string_lossy()
-        .into_owned();
-    let pool_size = windows_listener_pool_size();
-    tracing::info!(
-        pool_size,
-        queue_capacity = state.compile_admission.capacity,
-        expected_compile_slots = state.compile_admission.expected_compile_slots,
-        "soldr-daemon Windows named-pipe listener pool ready"
-    );
-    for index in 0..pool_size {
-        spawn_windows_pipe_instance(pipe_name.clone(), state.clone(), index == 0);
-    }
-    // Park until shutdown rather than forever. The pool instances are
-    // detached and self-replenishing, so aborting this task cannot stop
-    // them — each instance observes the same signal and drops its own pipe
-    // handle. Returning here is what lets the caller's `.await` complete.
-    state.shutdown.wait().await;
-    Ok(())
-}
-
-fn spawn_windows_pipe_instance(pipe_name: String, state: Arc<State>, first_pipe_instance: bool) {
-    // Keep this launcher synchronous. Calling `tokio::spawn` directly from
-    // `accept_windows_pipe_instance` would make the async function's opaque
-    // future recursively depend on itself, which Windows rejects because its
-    // `Send` bound cannot be inferred.
-    tokio::spawn(async move {
-        if let Err(error) =
-            accept_windows_pipe_instance(pipe_name, state, first_pipe_instance).await
-        {
-            tracing::debug!(%error, "Windows named-pipe listener exited");
-        }
-    });
-}
-
-async fn accept_windows_pipe_instance(
-    pipe_name: String,
-    state: Arc<State>,
-    first_pipe_instance: bool,
-) -> std::io::Result<()> {
-    // Never open a fresh instance once teardown has begun; that would
-    // re-arm the endpoint the shutdown path is trying to retire.
-    if state.shutdown.is_requested() {
-        return Ok(());
-    }
-    let mut server = crate::platform::ipc::peer::create_owner_only_windows_pipe(
-        &pipe_name,
-        first_pipe_instance,
-    )?;
-
-    // Drop the instance as soon as shutdown starts. Otherwise a wrapper can
-    // connect after the compile service has latched shut. Unix drops its
-    // listener with the accept task; this gives Windows the same fallback.
-    let connected = tokio::select! {
-        result = crate::platform::ipc::peer::pipe_server_connect(&mut server) => result.is_ok(),
-        _ = state.shutdown.wait() => return Ok(()),
-    };
-
-    if state.shutdown.is_requested() {
-        return Ok(());
-    }
-    if connected {
-        // Replenish before parsing the connected request, keeping the pool
-        // admission capacity independent from compile execution throughput.
-        spawn_windows_pipe_instance(pipe_name, state.clone(), false);
-        let peer = PeerIdentity::from_windows_pipe_server(&mut server);
-        let _ = handle_connection(server, state, peer).await;
-    } else {
-        spawn_windows_pipe_instance(pipe_name, state, false);
-    }
-    Ok(())
 }
 
 /// Read budget for draining a doomed connection (#1853). Short on purpose:

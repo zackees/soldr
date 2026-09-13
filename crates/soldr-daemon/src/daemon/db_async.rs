@@ -185,6 +185,7 @@ mod tests {
                 "server handlers",
                 concat!(
                     include_str!("server_runtime.rs"),
+                    include_str!("server_accept.rs"),
                     include_str!("server_dispatch.rs"),
                     include_str!("server_compile.rs")
                 ),
