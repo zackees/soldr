@@ -424,7 +424,11 @@ fn canonical_requirement_list(values: Option<&[String]>) -> Vec<String> {
     values
 }
 
-fn effective_rustup_home() -> Option<PathBuf> {
+/// The `RUSTUP_HOME` a rustup child launched through [`apply_implicit_toolchain_homes`]
+/// actually runs under. Read it back from a prepared command rather than
+/// re-deriving it, so a caller probing a toolchain directory looks in the home
+/// the install wrote to (soldr#3051).
+pub(crate) fn effective_rustup_home() -> Option<PathBuf> {
     let mut command = std::process::Command::new(rustup_binary());
     apply_implicit_toolchain_homes(&mut command);
     command

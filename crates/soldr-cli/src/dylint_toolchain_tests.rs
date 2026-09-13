@@ -805,3 +805,28 @@ fn the_driver_build_opt_in_is_off_by_default_and_warns_when_set() {
         "{warning}"
     );
 }
+
+/// soldr#3051: the readiness probe must read the home the install wrote to.
+/// With no caller `RUSTUP_HOME` and a managed home on disk, `rustup toolchain
+/// install` runs under the managed home; the probe used to read `~/.rustup`
+/// instead and report a successful install as never having happened.
+#[test]
+fn dylint_readiness_reads_the_home_the_install_writes_to() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let root = tempfile::tempdir().expect("temp soldr root");
+    let managed = root.path().join("rustup");
+    std::fs::create_dir_all(&managed).expect("managed rustup home");
+    let _root = EnvVarGuard::set(crate::core::SOLDR_CACHE_DIR_ENV_VAR, root.path());
+    let _home = EnvVarGuard::unset(crate::core::RUSTUP_HOME_ENV_VAR);
+
+    let mut install = std::process::Command::new("rustup");
+    crate::apply_implicit_toolchain_homes(&mut install);
+    let install_home = install
+        .get_envs()
+        .find_map(|(name, value)| (name == crate::core::RUSTUP_HOME_ENV_VAR).then_some(value))
+        .flatten()
+        .map(PathBuf::from);
+
+    assert_eq!(install_home.as_deref(), Some(managed.as_path()));
+    assert_eq!(dylint_manager_home().expect("manager home"), managed);
+}

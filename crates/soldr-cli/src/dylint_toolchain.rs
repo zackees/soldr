@@ -480,7 +480,7 @@ fn prepare_ttl() -> Duration {
 /// fall through to the full cold path rather than erroring.
 fn load_prepared_marker(version: &str) -> Option<DylintToolchainPlan> {
     let base_dir = SoldrPaths::new().ok()?.root;
-    let rustup_home = crate::core::resolve_rustup_home()?;
+    let rustup_home = crate::toolchain::effective_rustup_home()?;
     load_prepared_marker_from(
         &base_dir,
         &rustup_home,
@@ -842,8 +842,13 @@ fn ensure_installed(plan: &DylintToolchainPlan) -> Result<(), SoldrError> {
     Ok(())
 }
 
+/// The home every Dylint readiness probe reads. It must be the home the
+/// install writes to: this used to read the caller's `RUSTUP_HOME` (else
+/// `~/.rustup`) while `rustup toolchain install` ran under soldr's managed home,
+/// so a successful install was reported as "no toolchain directory was
+/// created" and retried forever (soldr#3051).
 fn dylint_manager_home() -> Result<PathBuf, SoldrError> {
-    crate::core::resolve_rustup_home().ok_or_else(|| {
+    crate::toolchain::effective_rustup_home().ok_or_else(|| {
         SoldrError::Other("could not resolve manager home while preparing Dylint".into())
     })
 }
