@@ -11,10 +11,13 @@
 /// environment variables. See the module doc for why it is deliberately not
 /// `TEST_PROCESS_ENV_LOCK`.
 pub(crate) mod catalogue_env;
-pub(crate) mod isolated_daemon;
 /// soldr#3128 — a fixture child whose deadline covers its whole process
 /// tree and whose output collection is bounded on every OS.
+pub(crate) mod fixture_command;
+pub(crate) mod isolated_daemon;
 pub(crate) mod tracked_child;
+
+pub(crate) use fixture_command::{isolated_soldr_command_in, isolated_soldr_command_with_target};
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};

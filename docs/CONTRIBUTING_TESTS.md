@@ -98,9 +98,10 @@ working directory, lands in the repository's own `target/`. There the no-cache
 preflight and cleanup hooks would modify live test binaries. The wrapper
 therefore sets `SOLDR_TEST_FORBID_TARGET_CONTAINING` to the running test binary,
 and such a build fails with a `test tripwire:` diagnostic. Run the fixture in a
-temporary workspace (`.current_dir(...)`) or give it its own `CARGO_TARGET_DIR`,
-set after `common::isolated_soldr_command()` because that helper scrubs the
-outer value.
+temporary workspace or give it its own `CARGO_TARGET_DIR`:
+`common::isolated_soldr_command_in(dir)` and
+`common::isolated_soldr_command_with_target(dir)` do each, the latter after the
+scrub that removes an inherited value.
 
 ## Naming a failing test (soldr#2934)
 
