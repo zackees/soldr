@@ -17,6 +17,8 @@ from typing import BinaryIO
 DIAGNOSTIC_TIMEOUT_SECS = 12
 CHILD_EXIT_GRACE_SECS = 8
 CHILD_EXIT_GRACE_ENV = "SOLDR_NEXTEST_CHILD_EXIT_GRACE_SECS"
+# Truthy (`1`/`true`/`yes`/`on`) keeps a test's private TMPDIR for inspection.
+KEEP_TMPDIR_ENV = "SOLDR_NEXTEST_KEEP_TMPDIR"
 
 
 # How long to block waiting for the child before looping to re-check state.
@@ -186,6 +188,47 @@ def _signal_child_tree(child: subprocess.Popen[bytes], signum: int) -> None:
         child.terminate()
 
 
+def _private_tmpdir() -> str | None:
+    """Create this test's private TMPDIR, or return None to leave TMPDIR alone.
+
+    soldr#3079: about 420 integration-test call sites create a uniquely named
+    directory under TMPDIR (`unique_temp_dir`) and never remove it. One
+    workstation held 956 of them, 15 GiB. Every Unix test runs through this
+    wrapper, so giving each test its own TMPDIR and removing it afterwards
+    reclaims all of them at the source without touching a call site.
+
+    Linux only: macOS's TMPDIR is already long and its `sun_path` limit is 104
+    bytes, so extra depth there risks the Unix-socket endpoints tests bind
+    under TMPDIR. The name is kept short (`snt<pid hex>`) for the same reason.
+    """
+
+    if not sys.platform.startswith("linux"):
+        return None
+    base = os.environ.get("TMPDIR") or "/tmp"
+    stem = f"snt{os.getpid():x}"
+    for attempt in range(16):
+        path = os.path.join(base, stem if attempt == 0 else f"{stem}-{attempt}")
+        try:
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            continue
+        except OSError:
+            return None
+        return path
+    return None
+
+
+def _remove_private_tmpdir(path: str | None) -> None:
+    """Best-effort removal of a private TMPDIR once its test has exited."""
+
+    if path is None:
+        return
+    keep = os.environ.get(KEEP_TMPDIR_ENV, "").strip().lower()
+    if keep in {"1", "true", "yes", "on"}:
+        return
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def run(command: list[str]) -> int:
     """Run one test command and preserve all output around timeout shutdown."""
 
@@ -209,14 +252,23 @@ def run(command: list[str]) -> int:
     # hazard. Linux needs that hook to install setsid/PDEATHSIG/ptrace policy.
     # Waiting and pipe closure are explicitly supervised below, so ownership
     # intentionally spans the whole run instead of a Popen context block.
-    # pylint: disable-next=consider-using-with,subprocess-popen-preexec-fn
-    child = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        preexec_fn=preexec_fn,
-        creationflags=creationflags,
+    private_tmpdir = _private_tmpdir()
+    child_env = (
+        None if private_tmpdir is None else {**os.environ, "TMPDIR": private_tmpdir}
     )
+    try:
+        # pylint: disable-next=consider-using-with,subprocess-popen-preexec-fn
+        child = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=child_env,
+            preexec_fn=preexec_fn,
+            creationflags=creationflags,
+        )
+    except BaseException:
+        _remove_private_tmpdir(private_tmpdir)
+        raise
     assert child.stdout is not None and child.stderr is not None
     pumps = [
         threading.Thread(
@@ -292,6 +344,7 @@ def run(command: list[str]) -> int:
             )
         else:
             _write_stderr("=== nextest timeout: stdout/stderr drained ===\n")
+    _remove_private_tmpdir(private_tmpdir)
     return returncode
 
 

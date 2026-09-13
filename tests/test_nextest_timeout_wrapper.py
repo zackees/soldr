@@ -640,3 +640,83 @@ def test_the_wait_loop_does_not_flat_poll(tmp_path) -> None:
     assert (
         "while child.poll() is None:" not in code
     ), "the flat-poll wait loop is the soldr#3144 regression"
+
+
+_LINUX_ONLY = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="the private per-test TMPDIR is Linux-only (soldr#3079)",
+)
+
+# A fixture that does what 420 integration-test call sites do: create a
+# uniquely named directory under TMPDIR and never remove it.
+_TMPDIR_CHILD = """
+import os
+import pathlib
+import sys
+
+tmp = os.environ.get("TMPDIR", "")
+print(tmp, flush=True)
+leak = pathlib.Path(tmp, "soldr-leaked-fixture-1")
+leak.mkdir(parents=True)
+(leak / "payload").write_text("left behind")
+sys.exit(int(sys.argv[1]))
+"""
+
+
+def _run_wrapper_under_tmpdir(
+    base: Path, exit_code: int, extra_env: dict[str, str] | None = None
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run the leaking child through the wrapper; return the TMPDIR it saw."""
+
+    env = {**os.environ, "TMPDIR": str(base)}
+    env.pop("SOLDR_NEXTEST_KEEP_TMPDIR", None)
+    env.update(extra_env or {})
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(WRAPPER),
+            sys.executable,
+            "-c",
+            _TMPDIR_CHILD,
+            str(exit_code),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    return result, Path(result.stdout.strip().splitlines()[0])
+
+
+@_LINUX_ONLY
+def test_each_test_gets_a_private_tmpdir_removed_after_it_exits(
+    tmp_path: Path,
+) -> None:
+    result, private = _run_wrapper_under_tmpdir(tmp_path, 0)
+
+    assert result.returncode == 0, result.stderr
+    assert private != tmp_path, "the test must not write straight into TMPDIR"
+    assert private.parent == tmp_path
+    assert not private.exists()
+    assert not list(tmp_path.iterdir()), "nothing the test created may outlive it"
+
+
+@_LINUX_ONLY
+def test_private_tmpdir_is_removed_even_when_the_test_fails(tmp_path: Path) -> None:
+    result, private = _run_wrapper_under_tmpdir(tmp_path, 3)
+
+    assert result.returncode == 3, result.stderr
+    assert private != tmp_path
+    assert not list(tmp_path.iterdir())
+
+
+@_LINUX_ONLY
+def test_keep_tmpdir_opt_out_leaves_it_for_inspection(tmp_path: Path) -> None:
+    result, private = _run_wrapper_under_tmpdir(
+        tmp_path, 0, {"SOLDR_NEXTEST_KEEP_TMPDIR": "1"}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert private != tmp_path
+    assert (private / "soldr-leaked-fixture-1" / "payload").is_file()
