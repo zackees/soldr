@@ -11,8 +11,8 @@ use crate::daemon::backend_handle_adoption::{
     broker_route_identity, SOLDR_DAEMON_IMAGE_HASH_LABEL, SOLDR_DAEMON_SERVICE_VERSION,
 };
 use running_process::broker::protocol_v2::{
-    service_definition_dir_v2, service_definition_path_v2, write_service_definition_v2,
-    BrokerIsolation, ServiceDefinition, ServiceDefinitionBuilder,
+    service_definition_dir_v2, service_definition_path_v2, BrokerIsolation, ServiceDefinition,
+    ServiceDefinitionBuilder,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -193,17 +193,62 @@ pub fn install_service_definition_to_dir_for_paths(
 ) -> io::Result<InstalledServiceDefinition> {
     let service_root = service_root.as_ref();
     let definition = soldr_daemon_service_definition_for_paths(paths, daemon_binary)?;
-    // `write_service_definition_v2` creates the (privately-permissioned)
-    // dir, validates the service name, and writes the `.servicedef.v2`
-    // protobuf.
-    let path =
-        write_service_definition_v2(service_root, &definition).map_err(servicedef_io_error)?;
+    // Creates the (privately-permissioned) dir, validates the service name,
+    // and replaces the `.servicedef.v2` protobuf atomically (soldr#3172).
+    let path = write_service_definition_v2_atomic(service_root, &definition)?;
     debug_assert_eq!(
         path,
         service_definition_path_v2(service_root, &definition.service_name)
             .expect("valid service name"),
     );
     Ok(InstalledServiceDefinition { path, definition })
+}
+
+/// Write one `.servicedef.v2` file so a concurrent reader never observes it
+/// half-written (soldr#3172).
+///
+/// Every build front door re-registers the daemon, and upstream
+/// `write_service_definition_v2` writes with `std::fs::write`, which truncates
+/// the live file before refilling it. The broker loads that same file for the
+/// other `soldr ci-test` stages running in parallel, and a load landing between
+/// the truncate and the write decodes zero bytes as a definition named `""`:
+/// `service-definition requested "soldr-daemon-<hash>" but file declares ""`,
+/// answered with `retry_after_ms=0`, so the stage fails outright.
+///
+/// Upstream's directory and name validation are kept. An identical file is
+/// left alone, which is the common case for a re-registration; anything else is
+/// written to a hidden temp file in the same directory and renamed over the
+/// original, so readers see the old bytes or the new ones and never neither.
+/// The temp name lacks the `.servicedef.v2` extension, so a scan ignores it.
+fn write_service_definition_v2_atomic(
+    root: &Path,
+    definition: &ServiceDefinition,
+) -> io::Result<PathBuf> {
+    use prost::Message as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
+
+    running_process::broker::server::ensure_service_definition_dir(root)
+        .map_err(servicedef_io_error)?;
+    let path =
+        service_definition_path_v2(root, &definition.service_name).map_err(servicedef_io_error)?;
+    let bytes = definition.encode_to_vec();
+    if std::fs::read(&path).is_ok_and(|existing| existing == bytes) {
+        return Ok(path);
+    }
+    let temp = root.join(format!(
+        ".{}.{}-{}.tmp",
+        definition.service_name,
+        std::process::id(),
+        TEMP_NONCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&temp, &bytes)?;
+    if let Err(error) = std::fs::rename(&temp, &path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -292,6 +337,81 @@ mod tests {
             .load(&installed.definition.service_name)
             .expect("load service definition");
         assert_eq!(loaded, installed.definition);
+    }
+
+    /// soldr#3172: a broker loading the definition while a front door
+    /// re-registers it must never see an empty or partial file.
+    #[test]
+    fn a_concurrent_loader_never_reads_a_half_written_service_definition() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let temp = TempDir::new().expect("tempdir");
+        let service_root = temp.path().join("services");
+        let binary = fake_daemon_binary(temp.path());
+        let service_name = "soldr-daemon-servicedef-race";
+        // Two definitions under one name, so every write really rewrites.
+        let variant = |tag: &str| {
+            let mut definition =
+                ServiceDefinitionBuilder::shared_broker(service_name, binary.display().to_string())
+                    .build();
+            definition.labels.insert("variant".into(), tag.into());
+            definition
+        };
+        let (first, second) = (variant("first"), variant("second"));
+        write_service_definition_v2_atomic(&service_root, &first).expect("initial write");
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let stop = Arc::clone(&stop);
+            let service_root = service_root.clone();
+            std::thread::spawn(move || {
+                let loader = ServiceDefinitionLoader::new(&service_root);
+                let (mut loads, mut failures) = (0usize, Vec::new());
+                while !stop.load(Ordering::Relaxed) {
+                    loads += 1;
+                    if let Err(error) = loader.load(service_name) {
+                        failures.push(error.to_string());
+                    }
+                }
+                (loads, failures)
+            })
+        };
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let mut writes = 0usize;
+        while std::time::Instant::now() < deadline {
+            let definition = if writes.is_multiple_of(2) {
+                &second
+            } else {
+                &first
+            };
+            write_service_definition_v2_atomic(&service_root, definition).expect("rewrite");
+            writes += 1;
+        }
+        stop.store(true, Ordering::Relaxed);
+        let (loads, failures) = reader.join().expect("reader thread");
+
+        assert!(loads > 0 && writes > 0, "loads={loads} writes={writes}");
+        assert!(
+            failures.is_empty(),
+            "{} of {loads} loads during {writes} rewrites saw a partial file; first: {}",
+            failures.len(),
+            failures[0]
+        );
+        // Every temp file was renamed into place: nothing is left beside it.
+        let mut entries: Vec<String> = std::fs::read_dir(&service_root)
+            .expect("read service root")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        entries.sort();
+        assert_eq!(entries, [format!("{service_name}.servicedef.v2")]);
     }
 
     #[test]
