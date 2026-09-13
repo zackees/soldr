@@ -105,15 +105,17 @@ jobs:
       # below; the thing the gate measures is cook's output over the zccache
       # fixture, not this binary. The `--release` on `soldr cook --release` is
       # a separate, load-bearing flag and stays.
+      # soldr#3148 / soldr#3147 step 3: this cold ci-release build ran at
+      # CARGO_BUILD_JOBS=1 / SOLDR_JOBS=1 (359-373 s) after unbounded parallel
+      # rustc OOM-killed it (soldr#2453). Both remedies that make a global cap
+      # unnecessary are now in place: the swap step above (soldr#3207), and the
+      # embedded zccache's exclusive admission for its amalgamated crate
+      # (zccache >= 1.13.11; the pinned soldr 0.9.13 embeds 1.13.21). The
+      # ci-release profile keeps codegen-units = 16 workspace-wide. The cook
+      # step below keeps its cap: it runs with ZCCACHE_DISABLE=1, so there is
+      # no admission gate to rely on.
       - name: Build soldr CLI (ci-release)
         working-directory: soldr
-        env:
-          # With every setup-soldr reuse layer off (soldr#2451) this build is
-          # fully cold, and unbounded parallel ci-release rustc OOM-killed on
-          # the hosted runner (the soldr#2453 signature). Same bounded-jobs
-          # remedy as the release wheel lanes.
-          CARGO_BUILD_JOBS: "1"
-          SOLDR_JOBS: "1"
         run: soldr cargo build -p soldr-cli --profile ci-release
 
       - name: Checkout zccache fixture
