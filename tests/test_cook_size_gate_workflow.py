@@ -32,30 +32,26 @@ def test_cook_fixture_preparation_pins_uv_python_313() -> None:
     assert "uv run --no-project --python 3.13 python" in fixture_step
 
 
-def test_only_the_cache_disabled_cook_keeps_a_compile_cap() -> None:
-    """soldr#3148: the wrapped build relies on swap + exclusive admission.
+def test_both_compile_caps_state_their_rung_4_reason() -> None:
+    """Both capped steps keep jobs=1, and each for a stated reason.
 
-    The cook step runs with ZCCACHE_DISABLE=1, so no admission gate exists
-    there and its cap stays (CLAUDE.md, concurrency ladder rung 4).
+    The ci-release build: soldr#3210 (PDEATHSIG kills long compiler children
+    when their spawning thread retires under concurrency). The cook step:
+    ZCCACHE_DISABLE=1 leaves no admission gate (CLAUDE.md, ladder rung 4).
     """
 
     import yaml
 
-    workflow = (
-        Path(__file__).resolve().parents[1]
-        / ".github"
-        / "workflows"
-        / "cook-size-gate.yml"
-    )
     steps = {
         step.get("name"): step
-        for step in yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"][
+        for step in yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"][
             "cook-size-gate"
         ]["steps"]
     }
-    build_env = steps["Build soldr CLI (ci-release)"].get("env") or {}
-    assert "CARGO_BUILD_JOBS" not in build_env
-    assert "SOLDR_JOBS" not in build_env
+    build_env = steps["Build soldr CLI (ci-release)"]["env"]
+    assert build_env["CARGO_BUILD_JOBS"] == "1"
+    assert build_env["SOLDR_JOBS"] == "1"
+    assert "soldr#3210" in WORKFLOW.read_text(encoding="utf-8")
     cook_env = steps["Run soldr cook against zccache (release profile)"]["env"]
     assert cook_env["ZCCACHE_DISABLE"] == "1"
     assert cook_env["CARGO_BUILD_JOBS"] == "1"

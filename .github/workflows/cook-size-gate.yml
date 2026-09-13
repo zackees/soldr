@@ -105,17 +105,18 @@ jobs:
       # below; the thing the gate measures is cook's output over the zccache
       # fixture, not this binary. The `--release` on `soldr cook --release` is
       # a separate, load-bearing flag and stays.
-      # soldr#3148 / soldr#3147 step 3: this cold ci-release build ran at
-      # CARGO_BUILD_JOBS=1 / SOLDR_JOBS=1 (359-373 s) after unbounded parallel
-      # rustc OOM-killed it (soldr#2453). Both remedies that make a global cap
-      # unnecessary are now in place: the swap step above (soldr#3207), and the
-      # embedded zccache's exclusive admission for its amalgamated crate
-      # (zccache >= 1.13.11; the pinned soldr 0.9.13 embeds 1.13.21). The
-      # ci-release profile keeps codegen-units = 16 workspace-wide. The cook
-      # step below keeps its cap: it runs with ZCCACHE_DISABLE=1, so there is
-      # no admission gate to rely on.
+      # Rung-4 cap, reason: soldr#3210. Uncapped (soldr#3148, PR #3209) this
+      # build failed 3 of 4 runs: rustc for soldr_daemon was SIGTERMed mid-
+      # compile with 0 swap used and oom_kill=0. zccache arms PR_SET_PDEATHSIG
+      # on compiler children, which fires when the *spawning tokio thread*
+      # retires; at jobs=1 nothing overlaps the long unit, so no thread
+      # retires under it. Swap (soldr#3207) and exclusive admission are in
+      # place but cannot help here. Lift this once soldr#3210 is fixed.
       - name: Build soldr CLI (ci-release)
         working-directory: soldr
+        env:
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: soldr cargo build -p soldr-cli --profile ci-release
 
       - name: Checkout zccache fixture
@@ -210,9 +211,8 @@ jobs:
           fi
           exit ${FAIL}
 
-      # soldr#3148: the uncapped ci-release build had its rustc child for
-      # soldr_daemon SIGTERMed with no memory pressure. The daemon's log and
-      # compile journal are the evidence and never reach the job log, so they
+      # soldr#3210: the daemon's log and compile journal are what named the
+      # SIGTERMed compiler child, and they never reach the job log, so they
       # are uploaded on every run. Same path set as _bootstrap-e2e.yml, rooted at
       # the setup-soldr state dir.
       - name: Upload soldr daemon logs
