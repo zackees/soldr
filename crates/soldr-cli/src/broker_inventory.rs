@@ -153,12 +153,7 @@ impl Inventory {
 
 /// The invoking process's `HOME`, as the broker identity resolver sees it.
 pub(crate) fn own_home() -> Option<PathBuf> {
-    let raw = if cfg!(windows) {
-        std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
-    } else {
-        std::env::var_os("HOME")
-    }?;
-    Some(PathBuf::from(raw))
+    crate::platform::host::dirs::home()
 }
 
 /// A broker's install directory is `<home>/.soldr/broker/`; walking up from
@@ -219,17 +214,17 @@ pub(crate) fn classify(records: &[ProcessRecord], own_home: &Path) -> Inventory 
     }
 }
 
+/// `USERPROFILE` is the Windows spelling and is never set on Unix; `HOME`
+/// is set on both (soldr's own fixtures set the pair to the same path), so
+/// checking both keys needs no host selection.
 fn env_home_of(environ: &[String]) -> Option<PathBuf> {
-    let key = if cfg!(windows) {
-        "USERPROFILE="
-    } else {
-        "HOME="
-    };
-    environ
-        .iter()
-        .find_map(|entry| entry.strip_prefix(key))
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    ["USERPROFILE=", "HOME="].iter().find_map(|key| {
+        environ
+            .iter()
+            .find_map(|entry| entry.strip_prefix(key))
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    })
 }
 
 fn live_process_table() -> Vec<ProcessRecord> {

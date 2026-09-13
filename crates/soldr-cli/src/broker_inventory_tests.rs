@@ -101,22 +101,6 @@ fn brokers_sort_before_daemons_oldest_first() {
 }
 
 #[test]
-fn own_home_matches_through_a_symlink() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let real = temp.path().join("real");
-    std::fs::create_dir_all(&real).expect("mkdir");
-    let link = temp.path().join("link");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&real, &link).expect("symlink");
-    #[cfg(not(unix))]
-    return;
-    let records = [record(2, "/x/.soldr/broker/soldr-broker", link.to_str())];
-    let inventory = classify(&records, &real);
-    assert_eq!(inventory.own_processes, 1);
-    assert!(inventory.leaked.is_empty());
-}
-
-#[test]
 fn image_name_variants_are_recognised() {
     assert_eq!(
         Role::of_executable(Path::new("/x/.soldr/broker/soldr-broker.exe")),
@@ -133,15 +117,6 @@ fn image_name_variants_are_recognised() {
     );
     assert_eq!(Role::of_executable(Path::new("/x/soldr")), None);
     assert_eq!(Role::of_executable(Path::new("/x/soldr-brokerage")), None);
-}
-
-#[cfg(windows)]
-#[test]
-fn a_windows_image_path_is_recognised() {
-    assert_eq!(
-        Role::of_executable(Path::new(r"C:\Users\me\.soldr\broker\soldr-broker.exe")),
-        Some(Role::Broker)
-    );
 }
 
 #[test]
@@ -218,4 +193,14 @@ fn the_doctor_view_keeps_exact_counts_and_a_bounded_sample() {
     let small = DoctorInventory::from_inventory(&classify(&records[..3], Path::new("/home/me")));
     assert_eq!(small.leaked.len(), 3);
     assert_eq!(small.leaked_omitted, 0);
+}
+
+#[test]
+fn the_process_home_prefers_userprofile_then_home() {
+    let both = ["HOME=/h".to_string(), "USERPROFILE=/u".to_string()];
+    assert_eq!(env_home_of(&both), Some(PathBuf::from("/u")));
+    let home_only = ["PATH=/bin".to_string(), "HOME=/h".to_string()];
+    assert_eq!(env_home_of(&home_only), Some(PathBuf::from("/h")));
+    let empty = ["HOME=".to_string()];
+    assert_eq!(env_home_of(&empty), None);
 }

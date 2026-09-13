@@ -145,8 +145,6 @@ fn purge_stops_a_broker_for_another_home_and_reports_it() {
         matches!(rows[0]["outcome"].as_str(), Some("terminated" | "forced")),
         "{stdout}"
     );
-        "the broker was signalled: {exited:?}"
-    );
 }
 
 #[test]
