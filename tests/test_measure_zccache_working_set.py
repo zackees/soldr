@@ -194,3 +194,33 @@ def test_main_is_quiet_about_a_missing_store(tmp_path: Path, capsys) -> None:
     )
     assert code == 0
     assert "nothing to measure" in capsys.readouterr().out
+
+
+def test_trial_false_skips_the_copy_but_still_walks(tmp_path: Path, capsys) -> None:
+    store = _store(tmp_path)
+    since = tmp_path / "since"
+    since.write_text(str(time.time() + 60), encoding="utf-8")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    code = measure.main(
+        [
+            "--store",
+            str(store),
+            "--since-file",
+            str(since),
+            "--soldr",
+            str(tmp_path / "never-run"),
+            "--scratch-root",
+            str(scratch),
+            "--trial",
+            "false",
+            "--cap-bytes",
+            "100",
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Working set:" in out and "Trial trim" not in out
+    assert not any(scratch.iterdir())

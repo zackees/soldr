@@ -31,6 +31,10 @@ is rewritten in place. `soldr gc maintain --root <copy> --json` then runs one
 Full pass under `ZCCACHE_CACHE_SIZE_BYTES`. The copy is always removed, and
 the saved store is never modified.
 
+The copy trial costs about 70 s on the gate (soldr#3120 measured a 55 s copy and a
+13.5 s pass), so the workflow runs it on `main` only. The walk takes about a second
+and runs everywhere.
+
 Report-only: always exits 0 once arguments parse.
 """
 
@@ -254,7 +258,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--store", type=pathlib.Path, required=True)
     parser.add_argument("--since-file", type=pathlib.Path, required=True)
-    parser.add_argument("--soldr", type=pathlib.Path, help="enables the trial trim")
+    parser.add_argument(
+        "--soldr", type=pathlib.Path, help="soldr binary for the trial trim"
+    )
+    parser.add_argument(
+        "--trial",
+        choices=("true", "false"),
+        default="true",
+        help="run the copy trial (about 70 s on the gate); the walk always runs",
+    )
     parser.add_argument("--scratch-root", type=pathlib.Path)
     parser.add_argument("--cap-bytes", type=int)
     parser.add_argument("--reserve-bytes", type=int, default=DEFAULT_RESERVE_BYTES)
@@ -279,7 +291,11 @@ def main(argv: list[str] | None = None) -> int:
         walk = walk_store(args.store, since)
         verdict = working_set_verdict(walk, cap_bytes)
     trial = None
-    if args.soldr is not None and args.scratch_root is not None:
+    if (
+        args.trial == "true"
+        and args.soldr is not None
+        and args.scratch_root is not None
+    ):
         store_bytes = (
             walk.total_bytes
             if walk is not None
