@@ -43,7 +43,10 @@ def test_only_the_cache_disabled_cook_keeps_a_compile_cap() -> None:
     import yaml
 
     workflow = (
-        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "cook-size-gate.yml"
+        Path(__file__).resolve().parents[1]
+        / ".github"
+        / "workflows"
+        / "cook-size-gate.yml"
     )
     steps = {
         step.get("name"): step
@@ -58,4 +61,3 @@ def test_only_the_cache_disabled_cook_keeps_a_compile_cap() -> None:
     assert cook_env["ZCCACHE_DISABLE"] == "1"
     assert cook_env["CARGO_BUILD_JOBS"] == "1"
     assert cook_env["SOLDR_JOBS"] == "1"
-
