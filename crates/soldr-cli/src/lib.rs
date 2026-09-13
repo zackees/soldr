@@ -220,7 +220,9 @@ pub(crate) mod broker_deadlines;
 /// soldr#2388: container-safe broker/session socket identity (graceful fallback
 /// when the OS provides no `/etc/machine-id`).
 pub mod broker_identity;
+pub(crate) mod broker_idle;
 pub(crate) mod broker_image_watch;
+pub(crate) mod broker_inventory;
 mod broker_launcher;
 pub(crate) mod broker_lease;
 pub(crate) mod broker_policy;

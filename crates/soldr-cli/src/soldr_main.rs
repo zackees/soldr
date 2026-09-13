@@ -283,6 +283,9 @@ fn run_main(raw_args: Vec<String>) -> i32 {
 
     crate::broker_spawn::maybe_spawn_broker_front_door(&raw_args);
     startup_trace::phase(startup_trace::phase::BROKER_FRONT_DOOR);
+    // soldr#3193: after the spawn, never before it -- the notice must not
+    // delay the path that makes this invocation work.
+    crate::broker_inventory::maybe_toast(&raw_args);
     // `--as <version>` trampoline. Peeled off before clap so the fetched
     // older soldr parses its own argv on its own terms.
     let (pinned_version, trampoline_args) = match extract_as_pin(&raw_args[1..]) {

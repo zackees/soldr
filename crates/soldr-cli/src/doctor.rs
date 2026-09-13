@@ -53,6 +53,9 @@ struct DoctorOutput {
     broker_deadlines: Vec<crate::broker_deadlines::DoctorBrokerDeadline>,
     /// Authoritative broker installation identity and physical bind endpoint.
     broker_endpoint: crate::broker_identity::DoctorBrokerEndpoint,
+    /// soldr-broker / soldr-daemon processes on this host serving a HOME
+    /// other than the invoking one (soldr#3193). `None` when HOME is unset.
+    leaked_processes: Option<crate::broker_inventory::Inventory>,
     /// Rollup of compile-daemon fallback events -- builds that ran
     /// uncached via direct rustc (soldr#1838 Phase 4). Empty means the
     /// cache was never bypassed.
@@ -181,6 +184,7 @@ pub(crate) fn run_doctor(
     crate::startup_trace::phase(crate::startup_trace::phase::DOCTOR_FALLBACK_ROLLUP);
     let cache_health = crate::cache_health::assess(&SoldrPaths::new()?);
     crate::startup_trace::phase(crate::startup_trace::phase::DOCTOR_CACHE_HEALTH);
+    let leaked_processes = crate::broker_inventory::scan();
 
     let Some(channel) = manifest.channel.as_deref() else {
         if json {
@@ -197,6 +201,7 @@ pub(crate) fn run_doctor(
                 timeouts: crate::timeout_registry::doctor_rows(),
                 broker_deadlines: crate::broker_deadlines::doctor_deadlines(),
                 broker_endpoint: crate::broker_identity::doctor_endpoint(),
+                leaked_processes: leaked_processes.clone(),
                 fallbacks: fallbacks.clone(),
                 zccache: bundle.clone(),
                 soldr_debug_info: soldr_debug_info.clone(),
@@ -214,6 +219,7 @@ pub(crate) fn run_doctor(
             crate::cache_health::print_human(&cache_health);
             crate::broker_deadlines::print_doctor_deadlines();
             crate::broker_identity::print_doctor_endpoint();
+            crate::broker_inventory::print_doctor_human(leaked_processes.as_ref());
             print_soldr_debug_info_human(&soldr_debug_info);
             print_defender_probe_human(defender.as_ref());
             if let Some(c) = cook.as_ref() {
@@ -230,6 +236,7 @@ pub(crate) fn run_doctor(
             crate::cache_health::print_human(&cache_health);
             crate::broker_deadlines::print_doctor_deadlines();
             crate::broker_identity::print_doctor_endpoint();
+            crate::broker_inventory::print_doctor_human(leaked_processes.as_ref());
             print_soldr_debug_info_human(&soldr_debug_info);
             print_defender_probe_human(defender.as_ref());
             if let Some(c) = cook.as_ref() {
@@ -303,6 +310,7 @@ pub(crate) fn run_doctor(
             timeouts: crate::timeout_registry::doctor_rows(),
             broker_deadlines: crate::broker_deadlines::doctor_deadlines(),
             broker_endpoint: crate::broker_identity::doctor_endpoint(),
+            leaked_processes: leaked_processes.clone(),
             fallbacks: fallbacks.clone(),
             zccache: bundle.clone(),
             soldr_debug_info: soldr_debug_info.clone(),
@@ -330,6 +338,7 @@ pub(crate) fn run_doctor(
         crate::timeout_registry::print_doctor_section();
         crate::broker_deadlines::print_doctor_deadlines();
         crate::broker_identity::print_doctor_endpoint();
+        crate::broker_inventory::print_doctor_human(leaked_processes.as_ref());
         crate::compile_fallback_rollup::print_section(&fallbacks);
     }
 
