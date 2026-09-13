@@ -291,8 +291,10 @@ impl BackendLauncher for SoldrBackendLauncher {
                 // up must not be published as this route's backend.
                 if let Err(error) = self.ensure_route_deadline(request) {
                     let _ = child.kill();
+                    reap_on_exit(child);
                     return Err(error);
                 }
+                reap_on_exit(child);
                 if debug {
                     eprintln!(
                         "soldr broker: route ready route={} elapsed={:?}",
@@ -304,6 +306,7 @@ impl BackendLauncher for SoldrBackendLauncher {
             }
             Err(err) => {
                 let _ = child.kill();
+                reap_on_exit(child);
                 drop(log);
                 let err = daemon_launch_failure(&err, &daemon_log_path);
                 if debug {
@@ -317,6 +320,23 @@ impl BackendLauncher for SoldrBackendLauncher {
             }
         }
     }
+}
+
+/// Wait on a spawned daemon from a background thread so its exit is reaped.
+///
+/// The daemon detaches with `setsid`, not a double fork, so this broker stays
+/// its kernel parent. Dropping the handle without waiting left every exited
+/// daemon a zombie under a long-lived broker until the broker itself died:
+/// 48 on one host, 100+ on another (soldr#3057, soldr#3075). The reaper thread
+/// is per daemon and parks in `wait`, so it costs nothing while the daemon runs.
+/// The handle is returned only so a test can join it.
+fn reap_on_exit(mut child: running_process::DaemonChild) -> Option<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("soldr-daemon-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        })
+        .ok()
 }
 
 fn daemon_launch_failure(error: &std::io::Error, log_path: &std::path::Path) -> String {
@@ -808,6 +828,44 @@ mod tests {
         assert!(
             crate::daemon::backend_handle_adoption::broker_route_claim_path(&paths).exists(),
             "replacement preflight still needs the incumbent PID/image claim"
+        );
+    }
+
+    /// soldr#3057: an exited daemon child must be reaped, not left a zombie
+    /// under the broker that spawned it.
+    #[test]
+    fn an_exited_daemon_child_is_reaped_rather_than_left_a_zombie() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let log = crate::broker_spawn::open_append(&temp.path().join("daemon-spawn.log"))
+            .expect("daemon log");
+        // The test binary itself is a portable short-lived child: `--list`
+        // prints the test names and exits.
+        let mut command = std::process::Command::new(std::env::current_exe().expect("test exe"));
+        command.arg("--list");
+        let child = running_process::spawn_daemon_with_stdio_and_env_policy(
+            &mut command,
+            crate::broker_spawn::daemon_stdio(&log),
+            running_process::EnvironmentPolicy::UserBaseline,
+        )
+        .expect("spawn short-lived daemon child");
+        let pid = child.id();
+        let reaper = reap_on_exit(child).expect("reaper thread");
+
+        // A zombie is not alive, so this loop ends once the child has exited
+        // whether or not anything reaped it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while crate::platform::process::inspect::is_alive(pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child {pid} did not exit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        reaper.join().expect("reaper thread joined");
+
+        assert!(
+            !crate::platform::process::inspect::is_zombie(pid),
+            "daemon child {pid} exited but was never reaped"
         );
     }
 }
