@@ -22,6 +22,7 @@ KEEP_TMPDIR_ENV = "SOLDR_NEXTEST_KEEP_TMPDIR"
 # soldr#3195: every test process refuses toolchain downloads (see
 # crates/soldr-core/src/core/toolchain_install_tripwire.rs).
 FORBID_TOOLCHAIN_INSTALL_ENV = "SOLDR_TEST_FORBID_TOOLCHAIN_INSTALL"
+FORBID_TARGET_CONTAINING_ENV = "SOLDR_TEST_FORBID_TARGET_CONTAINING"
 
 
 # How long to block waiting for the child before looping to re-check state.
@@ -265,6 +266,10 @@ def run(command: list[str]) -> int:
     # so one deliberate network run can still opt out.
     child_env.setdefault(FORBID_TOOLCHAIN_INSTALL_ENV, "1")
     child_env.setdefault("RUSTUP_AUTO_INSTALL", "0")
+    # soldr#3203: name the running test binary, so soldr refuses a fixture build
+    # whose Cargo target directory holds it -- the suite's own target tree.
+    if command:
+        child_env.setdefault(FORBID_TARGET_CONTAINING_ENV, os.path.abspath(command[0]))
     try:
         # pylint: disable-next=consider-using-with,subprocess-popen-preexec-fn
         child = subprocess.Popen(

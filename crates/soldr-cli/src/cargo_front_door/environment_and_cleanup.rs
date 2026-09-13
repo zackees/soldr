@@ -143,28 +143,26 @@ fn strip_dylint_dependency_cook_flag(args: &[String]) -> (Vec<String>, bool) {
     (cleaned, found)
 }
 
-/// Resolve the Cargo `target/` directory used by front-door hooks.
-/// Mirrors Cargo's resolution order:
-/// 1. `--target-dir <DIR>` inside the arg list.
-/// 2. `CARGO_TARGET_DIR` env var (if non-empty).
-/// 3. `<workspace_root>/target` derived from the nearest enclosing
-///    `Cargo.toml` to cwd.
+/// Resolve the Cargo `target/` directory used by front-door hooks, through the
+/// shared resolver that follows Cargo's own rules (soldr#3203). This used to
+/// take the nearest `Cargo.toml` rather than the workspace root and ignore
+/// `.cargo/config.toml`, so a build from inside a member pointed every hook at
+/// a `target/` Cargo never writes.
 ///
-/// Returns `None` when no manifest can be found cheaply so callers can
-/// skip rather than guess.
+/// Returns `None` when no manifest can be found, so callers can skip rather
+/// than guess.
 fn resolve_target_dir_for_hooks(args: &[String]) -> Option<std::path::PathBuf> {
-    if let Some(value) = disk::cargo_arg_value(args, "--target-dir") {
-        return Some(disk::absolutize_path(std::path::PathBuf::from(value)));
+    let cwd = std::env::current_dir().ok()?;
+    crate::core::cargo_target_dir::resolve_cargo_target_dir(&crate::core::cargo_target_dir::CargoTargetDirInputs::from_process(&cwd, args))
+}
+
+/// soldr#3203 test tripwire: refuse a build or unmediated compile whose target
+/// directory holds the running test binary, before any hook touches that tree.
+fn forbid_test_suite_target(args: &[String]) -> Result<(), SoldrError> {
+    match resolve_target_dir_for_hooks(args) {
+        Some(dir) => crate::core::cargo_target_dir::forbid_test_suite_target_tripwire(&dir),
+        None => Ok(()),
     }
-    if let Some(env_dir) = std::env::var_os("CARGO_TARGET_DIR") {
-        let s = env_dir.to_string_lossy().trim().to_string();
-        if !s.is_empty() {
-            return Some(disk::absolutize_path(std::path::PathBuf::from(s)));
-        }
-    }
-    let manifest = crate::trampoline::find_nearest_manifest()?;
-    let manifest_dir = manifest.parent()?.to_path_buf();
-    Some(manifest_dir.join("target"))
 }
 
 #[cfg(test)]

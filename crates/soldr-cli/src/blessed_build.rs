@@ -632,11 +632,16 @@ pub async fn inject_cmake_tooling(paths: &SoldrPaths, prep: &mut BlessedPrep) {
     }
 }
 
-/// Resolve the cargo target root the upcoming child build will use:
-/// `CARGO_TARGET_DIR` when set, else `./target` under the cwd.
+/// Resolve the cargo target root the upcoming child build will use, through the
+/// shared resolver (soldr#3203); `./target` only when it finds nothing.
 fn cargo_target_root() -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| {
+            crate::core::cargo_target_dir::resolve_cargo_target_dir(
+                &crate::core::cargo_target_dir::CargoTargetDirInputs::from_process(&cwd, &[]),
+            )
+        })
         .unwrap_or_else(|| PathBuf::from("target"))
 }
 

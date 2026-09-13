@@ -27,7 +27,7 @@
 //! per-unit stream disagree with the build-scoped summary, which read as the
 //! summary miscounting (soldr#3143). Each record's rustc `--out-dir` lies under
 //! the target directory of the build that ran it, so lines are scoped to this
-//! build's target roots -- see [`BuildScope`] and [`ScopedLines`] for why a
+//! build's target root -- see [`BuildScope`] and [`ScopedLines`] for why a
 //! wrong resolution can delay a line but never hide one.
 //!
 //! # Color on CI (deliberate)
@@ -289,76 +289,31 @@ fn parse_journal_chunk(chunk: &str) -> Vec<JournalUnit> {
     out
 }
 
-/// The target roots this build could be writing into (soldr#3143).
-///
-/// Generous on purpose. An extra root only lets another build's line through;
-/// a missing one is caught by [`ScopedLines`]' fallback. Cargo's own
-/// resolution is not reproduced exactly -- several partial copies of it
-/// already disagree across the tree (soldr#3203) -- so this does not add a
-/// sixth that claims to be exact.
+/// The target root this build writes into (soldr#3143), from the shared
+/// resolver (soldr#3203). Should Cargo still disagree -- a `--config <file>`
+/// it does not model, say -- [`ScopedLines`]' fallback keeps every line.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BuildScope {
     roots: Vec<PathBuf>,
 }
 
 impl BuildScope {
-    /// An explicit `--target-dir` or `CARGO_TARGET_DIR`, plus every
-    /// [`ancestor_target_roots`] root above the manifest (`--manifest-path`,
-    /// else the working directory).
     pub(crate) fn resolve(args: &[String]) -> Self {
-        let mut roots = Vec::new();
-        if let Some(dir) = super::disk::cargo_arg_value(args, "--target-dir") {
-            roots.push(super::disk::absolutize_path(PathBuf::from(dir)));
-        }
-        if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR").filter(|dir| !dir.is_empty()) {
-            roots.push(super::disk::absolutize_path(PathBuf::from(dir)));
-        }
-        let start = super::disk::cargo_arg_value(args, "--manifest-path")
-            .map(|manifest| super::disk::absolutize_path(PathBuf::from(manifest)))
-            .and_then(|manifest| manifest.parent().map(Path::to_path_buf))
-            .or_else(|| std::env::current_dir().ok());
-        if let Some(start) = start {
-            roots.extend(ancestor_target_roots(&start));
-        }
+        let roots = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| {
+                crate::core::cargo_target_dir::resolve_cargo_target_dir(
+                    &crate::core::cargo_target_dir::CargoTargetDirInputs::from_process(&cwd, args),
+                )
+            })
+            .into_iter()
+            .collect();
         Self { roots }
     }
 
     fn contains(&self, out_dir: &Path) -> bool {
         self.roots.iter().any(|root| out_dir.starts_with(root))
     }
-}
-
-/// For `start` and each ancestor: `<dir>/target` when `<dir>` holds a
-/// `Cargo.toml` -- so a workspace root above the member being built counts --
-/// and any `[build] target-dir` its `.cargo/config.toml` sets, relative to
-/// `<dir>` as Cargo resolves it.
-fn ancestor_target_roots(start: &Path) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    for dir in start.ancestors() {
-        if dir.join("Cargo.toml").is_file() {
-            roots.push(dir.join("target"));
-        }
-        for name in [".cargo/config.toml", ".cargo/config"] {
-            if let Some(configured) = configured_target_dir(&dir.join(name)) {
-                roots.push(if configured.is_absolute() {
-                    configured
-                } else {
-                    dir.join(configured)
-                });
-            }
-        }
-    }
-    roots
-}
-
-fn configured_target_dir(config: &Path) -> Option<PathBuf> {
-    let contents = std::fs::read_to_string(config).ok()?;
-    let parsed: toml::Value = toml::from_str(&contents).ok()?;
-    parsed
-        .get("build")?
-        .get("target-dir")?
-        .as_str()
-        .map(PathBuf::from)
 }
 
 /// Bound on lines held while the scope is unconfirmed.
@@ -794,36 +749,6 @@ mod tests {
         assert!(
             !scoped.confirmed,
             "an unattributable unit proves nothing about the scope"
-        );
-    }
-
-    /// Building from inside a member must still count the workspace root's
-    /// `target/`, and a `[build] target-dir` resolves against its config's dir.
-    #[test]
-    fn ancestor_roots_cover_the_workspace_root_and_a_configured_target_dir() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let ws = root.path();
-        let member = ws.join("crates").join("member");
-        std::fs::create_dir_all(&member).expect("member dir");
-        std::fs::create_dir_all(ws.join(".cargo")).expect(".cargo dir");
-        std::fs::write(ws.join("Cargo.toml"), "[workspace]\n").expect("root manifest");
-        std::fs::write(member.join("Cargo.toml"), "[package]\n").expect("member manifest");
-        std::fs::write(
-            ws.join(".cargo").join("config.toml"),
-            "[build]\ntarget-dir = \"out\"\n",
-        )
-        .expect("config");
-
-        let roots = ancestor_target_roots(&member);
-        for expected in [member.join("target"), ws.join("target"), ws.join("out")] {
-            assert!(
-                roots.contains(&expected),
-                "{expected:?} missing from {roots:?}"
-            );
-        }
-        assert!(
-            !roots.contains(&ws.join("crates").join("target")),
-            "no manifest there"
         );
     }
 }

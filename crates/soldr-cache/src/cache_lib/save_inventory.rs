@@ -12,25 +12,31 @@ fn hash_file(path: &Path) -> Result<[u8; 32]> {
 /// only excludes a `target/` entry when its full path matches one of
 /// these candidates.
 ///
-/// Candidates, matching Cargo's own resolution order (most specific
-/// first) — we do not attempt to parse `.cargo/config.toml`'s
-/// `build.target-dir` key here; an override there falls through to
-/// the conservative default below, which only means the real output
-/// dir gets hashed too (safe: extra work, never a missed input):
-/// * `$CARGO_TARGET_DIR` (if absolute),
-/// * `$CARGO_BUILD_TARGET_DIR` (if absolute),
-/// * `<workspace>/target` (Cargo's default).
+/// Candidates: the directory the shared resolver says Cargo would use from
+/// `workspace` (soldr#3203, which also reads `.cargo/config.toml`), plus the
+/// absolute `$CARGO_TARGET_DIR` / `$CARGO_BUILD_TARGET_DIR` and the default
+/// `<workspace>/target`. The extras are kept deliberately: excluding a path that
+/// is not the real output dir only skips a directory Cargo would own anyway,
+/// while missing the real one would hash build output as source.
 fn workspace_target_dir_candidates(workspace: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::with_capacity(3);
-    for var in ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"] {
-        if let Some(dir) = std::env::var_os(var) {
-            let path = PathBuf::from(dir);
-            if path.is_absolute() {
-                out.push(path);
-            }
+    let resolved = crate::core::cargo_target_dir::resolve_cargo_target_dir(
+        &crate::core::cargo_target_dir::CargoTargetDirInputs::from_process(workspace, &[]),
+    );
+    let mut out: Vec<PathBuf> = Vec::with_capacity(4);
+    let env_dirs = ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    for candidate in resolved
+        .into_iter()
+        .chain(env_dirs)
+        .chain(std::iter::once(workspace.join("target")))
+    {
+        if !out.contains(&candidate) {
+            out.push(candidate);
         }
     }
-    out.push(workspace.join("target"));
     out
 }
 

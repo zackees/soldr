@@ -529,27 +529,25 @@ fn green_indexed_prefix() -> &'static str {
 /// flag → `debug` (the "dev" profile), `--profile=<name>` → `<name>`.
 /// With `--target X` the artifacts land under `target/X/<profile>/`.
 fn resolve_cook_target_dir(manifest_dir: &Path, args: &CookArgs) -> PathBuf {
-    let configured = std::env::var_os("CARGO_TARGET_DIR").filter(|value| !value.is_empty());
     let invocation_dir = std::env::current_dir().unwrap_or_else(|_| manifest_dir.to_path_buf());
-    resolve_cook_target_dir_with_env(manifest_dir, &invocation_dir, args, configured.as_deref())
+    resolve_cook_target_dir_with(
+        &crate::core::cargo_target_dir::CargoTargetDirInputs::from_process(&invocation_dir, &[]),
+        manifest_dir,
+        args,
+    )
 }
 
-fn resolve_cook_target_dir_with_env(
+/// soldr#3203: the target root comes from the shared resolver, so a cook run
+/// from inside a workspace member lands in the workspace root's `target/` and
+/// honours `.cargo/config.toml`. `manifest_dir/target` is only the fallback for
+/// a resolver that finds no manifest.
+fn resolve_cook_target_dir_with(
+    inputs: &crate::core::cargo_target_dir::CargoTargetDirInputs,
     manifest_dir: &Path,
-    invocation_dir: &Path,
     args: &CookArgs,
-    configured: Option<&std::ffi::OsStr>,
 ) -> PathBuf {
     let profile = resolve_profile_dir_name(args);
-    let mut root = configured
-        .map(PathBuf::from)
-        .map(|path| {
-            if path.is_absolute() {
-                path
-            } else {
-                invocation_dir.join(path)
-            }
-        })
+    let mut root = crate::core::cargo_target_dir::resolve_cargo_target_dir(inputs)
         .unwrap_or_else(|| manifest_dir.join("target"));
     if let Some(triple) = args.target.as_deref() {
         root = root.join(triple);

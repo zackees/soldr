@@ -52,6 +52,9 @@ fn rust_analyzer_spawned_cargo_routes_through_child_shims_and_zccache() {
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_REAL_RUST_ANALYZER", &rust_analyzer)
+        // soldr#3203: the nested `soldr cargo` runs from this crate, whose
+        // workspace target is the suite's own `target/`.
+        .env("CARGO_TARGET_DIR", cache_root.join("target"))
         .env_remove("CARGO")
         .env_remove("RUSTC")
         .env_remove("RUSTC_WRAPPER")
