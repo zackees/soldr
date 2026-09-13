@@ -720,3 +720,43 @@ def test_keep_tmpdir_opt_out_leaves_it_for_inspection(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert private != tmp_path
     assert (private / "soldr-leaked-fixture-1" / "payload").is_file()
+
+
+_ENV_CHILD = """
+import os
+print(os.environ.get("SOLDR_TEST_FORBID_TOOLCHAIN_INSTALL", "<unset>"))
+print(os.environ.get("RUSTUP_AUTO_INSTALL", "<unset>"))
+"""
+
+
+def _wrapper_env_for(extra_env: dict[str, str]) -> list[str]:
+    """Run a child through the wrapper and return the two guard values it saw."""
+
+    env = {**os.environ, **extra_env}
+    for key in ("SOLDR_TEST_FORBID_TOOLCHAIN_INSTALL", "RUSTUP_AUTO_INSTALL"):
+        if key not in extra_env:
+            env.pop(key, None)
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER), sys.executable, "-c", _ENV_CHILD],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.split()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the wrapper runs Unix tests only")
+def test_every_test_process_refuses_toolchain_downloads() -> None:
+    """soldr#3195: the tripwire and rustup's auto-install guard are always armed."""
+
+    assert _wrapper_env_for({}) == ["1", "0"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the wrapper runs Unix tests only")
+def test_an_explicit_caller_value_overrides_the_download_guard() -> None:
+    assert _wrapper_env_for(
+        {"SOLDR_TEST_FORBID_TOOLCHAIN_INSTALL": "0", "RUSTUP_AUTO_INSTALL": "1"}
+    ) == ["0", "1"]

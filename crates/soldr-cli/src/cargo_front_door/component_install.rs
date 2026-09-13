@@ -218,6 +218,12 @@ fn probe_component_installed(probe_binary: &str, channel: Option<&str>) -> bool 
 }
 
 fn run_component_add(component: &str, channel: Option<&str>) -> bool {
+    if let Err(error) =
+        crate::core::forbid_toolchain_install_tripwire(&format!("rustup component add {component}"))
+    {
+        eprintln!("soldr: {error}");
+        return false;
+    }
     let mut cmd = Command::new(rustup_binary());
     cmd.args(["component", "add"]);
     if let Some(ch) = channel {

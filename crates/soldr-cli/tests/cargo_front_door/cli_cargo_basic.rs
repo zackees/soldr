@@ -202,9 +202,24 @@ fn cargo_front_door_maps_plus_toolchain_to_rustup_toolchain_env() {
     let log_path = cache_root.join("cargo.log");
     let cargo = fake_script_path(&tool_dir, "cargo");
     let rustc = fake_script_path(&tool_dir, "rustc");
+    // soldr#3195: the front door installs the requested toolchain before it
+    // execs cargo. Without a fake rustup that was a real `rustup toolchain
+    // install nightly-2026-03-26` on every host lacking that nightly.
+    let rustup = fake_script_path(&tool_dir, "rustup");
 
     write_fake_script(&cargo, &fake_cargo_toolchain_recorder_script(&log_path));
     write_fake_script(&rustc, &fake_rustc_script(&log_path));
+    write_fake_script(
+        &rustup,
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            "@echo off\nexit /b 0\n"
+        } else {
+            "#!/bin/sh\nexit 0\n"
+        },
+    );
 
     let output = common::isolated_soldr_command()
         .args([
@@ -218,6 +233,7 @@ fn cargo_front_door_maps_plus_toolchain_to_rustup_toolchain_env() {
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
         .env_remove("RUSTUP_TOOLCHAIN")
         .output()
         .expect("failed to run soldr cargo +toolchain test");

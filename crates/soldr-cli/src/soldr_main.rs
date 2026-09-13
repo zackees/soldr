@@ -43,7 +43,7 @@ pub(crate) use crate::cli_dispatch::*;
 
 pub(crate) const TEST_CARGO_BIN_ENV_VAR: &str = "SOLDR_TEST_CARGO_BIN";
 pub(crate) const TEST_RUSTC_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTC_BIN";
-pub(crate) const TEST_RUSTUP_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTUP_BIN";
+pub(crate) use crate::core::TEST_RUSTUP_BIN_ENV_VAR;
 pub(crate) const TEST_FREE_DISK_BYTES_ENV_VAR: &str = "SOLDR_TEST_FREE_DISK_BYTES";
 /// Overrides the default `nightly` toolchain used by `soldr gc cargo`
 /// to invoke cargo's unstable `-Zgc clean gc`. The `--toolchain` flag

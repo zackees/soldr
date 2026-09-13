@@ -81,6 +81,7 @@
         "cli_dylint_wrapper",
         "cli_reentrancy_guard",
         "cli_reentrancy_guard_canary",
+        "cli_toolchain_download_guard",
         "cli_wrapper_perf"
       ],
       "disposition": "native-linux-once",

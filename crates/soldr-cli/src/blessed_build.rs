@@ -447,6 +447,7 @@ fn ensure_dsymutil_on_path(prep: &mut BlessedPrep) -> Result<(), SoldrError> {
     )
     .ok()
     .and_then(|manifest| manifest.channel);
+    crate::core::forbid_toolchain_install_tripwire("rustup component add llvm-tools-preview")?;
     let mut command = Command::new(crate::binaries::rustup_binary());
     command.args(["component", "add", "llvm-tools-preview"]);
     if let Some(channel) = channel.as_deref() {

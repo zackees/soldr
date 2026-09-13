@@ -17,6 +17,11 @@ fn rustup_resolution_failure_reports_raw_error_and_ci_guidance() {
     let output = Command::new(common::soldr_bin())
         .args(["--no-cache", "rustc", "--version"])
         .env("RUSTUP_TOOLCHAIN", "soldr-ci-missing-toolchain")
+        // soldr#3195: the Nextest wrapper sets RUSTUP_AUTO_INSTALL=0 for every
+        // test, which changes the wording rustup uses for a missing toolchain.
+        // This test asserts on rustup's default wording, and its toolchain name
+        // is not a real channel, so re-enabling auto-install cannot download.
+        .env("RUSTUP_AUTO_INSTALL", "1")
         .output()
         .expect("failed to run soldr --no-cache rustc --version with invalid RUSTUP_TOOLCHAIN");
 

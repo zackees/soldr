@@ -272,10 +272,16 @@ jobs:
           # channel this job actually provisioned.
           channel=$(python .github/scripts/toolchain_ensure_channel.py "$TOOLCHAIN_ENSURE_JSON")
           test -n "$channel"
+          # soldr#3195: and the HOME the channel was provisioned into. Fixtures
+          # that isolate HOME otherwise send rustup to an empty temp home, where
+          # it silently reinstalled the toolchain inside each test.
+          rustup_home=$(python .github/scripts/rustup_home_from_toolchain_binary.py "$cargo_bin")
+          test -n "$rustup_home"
           {
             echo "CARGO=$cargo_bin"
             echo "RUSTC=$rustc_bin"
             echo "RUSTUP_TOOLCHAIN=$channel"
+            echo "RUSTUP_HOME=$rustup_home"
           } >> "$GITHUB_ENV"
 
       # soldr#2919: this is deliberately lane-local rather than a global
