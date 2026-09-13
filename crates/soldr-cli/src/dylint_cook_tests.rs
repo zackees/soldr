@@ -229,9 +229,11 @@ fn write_lockfile_root(root: &std::path::Path) {
     std::fs::write(root.join(concat!("Car", "go.lock")), "version = 3\n").unwrap();
 }
 
-// This is the golden test that `--tree` defaulting to `analysis` changed no
-// path: the historical `dylint/target/<nightly>` layout must be
-// byte-for-byte unchanged.
+// soldr#3049: the analysis-tree cook must land where `cargo dylint` actually
+// analyses the workspace. cargo-dylint names that directory
+// `dylint/target/<RUSTUP_TOOLCHAIN>`, the host-qualified toolchain, and main's
+// ci-test log shows `dylint/target/nightly-2026-05-28-x86_64-unknown-linux-gnu`.
+// The cook used to write the bare `nightly-2026-05-28`, a directory nothing reads.
 #[test]
 fn dylint_cook_defaults_to_the_analysis_tree_path() {
     let temp = tempfile::tempdir().unwrap();
@@ -254,13 +256,13 @@ fn dylint_cook_defaults_to_the_analysis_tree_path() {
         .take(3)
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect();
+    let expected_leaf = format!(
+        "nightly-2026-05-28-{}",
+        crate::core::TargetTriple::host().unwrap().triple()
+    );
     assert_eq!(
         tail,
-        vec![
-            "nightly-2026-05-28".to_string(),
-            "target".to_string(),
-            "dylint".to_string(),
-        ]
+        vec![expected_leaf, "target".to_string(), "dylint".to_string()]
     );
 }
 

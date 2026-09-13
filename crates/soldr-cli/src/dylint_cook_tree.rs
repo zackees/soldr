@@ -8,8 +8,7 @@
 //! UI-test stages (`ci_test/plan.rs`'s `dylint-test-*` stages) compile
 //! their `trybuild`/UI harnesses against. The two trees are populated by
 //! differently-shaped cargo invocations (check vs. build — see
-//! [`CookTree::operation`]) and are keyed by differently-derived channel
-//! segments (see [`CookTree::channel_segment`]), so collapsing them into one
+//! [`CookTree::operation`]), so collapsing them into one
 //! digest would let one tree's cook satisfy the other's marker while leaving
 //! the wrong-shaped artifacts on disk.
 
@@ -81,21 +80,18 @@ impl CookTree {
     /// The nightly-channel path segment cargo's `--target-dir` must resolve
     /// to, so the cook lands where its consumer looks.
     ///
-    /// FACT 1 (soldr#3042 step 3): `ci_test/plan.rs:56` builds the UI-test
-    /// target dir as `.../dylint/tests/<dylint_key>` where `dylint_key =
-    /// canonical_channel(&nightly.channel, &host)` (`ci_test/plan.rs:631`),
-    /// which APPENDS the host triple —
-    /// `nightly-2026-05-28-x86_64-unknown-linux-gnu`. The analysis tree's
-    /// consumer, `dylint_libraries::canonical_channel`
-    /// (`dylint_libraries.rs:61`), instead TRUNCATES to 18 chars and yields
-    /// the bare `nightly-2026-05-28`. These two rules disagree today, and
-    /// this function deliberately reuses each consumer's own rule rather
-    /// than inventing a third one that would agree with neither.
+    /// Both trees use the host-qualified toolchain from
+    /// `ci_test::plan::canonical_channel`. That is the `RUSTUP_TOOLCHAIN`
+    /// cargo-dylint names `dylint/target/<toolchain>` by, and the key
+    /// `soldr ci-test` freezes for all three Dylint trees. The analysis tree
+    /// used to take the truncated driver-identity key from
+    /// `dylint_libraries::canonical_channel` instead, so its cook wrote
+    /// `nightly-2026-05-28` while every consumer read
+    /// `nightly-2026-05-28-<host>` (soldr#3049). That truncated key still names
+    /// the published driver, which is keyed on the dated nightly alone; it just
+    /// never names a target directory.
     pub(crate) fn channel_segment(self, channel: &str, host: &str) -> String {
-        match self {
-            Self::Analysis => crate::dylint_libraries::canonical_channel(channel).to_string(),
-            Self::Tests => crate::ci_test::plan::canonical_channel(channel, host),
-        }
+        crate::ci_test::plan::canonical_channel(channel, host)
     }
 }
 
