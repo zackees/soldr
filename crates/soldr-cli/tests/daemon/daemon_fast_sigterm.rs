@@ -21,15 +21,14 @@
 
 #![allow(clippy::print_stdout)]
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::common;
+use crate::common::tracked_child::TrackedChild;
 use soldr_cli::cache_lib::daemon_lifecycle_log_path;
 use soldr_cli::core::SoldrPaths;
-use wait_timeout::ChildExt;
 
 /// Headroom for a loaded CI host. This is the *bound*, not the claim of
 /// "fast" -- the measured elapsed time, printed by the test below, is the
@@ -80,10 +79,11 @@ fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path) -> std::process
     cmd.output().expect("run soldr")
 }
 
-/// A foreground isolated daemon with its stderr piped (not nulled) so the
-/// fast-exit test can read the diagnostic line the owner asked for.
+/// A foreground isolated daemon whose output is captured (not nulled) so the
+/// fast-exit test can read the diagnostic line the owner asked for. Both pipes
+/// drain from spawn (soldr#3197), so the daemon can never stall writing them.
 struct DaemonProc {
-    child: Option<Child>,
+    child: Option<TrackedChild>,
     cache_root: PathBuf,
     home_root: PathBuf,
 }
@@ -96,10 +96,8 @@ impl DaemonProc {
             .env("SOLDR_CACHE_DIR", cache_root)
             .env("HOME", home_root)
             .env("USERPROFILE", home_root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        let mut child = cmd.spawn().expect("spawn soldr-daemon");
+            .stdin(Stdio::null());
+        let child = common::tracked_child::spawn_tracked(&mut cmd).expect("spawn soldr-daemon");
         let deadline = Instant::now() + Duration::from_secs(90);
         let route_claim = cache_root
             .join("cache")
@@ -122,11 +120,12 @@ impl DaemonProc {
             std::thread::sleep(Duration::from_millis(50));
         }
         if !ready {
-            let _ = child.kill();
-            let _ = child.wait();
+            let output = child.wait_bounded(Duration::ZERO);
             panic!(
-                "isolated daemon never became ready under {}",
-                cache_root.display()
+                "isolated daemon never became ready under {} ({})\nstderr:\n{}",
+                cache_root.display(),
+                output.disposition(),
+                output.stderr_lossy()
             );
         }
         Self {
@@ -137,29 +136,21 @@ impl DaemonProc {
     }
 
     fn pid(&self) -> u32 {
-        self.child.as_ref().expect("daemon child present").id()
+        self.child.as_ref().expect("daemon child present").pid()
     }
 
     /// Take ownership of the child process for a test that signals or
     /// waits on it directly. After this, `Drop` finds nothing to stop.
-    fn take_child(&mut self) -> Child {
+    fn take_child(&mut self) -> TrackedChild {
         self.child.take().expect("daemon child already taken")
     }
 }
 
 impl Drop for DaemonProc {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
+        if let Some(child) = self.child.take() {
             let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < deadline {
-                if let Ok(Some(_)) = child.try_wait() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.wait_bounded(Duration::from_secs(5));
         }
     }
 }
@@ -178,17 +169,16 @@ fn sigterm_takes_the_fast_exit_path() {
     let started = Instant::now();
     soldr_platform::process::terminate::signal_pid(pid, false)
         .expect("send SIGTERM to the isolated daemon");
-    let status = child
-        .wait_timeout(FAST_EXIT_BUDGET)
-        .expect("wait on the signalled daemon")
-        .unwrap_or_else(|| {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!(
-                "soldr-daemon (pid {pid}) did not exit within {FAST_EXIT_BUDGET:?} of SIGTERM \
-                 -- the fast-exit path must be bounded in milliseconds, not merely under 5s"
-            );
-        });
+    let Some(status) = child.wait_for_exit(FAST_EXIT_BUDGET) else {
+        let output = child.wait_bounded(Duration::ZERO);
+        panic!(
+            "soldr-daemon (pid {pid}) did not exit within {FAST_EXIT_BUDGET:?} of SIGTERM \
+             -- the fast-exit path must be bounded in milliseconds, not merely under 5s \
+             ({})\nstderr:\n{}",
+            output.disposition(),
+            output.stderr_lossy()
+        );
+    };
     let elapsed = started.elapsed();
     // The number soldr#3059 actually asked for: report it regardless of
     // pass/fail so a CI log always carries the measurement.
@@ -207,13 +197,10 @@ fn sigterm_takes_the_fast_exit_path() {
          took {elapsed:?}"
     );
 
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .expect("daemon stderr must have been piped")
-        .read_to_string(&mut stderr)
-        .expect("read daemon stderr");
+    let stderr = child
+        .wait_bounded(Duration::ZERO)
+        .stderr_lossy()
+        .into_owned();
     assert!(
         stderr.contains("SIGTERM") && stderr.contains(&pid.to_string()),
         "stderr must name the signal and the pid: {stderr:?}"
@@ -251,14 +238,14 @@ fn ordinary_daemon_stop_still_exits_cleanly_without_the_fast_marker() {
         "daemon stop must succeed; stdout: {stdout}; stderr: {stderr}"
     );
 
-    let status = child
-        .wait_timeout(Duration::from_secs(10))
-        .expect("wait on the stopped daemon")
-        .unwrap_or_else(|| {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("soldr-daemon did not exit after an explicit `daemon stop`");
-        });
+    let Some(status) = child.wait_for_exit(Duration::from_secs(10)) else {
+        let output = child.wait_bounded(Duration::ZERO);
+        panic!(
+            "soldr-daemon did not exit after an explicit `daemon stop` ({})\nstderr:\n{}",
+            output.disposition(),
+            output.stderr_lossy()
+        );
+    };
     assert_eq!(
         status.code(),
         Some(0),

@@ -9,14 +9,13 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::common;
 use serde_json::Value;
 use soldr_cli::core::SoldrPaths;
-use wait_timeout::ChildExt;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -95,10 +94,7 @@ fn run_soldr_with_timeout(
 ) -> std::process::Output {
     let mut cmd = Command::new(common::soldr_bin());
     scrub_outer_soldr_runtime(&mut cmd);
-    cmd.args(args)
-        .current_dir(current_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args(args).current_dir(current_dir);
     for (k, v) in isolated_env(cache_root, home_root) {
         cmd.env(k, v);
     }
@@ -117,24 +113,24 @@ fn run_soldr_with_timeout(
     // child completed — which is the diagnosis.
     cmd.env(soldr_cli::startup_trace::STARTUP_TRACE_ENV_VAR, "1");
 
-    let mut child = cmd.spawn().expect("failed to spawn soldr");
-    if child
-        .wait_timeout(timeout)
-        .expect("failed waiting for soldr")
-        .is_none()
-    {
-        let _ = child.kill();
-        let output = child.wait_with_output().expect("collect timed-out output");
+    // soldr#3197: both pipes drain from spawn. This used to wait first and read
+    // after exit, so a child whose output passed the 64 KB pipe buffer blocked
+    // in `write(2)` and was reported here as a timeout, output already sent.
+    let output = common::tracked_child::spawn_tracked(&mut cmd)
+        .expect("failed to spawn soldr")
+        .wait_bounded(timeout);
+    if output.timed_out {
         panic!(
-            "soldr {:?} timed out after {:?}\nstdout:\n{}\nstderr:\n{}\n{}",
+            "soldr {:?} timed out after {:?} ({})\nstdout:\n{}\nstderr:\n{}\n{}",
             args,
             timeout,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
+            output.disposition(),
+            output.stdout_lossy(),
+            output.stderr_lossy(),
             spawn_log_forensics(cache_root, home_root),
         );
     }
-    child.wait_with_output().expect("collect soldr output")
+    output.into_output()
 }
 
 /// The timed-out child often dies before its first byte of output

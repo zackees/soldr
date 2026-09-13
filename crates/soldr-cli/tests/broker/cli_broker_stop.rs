@@ -7,22 +7,23 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use crate::common;
+use crate::common::tracked_child::TrackedChild;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const STATUS_POLL_BUDGET: Duration = Duration::from_secs(20);
 const STOP_EXIT_BUDGET: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
 
-fn spawn_broker(home: &Path) -> std::process::Child {
-    common::isolated_soldr_command()
+/// `soldr broker serve` with both pipes draining from spawn (soldr#3197): the
+/// broker outlives the test body, so an undrained pipe would stall it.
+fn spawn_broker(home: &Path) -> TrackedChild {
+    let mut command = common::isolated_soldr_command();
+    command
         .args(["broker", "serve"])
         .env("HOME", home)
         .env("USERPROFILE", home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn soldr broker serve")
+        .stdin(Stdio::null());
+    common::tracked_child::spawn_tracked(&mut command).expect("spawn soldr broker serve")
 }
 
 fn run_broker(verb: &str, home: &Path) -> (String, i32) {
@@ -39,30 +40,6 @@ fn run_broker(verb: &str, home: &Path) -> (String, i32) {
         String::from_utf8_lossy(&out.stderr)
     );
     (combined, out.status.code().unwrap_or(-1))
-}
-
-fn wait_until_bound(child: &mut std::process::Child, deadline: Instant) -> bool {
-    use std::io::{BufRead, BufReader};
-    let Some(stdout) = child.stdout.take() else {
-        return false;
-    };
-    let handle = std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if line.contains("stable endpoint bound at") {
-                return true;
-            }
-        }
-        false
-    });
-    loop {
-        if handle.is_finished() {
-            return handle.join().unwrap_or(false);
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(POLL);
-    }
 }
 
 #[test]
@@ -84,7 +61,7 @@ fn broker_stop_terminates_running_broker() {
     let home = common::unique_temp_dir("broker-stop-live-home");
     let mut broker = spawn_broker(&home);
     assert!(
-        wait_until_bound(&mut broker, Instant::now() + READY_TIMEOUT),
+        broker.wait_for_stdout("stable endpoint bound at", Instant::now() + READY_TIMEOUT),
         "broker never printed its bound-at line within {READY_TIMEOUT:?}"
     );
 
@@ -126,21 +103,12 @@ fn broker_stop_terminates_running_broker() {
     );
 
     // The spawned broker process must actually exit.
-    let exit_deadline = Instant::now() + STOP_EXIT_BUDGET;
-    let exited = loop {
-        if matches!(broker.try_wait(), Ok(Some(_))) {
-            break true;
-        }
-        if Instant::now() >= exit_deadline {
-            break false;
-        }
-        std::thread::sleep(POLL);
-    };
-    if !exited {
-        let _ = broker.kill();
-        let _ = broker.wait();
-        panic!("broker process did not exit within {STOP_EXIT_BUDGET:?} after `broker stop`");
-    }
+    let exit = broker.wait_bounded(STOP_EXIT_BUDGET);
+    assert!(
+        !exit.timed_out,
+        "broker process did not exit within {STOP_EXIT_BUDGET:?} after `broker stop` ({})",
+        exit.disposition()
+    );
 
     // A second status must now report the broker is gone.
     let (after, after_code) = run_broker("status", &home);
@@ -176,7 +144,7 @@ fn broker_stop_drains_cooperatively_without_hitting_the_deadline() {
     let home = common::unique_temp_dir("broker-stop-cooperative-home");
     let mut broker = spawn_broker(&home);
     assert!(
-        wait_until_bound(&mut broker, Instant::now() + READY_TIMEOUT),
+        broker.wait_for_stdout("stable endpoint bound at", Instant::now() + READY_TIMEOUT),
         "broker never printed its bound-at line within {READY_TIMEOUT:?}"
     );
 
@@ -230,22 +198,13 @@ fn broker_stop_drains_cooperatively_without_hitting_the_deadline() {
 
     // The broker must have exited on its own. A force-kill would show up as a
     // signal here even if the stop command's own wording ever changed.
-    let exit_deadline = Instant::now() + STOP_EXIT_BUDGET;
-    let status = loop {
-        match broker.try_wait() {
-            Ok(Some(status)) => break status,
-            _ => {
-                if Instant::now() >= exit_deadline {
-                    let _ = broker.kill();
-                    let _ = broker.wait();
-                    panic!(
-                        "broker did not exit within {STOP_EXIT_BUDGET:?}; stop said:\n{stop_out}"
-                    );
-                }
-                std::thread::sleep(POLL);
-            }
-        }
-    };
+    let exit = broker.wait_bounded(STOP_EXIT_BUDGET);
+    assert!(
+        !exit.timed_out,
+        "broker did not exit within {STOP_EXIT_BUDGET:?} ({}); stop said:\n{stop_out}",
+        exit.disposition()
+    );
+    let status = exit.status.expect("an exited broker is reaped");
     assert!(
         status.success(),
         "a cooperatively drained broker must exit 0, not die of a signal; got {status:?} \
