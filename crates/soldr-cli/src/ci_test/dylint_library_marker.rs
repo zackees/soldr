@@ -44,11 +44,24 @@
 //! into Fresh Nextest's resident-memory peak. The skip did not create that
 //! hole; it removed the accidental staggering that was hiding it.
 //!
+//! # It stays opt-in: the five minutes it saved are gone (soldr#3132)
+//!
 //! soldr#3042 (Phase 3 of soldr#3039) has since landed the cook of the
-//! `target/dylint/tests` dependency layer, which is the root-cause fix.
-//! Flipping this default to on is therefore a one-line change gated on a
-//! warm host-lane run with `SOLDR_DYLINT_LIBRARY_SKIP=on` proving green on
-//! `main` -- not on any further work in this module.
+//! `target/dylint/tests` dependency layer, and the flip was meant to follow a
+//! warm host-lane run. Measuring first showed there is nothing left to buy.
+//! On the three most recent green `main` gates the six `dylint-library-*`
+//! stages took **7.1 s, 7.7 s and 11.4 s in total** (runs 34727854309,
+//! 34730203487, 34732041931), and the 11.4 s run had missed the
+//! `dylint-foundation` cache. The serialized minutes the skip was built to
+//! remove are now paid by the per-unit zccache store and the cook instead.
+//!
+//! Turning the skip on by default would save at most about twelve seconds
+//! while re-opening the exposure the three failed warm runs above showed:
+//! finishing the library stages early pulls the Dylint UI-test branch forward
+//! into Fresh Nextest's resident-memory peak. That is a bad trade, so the
+//! default stays off. Revisit only if the library stages regress back to
+//! minutes; the marker is still recorded on every run, so an opt-in run hits
+//! immediately.
 
 use crate::core::{SoldrError, SoldrPaths};
 use crate::dylint_toolchain::DylintToolchainPlan;
@@ -65,7 +78,7 @@ const WRAPPER_IDENTITY: &str = "soldr-ci-test-dylint-library-marker-v1";
 /// value that is not a recognised soldr-owned "on" spelling, keeps the six
 /// `dylint-library-*` stages running -- the default-off shape of
 /// [`crate::core::flag_value`] (soldr#2740). See the module docs for why
-/// this ships off and what has to be true to flip it.
+/// this stays off (soldr#3132).
 pub(crate) const SKIP_ENV_VAR: &str = "SOLDR_DYLINT_LIBRARY_SKIP";
 
 /// Is the opt-in skip switch on? Pure, taking the raw value rather than
