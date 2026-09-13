@@ -8,6 +8,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod cargo_target_dir_parity;
 mod cli_doctor;
 mod cli_optimize;
 mod cli_save;

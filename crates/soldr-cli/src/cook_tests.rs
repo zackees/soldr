@@ -71,22 +71,17 @@ fn cook_target_dir_honors_absolute_and_relative_cargo_target_dir() {
     let manifest_dir = Path::new("/workspace");
     let args = parse_cook_args(&argv(&["--release", "--target=x86_64-unknown-linux-gnu"])).unwrap();
 
+    let inputs = |target: &str| crate::core::cargo_target_dir::CargoTargetDirInputs {
+        cwd: std::path::PathBuf::from("/invocation/subdir"),
+        cargo_target_dir: Some(target.into()),
+        ..crate::core::cargo_target_dir::CargoTargetDirInputs::default()
+    };
     assert_eq!(
-        resolve_cook_target_dir_with_env(
-            manifest_dir,
-            Path::new("/invocation/subdir"),
-            &args,
-            Some(std::ffi::OsStr::new("/cache"))
-        ),
+        resolve_cook_target_dir_with(&inputs("/cache"), manifest_dir, &args),
         Path::new("/cache/x86_64-unknown-linux-gnu/release")
     );
     assert_eq!(
-        resolve_cook_target_dir_with_env(
-            manifest_dir,
-            Path::new("/invocation/subdir"),
-            &args,
-            Some(std::ffi::OsStr::new("out"))
-        ),
+        resolve_cook_target_dir_with(&inputs("out"), manifest_dir, &args),
         Path::new("/invocation/subdir/out/x86_64-unknown-linux-gnu/release")
     );
 }

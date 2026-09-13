@@ -278,6 +278,10 @@ fn lint_rust_uses_canonical_commands_without_a_redundant_check() {
     let output = isolated_soldr_command()
         .args(["--no-cache", "lint", "rust", "--package", "soldr-cli"])
         .env("SOLDR_CACHE_DIR", root.join("cache"))
+        // soldr#3203: a no-cache run prepares the target directory Cargo will
+        // use, which from this crate is the repository's own `target/` -- the
+        // tree this test suite is running out of. Give the fake build its own.
+        .env("CARGO_TARGET_DIR", root.join("target"))
         .env("SOLDR_TEST_CARGO_BIN", cargo)
         .env("SOLDR_TEST_RUSTC_BIN", rustc)
         .env("SOLDR_DYLINT_CONFIGURED_TOOLCHAIN", dylint_channel)

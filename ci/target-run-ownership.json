@@ -203,6 +203,7 @@
       "package": "soldr-cli",
       "binary": "toolchain_env",
       "modules": [
+        "cargo_target_dir_parity",
         "cli_save",
         "doctor_standalone_zccache",
         "python_compat_sysroot",

@@ -637,37 +637,13 @@ fn emit_output(output: &DylintCookOutput, json: bool) -> Result<(), SoldrError> 
     Ok(())
 }
 
+/// soldr#3203: the shared resolver, run as Cargo would be from `root`.
 fn cargo_target_root(root: &Path) -> Result<PathBuf, SoldrError> {
-    if let Some(value) = std::env::var_os("CARGO_TARGET_DIR").filter(|value| !value.is_empty()) {
-        let path = PathBuf::from(value);
-        return Ok(if path.is_absolute() {
-            path
-        } else {
-            root.join(path)
-        });
-    }
-    for name in [".cargo/config.toml", ".cargo/config"] {
-        let path = root.join(name);
-        let Ok(contents) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let parsed: toml::Value = toml::from_str(&contents).map_err(|error| {
-            SoldrError::Other(format!("failed to parse {}: {error}", path.display()))
-        })?;
-        if let Some(value) = parsed
-            .get("build")
-            .and_then(|build| build.get("target-dir"))
-            .and_then(toml::Value::as_str)
-        {
-            let path = PathBuf::from(value);
-            return Ok(if path.is_absolute() {
-                path
-            } else {
-                root.join(path)
-            });
-        }
-    }
-    Ok(root.join("target"))
+    let inputs = crate::core::cargo_target_dir::CargoTargetDirInputs::from_process(root, &[]);
+    Ok(
+        crate::core::cargo_target_dir::resolve_cargo_target_dir(&inputs)
+            .unwrap_or_else(|| root.join("target")),
+    )
 }
 
 /// The target root the cook should fill, honouring `--target-root` when
