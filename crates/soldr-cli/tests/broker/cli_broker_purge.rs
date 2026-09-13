@@ -14,7 +14,6 @@ use crate::common;
 
 const PROCESS_LIST_ENV: &str = "SOLDR_TEST_BROKER_PROCESS_LIST_FILE";
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
-const POLL: Duration = Duration::from_millis(100);
 
 fn scripted_table(dir: &Path, rows: &[serde_json::Value]) -> PathBuf {
     std::fs::create_dir_all(dir).expect("mkdir");
@@ -105,31 +104,32 @@ fn purge_stops_a_broker_for_another_home_and_reports_it() {
     let own = root.join("own");
     let fixture_home = root.join("fixture");
     std::fs::create_dir_all(&fixture_home).expect("mkdir");
-    let mut broker = common::isolated_soldr_command()
+    let mut command = common::isolated_soldr_command();
+    command
         .args(["broker", "serve"])
         .env("HOME", &fixture_home)
         .env("USERPROFILE", &fixture_home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn soldr broker serve");
+        .stdin(Stdio::null());
+    // soldr#3197: both pipes drain from spawn; the broker outlives this body.
+    let mut broker =
+        common::tracked_child::spawn_tracked(&mut command).expect("spawn soldr broker serve");
+    let broker_pid = broker.pid();
     assert!(
-        common::wait_for_bound_line(&mut broker, Instant::now() + READY_TIMEOUT),
+        broker.wait_for_stdout("stable endpoint bound at", Instant::now() + READY_TIMEOUT),
         "broker never bound"
     );
     let table = scripted_table(
         &root,
         &[
             broker_row(std::process::id(), &own),
-            broker_row(broker.id(), &fixture_home),
+            broker_row(broker_pid, &fixture_home),
         ],
     );
     let (stdout, stderr, code) = run(soldr_under(&own)
         .env(PROCESS_LIST_ENV, &table)
         .args(["broker", "purge", "--json"]));
     // The child is reaped here; the report below says how it was stopped.
-    let _ = broker.wait().expect("wait broker");
+    let _ = broker.wait_bounded(READY_TIMEOUT);
     assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
     let report: serde_json::Value = serde_json::from_str(&stdout).expect("json report");
     assert_eq!(report["stopped"], 1, "{stdout}");
@@ -140,7 +140,7 @@ fn purge_stops_a_broker_for_another_home_and_reports_it() {
         1,
         "the own-HOME row must never appear: {stdout}"
     );
-    assert_eq!(rows[0]["pid"], broker.id());
+    assert_eq!(rows[0]["pid"], broker_pid);
     assert!(
         matches!(rows[0]["outcome"].as_str(), Some("terminated" | "forced")),
         "{stdout}"
@@ -261,36 +261,28 @@ fn the_autospawn_switch_leaves_no_broker_behind() {
 fn an_idle_broker_stands_itself_down() {
     let home = common::unique_temp_dir("broker-purge-idle");
     std::fs::create_dir_all(&home).expect("mkdir");
-    let mut broker = common::isolated_soldr_command()
+    let mut command = common::isolated_soldr_command();
+    command
         .args(["broker", "serve"])
         .env("HOME", &home)
         .env("USERPROFILE", &home)
         .env("SOLDR_BROKER_IDLE_EXIT_SECS", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn soldr broker serve");
+        .stdin(Stdio::null());
+    // soldr#3197: stderr is read only after exit, so it must drain from spawn.
+    let mut broker =
+        common::tracked_child::spawn_tracked(&mut command).expect("spawn soldr broker serve");
     assert!(
-        common::wait_for_bound_line(&mut broker, Instant::now() + READY_TIMEOUT),
+        broker.wait_for_stdout("stable endpoint bound at", Instant::now() + READY_TIMEOUT),
         "broker never bound"
     );
-    let deadline = Instant::now() + READY_TIMEOUT;
-    let status = loop {
-        if let Some(status) = broker.try_wait().expect("try_wait") {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = broker.kill();
-            panic!("an idle broker must stand down within the idle window");
-        }
-        std::thread::sleep(POLL);
-    };
-    let mut stderr = String::new();
-    if let Some(mut pipe) = broker.stderr.take() {
-        use std::io::Read;
-        let _ = pipe.read_to_string(&mut stderr);
-    }
+    let exit = broker.wait_bounded(READY_TIMEOUT);
+    assert!(
+        !exit.timed_out,
+        "an idle broker must stand down within the idle window ({})",
+        exit.disposition()
+    );
+    let stderr = exit.stderr_lossy().into_owned();
+    let status = exit.status.expect("an exited broker is reaped");
     assert!(
         status.success(),
         "clean exit expected: {status:?}\n{stderr}"
