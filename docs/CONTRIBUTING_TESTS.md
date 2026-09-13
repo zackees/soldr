@@ -71,6 +71,16 @@ a thread dumper. Windows Nextest timeouts kill their job object immediately,
 so the graceful hook cannot run there; output captured before termination is
 still retained by Nextest.
 
+The wrapper also isolates each test from two costs that used to leak out of the
+suite. On Linux every test gets a private `TMPDIR` that is removed when it exits
+(soldr#3079; set `SOLDR_NEXTEST_KEEP_TMPDIR=1` to keep it). On every Unix host it
+sets `SOLDR_TEST_FORBID_TOOLCHAIN_INSTALL=1` and `RUSTUP_AUTO_INSTALL=0`
+(soldr#3195), so no test can download a Rust toolchain: two fixtures that faked
+every tool except `rustup` made every CI runner install a nightly it lacked, 1.6 GB
+and ~30 s per gate for one of them. A test that exercises an install path must
+give soldr a fake rustup through `SOLDR_TEST_RUSTUP_BIN`; one that reaches the
+real rustup now fails with a `test tripwire:` diagnostic naming the command.
+
 ## Naming a failing test (soldr#2934)
 
 Since the category consolidation, a `crates/soldr-cli` integration test's full

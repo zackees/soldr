@@ -226,6 +226,10 @@ fn shared_home_partial_toolchain_error(
 /// [`crate::prepare_cmd::rustup_add_target`], so probe, install, and
 /// target add all act on one toolchain store.
 fn run_pinned_rustup(args: &[&str], kind: &str) -> Result<(), SoldrError> {
+    if args.first() == Some(&"toolchain") && args.get(1) == Some(&"install") {
+        // soldr#3195: an install under test would download a toolchain.
+        crate::core::forbid_toolchain_install_tripwire(&format!("rustup {}", args.join(" ")))?;
+    }
     let paths = SoldrPaths::new()?;
     let rustup = crate::binaries::rustup_binary();
     let mut command = std::process::Command::new(rustup);

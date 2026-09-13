@@ -19,6 +19,9 @@ CHILD_EXIT_GRACE_SECS = 8
 CHILD_EXIT_GRACE_ENV = "SOLDR_NEXTEST_CHILD_EXIT_GRACE_SECS"
 # Truthy (`1`/`true`/`yes`/`on`) keeps a test's private TMPDIR for inspection.
 KEEP_TMPDIR_ENV = "SOLDR_NEXTEST_KEEP_TMPDIR"
+# soldr#3195: every test process refuses toolchain downloads (see
+# crates/soldr-core/src/core/toolchain_install_tripwire.rs).
+FORBID_TOOLCHAIN_INSTALL_ENV = "SOLDR_TEST_FORBID_TOOLCHAIN_INSTALL"
 
 
 # How long to block waiting for the child before looping to re-check state.
@@ -253,9 +256,15 @@ def run(command: list[str]) -> int:
     # Waiting and pipe closure are explicitly supervised below, so ownership
     # intentionally spans the whole run instead of a Popen context block.
     private_tmpdir = _private_tmpdir()
-    child_env = (
-        None if private_tmpdir is None else {**os.environ, "TMPDIR": private_tmpdir}
-    )
+    child_env = dict(os.environ)
+    if private_tmpdir is not None:
+        child_env["TMPDIR"] = private_tmpdir
+    # soldr#3195: a test must never download a Rust toolchain. Arm soldr's own
+    # install tripwire, and stop rustup proxies from auto-installing a missing
+    # toolchain, which soldr cannot see. An explicit value from the caller wins,
+    # so one deliberate network run can still opt out.
+    child_env.setdefault(FORBID_TOOLCHAIN_INSTALL_ENV, "1")
+    child_env.setdefault("RUSTUP_AUTO_INSTALL", "0")
     try:
         # pylint: disable-next=consider-using-with,subprocess-popen-preexec-fn
         child = subprocess.Popen(
