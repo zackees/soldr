@@ -267,6 +267,14 @@ pub(crate) fn print_maintenance_status(
             report.bytes_reclaimed,
             report.artifacts_removed,
         );
+        if let Some(measured_at) = status
+            .zccache_measured_at_ms
+            .filter(|measured_at| *measured_at != status.attempted_at_ms)
+        {
+            // soldr#3077: a deferred pass cannot reach the store, so this is
+            // the last pass that did.
+            println!("  zccache measured: {measured_at} ms since epoch (last pass that reached the store)");
+        }
     } else if let Some(error) = status.zccache_error.as_ref() {
         println!("  zccache:        failed ({error})");
     }
