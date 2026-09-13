@@ -75,6 +75,11 @@ pub(super) fn start_and_warn_on_jobs_drift(
             if let Some(warning) = drift_warning(&daemon_limit, local) {
                 eprintln!("{warning}");
             }
+            if let Some(notice) =
+                applied_limit_notice(&daemon_limit, super::foreign_env_flag("GITHUB_ACTIONS"))
+            {
+                eprintln!("{notice}");
+            }
         }
         Err(_) => persist_start_fallback(paths, session_id, repo_root, started_at_ms),
     }
@@ -106,6 +111,31 @@ pub(super) fn drift_warning(
         local_jobs = local.jobs,
         local_source = local.source.describe(),
     ))
+}
+
+/// The daemon's applied compile limit, for a CI job log (soldr#3148).
+///
+/// The daemon announces its limit when it starts (`compile_limit.rs`
+/// `resolve_and_announce`), but a detached daemon writes that to its own log
+/// file, so no CI job log ever showed it: grepping a full gate log for
+/// `compile concurrency = ` found nothing. That made every proposed lift of a
+/// `CARGO_BUILD_JOBS=1` / `SOLDR_JOBS=1` cap unverifiable -- a lane still
+/// inheriting `1` looks exactly like one running wider.
+///
+/// This build already received the limit on its `BuildSessionStart` ack, so
+/// repeating it costs no IPC. The wording matches the daemon's own line, so one
+/// grep finds both. Printed under GitHub Actions only: on a terminal the drift
+/// warning above already says everything that needs action.
+pub(super) fn applied_limit_notice(
+    daemon: &DaemonCompileLimit,
+    github_actions: bool,
+) -> Option<String> {
+    github_actions.then(|| {
+        format!(
+            "soldr: daemon compile concurrency = {} (from {})",
+            daemon.jobs, daemon.source
+        )
+    })
 }
 
 /// Durable stand-in for the daemon's own session-start bookkeeping, used
@@ -429,5 +459,17 @@ mod tests {
             .expect("record persisted");
         assert_eq!(stored.exit_code, Some(0));
         assert_eq!(stored.ended_at_ms, Some(5_000));
+    }
+
+    /// soldr#3148: the applied limit reaches a CI job log in the daemon's own
+    /// wording, so one grep finds both lines, and stays off a terminal.
+    #[test]
+    fn the_applied_limit_is_printed_for_ci_only() {
+        let limit = daemon(4, "topology");
+        assert_eq!(
+            applied_limit_notice(&limit, true).as_deref(),
+            Some("soldr: daemon compile concurrency = 4 (from topology)")
+        );
+        assert_eq!(applied_limit_notice(&limit, false), None);
     }
 }
