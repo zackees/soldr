@@ -202,6 +202,11 @@ async fn run_loop_inner<F, Fut>(
             shutdown.request();
             break;
         }
+        // soldr#3164: keep this daemon's own image ledger fresh so the
+        // broker's route sweep never reclaims the image a live daemon runs.
+        if let Ok(executable) = std::env::current_exe() {
+            crate::self_relocate::refresh_running_image_ledger(&executable);
+        }
         let now = SystemTime::now();
         let kind =
             due_kind(last_full_attempt, last_pressure, now).unwrap_or(MaintenanceKind::Pressure);

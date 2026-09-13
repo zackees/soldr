@@ -399,6 +399,77 @@ pub fn run_periodic_daemon_runtime_gc(paths: &SoldrPaths, current_exe: Option<&P
     run_periodic_gc_in(&daemon_runtime_root(paths), current_exe);
 }
 
+/// Sweep the daemon runtime copies of every broker route (soldr#3164).
+///
+/// The broker stages a verified daemon image into
+/// `<routes_root>/<route>/runtime/soldr-daemon/<version>/` for each route.
+/// `run_periodic_daemon_runtime_gc` is the ledger-based sweep for exactly that
+/// sub-tree, but it lost its only caller when the broker became the sole spawn
+/// front door (#2441), so a route whose daemon never launched again kept its
+/// ~105 MB copy forever: 116 stale copies, 10.8 GiB, on one workstation.
+///
+/// Each route keeps its own `.last-gc` marker, so calling this often is cheap:
+/// a route is scanned at most once per `GC_INTERVAL_SECONDS`. A copy is
+/// removed only when its `last-used` ledger is older than
+/// `STALE_RUNTIME_SECONDS`; a running daemon keeps that ledger fresh through
+/// [`refresh_running_image_ledger`].
+/// Returns how many stale copies were removed.
+pub fn sweep_route_runtime_copies(routes_root: &Path) -> usize {
+    let Ok(now) = current_unix_seconds() else {
+        return 0;
+    };
+    sweep_route_runtime_copies_at(routes_root, now, GC_INTERVAL_SECONDS, STALE_RUNTIME_SECONDS)
+        .removed_dirs
+}
+
+fn sweep_route_runtime_copies_at(
+    routes_root: &Path,
+    now: u64,
+    interval_seconds: u64,
+    stale_seconds: u64,
+) -> RuntimeGcSummary {
+    let mut total = RuntimeGcSummary::default();
+    let Ok(routes) = fs::read_dir(routes_root) else {
+        return total;
+    };
+    for route in routes.flatten() {
+        let runtime_root = route.path().join(RUNTIME_DIR).join(DAEMON_DIR);
+        // Only sweep a runtime tree that already exists: the GC creates its
+        // root, and a sweep must never grow a route it is reclaiming.
+        if !runtime_root.is_dir() {
+            continue;
+        }
+        let Ok(Some(summary)) =
+            maybe_run_periodic_gc_at(&runtime_root, None, now, interval_seconds, stale_seconds)
+        else {
+            continue;
+        };
+        total.scanned_dirs += summary.scanned_dirs;
+        total.removed_dirs += summary.removed_dirs;
+        total.skipped_current_dirs += summary.skipped_current_dirs;
+        total.skipped_fresh_dirs += summary.skipped_fresh_dirs;
+        total.stamped_dirs += summary.stamped_dirs;
+        total.failed_dirs += summary.failed_dirs;
+    }
+    total
+}
+
+/// Re-stamp the `last-used` ledger beside a running daemon's own image.
+///
+/// The ledger is written when an image is placed. A daemon that stays up for
+/// longer than `STALE_RUNTIME_SECONDS` would otherwise look abandoned to
+/// [`sweep_route_runtime_copies`], which would delete the image it is running
+/// from and trip its missing-image stand-down (soldr#1987). Only an existing
+/// ledger is refreshed, so this never creates one beside an arbitrary binary.
+pub fn refresh_running_image_ledger(executable: &Path) {
+    let Some(dir) = executable.parent() else {
+        return;
+    };
+    if dir.join(LAST_USED_FILENAME).is_file() {
+        let _ = touch_last_used(dir);
+    }
+}
+
 fn run_periodic_gc_in(runtime_root: &Path, current_exe: Option<&Path>) {
     let current_dir = current_exe.and_then(Path::parent);
     let Ok(now) = current_unix_seconds() else {
