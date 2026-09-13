@@ -346,6 +346,7 @@ fn serve_on_runtime_thread(
         state,
         Arc::new(peer_policy),
         endpoint.bind_endpoint.clone(),
+        endpoint.executable_path.clone(),
     ))
 }
 
@@ -354,6 +355,7 @@ async fn serve_loop(
     state: Arc<BrokerState>,
     peer_policy: Arc<PeerCredentialPolicy>,
     endpoint: String,
+    executable: std::path::PathBuf,
 ) -> io::Result<()> {
     // soldr#3158: a broadcast, latching signal — not a bare `Notify`.
     // Three loops park on this one signal (this accept loop, the route
@@ -367,6 +369,13 @@ async fn serve_loop(
         Arc::clone(&state.route_owners),
         Arc::clone(&state.registry),
         Arc::clone(&shutdown),
+    ));
+    // soldr#3075: a broker whose install directory was deleted (a disposable
+    // HOME) can never be reached again, so it stands itself down.
+    let home_watch = tokio::spawn(crate::broker_image_watch::run_home_watch(
+        Arc::clone(&shutdown),
+        crate::broker_image_watch::BROKER_HOME_CHECK_INTERVAL,
+        move || crate::broker_image_watch::install_directory_present(&executable),
     ));
     // soldr#3057: the broker watches its own RSS against the same
     // SOLDR_DAEMON_RSS_CEILING_BYTES ceiling the daemon uses, rather than
@@ -447,6 +456,7 @@ async fn serve_loop(
     // it may be mid-sleep, and a retiring broker must not wait a sweep
     // interval to finish.
     reaper.abort();
+    home_watch.abort();
     // Same reasoning as the reaper: a retiring broker must not wait out an
     // RSS_SAMPLE_INTERVAL sleep to finish shutting down.
     if let Some(handle) = rss_watchdog {
