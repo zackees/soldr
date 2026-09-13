@@ -247,7 +247,8 @@ fn delegated_pep517_pipe_lease_defers_maintenance_and_releases_on_eof() {
         .env("USERPROFILE", &home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        // soldr#3197: nothing reads stderr, so it must not be an undrained pipe.
+        .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
     let mut ready = String::new();

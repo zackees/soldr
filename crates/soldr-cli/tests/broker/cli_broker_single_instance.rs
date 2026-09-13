@@ -3,23 +3,23 @@
 
 use std::path::Path;
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::common;
+use crate::common::tracked_child::TrackedChild;
 
 const LOSER_EXIT_TIMEOUT: Duration = Duration::from_secs(15);
-const POLL: Duration = Duration::from_millis(100);
 
-fn spawn_broker(home: &Path) -> std::process::Child {
-    common::isolated_soldr_command()
+/// `soldr broker serve` with both pipes draining from spawn (soldr#3197): the
+/// broker outlives the test body, so an undrained pipe would stall it.
+fn spawn_broker(home: &Path) -> TrackedChild {
+    let mut command = common::isolated_soldr_command();
+    command
         .args(["broker", "serve"])
         .env("HOME", home)
         .env("USERPROFILE", home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn soldr broker serve")
+        .stdin(Stdio::null());
+    common::tracked_child::spawn_tracked(&mut command).expect("spawn soldr broker serve")
 }
 
 fn broker_bind_endpoint(home: &Path) -> String {
@@ -57,24 +57,13 @@ fn already_bound_endpoint_reports_cli_diagnostic_and_exit_75() {
     let _occupied = soldr_platform::ipc::broker::bind_listener(&endpoint, 1024)
         .expect("occupy broker endpoint");
 
-    let second = spawn_broker(&home);
-    let output = {
-        let deadline = Instant::now() + LOSER_EXIT_TIMEOUT;
-        let mut second = second;
-        loop {
-            if matches!(second.try_wait(), Ok(Some(_))) {
-                break second.wait_with_output().expect("collect loser output");
-            }
-            if Instant::now() >= deadline {
-                let _ = second.kill();
-                let _ = second.wait();
-                panic!(
-                    "broker stayed alive for {LOSER_EXIT_TIMEOUT:?} after its endpoint was occupied"
-                );
-            }
-            std::thread::sleep(POLL);
-        }
-    };
+    let loser = spawn_broker(&home).wait_bounded(LOSER_EXIT_TIMEOUT);
+    assert!(
+        !loser.timed_out,
+        "broker stayed alive for {LOSER_EXIT_TIMEOUT:?} after its endpoint was occupied ({})",
+        loser.disposition()
+    );
+    let output = loser.into_output();
 
     assert_eq!(
         output.status.code(),

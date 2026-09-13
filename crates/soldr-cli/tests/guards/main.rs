@@ -22,6 +22,7 @@ mod no_panicking_argv_collection;
 mod no_standalone_spawn_lint;
 mod no_timed_test_guard;
 mod phase5_contract;
+mod piped_child_drain_lint;
 mod process_isolation_lint;
 mod runtime_alias_identity;
 mod version_lockstep;

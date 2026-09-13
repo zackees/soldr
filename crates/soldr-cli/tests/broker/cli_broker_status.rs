@@ -8,21 +8,22 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use crate::common;
+use crate::common::tracked_child::TrackedChild;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const STATUS_POLL_BUDGET: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
 
-fn spawn_broker(home: &Path) -> std::process::Child {
-    common::isolated_soldr_command()
+/// `soldr broker serve` with both pipes draining from spawn (soldr#3197): the
+/// broker outlives the test body, so an undrained pipe would stall it.
+fn spawn_broker(home: &Path) -> TrackedChild {
+    let mut command = common::isolated_soldr_command();
+    command
         .args(["broker", "serve"])
         .env("HOME", home)
         .env("USERPROFILE", home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn soldr broker serve")
+        .stdin(Stdio::null());
+    common::tracked_child::spawn_tracked(&mut command).expect("spawn soldr broker serve")
 }
 
 /// Run `soldr broker status` once and return (stdout+stderr, exit code).
@@ -40,32 +41,6 @@ fn run_status(home: &Path) -> (String, i32) {
         String::from_utf8_lossy(&out.stderr)
     );
     (combined, out.status.code().unwrap_or(-1))
-}
-
-/// Consume `child`'s stdout on a background thread until it prints "binding at"
-/// or the deadline passes.
-fn wait_until_bound(child: &mut std::process::Child, deadline: Instant) -> bool {
-    use std::io::{BufRead, BufReader};
-    let Some(stdout) = child.stdout.take() else {
-        return false;
-    };
-    let handle = std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if line.contains("stable endpoint bound at") {
-                return true;
-            }
-        }
-        false
-    });
-    loop {
-        if handle.is_finished() {
-            return handle.join().unwrap_or(false);
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(POLL);
-    }
 }
 
 #[test]
@@ -88,7 +63,7 @@ fn broker_status_reports_snapshot_from_running_broker() {
     let home = common::unique_temp_dir("broker-status-live-home");
     let mut broker = spawn_broker(&home);
     assert!(
-        wait_until_bound(&mut broker, Instant::now() + READY_TIMEOUT),
+        broker.wait_for_stdout("stable endpoint bound at", Instant::now() + READY_TIMEOUT),
         "broker never printed its bound-at line within {READY_TIMEOUT:?}"
     );
 
@@ -106,8 +81,7 @@ fn broker_status_reports_snapshot_from_running_broker() {
         std::thread::sleep(POLL);
     };
 
-    let _ = broker.kill();
-    let _ = broker.wait();
+    let _ = broker.wait_bounded(Duration::ZERO);
 
     assert!(
         ok,

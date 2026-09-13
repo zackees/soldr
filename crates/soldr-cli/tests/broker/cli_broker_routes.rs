@@ -7,34 +7,23 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn issue_2476_routes_json_has_stable_schema_when_broker_is_live() {
-    use std::io::{BufRead as _, BufReader};
-
     let home = common::unique_temp_dir("broker-routes-home");
-    let mut broker = common::isolated_soldr_command()
+    let mut command = common::isolated_soldr_command();
+    command
         .args(["broker", "serve"])
         .env("HOME", &home)
         .env("USERPROFILE", &home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn broker");
-    let stdout = broker.stdout.take().expect("broker stdout");
-    let bound = std::thread::spawn(move || {
-        BufReader::new(stdout)
-            .lines()
-            .map_while(Result::ok)
-            .any(|line| line.contains("stable endpoint bound at"))
-    });
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !bound.is_finished() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
+        .stdin(Stdio::null());
+    // soldr#3197: both pipes keep draining after readiness, unlike the reader
+    // thread this replaced, which stopped at the match and never read stderr.
+    let mut broker = common::tracked_child::spawn_tracked(&mut command).expect("spawn broker");
     assert!(
-        bound.is_finished(),
+        broker.wait_for_stdout(
+            "stable endpoint bound at",
+            Instant::now() + Duration::from_secs(30)
+        ),
         "broker did not bind its stable endpoint"
     );
-    assert!(bound.join().expect("readiness reader"));
 
     let output = common::isolated_soldr_command()
         .args(["broker", "routes", "--json"])
@@ -50,7 +39,7 @@ fn issue_2476_routes_json_has_stable_schema_when_broker_is_live() {
         .env("HOME", &home)
         .env("USERPROFILE", &home)
         .output();
-    let _ = broker.wait();
+    let _ = broker.wait_bounded(Duration::from_secs(20));
 
     assert!(output.status.success());
     assert_eq!(json["schema_version"], 1);

@@ -27,6 +27,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::common;
+use crate::common::tracked_child::TrackedChild;
 
 /// Readiness budget. Generous because a cold embedded-zccache init has been
 /// measured at ~25 s in Docker; the assertions below are about *which* daemon
@@ -67,18 +68,17 @@ fn direct_sock(root: &Path) -> PathBuf {
 }
 
 /// Spawn a foreground daemon against `cache_root`, capturing its output so the
-/// loser's diagnostic can be asserted on.
-fn spawn_daemon(cache_root: &Path, home_root: &Path) -> std::process::Child {
+/// loser's diagnostic can be asserted on. Both pipes drain from spawn
+/// (soldr#3197), so the long-lived incumbent can never stall writing them.
+fn spawn_daemon(cache_root: &Path, home_root: &Path) -> TrackedChild {
     let mut cmd = common::isolated_daemon::isolated_daemon_command(&soldr_daemon_bin(), cache_root);
     cmd.args(["--foreground", "--idle-timeout-secs", "120"])
         .env("SOLDR_CACHE_DIR", cache_root)
         .env("HOME", home_root)
         .env("USERPROFILE", home_root)
         .env_remove("RUSTC_WRAPPER")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    cmd.spawn().expect("spawn soldr-daemon")
+        .stdin(Stdio::null());
+    common::tracked_child::spawn_tracked(&mut cmd).expect("spawn soldr-daemon")
 }
 
 /// How long to keep asking a daemon for status before concluding it stopped
@@ -148,17 +148,9 @@ fn wait_until_serving(cache_root: &Path, deadline: Instant) -> bool {
     false
 }
 
-fn stop_daemon(cache_root: &Path, child: &mut std::process::Child) {
+fn stop_daemon(cache_root: &Path, child: TrackedChild) {
     let _ = soldr_cli::daemon::client::shutdown(&direct_sock(cache_root));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            return;
-        }
-        std::thread::sleep(POLL);
-    }
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.wait_bounded(Duration::from_secs(5));
 }
 
 #[test]
@@ -167,7 +159,7 @@ fn two_daemons_against_one_root_never_coexist() {
     let home_root = unique_temp_dir("single-instance-home");
 
     // First daemon wins the root and starts serving.
-    let mut first = spawn_daemon(&cache_root, &home_root);
+    let first = spawn_daemon(&cache_root, &home_root);
     assert!(
         wait_until_serving(&cache_root, Instant::now() + READY_TIMEOUT),
         "first daemon never became ready"
@@ -184,26 +176,19 @@ fn two_daemons_against_one_root_never_coexist() {
 
     // Second daemon, same root. It must refuse rather than coexist.
     let second = spawn_daemon(&cache_root, &home_root);
-    let output = {
-        let deadline = Instant::now() + LOSER_EXIT_TIMEOUT;
-        let mut second = second;
-        loop {
-            if matches!(second.try_wait(), Ok(Some(_))) {
-                break second.wait_with_output().expect("collect loser output");
-            }
-            if Instant::now() >= deadline {
-                let _ = second.kill();
-                let _ = second.wait();
-                stop_daemon(&cache_root, &mut first);
-                panic!(
-                    "a second soldr-daemon stayed alive against the same root for \
-                         {LOSER_EXIT_TIMEOUT:?} — the single-instance guard did not hold \
-                         (issue #1814)"
-                );
-            }
-            std::thread::sleep(POLL);
-        }
-    };
+    let loser = second.wait_bounded(LOSER_EXIT_TIMEOUT);
+    if loser.timed_out {
+        stop_daemon(&cache_root, first);
+        panic!(
+            "a second soldr-daemon stayed alive against the same root for \
+             {LOSER_EXIT_TIMEOUT:?} — the single-instance guard did not hold \
+             (issue #1814); {}\nstdout:\n{}\nstderr:\n{}",
+            loser.disposition(),
+            loser.stdout_lossy(),
+            loser.stderr_lossy()
+        );
+    }
+    let output = loser.into_output();
 
     // The loser reports why. `daemon_entry` deliberately exits 0 on
     // AlreadyRunning (it is not an error for a redundant spawn to no-op),
@@ -231,7 +216,7 @@ fn two_daemons_against_one_root_never_coexist() {
         status.pid
     );
 
-    stop_daemon(&cache_root, &mut first);
+    stop_daemon(&cache_root, first);
 }
 
 #[test]
@@ -243,19 +228,14 @@ fn losing_daemon_leaves_the_state_db_openable() {
     let cache_root = unique_temp_dir("single-instance-db-cache");
     let home_root = unique_temp_dir("single-instance-db-home");
 
-    let mut first = spawn_daemon(&cache_root, &home_root);
+    let first = spawn_daemon(&cache_root, &home_root);
     assert!(
         wait_until_serving(&cache_root, Instant::now() + READY_TIMEOUT),
         "first daemon never became ready"
     );
 
-    let mut second = spawn_daemon(&cache_root, &home_root);
-    let deadline = Instant::now() + LOSER_EXIT_TIMEOUT;
-    while Instant::now() < deadline && !matches!(second.try_wait(), Ok(Some(_))) {
-        std::thread::sleep(POLL);
-    }
-    let _ = second.kill();
-    let _ = second.wait();
+    let second = spawn_daemon(&cache_root, &home_root);
+    let _ = second.wait_bounded(LOSER_EXIT_TIMEOUT);
 
     // The incumbent still answers, which is only possible if its own
     // state-DB access never lost the file lock to the rejected daemon.
@@ -277,5 +257,5 @@ fn losing_daemon_leaves_the_state_db_openable() {
         contention_log.display()
     );
 
-    stop_daemon(&cache_root, &mut first);
+    stop_daemon(&cache_root, first);
 }

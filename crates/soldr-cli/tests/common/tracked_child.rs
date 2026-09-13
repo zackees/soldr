@@ -46,6 +46,20 @@
 //! (`cargo_front_door::INHERIT_PARENT_PROCESS_GROUP_ENV`) so the front door
 //! keeps its cargo descendant in that same group instead of opening a new one
 //! of its own -- see `cli_cargo_doc_routes.rs`, which does the same.
+//!
+//! # A third defect: waiting before reading (soldr#3197)
+//!
+//! One process and no descendants is not enough either. `wait_timeout`
+//! followed by `wait_with_output` reads nothing until the child exits, so a
+//! child that writes more than the pipe buffer (64 KB on Linux) blocks in
+//! `write(2)` forever and the fixture reports a timeout with the output
+//! already sent. `run_soldr_with_timeout` hit exactly that when
+//! `soldr doctor --json` briefly grew to ~100 KB. Draining from spawn closes
+//! it, which is why [`TrackedChild::try_status`],
+//! [`TrackedChild::wait_for_exit`] and [`TrackedChild::wait_for_stdout`] exist:
+//! a fixture that must poll a child, or time its exit, can do so without ever
+//! holding an undrained pipe. `guards/piped_child_drain_lint.rs` fails the build
+//! when a test spawns a child with a piped stream it does not drain.
 
 use std::io::Read;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -183,6 +197,40 @@ pub(crate) fn spawn_tracked(command: &mut Command) -> std::io::Result<TrackedChi
 impl TrackedChild {
     pub(crate) fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// Reap the direct child if it has exited, without blocking. Safe to poll:
+    /// both pipes are already draining, so the child can never be parked on a
+    /// full pipe while the caller waits for it.
+    pub(crate) fn try_status(&mut self) -> Option<ExitStatus> {
+        self.child.try_wait().ok().flatten()
+    }
+
+    /// Wait up to `timeout` for the direct child only, leaving it running if it
+    /// has not exited. For callers that time the exit itself -- the snapshot in
+    /// [`Self::wait_bounded`] would add the drain grace to the measurement --
+    /// or that must keep the handle. Finish with `wait_bounded`.
+    pub(crate) fn wait_for_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
+        self.child.wait_timeout(timeout).ok().flatten()
+    }
+
+    /// Poll the drained stdout until it contains `needle`. Returns `false` at
+    /// `deadline`, or once the child has exited without printing it. The pipes
+    /// keep draining afterwards, unlike a reader thread that stops at the match.
+    pub(crate) fn wait_for_stdout(&mut self, needle: &str, deadline: Instant) -> bool {
+        loop {
+            if String::from_utf8_lossy(&self.stdout.snapshot()).contains(needle) {
+                return true;
+            }
+            if self.try_status().is_some() {
+                self.await_pipes(PIPE_DRAIN_GRACE);
+                return String::from_utf8_lossy(&self.stdout.snapshot()).contains(needle);
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Wait up to `timeout` for the child, then return regardless.

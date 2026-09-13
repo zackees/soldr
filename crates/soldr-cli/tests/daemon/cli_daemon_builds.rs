@@ -17,7 +17,6 @@ use soldr_cli::cache_lib::target_registry::TargetRegistry;
 use soldr_cli::daemon::client;
 use soldr_cli::daemon::db::{self, Event, EventKind};
 use soldr_cli::daemon::protocol::BuildRecord;
-use wait_timeout::ChildExt;
 
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -451,10 +450,8 @@ fn logs_unavailable_daemon_never_waits_for_its_database_lock() {
         .env("HOME", &home_root)
         .env("USERPROFILE", &home_root)
         .env("SOLDR_TEST_DIRECT_DAEMON_CONTROL", "1")
-        .env_remove("RUSTC_WRAPPER")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command.spawn().expect("spawn logs list");
+        .env_remove("RUSTC_WRAPPER");
+    let child = common::tracked_child::spawn_tracked(&mut command).expect("spawn logs list");
     // 10s, not the historical 3s: the old tight budget existed to
     // distinguish a fast IPC failure from redb's 5s exclusive-lock wait.
     // Post-SQLite there is no lock wait to detect (the CLI never opens the
@@ -462,16 +459,16 @@ fn logs_unavailable_daemon_never_waits_for_its_database_lock() {
     // budget only needs to bound the whole invocation -- and 3s raced the
     // front door's cold broker staging under load, which is startup noise,
     // not the property this test asserts.
-    let status = child
-        .wait_timeout(Duration::from_secs(10))
-        .expect("wait for logs list")
-        .unwrap_or_else(|| {
-            let _ = child.kill();
-            panic!("logs list hung instead of failing through IPC")
-        });
-    let output = child.wait_with_output().expect("collect logs list output");
+    let output = child.wait_bounded(Duration::from_secs(10));
     assert!(
-        !status.success(),
+        !output.timed_out,
+        "logs list hung instead of failing through IPC ({})\nstderr:\n{}",
+        output.disposition(),
+        output.stderr_lossy()
+    );
+    let output = output.into_output();
+    assert!(
+        !output.status.success(),
         "unreachable daemon must return an actionable CLI error"
     );
     assert!(

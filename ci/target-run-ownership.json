@@ -191,6 +191,7 @@
         "multicall_bin_layout",
         "no_panicking_argv_collection",
         "no_timed_test_guard",
+        "piped_child_drain_lint",
         "runtime_alias_identity"
       ],
       "disposition": "native-linux-once",

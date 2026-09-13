@@ -5,13 +5,12 @@ use crate::common;
 use crate::common::*;
 use serde_json::Value;
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::{
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use wait_timeout::ChildExt;
 
 #[test]
 fn cargo_front_door_runs_real_cargo() {
@@ -546,28 +545,19 @@ fn fake_always_slow_cargo_script(log_path: &Path) -> String {
 const CARGO_TIMEOUT_TEST_EXECUTION_BUDGET: Duration = Duration::from_secs(90);
 
 fn wait_for_timeout_test_completion(
-    mut child: std::process::Child,
+    child: common::tracked_child::TrackedChild,
     label: &str,
 ) -> std::process::Output {
-    if child
-        .wait_timeout(CARGO_TIMEOUT_TEST_EXECUTION_BUDGET)
-        .expect("wait for soldr timeout fixture")
-        .is_none()
-    {
-        let _ = child.kill();
-        let output = child
-            .wait_with_output()
-            .expect("collect outer-timeout fixture output");
-        panic!(
-            "{label}: outer test execution exceeded {:?}; stdout:\n{}\nstderr:\n{}",
-            CARGO_TIMEOUT_TEST_EXECUTION_BUDGET,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-    }
-    child
-        .wait_with_output()
-        .expect("collect soldr timeout fixture output")
+    let output = child.wait_bounded(CARGO_TIMEOUT_TEST_EXECUTION_BUDGET);
+    assert!(
+        !output.timed_out,
+        "{label}: outer test execution exceeded {:?} ({}); stdout:\n{}\nstderr:\n{}",
+        CARGO_TIMEOUT_TEST_EXECUTION_BUDGET,
+        output.disposition(),
+        output.stdout_lossy(),
+        output.stderr_lossy(),
+    );
+    output.into_output()
 }
 
 fn assert_startup_phases_in_order(stderr: &str, expected: &[&str]) {
@@ -1004,12 +994,9 @@ fn cargo_timeout_during_no_cache_retry_does_not_recurse() {
         .env("SOLDR_CARGO_WAIT_TIMEOUT_SECS", "4")
         .env("SOLDR_STARTUP_TRACE", "1")
         .env("SOLDR_CACHE_DIR", &cache_root)
-        .env_remove("ZCCACHE_DISABLE")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .env_remove("ZCCACHE_DISABLE");
     let output = wait_for_timeout_test_completion(
-        command
-            .spawn()
+        common::tracked_child::spawn_tracked(&mut command)
             .expect("spawn soldr cargo build with retry timeout"),
         "timed-out cargo retry attempt",
     );
@@ -1079,12 +1066,9 @@ fn cargo_explicit_timeout_retry_can_be_disabled() {
         .env("SOLDR_NO_CARGO_TIMEOUT_RETRY", "1")
         .env("SOLDR_STARTUP_TRACE", "1")
         .env("SOLDR_CACHE_DIR", &cache_root)
-        .env_remove("ZCCACHE_DISABLE")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .env_remove("ZCCACHE_DISABLE");
     let output = wait_for_timeout_test_completion(
-        command
-            .spawn()
+        common::tracked_child::spawn_tracked(&mut command)
             .expect("spawn soldr cargo build with retry disabled"),
         "retry-disabled timed-out cargo attempt",
     );

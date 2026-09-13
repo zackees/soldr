@@ -81,6 +81,16 @@ and ~30 s per gate for one of them. A test that exercises an install path must
 give soldr a fake rustup through `SOLDR_TEST_RUSTUP_BIN`; one that reaches the
 real rustup now fails with a `test tripwire:` diagnostic naming the command.
 
+A fixture that spawns a child and pipes its stdout or stderr must drain those
+pipes while the child runs (soldr#3197). A pipe holds about 64 KB; past that the
+child blocks in `write(2)` until someone reads, so `wait_timeout` followed by
+`wait_with_output` deadlocks as soon as the output grows, and the failure shows up
+as a timeout with the output already written. Spawn through
+`common::tracked_child::spawn_tracked`, which drains both pipes from the start. It
+also gives you `try_status`, `wait_for_exit` and `wait_for_stdout` for fixtures
+that poll a child or time its exit. `Command::output()` is always safe.
+`guards/piped_child_drain_lint.rs` fails the build on the undrained shape.
+
 ## Naming a failing test (soldr#2934)
 
 Since the category consolidation, a `crates/soldr-cli` integration test's full

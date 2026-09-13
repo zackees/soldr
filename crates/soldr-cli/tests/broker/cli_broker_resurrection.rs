@@ -1,8 +1,8 @@
 //! Process-level correctness coverage for soldr#2476 broker resurrection.
 
 use crate::common;
+use crate::common::tracked_child::TrackedChild;
 
-use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -87,14 +87,6 @@ fn kill_and_reap(child: &mut Child) {
         let _ = child.kill();
         let _ = child.wait();
     }
-}
-
-fn read_child_stderr(child: &mut Child) -> String {
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_string(&mut stderr);
-    }
-    stderr
 }
 
 fn resurrection_failure_context(
@@ -201,15 +193,22 @@ fn stop_broker_and_confirm_absent(home: &Path) -> Result<(), String> {
 
 fn cleanup_race_owners(
     home: &Path,
-    stale_owner: &mut Child,
-    replacement_owner: &mut Child,
+    stale_owner: TrackedChild,
+    replacement_owner: TrackedChild,
     incumbent: &mut Child,
 ) -> (String, String, Result<(), String>) {
-    kill_and_reap(stale_owner);
-    kill_and_reap(replacement_owner);
+    // soldr#3197: both owners' stderr has drained since spawn, so this collects
+    // it (terminating an owner still running) without the wait-then-read
+    // deadlock a raw piped child has.
+    let stale_stderr = stale_owner
+        .wait_bounded(Duration::ZERO)
+        .stderr_lossy()
+        .into_owned();
+    let replacement_stderr = replacement_owner
+        .wait_bounded(Duration::ZERO)
+        .stderr_lossy()
+        .into_owned();
     kill_and_reap(incumbent);
-    let stale_stderr = read_child_stderr(stale_owner);
-    let replacement_stderr = read_child_stderr(replacement_owner);
     let stopped = stop_broker_and_confirm_absent(home);
     (stale_stderr, replacement_stderr, stopped)
 }
@@ -465,20 +464,19 @@ fn issue_2920_expired_retirement_lease_preserves_replacement_resources() {
 
     let mut stale_owner = front_door_capturing_stderr(&home);
     stale_owner
-        .stderr(Stdio::piped())
         .env("SOLDR_TEST_KNOWN_BAD_STOP_PAUSE_MS", "30000")
         .env("SOLDR_TEST_KNOWN_BAD_STOP_READY_FILE", &stopped)
         .env(
             "SOLDR_TEST_KNOWN_BAD_STOP_CONTINUE_FILE",
             &continue_stale_owner,
         );
-    let mut stale_owner = stale_owner.spawn().expect("spawn stale retirement owner");
+    let mut stale_owner = common::tracked_child::spawn_tracked(&mut stale_owner)
+        .expect("spawn stale retirement owner");
     let stopped_observed = wait_for_path(&stopped, deadline);
     let stale_owner_marked_replacement = replacement_ready.exists();
 
     let mut replacement_owner = front_door_capturing_stderr(&home);
     replacement_owner
-        .stderr(Stdio::piped())
         // This is injected only into the contender that must prove its
         // replacement is genuinely STATUS-ready. The stale owner cannot
         // publish it while paused before cleanup.
@@ -486,8 +484,7 @@ fn issue_2920_expired_retirement_lease_preserves_replacement_resources() {
             "SOLDR_TEST_KNOWN_BAD_REPLACEMENT_READY_FILE",
             &replacement_ready,
         );
-    let mut replacement_owner = replacement_owner
-        .spawn()
+    let mut replacement_owner = common::tracked_child::spawn_tracked(&mut replacement_owner)
         .expect("spawn replacement owner after lease expiry");
     let replacement_ready_observed = wait_for_path(&replacement_ready, deadline);
     let replacement_status_text = broker_status(&home);
@@ -510,12 +507,8 @@ fn issue_2920_expired_retirement_lease_preserves_replacement_resources() {
         || replacement_image.is_none()
     {
         std::fs::write(&continue_stale_owner, b"continue\n").ok();
-        let (stale_stderr, replacement_stderr, cleanup) = cleanup_race_owners(
-            &home,
-            &mut stale_owner,
-            &mut replacement_owner,
-            &mut incumbent,
-        );
+        let (stale_stderr, replacement_stderr, cleanup) =
+            cleanup_race_owners(&home, stale_owner, replacement_owner, &mut incumbent);
         let diagnostics = resurrection_failure_context(&home, &stale_stderr, &replacement_stderr);
         panic!(
             "replacement never became ready before stale cleanup: stopped={stopped_observed} \
@@ -531,17 +524,15 @@ fn issue_2920_expired_retirement_lease_preserves_replacement_resources() {
     // we let the stale owner try cleanup. Its next lease renewal must fence
     // and leave both replacement resources byte-for-byte intact.
     std::fs::write(&continue_stale_owner, b"continue\n").expect("release stale owner");
-    let stale_status = wait_for_child(&mut stale_owner, deadline);
-    let replacement_status = wait_for_child(&mut replacement_owner, deadline);
+    let stale_status =
+        stale_owner.wait_for_exit(deadline.saturating_duration_since(Instant::now()));
+    let replacement_status =
+        replacement_owner.wait_for_exit(deadline.saturating_duration_since(Instant::now()));
     let incumbent_exit = wait_for_child(&mut incumbent, deadline);
     let after = broker_status(&home);
     let image_after = std::fs::read(&image);
-    let (stale_stderr, replacement_stderr, cleanup) = cleanup_race_owners(
-        &home,
-        &mut stale_owner,
-        &mut replacement_owner,
-        &mut incumbent,
-    );
+    let (stale_stderr, replacement_stderr, cleanup) =
+        cleanup_race_owners(&home, stale_owner, replacement_owner, &mut incumbent);
     let diagnostics = format!(
         "cleanup={cleanup:?}\n{}",
         resurrection_failure_context(&home, &stale_stderr, &replacement_stderr)
