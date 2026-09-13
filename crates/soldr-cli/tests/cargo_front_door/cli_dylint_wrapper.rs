@@ -430,11 +430,25 @@ fn missing_prebuilt_driver_fails_before_cargo_dylint_launch() {
     fs::remove_dir_all(root.join("drivers")).expect("remove prebuilt driver fixture");
     // soldr#3163: with the prebuilt driver gone, soldr asks the toolchain
     // catalogue for one before refusing. Left enabled, this test downloaded
-    // the real catalogue: 1.3 s on a fast network, 28-39 s on every CI gate,
-    // and the full 45 s retry budget against an unreachable catalogue. The
-    // behaviour under test is the refusal when no driver is available, so keep
-    // the catalogue out of it.
+    // the real catalogue, and ran out the full 45 s retry budget against an
+    // unreachable one. The behaviour under test is the refusal when no driver
+    // is available, so keep the catalogue out of it.
     command.env("SOLDR_MANIFEST_DISABLE", "1");
+    // soldr#3163: the same path also runs `rustup component add rustc-dev` and
+    // `llvm-tools-preview` for the fixture's nightly. The fixture fakes cargo,
+    // rustc and the driver but not rustup, so on any host without that exact
+    // nightly (every CI runner) the real rustup installed it: ~1.6 GB, 28-39 s
+    // on every gate, 58 s locally with only that toolchain removed. A fake
+    // rustup keeps the test on the refusal it asserts.
+    let fake_rustup = root.join("tools").join("rustup");
+    write_script(
+        &fake_rustup,
+        format!(
+            "#!/bin/sh\necho \"rustup argv=$*\" >> \"{}\"\nexit 0\n",
+            root.join("tool.log").display()
+        ),
+    );
+    command.env("SOLDR_TEST_RUSTUP_BIN", &fake_rustup);
 
     let output = command
         .args(["dylint", "--all"])
