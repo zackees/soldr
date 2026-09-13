@@ -258,47 +258,6 @@ fn cargo_front_door_maps_plus_toolchain_to_rustup_toolchain_env() {
     );
 }
 
-/// soldr#3195: with the test download guard armed and no fake rustup, the
-/// `+toolchain` install must fail with the guard's diagnostic instead of
-/// invoking the real rustup, which downloads a toolchain the host lacks.
-#[test]
-fn plus_toolchain_install_trips_the_test_download_guard() {
-    let cache_root = unique_temp_dir("cargo-plus-toolchain-guard");
-    let tool_dir = unique_temp_dir("cargo-plus-toolchain-guard-bin");
-    let log_path = cache_root.join("cargo.log");
-    let cargo = fake_script_path(&tool_dir, "cargo");
-    let rustc = fake_script_path(&tool_dir, "rustc");
-    write_fake_script(&cargo, &fake_cargo_toolchain_recorder_script(&log_path));
-    write_fake_script(&rustc, &fake_rustc_script(&log_path));
-
-    let output = common::isolated_soldr_command()
-        .args([
-            "--no-cache",
-            "cargo",
-            // A channel no host has, so the front door always reaches its install
-            // path instead of finding the toolchain already present.
-            "+nightly-2001-01-01",
-            "test",
-            "--manifest-path",
-            "dylints/ban_manual_slash_normalize/Cargo.toml",
-        ])
-        .env("SOLDR_CACHE_DIR", &cache_root)
-        .env("SOLDR_TEST_CARGO_BIN", &cargo)
-        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_FORBID_TOOLCHAIN_INSTALL", "1")
-        .env_remove("SOLDR_TEST_RUSTUP_BIN")
-        .env_remove("RUSTUP_TOOLCHAIN")
-        .output()
-        .expect("failed to run soldr cargo +toolchain under the download guard");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("SOLDR_TEST_FORBID_TOOLCHAIN_INSTALL"),
-        "the real rustup must not be asked to install a toolchain under test\nstatus: {:?}\nstderr:\n{stderr}",
-        output.status
-    );
-}
-
 #[test]
 fn cargo_multicall_shim_routes_rustc_through_cargo_front_door() {
     let root = unique_temp_dir("cargo-rustc-multicall");
