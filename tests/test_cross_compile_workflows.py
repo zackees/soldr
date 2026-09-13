@@ -818,6 +818,29 @@ def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
     assert "uses: Swatinem/rust-cache" not in cross_job
     assert "shared-key:" not in cross_job
 
+    # soldr#3148 step 2: the nextest archive is no longer capped. The old
+    # $GITHUB_ENV cap was only half applied (the daemon had already resolved
+    # its limit), heavy test links get measured exclusive admission
+    # (soldr#3154), and swap is enabled. The archive must unset inherited caps
+    # itself -- setup-soldr exports them job-wide -- while the two
+    # wrapper-less bootstrap steps, where admission cannot engage, keep theirs.
+    assert "Select nextest archive resources" not in cross_job
+    archive = _step_block(cross, "Build nextest archive")
+    # Order within the `run:` script only: the step's `env:` comment also
+    # names `soldr cargo nextest archive`.
+    archive_run = archive[archive.index("        run: |") :]
+    assert "unset CARGO_BUILD_JOBS SOLDR_JOBS" in archive_run
+    assert archive_run.index("unset CARGO_BUILD_JOBS SOLDR_JOBS") < archive_run.index(
+        "soldr cargo nextest archive \\"
+    )
+    for bootstrap in (
+        "Bootstrap soldr for SDK / blessed-build prep",
+        "Build current Soldr GNU proof driver",
+    ):
+        step = _step_block(cross, bootstrap)
+        assert 'RUSTC_WRAPPER: ""' in step
+        assert 'CARGO_BUILD_JOBS: "1"' in step and 'SOLDR_JOBS: "1"' in step
+
 
 def test_external_zccache_bootstraps_get_exclusive_service_access() -> None:
     bootstrap = (WORKFLOWS / "_bootstrap-e2e.yml").read_text(encoding="utf-8")

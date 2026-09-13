@@ -750,10 +750,19 @@ jobs:
       # Every archive routes through soldr. Darwin and Windows MSVC inherit
       # the blessed SDK + clang/lld env; Linux targets retain their
       # CARGO_TARGET_*_LINKER wrappers through the cargo front door.
-      - name: Select nextest archive resources
-        shell: bash
-        run: python3 .github/scripts/cross_build_resources.py --target '${{ inputs.target }}' --github-env "$GITHUB_ENV"
-
+      # soldr#3148 step 2: the archive used to be capped at jobs=1 by
+      # `cross_build_resources.py` writing CARGO_BUILD_JOBS/SOLDR_JOBS into
+      # $GITHUB_ENV. Measured on run 34774906903, that cap was only half
+      # applied: the daemon had already resolved its limit when an earlier
+      # step started it, so every archive logged "this build will use 3
+      # concurrent compiles (from default), not the 1 you asked for (from
+      # SOLDR_JOBS)" -- only Cargo's producer queue was serialized. The heavy
+      # links it existed to protect are the consolidated integration-test
+      # binaries, which get measured exclusive admission since soldr#3154,
+      # and swap is enabled above. Unset both knobs, including setup-soldr's
+      # inherited ones, as the Linux gate does; the job log's
+      # `soldr: daemon compile concurrency =` line (soldr#3206) records the
+      # limit that applied.
       - name: Build nextest archive
         shell: bash
         env:
@@ -765,6 +774,7 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: line-tables-only
         run: |
           set -euo pipefail
+          unset CARGO_BUILD_JOBS SOLDR_JOBS
           mkdir -p dist
           target='${{ inputs.target }}'
           archive="dist/${{ inputs.artifact_name }}-tests.tar.zst"
