@@ -63,6 +63,8 @@ pub mod lifecycle;
 pub mod maintenance;
 pub mod protocol;
 pub mod rss_ceiling;
+/// soldr#3210: runtime threads must outlive the compilers they spawn.
+pub(crate) mod runtime_threads;
 pub mod server;
 pub mod service_definition;
 /// SESSION `0x5350` endpoint per-connection handler (soldr#2388 Step 6d/7 /
