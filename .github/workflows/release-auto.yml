@@ -122,6 +122,14 @@ jobs:
           submodules: recursive
           ref: ${{ needs.prepare.outputs.commit_sha }}
 
+      # soldr#3148 step 1: the compile caps below are rung 4 of CLAUDE.md's
+      # ladder; swap is rung 3 and must be in place before any cap is lifted.
+      # The script degrades to a warning where swap cannot be enabled.
+      - name: Enlarge swap (OOM headroom)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash .github/scripts/setup_ci_swap.sh
+
       # soldr#2763: these jobs run .github/scripts/*.py and ci/*.py through
       # bare `python3`. Without pinning they inherit the runner image's
       # interpreter, which on macOS is old enough to lack Python 3.10+ APIs

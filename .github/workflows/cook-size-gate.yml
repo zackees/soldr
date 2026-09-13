@@ -69,6 +69,14 @@ jobs:
           path: soldr
           submodules: recursive
 
+      # soldr#3148 step 1: the compile caps below are rung 4 of CLAUDE.md's
+      # ladder; swap is rung 3 and must be in place before any cap is lifted.
+      # The script degrades to a warning where swap cannot be enabled.
+      - name: Enlarge swap (OOM headroom)
+        shell: bash
+        working-directory: soldr
+        run: bash .github/scripts/setup_ci_swap.sh
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
