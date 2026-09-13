@@ -65,6 +65,12 @@ pub struct MaintenanceStatus {
     pub filesystem_free_percent: Option<f64>,
     pub zccache: Option<EmbeddedDiskMaintenanceReport>,
     pub zccache_error: Option<String>,
+    /// When [`Self::zccache`] was measured. A deferred pass never reaches the
+    /// store, so it carries the last measured report forward with its original
+    /// time rather than blanking it (soldr#3077). Absent in files written
+    /// before this field existed.
+    #[serde(default)]
+    pub zccache_measured_at_ms: Option<i64>,
     pub cook: ComponentOutcome,
     pub history: ComponentOutcome,
     pub pep517_targets: ComponentOutcome,
@@ -102,6 +108,7 @@ impl MaintenanceStatus {
             filesystem_free_percent: free_percent,
             zccache: None,
             zccache_error: None,
+            zccache_measured_at_ms: None,
             cook: ComponentOutcome::default(),
             history: ComponentOutcome::default(),
             pep517_targets: ComponentOutcome::default(),
@@ -138,7 +145,7 @@ pub async fn run_loop(context: MaintenanceContext) {
             if succeeded && kind == MaintenanceKind::Full {
                 let _ = record_last_full(&context.paths, now);
             }
-            let _ = write_status(&context.paths, &status);
+            let _ = persist_status(&context.paths, status);
             outcome.lease_acquired
         }
     })
@@ -249,7 +256,10 @@ async fn run_once_with_lease_state(
         .maintain_disk(kind == MaintenanceKind::Full)
         .await
     {
-        Ok(report) => status.zccache = Some(report),
+        Ok(report) => {
+            status.zccache = Some(report);
+            status.zccache_measured_at_ms = Some(unix_millis(now));
+        }
         Err(error) => status.zccache_error = Some(error.to_string()),
     }
     let zccache_pressure = status
@@ -358,7 +368,7 @@ pub async fn run_manual_root(root: PathBuf) -> Result<MaintenanceStatus, String>
     if status.successful_at_ms.is_some() {
         record_last_full(&paths, now).map_err(|error| error.to_string())?;
     }
-    write_status(&paths, &status).map_err(|error| error.to_string())?;
+    let status = persist_status(&paths, status).map_err(|error| error.to_string())?;
     if let Ok(service) = Arc::try_unwrap(service) {
         service
             .shutdown(zccache::embedded::ShutdownMode::Graceful)
@@ -708,6 +718,47 @@ fn record_last_full_attempt(paths: &SoldrPaths, now: SystemTime) -> std::io::Res
         &full_attempt_marker_path(paths),
         format!("{}\n", unix_millis(now)).as_bytes(),
     )
+}
+
+/// Write `status`, first carrying the last measured zccache usage forward
+/// when this pass did not reach the store (soldr#3077).
+///
+/// A pass deferred by an active build writes a status with no zccache report.
+/// Replacing the file with that erased the only record of how large the
+/// artifact store is, so on a host that is usually building `soldr status`
+/// showed no store size at all while `.staged-v2` held tens of GiB.
+fn persist_status(
+    paths: &SoldrPaths,
+    mut status: MaintenanceStatus,
+) -> std::io::Result<MaintenanceStatus> {
+    carry_forward_zccache_measurement(read_status(paths).as_ref(), &mut status);
+    write_status(paths, &status)?;
+    Ok(status)
+}
+
+/// Keep the previous pass's zccache report when this one has neither a fresh
+/// report nor an error. A fresh report always wins, and a failed measurement
+/// is reported as failed rather than hidden behind a stale number.
+fn carry_forward_zccache_measurement(
+    previous: Option<&MaintenanceStatus>,
+    status: &mut MaintenanceStatus,
+) {
+    if status.zccache.is_some() || status.zccache_error.is_some() {
+        return;
+    }
+    let Some(previous) = previous else {
+        return;
+    };
+    let Some(report) = previous.zccache.clone() else {
+        return;
+    };
+    status.zccache = Some(report);
+    // A status file written before the measured-at field existed still names
+    // the pass that produced its report.
+    status.zccache_measured_at_ms = previous
+        .zccache_measured_at_ms
+        .or(previous.successful_at_ms)
+        .or(Some(previous.attempted_at_ms));
 }
 
 fn write_status(paths: &SoldrPaths, status: &MaintenanceStatus) -> std::io::Result<()> {

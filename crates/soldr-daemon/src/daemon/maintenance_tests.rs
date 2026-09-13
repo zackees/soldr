@@ -515,3 +515,133 @@ fn invalid_config_does_not_disable_independent_collectors() {
     assert!(outcomes.pep517_targets.error.is_none());
     assert!(outcomes.legacy_zccache.error.is_none());
 }
+
+fn disk_report(usage_after_bytes: u64) -> EmbeddedDiskMaintenanceReport {
+    EmbeddedDiskMaintenanceReport {
+        kind: "full".into(),
+        pressure: "none".into(),
+        budget_bytes: 100 << 30,
+        usage_before_bytes: usage_after_bytes,
+        usage_after_bytes,
+        bytes_reclaimed: 0,
+        artifacts_removed: 0,
+        expired_artifacts_removed: 0,
+        pending_write_bytes: 0,
+    }
+}
+
+fn status_attempted_at(attempted_at_ms: i64) -> MaintenanceStatus {
+    MaintenanceStatus {
+        schema_version: STATUS_SCHEMA_VERSION,
+        owning_root: "/root".into(),
+        daemon_identity: "soldr:embedded-v1".into(),
+        embedded_cache_root: "/root/cache/zccache/daemon-state/embedded-v1".into(),
+        disk_policy: EmbeddedDiskPolicy {
+            source: "dynamic_5_percent_clamped_40_200_gib".into(),
+            max_cache_bytes: None,
+            max_cache_percent: None,
+        },
+        attempted_at_ms,
+        successful_at_ms: None,
+        last_full_at_ms: None,
+        kind: MaintenanceKind::Full,
+        deferred_reason: None,
+        filesystem_capacity_bytes: None,
+        filesystem_free_bytes: None,
+        filesystem_free_percent: None,
+        zccache: None,
+        zccache_error: None,
+        zccache_measured_at_ms: None,
+        cook: ComponentOutcome::default(),
+        history: ComponentOutcome::default(),
+        pep517_targets: ComponentOutcome::default(),
+        pep517_wheels: ComponentOutcome::default(),
+        trash: ComponentOutcome::default(),
+        workspace_targets: ComponentOutcome::default(),
+        daemon_events: ComponentOutcome::default(),
+        legacy_zccache: ComponentOutcome::default(),
+    }
+}
+
+fn completed_pass(attempted_at_ms: i64, usage_after_bytes: u64) -> MaintenanceStatus {
+    let mut status = status_attempted_at(attempted_at_ms);
+    status.successful_at_ms = Some(attempted_at_ms);
+    status.zccache = Some(disk_report(usage_after_bytes));
+    status.zccache_measured_at_ms = Some(attempted_at_ms);
+    status
+}
+
+fn deferred_pass(attempted_at_ms: i64) -> MaintenanceStatus {
+    let mut status = status_attempted_at(attempted_at_ms);
+    status.deferred_reason = Some("build_active".into());
+    status
+}
+
+/// soldr#3077: a pass deferred by an active build must not erase the store
+/// size the last completed pass measured.
+#[test]
+fn a_deferred_pass_keeps_the_last_measured_zccache_usage() {
+    let previous = completed_pass(100, 64 << 30);
+    let mut status = deferred_pass(200);
+
+    carry_forward_zccache_measurement(Some(&previous), &mut status);
+
+    assert_eq!(status.zccache, Some(disk_report(64 << 30)));
+    assert_eq!(status.zccache_measured_at_ms, Some(100));
+    // Still reported as the deferred attempt it was.
+    assert_eq!(status.successful_at_ms, None);
+    assert_eq!(status.deferred_reason.as_deref(), Some("build_active"));
+    assert_eq!(status.attempted_at_ms, 200);
+}
+
+#[test]
+fn a_fresh_zccache_measurement_is_never_replaced_by_an_older_one() {
+    let previous = completed_pass(100, 64 << 30);
+    let mut status = completed_pass(200, 1 << 30);
+
+    carry_forward_zccache_measurement(Some(&previous), &mut status);
+
+    assert_eq!(status.zccache, Some(disk_report(1 << 30)));
+    assert_eq!(status.zccache_measured_at_ms, Some(200));
+}
+
+#[test]
+fn a_failed_zccache_measurement_is_not_hidden_behind_a_stale_report() {
+    let previous = completed_pass(100, 64 << 30);
+    let mut status = status_attempted_at(200);
+    status.zccache_error = Some("store unavailable".into());
+
+    carry_forward_zccache_measurement(Some(&previous), &mut status);
+
+    assert_eq!(status.zccache, None);
+    assert_eq!(status.zccache_measured_at_ms, None);
+}
+
+/// The whole path `soldr status` reads: a status file written before the
+/// measured-at field existed, then a deferred pass persisted over it.
+#[test]
+fn a_deferred_pass_persisted_over_an_older_status_file_keeps_its_usage() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+    let mut legacy = serde_json::to_value(completed_pass(100, 64 << 30)).expect("encode");
+    legacy
+        .as_object_mut()
+        .expect("status object")
+        .remove("zccache_measured_at_ms");
+    std::fs::create_dir_all(status_path(&paths).parent().expect("parent")).expect("status dir");
+    std::fs::write(
+        status_path(&paths),
+        serde_json::to_vec(&legacy).expect("json"),
+    )
+    .expect("legacy status");
+
+    let written = persist_status(&paths, deferred_pass(200)).expect("persist");
+    let read_back = read_status(&paths).expect("status file");
+
+    assert_eq!(written, read_back);
+    assert_eq!(read_back.zccache, Some(disk_report(64 << 30)));
+    // An older file has no measured-at time, so the pass that measured it
+    // stands in for it.
+    assert_eq!(read_back.zccache_measured_at_ms, Some(100));
+    assert_eq!(read_back.deferred_reason.as_deref(), Some("build_active"));
+}
