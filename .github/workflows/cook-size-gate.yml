@@ -209,3 +209,22 @@ jobs:
             FAIL=1
           fi
           exit ${FAIL}
+
+      # soldr#3148: the uncapped ci-release build had its rustc child for
+      # soldr_daemon SIGTERMed with no memory pressure. The daemon's log and
+      # compile journal are the evidence and never reach the job log, so they
+      # are uploaded on every run. Same path set as _bootstrap-e2e.yml, rooted at
+      # the setup-soldr state dir.
+      - name: Upload soldr daemon logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cook-size-gate-soldr-logs
+          if-no-files-found: ignore
+          # setup-soldr points SOLDR_CACHE_DIR here, not at ~/.soldr.
+          path: |
+            ${{ runner.temp }}/setup-soldr-soldr/logs/
+            ${{ runner.temp }}/setup-soldr-soldr/cache/zccache/logs/
+            ${{ runner.temp }}/setup-soldr-soldr/cache/zccache/history/**/*.json
+            ${{ runner.temp }}/setup-soldr-soldr/cache/zccache/history/**/*.jsonl
