@@ -226,6 +226,7 @@ pub(crate) mod broker_inventory;
 mod broker_launcher;
 pub(crate) mod broker_lease;
 pub(crate) mod broker_policy;
+pub(crate) mod broker_purge;
 pub(crate) mod broker_reaper;
 pub(crate) mod broker_server;
 pub mod broker_spawn;

@@ -71,6 +71,25 @@ pub(crate) async fn run_idle_standdown(
     }
 }
 
+/// Spawn the stand-down task for a serving broker, or nothing when idle exit
+/// is disabled. "Used" is any open connection or any owned route; the route
+/// reaper forgets routes whose requesters are gone, so a broker whose clients
+/// all exited becomes idle once the reap grace passes. Sampling never waits
+/// longer than the window itself, so a short test window is honoured promptly.
+pub(crate) fn spawn_standdown(
+    shutdown: &Arc<ShutdownSignal>,
+    is_idle: impl FnMut() -> bool + Send + 'static,
+) -> Option<tokio::task::JoinHandle<()>> {
+    idle_exit_window().map(|window| {
+        tokio::spawn(run_idle_standdown(
+            Arc::clone(shutdown),
+            IDLE_CHECK_INTERVAL.min(window),
+            window,
+            is_idle,
+        ))
+    })
+}
+
 #[cfg(test)]
 #[path = "broker_idle_tests.rs"]
 mod tests;

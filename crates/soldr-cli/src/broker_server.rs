@@ -388,22 +388,10 @@ async fn serve_loop(
         crate::broker_image_watch::BROKER_HOME_CHECK_INTERVAL,
         move || crate::broker_image_watch::install_directory_present(&executable),
     ));
-    // soldr#3193: a broker nobody has used for the idle window stands down,
-    // so a throwaway-HOME fixture broker does not outlive its test suite by
-    // days. "Used" is any open connection or any owned route; the route
-    // reaper above forgets routes whose requesters are gone, so a broker
-    // whose clients all exited becomes idle once the reap grace passes.
-    let idle_standdown = crate::broker_idle::idle_exit_window().map(|window| {
-        let idle_state = Arc::clone(&state);
-        tokio::spawn(crate::broker_idle::run_idle_standdown(
-            Arc::clone(&shutdown),
-            // Sample at least once per window so a short test window is
-            // honoured promptly.
-            crate::broker_idle::IDLE_CHECK_INTERVAL.min(window),
-            window,
-            move || idle_state.is_idle(),
-        ))
-    });
+    // soldr#3193: a broker nobody uses for the idle window stands down.
+    let idle_state = Arc::clone(&state);
+    let idle_standdown =
+        crate::broker_idle::spawn_standdown(&shutdown, move || idle_state.is_idle());
     // soldr#3057: the broker watches its own RSS against the same
     // SOLDR_DAEMON_RSS_CEILING_BYTES ceiling the daemon uses, rather than
     // cross-checking a specific daemon's breach.
@@ -484,12 +472,9 @@ async fn serve_loop(
     // interval to finish.
     reaper.abort();
     home_watch.abort();
-    if let Some(handle) = idle_standdown {
-        handle.abort();
-    }
     // Same reasoning as the reaper: a retiring broker must not wait out an
     // RSS_SAMPLE_INTERVAL sleep to finish shutting down.
-    if let Some(handle) = rss_watchdog {
+    for handle in [rss_watchdog, idle_standdown].into_iter().flatten() {
         handle.abort();
     }
     crate::platform::ipc::broker::retire_endpoint(&endpoint);
