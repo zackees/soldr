@@ -249,7 +249,14 @@ fn external_zccache_profiles_bound_internal_codegen_parallelism() {
     let root = repo_root();
     let manifest = fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
 
-    for profile in ["dev", "test", "ci-bootstrap", "ci-release", "ci-nextest"] {
+    for profile in [
+        "dev",
+        "test",
+        "release",
+        "ci-bootstrap",
+        "ci-release",
+        "ci-nextest",
+    ] {
         let section = format!("profile.{profile}.package.zccache");
         let lines = read_section_lines(&root.join("Cargo.toml"), &section);
         assert!(

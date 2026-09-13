@@ -322,7 +322,18 @@ strip = "none"
 # the optimization and size benefit while keeping CI compilation feasible.
 lto = "thin"
 # Single codegen unit unlocks the last bit of optimization. Slows
-# clean builds further; release-only, so acceptable.
+# clean builds further; release-only, so acceptable. Deliberate, not a copy of
+# the zccache override below (soldr#3055): it predates that override (#929,
+# citing #920's size work), and the owner's standing direction is that shipped
+# release builds stay at maximum optimization with LTO.
+codegen-units = 1
+
+# soldr#3055: bound the amalgamated zccache unit here too, rather than leaning
+# on the workspace-wide `codegen-units = 1` above. Every other profile carries
+# this override; without it, loosening the release-wide setting would silently
+# unbound the one crate that genuinely needs a single codegen unit.
+# `version_lockstep.rs` guards it alongside the others.
+[profile.release.package.zccache]
 codegen-units = 1
 
 # soldr#1282 — fast-compile profile for the CI bootstrap step.
