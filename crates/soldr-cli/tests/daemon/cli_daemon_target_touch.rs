@@ -339,6 +339,8 @@ fn a_touch_during_daemon_bringup_is_acknowledged_before_serving_starts() {
     const SERVE_PAUSE: Duration = Duration::from_secs(6);
     let cache_root = unique_temp_dir("target-touch-bringup-cache");
     let home_root = unique_temp_dir("target-touch-bringup-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let target = cache_root.join("dev").join("workspace").join("target");
     std::fs::create_dir_all(&target).expect("seed target dir");
     let sock = direct_sock(&cache_root);
@@ -397,6 +399,8 @@ fn a_touch_during_daemon_bringup_is_acknowledged_before_serving_starts() {
 fn a_cook_touch_is_acknowledged() {
     let cache_root = unique_temp_dir("cook-touch-ack-cache");
     let home_root = unique_temp_dir("cook-touch-ack-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let sock = direct_sock(&cache_root);
     let _daemon = DaemonProc::spawn(&cache_root, &home_root);
 
