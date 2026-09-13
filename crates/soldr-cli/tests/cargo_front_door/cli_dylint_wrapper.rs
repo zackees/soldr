@@ -227,6 +227,7 @@ fn dylint_front_door_preserves_direct_and_nested_compiler_chains() {
         return;
     }
     let root = unique_temp_dir("dylint-wrapper-success");
+    let _broker = crate::common::BrokerHomeGuard::new(&root.join("cache"), &root.join("home"));
     let output = dylint_command(&root)
         .args(["cargo", "dylint", "--all"])
         .output()
@@ -276,6 +277,7 @@ fn dylint_wrapper_shim_keeps_the_effective_mirror_paired() {
         return;
     }
     let root = unique_temp_dir("dylint-wrapper-mirror");
+    let _broker = crate::common::BrokerHomeGuard::new(&root.join("cache"), &root.join("home"));
     let output = dylint_command(&root)
         .args(["cargo", "dylint", "--all"])
         .output()
@@ -325,6 +327,7 @@ fn dylint_front_door_preserves_failing_nested_diagnostics_and_exit() {
         return;
     }
     let root = unique_temp_dir("dylint-wrapper-failure");
+    let _broker = crate::common::BrokerHomeGuard::new(&root.join("cache"), &root.join("home"));
     let output = dylint_command(&root)
         .args(["dylint", "--all"])
         .env("DYLINT_TEST_FAIL", "1")
@@ -362,6 +365,7 @@ fn dylint_component_conflict_preserves_rustup_stderr_and_names_reset() {
         return;
     }
     let root = unique_temp_dir("dylint-component-conflict");
+    let _broker = crate::common::BrokerHomeGuard::new(&root.join("cache"), &root.join("home"));
     let channel = format!(
         "nightly-2026-05-26-{}",
         soldr_cli::pyo3_detect::host_triple()
@@ -426,6 +430,7 @@ fn missing_prebuilt_driver_fails_before_cargo_dylint_launch() {
         return;
     }
     let root = unique_temp_dir("dylint-missing-prebuilt");
+    let _broker = crate::common::BrokerHomeGuard::new(&root.join("cache"), &root.join("home"));
     let mut command = dylint_command(&root);
     fs::remove_dir_all(root.join("drivers")).expect("remove prebuilt driver fixture");
     // soldr#3163: with the prebuilt driver gone, soldr asks the toolchain
@@ -489,6 +494,7 @@ fn hanging_driver_probe_is_killed_and_reaped() {
         return;
     }
     let root = unique_temp_dir("dylint-hang-probe");
+    let _broker = crate::common::BrokerHomeGuard::new(&root.join("cache"), &root.join("home"));
     let mut command = dylint_command(&root);
     let channel = format!(
         "nightly-2026-05-26-{}",
@@ -558,6 +564,7 @@ fn inherited_dylint_scope_skips_the_driver_preflight() {
         return;
     }
     let root = unique_temp_dir("dylint-inherited-scope");
+    let _broker = crate::common::BrokerHomeGuard::new(&root.join("cache"), &root.join("home"));
     let mut command = dylint_command(&root);
     fs::remove_dir_all(root.join("drivers")).expect("remove prebuilt driver fixture");
     let channel = format!(
@@ -599,6 +606,7 @@ fn dylint_run_writes_the_prepared_marker_for_the_warm_path() {
         return;
     }
     let root = unique_temp_dir("dylint-wrapper-marker");
+    let _broker = crate::common::BrokerHomeGuard::new(&root.join("cache"), &root.join("home"));
     let output = dylint_command(&root)
         .args(["cargo", "dylint", "--all"])
         .output()
@@ -640,6 +648,7 @@ fn shim_dispatch_failure_is_not_annotated_as_silent() {
         return;
     }
     let root = unique_temp_dir("dylint-shim-spoke");
+    let _broker = crate::common::BrokerHomeGuard::new(&root.join("cache"), &root.join("home"));
     let shim = root.join("soldr-dylint");
     std::fs::hard_link(common::soldr_bin(), &shim)
         .or_else(|_| std::fs::copy(common::soldr_bin(), &shim).map(|_| ()))

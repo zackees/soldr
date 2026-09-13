@@ -166,6 +166,8 @@ fn registry_row_exists(cache_root: &Path, target_path: &Path) -> Option<i64> {
 fn unavailable_daemon_does_not_open_state_db() {
     let cache_root = unique_temp_dir("target-touch-fallback-cache");
     let home_root = unique_temp_dir("target-touch-fallback-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let target = cache_root.join("dev").join("workspace").join("target");
     std::fs::create_dir_all(&target).expect("seed target dir");
 
@@ -190,6 +192,8 @@ fn unavailable_daemon_does_not_open_state_db() {
 fn daemon_path_writes_via_ipc_when_available() {
     let cache_root = unique_temp_dir("target-touch-daemon-cache");
     let home_root = unique_temp_dir("target-touch-daemon-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let target = cache_root.join("dev").join("workspace").join("target");
     std::fs::create_dir_all(&target).expect("seed target dir");
 

@@ -175,6 +175,8 @@ fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
 fn cache_flush_checkpoints_embedded_state() {
     let cache_root = unique_temp_dir("flush-caches-cache");
     let home_root = unique_temp_dir("flush-caches-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
 
     let out = run_soldr(&["cache", "flush", "--json"], &cache_root, &home_root);
@@ -240,6 +242,8 @@ fn cache_flush_checkpoints_embedded_state() {
 fn cache_shutdown_stops_soldr_daemon_and_waits_for_exit() {
     let cache_root = unique_temp_dir("shutdown-cache");
     let home_root = unique_temp_dir("shutdown-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let mut daemon = DaemonProc::spawn(&cache_root, &home_root);
 
     let out = run_soldr(
@@ -277,6 +281,8 @@ fn cache_shutdown_stops_soldr_daemon_and_waits_for_exit() {
 fn daemon_stop_does_not_return_before_process_exit() {
     let cache_root = unique_temp_dir("daemon-stop-cache");
     let home_root = unique_temp_dir("daemon-stop-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let mut daemon = DaemonProc::spawn(&cache_root, &home_root);
 
     let out = run_soldr(&["daemon", "stop"], &cache_root, &home_root);

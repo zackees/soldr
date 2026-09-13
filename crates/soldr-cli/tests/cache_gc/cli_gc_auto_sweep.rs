@@ -17,6 +17,9 @@ use crate::common;
 fn gc_auto_sweep_runs_and_logs_start_line() {
     let cache_root = tempfile::tempdir().expect("cache tempdir");
     let home_root = tempfile::tempdir().expect("home tempdir");
+    // soldr#3193: declared after the dirs so it drops before them and
+    // `broker stop` still resolves the fixture endpoint.
+    let _broker = crate::common::BrokerHomeGuard::new(cache_root.path(), home_root.path());
 
     let out = Command::new(common::soldr_bin())
         .args(["gc", "auto-sweep"])

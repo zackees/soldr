@@ -48,6 +48,7 @@ fn seed_stale_copy(scan_root: &Path) -> String {
 #[test]
 fn doctor_json_reports_stale_copies_and_daemon_processes() {
     let workspace = common::unique_temp_dir("doctor-standalone-dirty");
+    let _broker = common::BrokerHomeGuard::new(&workspace, &workspace);
     let scan_root = workspace.join("zccache-root");
     let stale = seed_stale_copy(&scan_root);
     let process_list = workspace.join("procs.txt");
@@ -78,6 +79,7 @@ fn doctor_json_reports_stale_copies_and_daemon_processes() {
 #[test]
 fn doctor_human_output_warns_on_standalone_leftovers() {
     let workspace = common::unique_temp_dir("doctor-standalone-human");
+    let _broker = common::BrokerHomeGuard::new(&workspace, &workspace);
     let scan_root = workspace.join("zccache-root");
     seed_stale_copy(&scan_root);
     let process_list = workspace.join("procs.txt");
@@ -107,6 +109,7 @@ fn doctor_human_output_warns_on_standalone_leftovers() {
 #[test]
 fn doctor_reports_clean_baseline_when_no_leftovers() {
     let workspace = common::unique_temp_dir("doctor-standalone-clean");
+    let _broker = common::BrokerHomeGuard::new(&workspace, &workspace);
     let scan_root = workspace.join("zccache-root");
     fs::create_dir_all(scan_root.join("v1.12.15").join("runtime-binaries"))
         .expect("create empty runtime-binaries");

@@ -191,6 +191,8 @@ fn end_to_end_pack_then_record_then_lookup_hits() {
     }
     let cache_root = unique_temp_dir("e2e-cache");
     let home_root = unique_temp_dir("e2e-home");
+    // soldr#3193: stop the broker this HOME spawns when the test ends.
+    let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 
