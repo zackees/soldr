@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub const DEFAULT_MAX_AGE: Duration = Duration::from_secs(4 * 24 * 60 * 60);
+/// The shared soldr-owned staleness gate (soldr#3079).
+pub const DEFAULT_MAX_AGE: Duration = crate::cache_lib::gc_policy::STALENESS_GATE;
 pub const DEFAULT_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const SANITIZED_MIGRATION_MARKER: &str = ".sanitized-history-v1";
 const LEGACY_SESSION_FILES_MIGRATION_MARKER: &str = ".legacy-session-files-v1";
@@ -587,10 +588,13 @@ mod tests {
         let db_path = paths.root.join("state.sqlite3");
         let now = UNIX_EPOCH + Duration::from_secs(100 * 24 * 60 * 60);
         let now_ms = now.duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+        // Past the 72 h staleness gate (soldr#3079): only the 10-day row. The
+        // 2- and 1-day rows are inside it, so the older of them goes to the
+        // size cap instead.
         for (id, age_days, active) in [
             (1_u64, 10_u64, false),
-            (2, 3, false),
-            (3, 2, false),
+            (2, 2, false),
+            (3, 1, false),
             (4, 90, true),
         ] {
             let dir = history_root(&paths).join(id.to_string());

@@ -9,7 +9,8 @@ use crate::core::SoldrPaths;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-pub const PRESSURE_MAX_AGE: Duration = Duration::from_secs(4 * 24 * 60 * 60);
+/// The shared soldr-owned staleness gate (soldr#3079).
+pub const PRESSURE_MAX_AGE: Duration = crate::cache_lib::gc_policy::STALENESS_GATE;
 pub const ABSOLUTE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// How many PEP 517 target namespaces to keep, newest first, regardless of

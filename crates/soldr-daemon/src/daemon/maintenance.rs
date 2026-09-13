@@ -20,7 +20,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const PRESSURE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 pub const FULL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const EVENT_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-const PRESSURE_STALE_AGE: Duration = Duration::from_secs(4 * 24 * 60 * 60);
+// soldr#3079: the shared soldr-owned staleness gate, not a copy of it.
+const PRESSURE_STALE_AGE: Duration = crate::cache_lib::gc_policy::STALENESS_GATE;
 const FULL_STALE_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const STATUS_SCHEMA_VERSION: u32 = 2;
 const FULL_MARKER: &str = "last-full-v1";

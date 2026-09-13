@@ -284,7 +284,7 @@ pub(crate) fn print_maintenance_status(
         println!("  filesystem:     free={free} bytes ({percent:.1}%)");
     }
     println!(
-        "  schedule:       pressure every 5m; full age pass every 24h; 4d pressure / 30d absolute expiry"
+        "  schedule:       pressure every 5m; full age pass every 24h; 72h pressure / 30d absolute expiry (embedded zccache: 4d pressure)"
     );
     println!(
         "  last attempted: {} ms since epoch",

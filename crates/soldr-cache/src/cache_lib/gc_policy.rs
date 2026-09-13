@@ -96,6 +96,16 @@ pub struct EvictionAction {
 
 const DAY: u64 = 24 * 60 * 60;
 const HOUR: u64 = 60 * 60;
+
+/// How long a soldr-owned item must sit unused before reclamation may take it.
+///
+/// soldr#3079: 72 h is the weekend, not a round number. Someone who stops on
+/// Friday evening and returns Monday morning has been away about 63 h, so a
+/// shorter gate destroys a returning user's state and a much longer one stops
+/// reclaiming on a machine that fills its disk in days. It was four days.
+/// The embedded zccache store keeps its own ages upstream, and the 30-day
+/// absolute expiry is unchanged.
+pub const STALENESS_GATE: Duration = Duration::from_secs(72 * HOUR);
 const GIB: u64 = 1024 * 1024 * 1024;
 
 fn always(_: &GcContext) -> bool {
@@ -190,8 +200,8 @@ pub fn registry() -> Vec<GcCategory> {
             label: "build history",
             cost_tier: CostTier::BuildHistory,
             retention: RetentionPolicy {
-                pressure_age: Some(Duration::from_secs(4 * DAY)),
-                full_age: Some(Duration::from_secs(4 * DAY)),
+                pressure_age: Some(STALENESS_GATE),
+                full_age: Some(STALENESS_GATE),
                 size_cap: Some(GIB),
                 min_age_floor: Duration::ZERO,
                 keep_newest: 0,
@@ -205,7 +215,7 @@ pub fn registry() -> Vec<GcCategory> {
             label: "pep517 targets",
             cost_tier: CostTier::Pep517Build,
             retention: RetentionPolicy {
-                pressure_age: Some(Duration::from_secs(4 * DAY)),
+                pressure_age: Some(STALENESS_GATE),
                 full_age: Some(Duration::from_secs(30 * DAY)),
                 size_cap: None,
                 min_age_floor: Duration::ZERO,
@@ -220,7 +230,7 @@ pub fn registry() -> Vec<GcCategory> {
             label: "pep517 wheels",
             cost_tier: CostTier::Pep517Build,
             retention: RetentionPolicy {
-                pressure_age: Some(Duration::from_secs(4 * DAY)),
+                pressure_age: Some(STALENESS_GATE),
                 full_age: Some(Duration::from_secs(30 * DAY)),
                 size_cap: None,
                 min_age_floor: Duration::ZERO,
@@ -250,7 +260,7 @@ pub fn registry() -> Vec<GcCategory> {
             label: "workspace target dirs",
             cost_tier: CostTier::WorkspaceTarget,
             retention: RetentionPolicy {
-                pressure_age: Some(Duration::from_secs(4 * DAY)),
+                pressure_age: Some(STALENESS_GATE),
                 full_age: Some(Duration::from_secs(30 * DAY)),
                 size_cap: None,
                 min_age_floor: Duration::from_secs(60 * 60),
@@ -280,7 +290,7 @@ pub fn registry() -> Vec<GcCategory> {
             label: "legacy cache roots",
             cost_tier: CostTier::LegacyRoot,
             retention: RetentionPolicy {
-                pressure_age: Some(Duration::from_secs(4 * DAY)),
+                pressure_age: Some(STALENESS_GATE),
                 full_age: Some(Duration::from_secs(30 * DAY)),
                 size_cap: None,
                 min_age_floor: Duration::ZERO,
@@ -367,7 +377,9 @@ mod tests {
                 .find(|action| action.category_id == id)
                 .unwrap()
         };
-        assert_eq!(by("history").older_than, Some(Duration::from_secs(4 * DAY)));
+        // soldr#3079: soldr-owned reclamation is gated at 72 h, the weekend.
+        assert_eq!(by("history").older_than, Some(STALENESS_GATE));
+        assert_eq!(STALENESS_GATE, Duration::from_secs(72 * HOUR));
         assert_eq!(by("history").size_cap, Some(GIB));
         assert_eq!(
             by("pep517_targets").older_than,
@@ -394,14 +406,15 @@ mod tests {
                 .find(|action| action.category_id == id)
                 .unwrap()
         };
-        assert_eq!(
-            by("pep517_targets").older_than,
-            Some(Duration::from_secs(4 * DAY))
-        );
-        assert_eq!(
-            by("workspace_targets").older_than,
-            Some(Duration::from_secs(4 * DAY))
-        );
+        for id in [
+            "history",
+            "pep517_targets",
+            "pep517_wheels",
+            "workspace_targets",
+            "legacy_zccache",
+        ] {
+            assert_eq!(by(id).older_than, Some(STALENESS_GATE), "{id}");
+        }
         assert!(actions
             .iter()
             .all(|action| action.category_id != "daemon_events"));
