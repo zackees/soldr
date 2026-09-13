@@ -31,6 +31,7 @@
         "broker_identity_pipe",
         "broker_identity_unix",
         "cli_broker_resurrection",
+        "cli_broker_purge",
         "cli_broker_single_instance",
         "cli_broker_stop",
         "cli_kill_matrix",
@@ -310,6 +311,12 @@
       "source_id": "broker-target-replay",
       "test_name": "cli_broker_stop::broker_stop_terminates_running_broker",
       "reason": "Prove native broker termination and endpoint cleanup."
+    },
+    {
+      "id": "broker-purge",
+      "source_id": "broker-target-replay",
+      "test_name": "cli_broker_purge::purge_stops_a_broker_for_another_home_and_reports_it",
+      "reason": "Prove native terminate-then-force-kill of a broker for another HOME on each target (soldr#3193)."
     },
     {
       "id": "broker-kill-recovery",

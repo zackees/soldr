@@ -179,12 +179,12 @@ slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
 # `isolated_daemon_shared_copy`. They were never in this group, so the module
 # lists stay explicit rather than collapsing to a bare `binary(daemon)`.
 [[profile.default.overrides]]
-filter = '(binary(broker) & test(/^(cli_broker_resurrection|cli_broker_routes|cli_broker_single_instance|cli_broker_status|cli_broker_stop|cli_build_alias_parity|cli_build_fetch_overlap|cli_jobs_routing|cli_kill_matrix)::/)) + test(=cli_gc::gc_list_json_reports_built_project_target_dir)'
+filter = '(binary(broker) & test(/^(cli_broker_purge|cli_broker_resurrection|cli_broker_routes|cli_broker_single_instance|cli_broker_status|cli_broker_stop|cli_build_alias_parity|cli_build_fetch_overlap|cli_jobs_routing|cli_kill_matrix)::/)) + test(=cli_gc::gc_list_json_reports_built_project_target_dir)'
 platform = { target = 'cfg(target_os = "linux")' }
 test-group = 'soldr-runtime-linux'
 
 [[profile.default.overrides]]
-filter = '(binary(broker) & test(/^(cli_broker_resurrection|cli_broker_routes|cli_broker_single_instance|cli_broker_status|cli_broker_stop|cli_build_alias_parity|cli_build_fetch_overlap|cli_jobs_routing|cli_kill_matrix)::/)) + test(=cli_gc::gc_list_json_reports_built_project_target_dir)'
+filter = '(binary(broker) & test(/^(cli_broker_purge|cli_broker_resurrection|cli_broker_routes|cli_broker_single_instance|cli_broker_status|cli_broker_stop|cli_build_alias_parity|cli_build_fetch_overlap|cli_jobs_routing|cli_kill_matrix)::/)) + test(=cli_gc::gc_list_json_reports_built_project_target_dir)'
 test-group = 'soldr-runtime'
 
 # soldr#2336: these three drive `isolated_soldr_command`, which scrubs every
