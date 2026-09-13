@@ -26,16 +26,22 @@ fn package(dir: &Path, name: &str, extra: &str) {
 }
 
 /// An outer workspace excluding a nested one, a member, and a member reaching
-/// its root through `package.workspace`. Carries the repo's toolchain pin so
-/// the CI Cargo shim (the source Soldr front door) accepts it.
+/// its root through `package.workspace`. Carries the repo's toolchain channel
+/// so the CI Cargo shim (the source Soldr front door) accepts it.
 fn fixture() -> PathBuf {
     let root = std::fs::canonicalize(common::unique_temp_dir("cargo-target-dir-parity"))
         .expect("canonical fixture root");
-    std::fs::copy(
-        common::workspace_root().join("rust-toolchain.toml"),
-        root.join("rust-toolchain.toml"),
-    )
-    .expect("copy toolchain pin");
+    // Channel only: the repository pin also lists components, and under CI's
+    // Cargo shim the front door would try to add them -- a download the
+    // soldr#3195 tripwire rightly refuses. `cargo metadata` needs the toolchain.
+    let channel = soldr_cli::core::read_rust_toolchain_manifest(&common::workspace_root())
+        .expect("read repository toolchain pin")
+        .channel
+        .expect("repository pins a channel");
+    write(
+        &root.join("rust-toolchain.toml"),
+        &format!("[toolchain]\nchannel = \"{channel}\"\n"),
+    );
     write(
         &root.join("Cargo.toml"),
         "[workspace]\nmembers = []\nexclude = [\"ws\"]\n",
