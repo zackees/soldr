@@ -246,7 +246,9 @@ Two traps when gathering that telemetry:
 |---|---|
 | `_ci-cross-build-linux.yml` bootstrap steps | `RUSTC_WRAPPER: ""` (one also `ZCCACHE_DISABLE=1`). No service, no gate. Step-scoped. |
 | `ci.yml` `wheel-cross-verify` | Bootstrap-shaped build (soldr#2469). |
-| `cook-size-gate.yml`, `release-auto.yml`, `perf-matrix.yml` | Swap is now in place (soldr#3148 step 1), so rung 3 exists; the caps stay until each lane is canaried. A lift is verified from the job log's `soldr: daemon compile concurrency =` line (soldr#3206). |
+| `cook-size-gate.yml` cook step | `ZCCACHE_DISABLE=1`: no admission gate. Step-scoped. |
+| `cook-size-gate.yml` ci-release build | soldr#3210: zccache's compiler children carry `PR_SET_PDEATHSIG`, which fires when the spawning tokio thread retires, so uncapped the long `soldr_daemon` unit is SIGTERMed mid-compile (3 of 4 runs). Swap and exclusive admission do not help. Step-scoped. |
+| `release-auto.yml`, `perf-matrix.yml` | Swap is now in place (soldr#3148 step 1), so rung 3 exists; the caps stay until each lane is canaried. A lift is verified from the job log's `soldr: daemon compile concurrency =` line (soldr#3206). |
 
 Every entry names a reason. A cap with no reason beside it is a bug report
 waiting to be written.

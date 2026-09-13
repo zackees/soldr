@@ -105,13 +105,16 @@ jobs:
       # below; the thing the gate measures is cook's output over the zccache
       # fixture, not this binary. The `--release` on `soldr cook --release` is
       # a separate, load-bearing flag and stays.
+      # Rung-4 cap, reason: soldr#3210. Uncapped (soldr#3148, PR #3209) this
+      # build failed 3 of 4 runs: rustc for soldr_daemon was SIGTERMed mid-
+      # compile with 0 swap used and oom_kill=0. zccache arms PR_SET_PDEATHSIG
+      # on compiler children, which fires when the *spawning tokio thread*
+      # retires; at jobs=1 nothing overlaps the long unit, so no thread
+      # retires under it. Swap (soldr#3207) and exclusive admission are in
+      # place but cannot help here. Lift this once soldr#3210 is fixed.
       - name: Build soldr CLI (ci-release)
         working-directory: soldr
         env:
-          # With every setup-soldr reuse layer off (soldr#2451) this build is
-          # fully cold, and unbounded parallel ci-release rustc OOM-killed on
-          # the hosted runner (the soldr#2453 signature). Same bounded-jobs
-          # remedy as the release wheel lanes.
           CARGO_BUILD_JOBS: "1"
           SOLDR_JOBS: "1"
         run: soldr cargo build -p soldr-cli --profile ci-release
@@ -207,3 +210,21 @@ jobs:
             FAIL=1
           fi
           exit ${FAIL}
+
+      # soldr#3210: the daemon's log and compile journal are what named the
+      # SIGTERMed compiler child, and they never reach the job log, so they
+      # are uploaded on every run. Same path set as _bootstrap-e2e.yml, rooted at
+      # the setup-soldr state dir.
+      - name: Upload soldr daemon logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cook-size-gate-soldr-logs
+          if-no-files-found: ignore
+          # setup-soldr points SOLDR_CACHE_DIR here, not at ~/.soldr.
+          path: |
+            ${{ runner.temp }}/setup-soldr-soldr/logs/
+            ${{ runner.temp }}/setup-soldr-soldr/cache/zccache/logs/
+            ${{ runner.temp }}/setup-soldr-soldr/cache/zccache/history/**/*.json
+            ${{ runner.temp }}/setup-soldr-soldr/cache/zccache/history/**/*.jsonl

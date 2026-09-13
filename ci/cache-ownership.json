@@ -107,6 +107,14 @@
       "rationale": "Run-scoped diagnostics for humans; never restored."
     },
     {
+      "id": "cook-size-gate-soldr-logs",
+      "workflow": "cook-size-gate.yml",
+      "step": "Upload soldr daemon logs",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Run-scoped diagnostics for humans; never restored."
+    },
+    {
       "id": "build-and-test-rustup-toolchain",
       "workflow": "_build-and-test.yml",
       "step": "Cache rustup 1.95.0 in ~/.rustup",
