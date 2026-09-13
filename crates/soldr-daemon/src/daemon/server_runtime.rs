@@ -118,10 +118,11 @@ pub fn run(opts: ServerOptions) -> Result<(), ServerError> {
         .unwrap_or(2);
     let workers = available.max(2);
     tracing::info!("soldr-daemon Tokio runtime: {workers} workers (host parallelism: {available})");
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(workers)
-        .enable_all()
-        .build()?;
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.worker_threads(workers).enable_all();
+    // soldr#3210: a retiring pool thread SIGTERMs the compilers it spawned.
+    crate::daemon::runtime_threads::keep_threads_for_daemon_lifetime(&mut builder);
+    let runtime = builder.build()?;
     bringup.phase(crate::daemon::bringup::phase::TOKIO_RUNTIME);
     runtime.block_on(run_async_recording(opts, bringup))
 }
