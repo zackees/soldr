@@ -1933,30 +1933,3 @@ pub fn spawn_staged(command: &mut Command) -> std::io::Result<std::process::Chil
 pub fn output_staged(command: &mut Command) -> std::io::Result<std::process::Output> {
     retry_while_text_file_busy(|| command.output())
 }
-
-/// Consume `child`'s stdout on a background thread until the broker prints
-/// its "stable endpoint bound at" line or `deadline` passes. The reader
-/// thread keeps draining afterwards so the broker never blocks on a full
-/// pipe (soldr#3193 tests).
-#[allow(dead_code)]
-pub(crate) fn wait_for_bound_line(
-    child: &mut std::process::Child,
-    deadline: std::time::Instant,
-) -> bool {
-    use std::io::{BufRead, BufReader};
-    let Some(stdout) = child.stdout.take() else {
-        return false;
-    };
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut sent = false;
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if !sent && line.contains("stable endpoint bound at") {
-                let _ = tx.send(());
-                sent = true;
-            }
-        }
-    });
-    rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-        .is_ok()
-}
