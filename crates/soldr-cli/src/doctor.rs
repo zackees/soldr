@@ -55,7 +55,7 @@ struct DoctorOutput {
     broker_endpoint: crate::broker_identity::DoctorBrokerEndpoint,
     /// soldr-broker / soldr-daemon processes on this host serving a HOME
     /// other than the invoking one (soldr#3193). `None` when HOME is unset.
-    leaked_processes: Option<crate::broker_inventory::Inventory>,
+    leaked_processes: Option<crate::broker_inventory::DoctorInventory>,
     /// Rollup of compile-daemon fallback events -- builds that ran
     /// uncached via direct rustc (soldr#1838 Phase 4). Empty means the
     /// cache was never bypassed.
@@ -184,7 +184,8 @@ pub(crate) fn run_doctor(
     crate::startup_trace::phase(crate::startup_trace::phase::DOCTOR_FALLBACK_ROLLUP);
     let cache_health = crate::cache_health::assess(&SoldrPaths::new()?);
     crate::startup_trace::phase(crate::startup_trace::phase::DOCTOR_CACHE_HEALTH);
-    let leaked_processes = crate::broker_inventory::scan();
+    let leaked_processes = crate::broker_inventory::scan_for_doctor();
+    crate::startup_trace::phase(crate::startup_trace::phase::DOCTOR_BROKER_INVENTORY);
 
     let Some(channel) = manifest.channel.as_deref() else {
         if json {

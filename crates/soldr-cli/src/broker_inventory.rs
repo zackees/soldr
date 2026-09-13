@@ -417,7 +417,48 @@ pub(crate) fn maybe_toast(raw_args: &[String]) {
 // Doctor
 // ---------------------------------------------------------------------------
 
-pub(crate) fn print_doctor_human(inventory: Option<&Inventory>) {
+/// How many leaked rows `doctor` lists. The counts are always exact; the
+/// rows are a sample. A host with hundreds of fixture brokers must not turn
+/// the doctor report into a 100 KB document (that also overflows the 64 KB
+/// pipe of any caller that waits before reading, which is how this surfaced),
+/// and `soldr broker purge --dry-run` lists every row for whoever wants them.
+pub(crate) const DOCTOR_LISTED_ROWS: usize = 20;
+
+/// The `doctor` rendering of an [`Inventory`]: exact totals, a bounded
+/// sample of rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct DoctorInventory {
+    pub(crate) own_home: String,
+    pub(crate) own_processes: usize,
+    pub(crate) leaked_brokers: usize,
+    pub(crate) leaked_daemons: usize,
+    pub(crate) leaked_with_missing_home: usize,
+    /// The first [`DOCTOR_LISTED_ROWS`] leaked processes.
+    pub(crate) leaked: Vec<LeakedProcess>,
+    /// How many leaked processes are not in `leaked`.
+    pub(crate) leaked_omitted: usize,
+}
+
+impl DoctorInventory {
+    pub(crate) fn from_inventory(inventory: &Inventory) -> Self {
+        let listed = inventory.leaked.len().min(DOCTOR_LISTED_ROWS);
+        Self {
+            own_home: inventory.own_home.clone(),
+            own_processes: inventory.own_processes,
+            leaked_brokers: inventory.leaked_brokers(),
+            leaked_daemons: inventory.leaked_daemons(),
+            leaked_with_missing_home: inventory.leaked_with_missing_home(),
+            leaked: inventory.leaked[..listed].to_vec(),
+            leaked_omitted: inventory.leaked.len() - listed,
+        }
+    }
+}
+
+pub(crate) fn scan_for_doctor() -> Option<DoctorInventory> {
+    scan().map(|inventory| DoctorInventory::from_inventory(&inventory))
+}
+
+pub(crate) fn print_doctor_human(inventory: Option<&DoctorInventory>) {
     println!();
     println!("soldr processes for other HOMEs:");
     let Some(inventory) = inventory else {
@@ -428,15 +469,13 @@ pub(crate) fn print_doctor_human(inventory: Option<&Inventory>) {
         "  own HOME:          {} ({} process(es) serving it)",
         inventory.own_home, inventory.own_processes
     );
-    if inventory.leaked.is_empty() {
+    if inventory.leaked_brokers + inventory.leaked_daemons == 0 {
         println!("  leaked:            none detected");
         return;
     }
     println!(
         "  leaked:            {} broker(s), {} daemon(s); {} with a HOME that no longer exists",
-        inventory.leaked_brokers(),
-        inventory.leaked_daemons(),
-        inventory.leaked_with_missing_home()
+        inventory.leaked_brokers, inventory.leaked_daemons, inventory.leaked_with_missing_home
     );
     println!("  remedy:            {BROKER_PURGE_COMMAND} (soldr#3193)");
     for process in &inventory.leaked {
@@ -450,6 +489,12 @@ pub(crate) fn print_doctor_human(inventory: Option<&Inventory>) {
             } else {
                 "  [missing]"
             }
+        );
+    }
+    if inventory.leaked_omitted > 0 {
+        println!(
+            "  ... and {} more; `{BROKER_PURGE_COMMAND} --dry-run` lists every one",
+            inventory.leaked_omitted
         );
     }
 }

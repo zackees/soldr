@@ -203,3 +203,19 @@ fn a_foreground_broker_serve_is_a_broker_too() {
     let pids: Vec<_> = inventory.leaked.iter().map(|p| p.pid).collect();
     assert_eq!(pids, vec![9]);
 }
+
+#[test]
+fn the_doctor_view_keeps_exact_counts_and_a_bounded_sample() {
+    let records: Vec<ProcessRecord> = (1..=(DOCTOR_LISTED_ROWS as u32 + 5))
+        .map(|n| record(n, "/x/.soldr/broker/soldr-broker", Some("/nonexistent/x")))
+        .collect();
+    let view = DoctorInventory::from_inventory(&classify(&records, Path::new("/home/me")));
+    assert_eq!(view.leaked_brokers, DOCTOR_LISTED_ROWS + 5);
+    assert_eq!(view.leaked_with_missing_home, DOCTOR_LISTED_ROWS + 5);
+    assert_eq!(view.leaked.len(), DOCTOR_LISTED_ROWS);
+    assert_eq!(view.leaked_omitted, 5);
+
+    let small = DoctorInventory::from_inventory(&classify(&records[..3], Path::new("/home/me")));
+    assert_eq!(small.leaked.len(), 3);
+    assert_eq!(small.leaked_omitted, 0);
+}

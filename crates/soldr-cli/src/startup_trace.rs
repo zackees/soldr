@@ -110,6 +110,7 @@ pub mod phase {
     pub const DOCTOR_COOK_STATS: &str = "doctor_cook_stats";
     pub const DOCTOR_FALLBACK_ROLLUP: &str = "doctor_fallback_rollup";
     pub const DOCTOR_CACHE_HEALTH: &str = "doctor_cache_health";
+    pub const DOCTOR_BROKER_INVENTORY: &str = "doctor_broker_inventory";
 }
 
 struct TraceClock {
