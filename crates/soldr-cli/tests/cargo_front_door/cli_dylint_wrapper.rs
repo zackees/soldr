@@ -428,6 +428,13 @@ fn missing_prebuilt_driver_fails_before_cargo_dylint_launch() {
     let root = unique_temp_dir("dylint-missing-prebuilt");
     let mut command = dylint_command(&root);
     fs::remove_dir_all(root.join("drivers")).expect("remove prebuilt driver fixture");
+    // soldr#3163: with the prebuilt driver gone, soldr asks the toolchain
+    // catalogue for one before refusing. Left enabled, this test downloaded
+    // the real catalogue: 1.3 s on a fast network, 28-39 s on every CI gate,
+    // and the full 45 s retry budget against an unreachable catalogue. The
+    // behaviour under test is the refusal when no driver is available, so keep
+    // the catalogue out of it.
+    command.env("SOLDR_MANIFEST_DISABLE", "1");
 
     let output = command
         .args(["dylint", "--all"])
