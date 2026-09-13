@@ -37,6 +37,7 @@ pub mod quiet;
 pub mod spawn_exclusion;
 mod target_triple;
 mod temp;
+pub mod toolchain_install_tripwire;
 mod toolchain_manifest;
 mod toolchain_resolve;
 pub mod wire;
@@ -58,6 +59,9 @@ pub use target_triple::{Arch, Env, Os, TargetTriple};
 pub use temp::{
     ensure_temp_root, ensure_temp_root_for, replace_file_with_dir, temp_root, temp_root_for,
     SOLDR_TMPDIR_ENV_VAR,
+};
+pub use toolchain_install_tripwire::{
+    forbid_toolchain_install_tripwire, FORBID_TOOLCHAIN_INSTALL_ENV_VAR, TEST_RUSTUP_BIN_ENV_VAR,
 };
 pub use toolchain_manifest::{
     read_rust_toolchain_manifest, PluginSpec, RustToolchainManifest, SoldrCookManifest,

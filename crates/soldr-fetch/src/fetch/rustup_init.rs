@@ -122,6 +122,7 @@ pub fn auto_bootstrap_if_missing_blocking(
     if no_bootstrap_opt_out() {
         return Ok(AutoBootstrapOutcome::OptedOut);
     }
+    crate::core::forbid_toolchain_install_tripwire("rustup bootstrap")?;
     eprintln!(
         concat!(
             "soldr: rustup not found; bootstrapping the Rust toolchain into {} ",
@@ -150,6 +151,7 @@ pub async fn auto_bootstrap_if_missing(
     if no_bootstrap_opt_out() {
         return Ok(AutoBootstrapOutcome::OptedOut);
     }
+    crate::core::forbid_toolchain_install_tripwire("rustup bootstrap")?;
     eprintln!(
         concat!(
             "soldr: rustup not found; bootstrapping the Rust toolchain into {} ",

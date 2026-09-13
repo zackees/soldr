@@ -538,3 +538,43 @@ mod pin_requirement_tests {
         }
     }
 }
+
+/// soldr#3195: which `soldr rustup` passthroughs the download guard stops.
+#[test]
+fn rustup_passthrough_download_verbs_are_recognised() {
+    let args = |words: &[&str]| words.iter().map(|w| (*w).to_string()).collect::<Vec<_>>();
+    for downloading in [
+        &["toolchain", "install", "nightly-2026-05-26"][..],
+        &["component", "add", "--toolchain", "1.95.0", "rustfmt"],
+        &[
+            "target",
+            "add",
+            "x86_64-unknown-linux-musl",
+            "--toolchain",
+            "1.95.0",
+        ],
+        &["+nightly", "component", "add", "rust-src"],
+        &["install", "stable"],
+        &["update"],
+        &["default", "nightly"],
+    ] {
+        assert!(
+            super::rustup_args_would_download(&args(downloading)),
+            "{downloading:?}"
+        );
+    }
+    for read_only in [
+        &["toolchain", "list"][..],
+        &["component", "list", "--installed"],
+        &["target", "list"],
+        &["which", "rustc"],
+        &["show"],
+        &["--version"],
+        &["toolchain", "uninstall", "nightly-2026-05-26"],
+    ] {
+        assert!(
+            !super::rustup_args_would_download(&args(read_only)),
+            "{read_only:?}"
+        );
+    }
+}

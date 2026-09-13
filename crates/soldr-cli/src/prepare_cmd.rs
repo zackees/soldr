@@ -846,6 +846,7 @@ fn run_rustup_target_add(
     command: &mut std::process::Command,
     triple: &str,
 ) -> Result<std::process::ExitStatus, SoldrError> {
+    crate::core::forbid_toolchain_install_tripwire(&format!("rustup target add {triple}"))?;
     crate::exit_guard::run_child_command(
         command,
         &format!("rustup target add {triple}"),

@@ -275,6 +275,12 @@ pub(crate) fn run_rustup_passthrough(args: &[String]) -> Result<i32, SoldrError>
     } else {
         scope_rustup_args_to_pin(args)?
     };
+    if rustup_args_would_download(&final_args) {
+        crate::core::forbid_toolchain_install_tripwire(&format!(
+            "rustup {}",
+            final_args.join(" ")
+        ))?;
+    }
     let mut command = std::process::Command::new(rustup_binary());
     if let Some(channel) = dylint_channel {
         command.env("RUSTUP_TOOLCHAIN", channel);
@@ -284,6 +290,24 @@ pub(crate) fn run_rustup_passthrough(args: &[String]) -> Result<i32, SoldrError>
     suppress_windows_console_window(&mut command);
     let status = run_toolchain_command(&mut command, "rustup passthrough")?;
     Ok(status.code().unwrap_or(1))
+}
+
+/// Whether a `soldr rustup` passthrough could download a toolchain,
+/// component or target (soldr#3195): `toolchain install`, `component add`,
+/// `target add`, and the verbs that install implicitly (`install`, `update`,
+/// `default`). Flags and `+toolchain` shorthands are skipped to find the verb.
+pub(crate) fn rustup_args_would_download(args: &[String]) -> bool {
+    let mut positionals = args
+        .iter()
+        .map(String::as_str)
+        .filter(|arg| !arg.starts_with('-') && !arg.starts_with('+'));
+    matches!(
+        (positionals.next(), positionals.next()),
+        (Some("toolchain"), Some("install"))
+            | (Some("component"), Some("add"))
+            | (Some("target"), Some("add"))
+            | (Some("install" | "update" | "default"), _)
+    )
 }
 
 fn scope_rustup_args_to_dylint(args: &[String], channel: &str) -> Vec<String> {
@@ -912,6 +936,7 @@ pub(crate) fn rustup_toolchain_install_with_profile(
     channel: &str,
     profile: Option<&str>,
 ) -> Result<i32, SoldrError> {
+    crate::core::forbid_toolchain_install_tripwire(&format!("rustup toolchain install {channel}"))?;
     let mut command = std::process::Command::new(rustup_binary());
     command.args([
         "toolchain",
@@ -929,6 +954,9 @@ pub(crate) fn rustup_toolchain_install_with_profile(
 }
 
 pub(crate) fn rustup_component_add(channel: &str, component: &str) -> Result<i32, SoldrError> {
+    crate::core::forbid_toolchain_install_tripwire(&format!(
+        "rustup component add {component} --toolchain {channel}"
+    ))?;
     let mut command = std::process::Command::new(rustup_binary());
     command.args(["component", "add", "--toolchain", channel, component]);
     apply_implicit_toolchain_homes(&mut command);
@@ -941,6 +969,9 @@ pub(crate) fn rustup_component_add(channel: &str, component: &str) -> Result<i32
 }
 
 fn rustup_target_add(channel: &str, target: &str) -> Result<i32, SoldrError> {
+    crate::core::forbid_toolchain_install_tripwire(&format!(
+        "rustup target add {target} --toolchain {channel}"
+    ))?;
     let mut command = std::process::Command::new(rustup_binary());
     command.args(["target", "add", "--toolchain", channel, target]);
     apply_implicit_toolchain_homes(&mut command);
