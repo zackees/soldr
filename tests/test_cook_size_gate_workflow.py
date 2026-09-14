@@ -32,12 +32,13 @@ def test_cook_fixture_preparation_pins_uv_python_313() -> None:
     assert "uv run --no-project --python 3.13 python" in fixture_step
 
 
-def test_both_compile_caps_state_their_rung_4_reason() -> None:
-    """Both capped steps keep jobs=1, and each for a stated reason.
+def test_only_the_cache_disabled_cook_keeps_a_compile_cap() -> None:
+    """The cook step keeps jobs=1 for its rung-4 reason; the build is uncapped.
 
-    The ci-release build: soldr#3210 (PDEATHSIG kills long compiler children
-    when their spawning thread retires under concurrency). The cook step:
-    ZCCACHE_DISABLE=1 leaves no admission gate (CLAUDE.md, ladder rung 4).
+    The ci-release build ran capped only while the pinned soldr predated
+    soldr#3211 (soldr#3210: PDEATHSIG killed long compiler children when their
+    spawning thread retired). The 0.9.16 pin carries the fix (soldr#3148). The
+    cook step: ZCCACHE_DISABLE=1 leaves no admission gate (CLAUDE.md, rung 4).
     """
 
     import yaml
@@ -48,10 +49,10 @@ def test_both_compile_caps_state_their_rung_4_reason() -> None:
             "cook-size-gate"
         ]["steps"]
     }
-    build_env = steps["Build soldr CLI (ci-release)"]["env"]
-    assert build_env["CARGO_BUILD_JOBS"] == "1"
-    assert build_env["SOLDR_JOBS"] == "1"
-    assert "soldr#3210" in WORKFLOW.read_text(encoding="utf-8")
+    build_env = steps["Build soldr CLI (ci-release)"].get("env") or {}
+    assert "CARGO_BUILD_JOBS" not in build_env
+    assert "SOLDR_JOBS" not in build_env
+    assert "soldr#3211" in WORKFLOW.read_text(encoding="utf-8")
     cook_env = steps["Run soldr cook against zccache (release profile)"]["env"]
     assert cook_env["ZCCACHE_DISABLE"] == "1"
     assert cook_env["CARGO_BUILD_JOBS"] == "1"
