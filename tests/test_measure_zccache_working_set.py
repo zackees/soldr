@@ -224,3 +224,78 @@ def test_trial_false_skips_the_copy_but_still_walks(tmp_path: Path, capsys) -> N
     assert code == 0
     assert "Working set:" in out and "Trial trim" not in out
     assert not any(scratch.iterdir())
+
+
+def _touch_after_marker(tmp_path: Path, store: Path) -> float:
+    """Mark, then hardlink v1.13.22's `hit` so only that tree is touched."""
+    since = _after_marker()
+    os.link(
+        store / "embedded-v1" / "v1.13.22" / "artifacts" / "hit",
+        tmp_path / "materialized",
+    )
+    return since
+
+
+def test_prune_removes_only_version_trees_this_run_never_touched(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    since = _touch_after_marker(tmp_path, store)
+
+    pruned = measure.prune_dead_version_dirs(measure.walk_store(store, since))
+
+    assert pruned == [("v1.13.21", 300)]
+    assert not (store / "embedded-v1" / "v1.13.21").exists()
+    assert (store / "embedded-v1" / "v1.13.22" / "artifacts" / "cold").exists()
+
+
+def test_prune_refuses_an_invalid_measurement(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    nothing_touched = measure.walk_store(store, time.time() + 60)
+    everything_touched = measure.walk_store(store, 0.0)
+
+    assert not measure.prune_dead_version_dirs(nothing_touched)
+    assert not measure.prune_dead_version_dirs(everything_touched)
+    assert (store / "embedded-v1" / "v1.13.21").exists()
+
+
+def test_a_touched_empty_file_keeps_its_version_tree(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    marker = store / "embedded-v1" / "v1.13.21" / "compiler_hash.bin"
+    _file(marker, 0)
+    since = _after_marker()
+    os.chmod(marker, 0o600)  # bumps ctime, 0 bytes touched
+    os.link(
+        store / "embedded-v1" / "v1.13.22" / "artifacts" / "hit",
+        tmp_path / "materialized",
+    )
+
+    assert not measure.prune_dead_version_dirs(measure.walk_store(store, since))
+    assert (store / "embedded-v1" / "v1.13.21").exists()
+
+
+def test_prune_never_removes_unversioned_files(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    _file(store / "embedded-v1" / "instance.json", 5)
+    since = _touch_after_marker(tmp_path, store)
+
+    measure.prune_dead_version_dirs(measure.walk_store(store, since))
+
+    assert (store / "embedded-v1" / "instance.json").exists()
+
+
+def test_main_prunes_only_when_asked(tmp_path: Path, capsys) -> None:
+    store = _store(tmp_path)
+    since_file = tmp_path / "since"
+    since_file.write_text(str(_touch_after_marker(tmp_path, store)), encoding="utf-8")
+    common = ["--store", str(store), "--since-file", str(since_file)]
+
+    measure.main([*common, "--cap-bytes", "1000"])
+    assert (store / "embedded-v1" / "v1.13.21").exists()
+    assert "Pruned" not in capsys.readouterr().out
+
+    measure.main([*common, "--cap-bytes", "1000", "--prune-dead-version-dirs"])
+    assert not (store / "embedded-v1" / "v1.13.21").exists()
+    assert "Pruned dead version trees before the save: `v1.13.21`" in (
+        capsys.readouterr().out
+    )

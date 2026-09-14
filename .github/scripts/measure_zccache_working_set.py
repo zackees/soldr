@@ -35,7 +35,12 @@ The copy trial costs about 70 s on the gate (soldr#3120 measured a 55 s copy and
 13.5 s pass), so the workflow runs it on `main` only. The walk takes about a second
 and runs everywhere.
 
-Report-only: always exits 0 once arguments parse.
+**Prune (opt-in, modifies the store).** `--prune-dead-version-dirs` removes
+whole zccache version trees that this run touched zero files of. See
+`prune_dead_version_dirs` for the guards. After soldr#3213 aligned the
+bootstrap pin, the gate measured `v1.13.21` at 3.09 GiB with 0 bytes touched.
+
+Always exits 0 once arguments parse.
 """
 
 from __future__ import annotations
@@ -68,14 +73,26 @@ class Walk:
     touched_bytes: int = 0
     # version directory -> [bytes, touched bytes]
     by_version: dict[str, list[int]] = dataclasses.field(default_factory=dict)
+    # version directory -> the directories carrying that name
+    version_paths: dict[str, set[pathlib.Path]] = dataclasses.field(
+        default_factory=dict
+    )
+    # version directory -> files touched (a touched empty file still marks it live)
+    touched_files_by_version: dict[str, int] = dataclasses.field(default_factory=dict)
 
 
-def version_bucket(store: pathlib.Path, path: pathlib.Path) -> str:
+UNVERSIONED = "(unversioned)"
+
+
+def version_dir(
+    store: pathlib.Path, path: pathlib.Path
+) -> tuple[str, pathlib.Path | None]:
     """The zccache version directory (`v1.13.22`) a store file lives under."""
-    for part in path.relative_to(store).parts[:-1]:
+    parts = path.relative_to(store).parts[:-1]
+    for index, part in enumerate(parts):
         if part.startswith("v") and part[1:2].isdigit():
-            return part
-    return "(unversioned)"
+            return part, store.joinpath(*parts[: index + 1])
+    return UNVERSIONED, None
 
 
 def walk_store(store: pathlib.Path, since: float) -> Walk:
@@ -95,7 +112,10 @@ def walk_store(store: pathlib.Path, since: float) -> Walk:
                 continue
             seen.add(inode)
             touched = max(info.st_atime, info.st_ctime, info.st_mtime) >= since
-            bucket = walk.by_version.setdefault(version_bucket(store, path), [0, 0])
+            version, directory = version_dir(store, path)
+            bucket = walk.by_version.setdefault(version, [0, 0])
+            if directory is not None:
+                walk.version_paths.setdefault(version, set()).add(directory)
             walk.total_files += 1
             walk.total_bytes += info.st_size
             bucket[0] += info.st_size
@@ -103,7 +123,52 @@ def walk_store(store: pathlib.Path, since: float) -> Walk:
                 walk.touched_files += 1
                 walk.touched_bytes += info.st_size
                 bucket[1] += info.st_size
+                walk.touched_files_by_version[version] = (
+                    walk.touched_files_by_version.get(version, 0) + 1
+                )
     return walk
+
+
+def measurement_is_valid(walk: Walk) -> bool:
+    """Some, but not all, files were touched after the restore marker."""
+    return 0 < walk.touched_files < walk.total_files
+
+
+def prune_dead_version_dirs(walk: Walk) -> list[tuple[str, int]]:
+    """Remove whole zccache version trees this run never touched (soldr#3120).
+
+    A version tree nobody read, linked or wrote during a full gate run is dead
+    weight that every later generation would restore and save again. zccache's
+    own maintenance only walks its current version, and soldr's legacy sweep
+    runs only inside a maintenance pass, which CI never gets to run.
+
+    Deliberately conservative. Nothing is removed unless the walk is a valid
+    measurement and some other version tree was touched, so a run that used
+    nothing never empties the store. A name that maps to more than one
+    directory is left alone. Unversioned files are never removed.
+    """
+    if not measurement_is_valid(walk):
+        return []
+    live = {
+        name
+        for name, count in walk.touched_files_by_version.items()
+        if count and name != UNVERSIONED
+    }
+    if not live:
+        return []
+    pruned: list[tuple[str, int]] = []
+    for name, (total, _touched) in sorted(walk.by_version.items()):
+        paths = walk.version_paths.get(name, set())
+        if name in live or name == UNVERSIONED or len(paths) != 1:
+            continue
+        (directory,) = paths
+        try:
+            shutil.rmtree(directory)
+        except OSError as error:
+            print(f"could not prune {directory}: {error}", file=sys.stderr)
+            continue
+        pruned.append((name, total))
+    return pruned
 
 
 def working_set_verdict(walk: Walk, cap_bytes: int) -> str:
@@ -205,7 +270,13 @@ def gib(value: int) -> str:
     return f"{value / GIB:.2f} GiB"
 
 
-def render(walk: Walk | None, verdict: str, cap_bytes: int, trial: dict | None) -> str:
+def render(
+    walk: Walk | None,
+    verdict: str,
+    cap_bytes: int,
+    trial: dict | None,
+    pruned: list[tuple[str, int]] | None = None,
+) -> str:
     lines = [
         "## Tier-2 zccache working set (soldr#3120)",
         "",
@@ -227,6 +298,12 @@ def render(walk: Walk | None, verdict: str, cap_bytes: int, trial: dict | None) 
         lines.append("")
     else:
         lines += [f"Working set: {verdict}", ""]
+    if pruned is not None:
+        if pruned:
+            names = ", ".join(f"`{name}` ({gib(size)})" for name, size in pruned)
+            lines += [f"Pruned dead version trees before the save: {names}", ""]
+        else:
+            lines += ["Pruned dead version trees before the save: none", ""]
     if trial is not None:
         if "skipped" in trial:
             lines.append(f"Trial trim: skipped ({trial['skipped']})")
@@ -268,6 +345,11 @@ def main(argv: list[str] | None = None) -> int:
         help="run the copy trial (about 70 s on the gate); the walk always runs",
     )
     parser.add_argument("--scratch-root", type=pathlib.Path)
+    parser.add_argument(
+        "--prune-dead-version-dirs",
+        action="store_true",
+        help="remove version trees this run never touched (modifies the store)",
+    )
     parser.add_argument("--cap-bytes", type=int)
     parser.add_argument("--reserve-bytes", type=int, default=DEFAULT_RESERVE_BYTES)
     parser.add_argument(
@@ -290,6 +372,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         walk = walk_store(args.store, since)
         verdict = working_set_verdict(walk, cap_bytes)
+    pruned = None
+    if walk is not None and args.prune_dead_version_dirs:
+        pruned = prune_dead_version_dirs(walk)
     trial = None
     if (
         args.trial == "true"
@@ -297,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
         and args.scratch_root is not None
     ):
         store_bytes = (
-            walk.total_bytes
+            walk.total_bytes - sum(size for _name, size in pruned or [])
             if walk is not None
             else walk_store(args.store, float("inf")).total_bytes
         )
@@ -307,7 +392,7 @@ def main(argv: list[str] | None = None) -> int:
         if trial.get("stderr_tail") and trial.get("exit_code"):
             print(trial["stderr_tail"], file=sys.stderr)
 
-    text = render(walk, verdict, cap_bytes, trial)
+    text = render(walk, verdict, cap_bytes, trial, pruned)
     print(text)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
