@@ -847,8 +847,10 @@ def test_external_zccache_bootstraps_get_exclusive_service_access() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     build_and_test = (WORKFLOWS / "_build-and-test.yml").read_text(encoding="utf-8")
 
-    assert 'CARGO_BUILD_JOBS: "1"' in bootstrap
-    assert 'SOLDR_JOBS: "1"' in bootstrap
+    # soldr#3148: the bootstrap build runs the 0.9.16 pin, which carries
+    # soldr#3211, so exclusive admission owns concurrency with no cap.
+    assert "CARGO_BUILD_JOBS:" not in bootstrap
+    assert "SOLDR_JOBS:" not in bootstrap
     assert "Enlarge swap (OOM headroom)" in bootstrap
     lint_job = _job_block(ci, "lint")
     assert "CARGO_BUILD_JOBS" not in lint_job
@@ -933,7 +935,7 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_and_the_blessed_build() ->
     assert (
         "uses: zackees/setup-soldr@d6a0844c40b94f62cf104377b4cc90403c96f6ce" in release
     )
-    assert "version: 0.9.15" in release
+    assert "version: 0.9.16" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert "target-wheel-hook" in release
     # soldr#2469 step 2.2: the GitHub gate delegates both release lookup
@@ -1011,7 +1013,7 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
     assert (
         "uses: zackees/setup-soldr@d6a0844c40b94f62cf104377b4cc90403c96f6ce" in release
     )
-    assert "version: 0.9.15" in release
+    assert "version: 0.9.16" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert ".github/scripts/prepare_release_wheel.py" in release
     assert '--runner-os "$RUNNER_OS"' in release

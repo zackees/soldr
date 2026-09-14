@@ -46,21 +46,31 @@ def test_no_workflow_or_job_scope_caps_outside_the_named_exceptions() -> None:
     assert not offenders, f"job/workflow-scoped compile caps: {offenders}"
 
 
-def test_bootstrap_e2e_caps_only_the_released_soldr_build() -> None:
+def test_bootstrap_e2e_builds_are_uncapped() -> None:
+    # Both builds are wrapped: "Build soldr-cli" runs the released soldr pin,
+    # which carries soldr#3211 since 0.9.16, and the third-party build runs
+    # the freshly built source soldr.
     steps = _steps("_bootstrap-e2e.yml", "bootstrap-e2e")
-    build = steps["Build soldr-cli"]["env"]
-    assert build["CARGO_BUILD_JOBS"] == "1" and build["SOLDR_JOBS"] == "1"
-    third_party = steps["Build third-party app through soldr"].get("env") or {}
-    assert not CAPS & set(third_party)
+    for name in ("Build soldr-cli", "Build third-party app through soldr"):
+        assert not CAPS & set(steps[name].get("env") or {}), name
     text = (WORKFLOWS / "_bootstrap-e2e.yml").read_text(encoding="utf-8")
-    assert "soldr#3210" in text and "soldr#3211" in text
+    assert "soldr#3211" in text
 
 
-def test_setup_soldr_action_caps_the_build_and_the_no_cache_test() -> None:
+def test_setup_soldr_action_caps_only_the_no_cache_test() -> None:
     steps = _steps("setup-soldr-action.yml", "smoke")
-    for name in ("Build through soldr", "Test through soldr"):
-        env = steps[name]["env"]
-        assert env["CARGO_BUILD_JOBS"] == "1" and env["SOLDR_JOBS"] == "1", name
-    assert "--no-cache cargo nextest run" in steps["Test through soldr"]["run"]
-    text = (WORKFLOWS / "setup-soldr-action.yml").read_text(encoding="utf-8")
-    assert "soldr#3210" in text
+    assert not CAPS & set(steps["Build through soldr"].get("env") or {})
+    test = steps["Test through soldr"]
+    assert test["env"]["CARGO_BUILD_JOBS"] == "1" and test["env"]["SOLDR_JOBS"] == "1"
+    # The one honest rung-4 reason: `--no-cache` has no admission gate.
+    assert "--no-cache cargo nextest run" in test["run"]
+
+
+def test_cook_size_gate_caps_only_the_cache_disabled_cook() -> None:
+    steps = _steps("cook-size-gate.yml", "cook-size-gate")
+    build = steps["Build soldr CLI (ci-release)"]
+    assert not CAPS & set(build.get("env") or {})
+    cook = steps["Run soldr cook against zccache (release profile)"]["env"]
+    assert cook["ZCCACHE_DISABLE"] == "1"
+    assert cook["CARGO_BUILD_JOBS"] == "1" and cook["SOLDR_JOBS"] == "1"
+

@@ -182,7 +182,7 @@ jobs:
       - name: Setup pinned soldr toolchain
         uses: zackees/setup-soldr@d6a0844c40b94f62cf104377b4cc90403c96f6ce
         with:
-          version: 0.9.15
+          version: 0.9.16
           toolchain: 1.95.0
           # Provision the ci-test Dylint foundation once, separately from
           # the stable source-driver target tree used by the prescribed DAG.
