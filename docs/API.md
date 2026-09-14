@@ -465,10 +465,11 @@ broke `soldr wheel` for host-target Linux builds on any modern distro.)
 
 Scope notes:
 
-- **abi3 only.** A non-abi3 extension module needs a CPython built for the
-  target, not just a sysroot. When soldr cannot place the build in an
-  interpreter-free mode it refuses and names `soldr maturin build` as the
-  escape hatch, rather than quietly building against the host's Python.
+- **abi3 only — and specifically `abi3-py310`; see "PyO3 ABI policy" below.**
+  A non-abi3 extension module needs a CPython built for the target, not just
+  a sysroot. When soldr cannot place the build in an interpreter-free mode it
+  refuses and names `soldr maturin build` as the escape hatch, rather than
+  quietly building against the host's Python.
 - **No glibc-floor suffix.** `--target <triple>.<major>.<minor>` (soldr#2202)
   is rejected here. A floor is a request to zig, never a guarantee — the
   effective floor is also bounded by every symbol the vendored C dependencies
@@ -480,6 +481,47 @@ Scope notes:
 - `--release` together with a forwarded `--debug` is refused: those are two
   different profiles, and picking one would build something you did not ask
   for.
+
+#### PyO3 ABI policy: `abi3-py310`, always
+
+Every PyO3 extension built through soldr — soldr's own `soldr._native` and
+every downstream repo in the fleet (fbuild, zccache, running-process, bosn) —
+declares exactly this:
+
+```toml
+[dependencies]
+pyo3 = { version = "0.29", features = ["abi3-py310"] }
+```
+
+This is a fleet-wide policy, not a per-repo choice, and it is the only ABI
+`soldr wheel` supports directly:
+
+- **`abi3-py310` is the compatibility floor.** One `cp310-abi3-<platform>`
+  wheel installs on CPython 3.10 and every later release. A higher floor
+  (`abi3-py311`, `abi3-py312`) buys nothing soldr needs and drops every 3.10
+  host. A version-specific extension (no `abi3-*` feature; tag
+  `cp3xx-cp3xx-<platform>`) needs one wheel per interpreter *and* a CPython
+  built for the target when cross-compiling — which is the exact case the
+  abi3 refusal above exists to catch.
+- **It is interpreter-free, so it cross-compiles.** With `abi3-py310` the
+  PyO3 planner (`crates/soldr-cli/src/pyo3_detect.rs`) places the build in
+  `Abi3NoPython` mode: `PYO3_NO_PYTHON=1`, no `PYO3_CROSS_LIB_DIR`, no
+  `PYO3_CROSS_PYTHON_VERSION`. That is what lets `soldr wheel --release
+  --target x86_64-apple-darwin` (or any other cross triple) run on a Linux
+  host with only the sysroot/SDK soldr prepared. `ci/docker-pyo3-policy/`
+  builds its fixture extension with this feature for both Apple triples to
+  keep the mode honest.
+- **It matches soldr's own floor.** soldr's PyPI wrapper requires Python
+  >=3.10 (see `CLAUDE.md` "Toolchain"), so the ABI floor and the package
+  floor agree.
+
+Do not derive the ABI floor from a downstream repo's `requires-python`. A
+repo that declares `requires-python = ">=3.11"` still builds `abi3-py310`
+(a `cp310-abi3` wheel installs fine on 3.11+); the package floor and the
+ABI floor are different knobs, and only the second one is soldr's concern.
+Reference implementations: `fbuild/Cargo.toml` (`abi3-py310`, cross-built for
+both Apple triples on Linux with `PYO3_NO_PYTHON=1 soldr build --target …`),
+`zccache/crates/*-py/Cargo.toml`, `running-process/Cargo.toml`.
 
 ### `soldr cargo`
 

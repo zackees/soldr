@@ -260,8 +260,9 @@ pub fn abi3_scope_check(
             Err(SoldrError::Other(format!(
                 "soldr wheel: cross-building a wheel for `{target}` needs a CPython built \
                  for that target, because this workspace's PyO3 extension is not proven \
-                 abi3. The first cut of `soldr wheel` is abi3-only (soldr#2139): enable an \
-                 `abi3-py3xx` feature on pyo3, or set SOLDR_PYO3_COMPATIBILITY=sysroot, or \
+                 abi3. The first cut of `soldr wheel` is abi3-only (soldr#2139): enable the \
+                 `abi3-py310` feature on pyo3 (the fleet-wide policy, docs/API.md \"PyO3 ABI \
+                 policy\"), or set SOLDR_PYO3_COMPATIBILITY=sysroot, or \
                  drive maturin yourself with `soldr maturin build`."
             )))
         }
