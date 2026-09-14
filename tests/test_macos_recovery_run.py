@@ -111,29 +111,47 @@ def _stub(stub_dir: Path, name: str, body: str) -> None:
 
 
 def test_mem_sample_reports_macos_memory_probes(tmp_path: Path) -> None:
-    """The sample line carries each probe's value, one line, top RSS first."""
+    """One line: free memory, per-process aggregates, then top RSS."""
     stubs = tmp_path / "stubs"
     stubs.mkdir()
     _stub(
         stubs,
         "sysctl",
         'case "$2" in\n'
-        "  vm.page_free_count) echo 4242 ;;\n"
+        "  vm.page_free_count) echo 2560 ;;\n"
+        "  hw.pagesize) echo 4096 ;;\n"
         "  kern.memorystatus_vm_pressure_level) echo 4 ;;\n"
-        "  vm.swapusage) echo 'total = 2048.00M  used = 1024.00M' ;;\n"
+        "  vm.swapusage) echo 'total = 2048.00M  used = 1024.00M  free = 1024.00M' ;;\n"
         "  vm.loadavg) echo '{ 3.10 2.00 1.50 }' ;;\n"
         "  *) exit 1 ;;\n"
         "esac",
     )
-    _stub(stubs, "ps", "printf '%s\\n' '2097152 /usr/bin/rustc' '10240 soldr-daemon'")
+    _stub(
+        stubs,
+        "ps",
+        "printf '%s\\n' "
+        "'2097152 /usr/bin/rustc' "
+        "'204800 /tmp/h1/.soldr/broker/soldr-broker' "
+        "'153600 /tmp/h2/.soldr/broker/soldr-broker' "
+        "'10240 soldr-daemon' "
+        "'512000 /Volumes/Work/soldr' "
+        "'4096 /Volumes/Work/.soldr/bin/rustup' "
+        "'2048 /bin/sh'",
+    )
     line = _run_mem_sample(tmp_path, stubs)
     assert "\n" not in line
     assert line.startswith("[mem] t=")
-    assert "free_pages=4242" in line
+    assert "free=10M" in line
     assert "pressure=4" in line
-    assert "swap=[total = 2048.00M used = 1024.00M]" in line
+    assert (
+        "procs=7 daemon=1/10M broker=2/350M soldr=1/500M rustup=1/4M"
+        " cargo=0/0M rustc=1/2048M"
+    ) in line
+    assert "top=[rustc:2048M soldr:500M soldr-broker:200M ]" in line
+    assert "swap_used=1024.00M" in line
     assert "load=[ 3.10 2.00 1.50 ]" in line
-    assert "top=[rustc:2048M soldr-daemon:10M ]" in line
+    # The aggregates precede top/swap/load so a truncated sample keeps them.
+    assert line.index("procs=") < line.index("top=") < line.index("load=")
 
 
 def test_mem_sample_degrades_to_na_when_probes_fail(tmp_path: Path) -> None:
@@ -145,13 +163,45 @@ def test_mem_sample_degrades_to_na_when_probes_fail(tmp_path: Path) -> None:
     line = _run_mem_sample(tmp_path, stubs)
     assert line.startswith("[mem] t=")
     for probe in (
-        "free_pages=n/a",
+        "free=n/a",
         "pressure=n/a",
-        "swap=[n/a]",
-        "load=[n/a]",
+        "procs=n/a",
         "top=[n/a]",
+        "swap_used=n/a",
+        "load=[n/a]",
     ):
         assert probe in line, line
+
+
+def _command_substitutions(script: str) -> list[str]:
+    """Every `$( ... )` span, matched by parenthesis depth."""
+    spans = []
+    start = script.find("$(")
+    while start != -1:
+        depth, index = 0, start + 1
+        while index < len(script):
+            if script[index] == "(":
+                depth += 1
+            elif script[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            index += 1
+        spans.append(script[start : index + 1])
+        start = script.find("$(", start + 2)
+    return spans
+
+
+def test_no_case_statement_inside_a_command_substitution() -> None:
+    """Recovery's bash 3.2 cannot parse `case` inside `$( )`.
+
+    `bash -n` here is bash 5, which accepts it, so only a replay could catch
+    it: run 34853028731 died in `nextest_run` with `syntax error near
+    unexpected token ;;` and no suite ran at all.
+    """
+    script = MODULE.build_guest_script()
+    offenders = [span for span in _command_substitutions(script) if "case " in span]
+    assert not offenders, offenders
 
 
 def test_build_guest_script_is_valid_posix_sh_syntax() -> None:
