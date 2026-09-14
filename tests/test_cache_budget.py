@@ -273,6 +273,66 @@ def test_prune_supersedes_older_sha_keyed_bootstrap_drivers_on_main() -> None:
     )
 
 
+def test_retired_dylint_nightly_entries_are_prune_candidates() -> None:
+    # soldr#3216: the nightly toolchain cache was retired; any live entry is
+    # reclaimable wherever it sits.
+    raw = [
+        {
+            **entry(
+                "dylint-nightly-v1-x86_64-unknown-linux-gnu-nightly-2026-05-28", 474
+            ),
+            "id": 1,
+        },
+        {
+            **entry(
+                "dylint-driver-v1-x86_64-unknown-linux-gnu-nightly-2026-05-28-6.0.3", 1
+            ),
+            "id": 2,
+        },
+    ]
+    candidates = guard.prune_candidates(guard.normalize_entries(raw))
+    assert [c.key for c in candidates] == [
+        "dylint-nightly-v1-x86_64-unknown-linux-gnu-nightly-2026-05-28"
+    ]
+
+
+def test_prune_supersedes_older_dylint_foundation_generations_on_main() -> None:
+    # soldr#3216: the foundation key hashes the lint sources, so a lint change
+    # saves a new ~413 MiB generation beside the old one.
+    base = "dylint-foundation-v2-x86_64-unknown-linux-gnu"
+    raw = [
+        {
+            **entry(f"{base}-c301e24a", 433),
+            "id": 1,
+            "createdAt": "2026-09-13T05:27:00Z",
+        },
+        {
+            **entry(f"{base}-9f00aa11", 434),
+            "id": 2,
+            "createdAt": "2026-09-14T12:00:00Z",
+        },
+    ]
+    candidates = guard.prune_candidates(guard.normalize_entries(raw))
+    assert [c.key for c in candidates] == [f"{base}-c301e24a"]
+
+
+def test_the_dylint_nightly_cache_producer_stays_retired() -> None:
+    # soldr#3216: the retirement is only real if nothing re-adds the producer
+    # or quietly re-registers its prefix under a family.
+    families = json.loads(MANIFEST.read_text(encoding="utf-8"))["budget"]["families"]
+    assert "dylint-nightly-" in guard.RETIRED_PREFIXES
+    assert not any(
+        prefix.startswith("dylint-nightly-")
+        for spec in families.values()
+        for prefix in spec["key_prefixes"]
+    )
+    workflow = (REPO_ROOT / ".github" / "workflows" / "_build-and-test.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "key: dylint-nightly-" not in workflow
+    assert "dylint_nightly_cache" not in workflow
+
+
 def test_a_lone_bootstrap_driver_per_lineage_is_kept() -> None:
     raw = [
         {**entry("bootstrap-soldr-blessed-linux-gnu-dev-v1-abc", 23), "id": 1},

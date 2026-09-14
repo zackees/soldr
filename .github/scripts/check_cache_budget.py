@@ -87,6 +87,10 @@ GIB = 1024**3
 # Retired Swatinem/rust-cache shared-key namespaces: nothing writes these any
 # more, so any entry still carrying one of these prefixes is pure waste.
 RETIRED_PREFIXES: tuple[str, ...] = (
+    # `dylint-nightly-v1-<target>-<channel>` in _build-and-test.yml. Retired by
+    # soldr#3216: 452 MiB of the fixed budget for about 15 s per host run, and
+    # it pushed dylint-foundation over an allocation no family could top up.
+    "dylint-nightly-",
     # `cross-build-<target>-v7` in _ci-cross-build-linux.yml. Retired by
     # soldr#3047: soldr#2996 had already made Tier 1 `soldr cook` the surviving
     # implementation of the dependency-graph cache on exactly this lane, so the
@@ -424,7 +428,15 @@ def build_table(
 # ~23 MiB driver that nothing superseded (13 live on 2026-09-14, 0.30 GiB of
 # a 0.15 GiB family). Its two lineages (`...-linux-gnu`, `...-linux-gnu-dev-v1`)
 # now keep only their newest entry.
-GENERATION_KEY_PREFIXES = ("v0-rust-", "zccache-unit-", "bootstrap-soldr-blessed-")
+# `dylint-foundation-` (soldr#3216): the tree is keyed on a hash of the lint
+# sources and saved only on main, so each lint change leaves the previous
+# ~413 MiB generation behind; two of them alone exceed the family allocation.
+GENERATION_KEY_PREFIXES = (
+    "v0-rust-",
+    "zccache-unit-",
+    "bootstrap-soldr-blessed-",
+    "dylint-foundation-",
+)
 
 
 def strip_shared_key_hash(key: str) -> str:
