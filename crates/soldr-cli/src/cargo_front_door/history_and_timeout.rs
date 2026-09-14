@@ -17,16 +17,17 @@ fn append_cargo_abort_log(request: CargoAbortLogRequest<'_>) -> Result<PathBuf, 
         std::fs::create_dir_all(parent)?;
     }
 
-    let retry_without_cache: Vec<&str> = ["soldr", "--no-cache", "cargo"]
-        .into_iter()
-        .chain(args.iter().map(String::as_str))
-        .collect();
     let retry_with_zccache_disabled: Vec<&str> = ["soldr", "cargo"]
         .into_iter()
         .chain(args.iter().map(String::as_str))
         .collect();
     let record = serde_json::json!({
-        "schema_version": 1,
+        // soldr#2424: v2 drops the `--no-cache` spellings. soldr#2364 deprecated
+        // and hid that flag in favour of `ZCCACHE_DISABLE=1`, and soldr#2777
+        // removed it from every printed recovery message, but this record still
+        // offered it twice: a `retry_without_cache` duplicate of
+        // `retry_with_zccache_disabled`, and a bare-argv `clean_hint`.
+        "schema_version": 2,
         "event": "cargo_abort",
         "ts_ms": ended_at_ms,
         "session_id": session_id,
@@ -49,14 +50,14 @@ fn append_cargo_abort_log(request: CargoAbortLogRequest<'_>) -> Result<PathBuf, 
         },
         "recovery": {
             "inspect_logs": ["soldr", "logs", "paths"],
-            "retry_without_cache": {
-                "argv": retry_without_cache,
-            },
             "retry_with_zccache_disabled": {
                 "env": { "ZCCACHE_DISABLE": "1" },
                 "argv": retry_with_zccache_disabled,
             },
-            "clean_hint": ["soldr", "--no-cache", "cargo", "clean", "-p", "<crate>"],
+            "clean_hint": {
+                "env": { "ZCCACHE_DISABLE": "1" },
+                "argv": ["soldr", "cargo", "clean", "-p", "<crate>"],
+            },
             "timeout_env": {
                 "cargo_wait": CARGO_WAIT_TIMEOUT_ENV_VAR,
                 "compile_reply": "SOLDR_COMPILE_REPLY_TIMEOUT_SECS",

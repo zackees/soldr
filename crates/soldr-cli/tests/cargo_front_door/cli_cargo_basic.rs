@@ -848,13 +848,14 @@ fn cargo_timeout_cleans_incremental_and_next_run_succeeds() {
         Value::from(1)
     );
     assert_eq!(
-        abort_record["recovery"]["retry_without_cache"]["argv"],
-        serde_json::json!(["soldr", "--no-cache", "cargo", "build"])
+        abort_record["recovery"]["retry_with_zccache_disabled"]["argv"],
+        serde_json::json!(["soldr", "cargo", "build"])
     );
     assert_eq!(
         abort_record["recovery"]["retry_with_zccache_disabled"]["env"]["ZCCACHE_DISABLE"],
         Value::from("1")
     );
+    assert!(!abort_record["recovery"].to_string().contains("--no-cache"));
 
     let second = common::isolated_soldr_command()
         .args(["--no-cache", "cargo", "build"])
@@ -962,9 +963,10 @@ fn cargo_timeout_retries_once_without_cache() {
     assert_eq!(abort_record["timeout_config"]["duration_secs"], 1);
     assert_eq!(abort_record["auto_retry_planned"], Value::from(true));
     assert_eq!(
-        abort_record["recovery"]["retry_without_cache"]["argv"],
-        serde_json::json!(["soldr", "--no-cache", "cargo", "build"])
+        abort_record["recovery"]["retry_with_zccache_disabled"]["argv"],
+        serde_json::json!(["soldr", "cargo", "build"])
     );
+    assert!(!abort_record["recovery"].to_string().contains("--no-cache"));
 
     let log = fs::read_to_string(&log_path).expect("fake cargo log");
     assert!(

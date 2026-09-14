@@ -654,6 +654,8 @@ fn extract_target_arg(args: &[String]) -> Option<&str> {
 #[cfg(test)]
 mod backtrace_policy_tests;
 #[cfg(test)]
+mod cargo_abort_log_tests;
+#[cfg(test)]
 mod dylint_driver_tests;
 #[cfg(test)]
 mod scrub_pool_tests;
