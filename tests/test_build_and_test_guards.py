@@ -211,10 +211,28 @@ def test_source_driver_reuse_is_exact_sha_opportunistic_and_fails_closed() -> No
 
     assert "steps.shared_source_driver.outcome != 'success'" in build
     assert "soldr cargo build" in build
-    # The driver lives outside the workspace target dir: `soldr cook`'s
-    # cargo-chef skeleton build overwrites every bin there with a stub.
+    # The driver BUILDS in the workspace target dir, so its rustc invocations
+    # match ci-test's and share zccache contexts (a $RUNNER_TEMP target dir
+    # made 29 units miss every run). It RUNS from a copy outside that dir:
+    # `soldr cook`'s cargo-chef skeleton build overwrites every bin there with
+    # a stub, so the copy must happen in this step, before either cook step.
     assert 'source_soldr="${RUNNER_TEMP}/soldr-source-driver/' in verify
-    assert "CARGO_TARGET_DIR: ${{ runner.temp }}/soldr-source-driver" in build
+    assert "CARGO_TARGET_DIR: ${{ github.workspace }}/target" in build
+    assert "CARGO_TARGET_DIR: ${{ runner.temp }}/soldr-source-driver" not in build
+    assert (
+        'install -D "${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"'
+        in build
+    )
+    assert (
+        '"${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"' in build
+    )
+    assert build.index("soldr cargo build") < build.index("install -D")
+    build_at = workflow.index("- name: Build ci-test driver")
+    for cook in (
+        "- name: Cook the Dylint UI-test dependency layer",
+        "- name: Cook stable dependency tree",
+    ):
+        assert build_at < workflow.index(cook)
     assert 'source_soldr="${GITHUB_WORKSPACE}/target/' not in workflow
 
 
