@@ -452,7 +452,7 @@ fn cargo_abort_log_records_timeout_cleanup_and_recovery() {
     let record: serde_json::Value =
         serde_json::from_str(lines[0]).expect("cargo abort log record is JSON");
 
-    assert_eq!(record["schema_version"], serde_json::Value::from(1));
+    assert_eq!(record["schema_version"], serde_json::Value::from(2));
     assert_eq!(record["event"], serde_json::Value::from("cargo_abort"));
     assert_eq!(record["session_id"], serde_json::Value::from(42));
     assert_eq!(record["timeout"], serde_json::Value::from(true));
@@ -473,12 +473,26 @@ fn cargo_abort_log_records_timeout_cleanup_and_recovery() {
         serde_json::Value::from(1)
     );
     assert_eq!(
-        record["recovery"]["retry_without_cache"]["argv"],
-        serde_json::json!(["soldr", "--no-cache", "cargo", "build", "-p", "demo"])
-    );
-    assert_eq!(
         record["recovery"]["retry_with_zccache_disabled"]["env"]["ZCCACHE_DISABLE"],
         serde_json::Value::from("1")
+    );
+    assert_eq!(
+        record["recovery"]["retry_with_zccache_disabled"]["argv"],
+        serde_json::json!(["soldr", "cargo", "build", "-p", "demo"])
+    );
+    assert_eq!(
+        record["recovery"]["clean_hint"],
+        serde_json::json!({
+            "env": {"ZCCACHE_DISABLE": "1"},
+            "argv": ["soldr", "cargo", "clean", "-p", "<crate>"],
+        })
+    );
+    // soldr#2424 / soldr#2777: the deprecated, hidden flag must not come back
+    // through the structured record either.
+    assert!(
+        !record["recovery"].to_string().contains("--no-cache"),
+        "recovery must not advise the deprecated --no-cache flag: {}",
+        record["recovery"]
     );
     assert_eq!(
         record["recovery"]["inspect_logs"],
