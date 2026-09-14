@@ -386,12 +386,6 @@ async fn run_async_recording(
         cook_hits_this_session: AtomicU64::new(0),
         shutdown,
         event_batcher,
-        compile_admission: CompileAdmission::new(
-            ipc_queue_capacity(windows_listener_pool_size()),
-            // soldr#2023: read the limit the service applied rather than
-            // resolving a second time — see `crate::compile_limit`.
-            compile_service.applied_jobs().jobs,
-        ),
         compile_service,
     });
 

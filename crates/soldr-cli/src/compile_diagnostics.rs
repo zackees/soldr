@@ -12,7 +12,7 @@ use std::io::Write;
 /// compile wrote anything to it.
 ///
 /// A rustc failure never surfaces as a [`DispatchError`] — it arrives as
-/// `CompileDone { exit_code != 0 }` and is propagated as a bare exit code
+/// a non-zero compile exit and is propagated as a bare exit code
 /// (see [`client_error_indicates_daemon_unavailable`]). When the daemon
 /// also relays no stderr, Cargo prints `error: could not compile <crate>`
 /// with an empty cause and the user has nothing to act on.

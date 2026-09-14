@@ -6,7 +6,7 @@
 //! to one file. As of the #980 L1 "no backwards compatibility" pass
 //! the embedded service is mandatory — the daemon always instantiates
 //! it at boot and the wrapper always dispatches through the
-//! `Request::Compile` IPC verb. The legacy fork-zccache.exe path is
+//! broker SESSION route. The legacy fork-zccache.exe path is
 //! gone.
 //!
 //! ## Design constraint: daemon-only
@@ -18,7 +18,7 @@
 //! must not pay `ZccacheService::start` cost — that would defeat the
 //! whole point of "one process, one tokio runtime, one console-subscriber
 //! pane". Wrappers always talk to the daemon over the
-//! `Request::Compile` IPC verb that ferries the compile to the
+//! broker SESSION route, which ferries the compile to the
 //! embedded backend without a `Command::new("zccache")` fork.
 //!
 //! ## Tokio runtime sharing (the tokio-console story)

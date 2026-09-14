@@ -14,8 +14,9 @@
 //! has already recorded the same `target/` dir for the current build
 //! session (signalled via `SOLDR_TARGET_REGISTRY_RECORDED=<dir>`),
 //! the wrapper skips redb and the daemon target-touch IPC entirely.
-//! Per-crate timing data rides the existing `Request::Compile` IPC
-//! rather than opening standalone telemetry connections (soldr#1537).
+//! Per-crate timing data rides the compile's own SESSION connection
+//! rather than opening standalone telemetry connections (soldr#1537,
+//! soldr#3224).
 //!
 //! Lives in its own module so the lib tree exposes it for the
 //! integration tests under `tests/cargo_front_door/cli_wrapper_perf.rs` without
@@ -81,7 +82,7 @@ pub fn record_target_dir_in_registry(rustc_args: &[String]) -> TargetTouchPath {
 
     // Target touches always route through the daemon (soldr#2249).
     // Slow path: in-session, daemon for target-touch. Compile lifecycle
-    // telemetry rides the subsequent Request::Compile connection.
+    // telemetry rides the subsequent SESSION compile connection.
     crate::daemon::client::record_target_touch_or_fallback(&paths, &target);
 
     // Compile dispatch owns bounded daemon startup and recovery. Starting it

@@ -4,7 +4,7 @@
 //! execution path. This handler reads the opening `SessionStart` (raw rustc argv +
 //! env + cwd carried on the wire), converts it with the *shared* daemon-side
 //! parser ([`build_compile_request_from`]), runs it through the **embedded zccache
-//! service** — the exact same execution `Request::Compile` uses — and streams the
+//! service** — the same execution the retired direct-IPC compile verb used — and streams the
 //! captured stdout/stderr/exit back as `SessionFrame`s via the shared
 //! [`stream_compile_output`](crate::daemon::server::stream_compile_output) with a
 //! [`SessionCompileSink`]. There is **no spawned child at the session layer**;
@@ -101,13 +101,11 @@ async fn test_pause_after_session_start(start: &SessionStart) {
 }
 
 /// Run `req` through the embedded zccache service and stream its output as
-/// `SessionFrame`s. Reuses the same execution + output plumbing as the control
-/// wire (`SoldrZccacheService::compile` + `stream_compile_output`).
+/// `SessionFrame`s, via `SoldrZccacheService::compile` + `stream_compile_output`.
 ///
 /// Cancel-on-disconnect (soldr#2388 Step 9): the compile is raced against the
-/// client's read side via [`race_against_disconnect`], byte-for-byte the same
-/// kill-matrix obligation the control wire honors in
-/// [`dispatch_compile_streaming`](crate::daemon::server). A wrapper that dies
+/// client's read side via [`race_against_disconnect`] (or
+/// [`race_compile_with_lifecycle`], which records build history around it). A wrapper that dies
 /// mid-compile closes its end of the relayed SESSION connection; the daemon
 /// sees EOF and drops the zccache future at the `select!` boundary, so the
 /// rustc child it owns is reaped instead of running to completion for output
@@ -130,7 +128,7 @@ where
     let inner_started = std::time::Instant::now();
 
     // Box the compile future before it enters the disconnect `select!`, for the
-    // same reason the control path does (`dispatch_compile_streaming`): the
+    // same reason the retired direct-IPC path did: the
     // staged-output future is large and carrying it inline through the generic
     // race helper can exhaust Tokio's worker stack under a parallel cold build.
     let compile_fut = Box::pin(compile_service.compile(req));
@@ -169,7 +167,7 @@ where
             // mid-compile, so the embedded zccache future was dropped at the
             // `select!` boundary and its rustc child reaped. Don't write a
             // reply into a dead pipe; record the disconnect so postmortems can
-            // count it (mirrors the legacy `dispatch_compile_streaming` arm).
+            // count it.
             record_undelivered(
                 paths,
                 &compile_id,

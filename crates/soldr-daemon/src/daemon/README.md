@@ -55,6 +55,6 @@ disconnect signal was thrown away after zccache had already journaled
 `exit_code: 0`.
 
 The daemon owns the in-process embedded zccache service; wrappers dispatch
-compiles to it over the `Request::Compile` IPC verb (soldr#977/#980/#1081),
+compiles to it over the broker SESSION route (soldr#977/#980/#1081/#2424),
 and `soldr session end` reads cumulative compile stats via
 `Request::CompileStats` (soldr#1368).

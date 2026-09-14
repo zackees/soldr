@@ -175,8 +175,8 @@ impl DisconnectReason {
 /// the client closes its end of the IPC channel, dropping `fut` so any
 /// inflight work it owns is cancelled at the same instant.
 ///
-/// The protocol contract on a `Request::Compile` exchange is strictly
-/// request-response: once the wrapper sends the Compile frame it sits
+/// The protocol contract on a compile exchange is strictly
+/// request-response: once the client sends its compile request it sits
 /// blocked waiting for the daemon's response, so any byte arriving on
 /// `reader` mid-compile is also treated as a disconnect (it can only
 /// be a protocol violation or a stale-frame leftover, and either way

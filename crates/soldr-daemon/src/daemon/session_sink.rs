@@ -6,7 +6,7 @@
 //! encoded with `session_codec` onto the `[1][u32 len][Frame{0x5350}]` wire the
 //! broker relays transparently. The terminal `Exit` frame carries `cache_outcome`
 //! and `compile_id` on `SessionExit.metadata` (running-process#934), so the
-//! SESSION path preserves the observability the legacy `CompileDone` frame gives
+//! SESSION path preserves the observability the retired `CompileDone` frame gave
 //! (build history, `soldr doctor`, perf-gate attribution).
 //!
 //! Execution is unchanged — soldr owns it via the embedded zccache service; this

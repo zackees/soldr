@@ -40,9 +40,8 @@
 use crate::daemon::db::{Event, EventKind};
 use crate::daemon::protocol::{
     BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord, CacheFlushInfo,
-    CacheFlushStepInfo, CompileLifecycle, CompileRequest, CompileResponseBody, CompileStatsInfo,
-    CookStats, IpcBurstStats, Request, Response, ShutdownAck, StagedProfileInfo, StatusInfo,
-    TargetRegistryRow, WireDecodeError,
+    CacheFlushStepInfo, CompileStatsInfo, CookStats, Request, Response, ShutdownAck,
+    StagedProfileInfo, StatusInfo, TargetRegistryRow, WireDecodeError,
 };
 
 /// Back-compat re-exports: these moved to `core::wire` (#1490 Phase 0,
@@ -355,26 +354,6 @@ fn cook_stats_from_wire(wire: proto::WireCookStats) -> CookStats {
     }
 }
 
-fn ipc_burst_stats_to_wire(stats: &IpcBurstStats) -> proto::WireIpcBurstStats {
-    proto::WireIpcBurstStats {
-        accepted: stats.accepted,
-        queued: stats.queued,
-        backpressured: stats.backpressured,
-        busy_retries: stats.busy_retries,
-        queue_high_water: stats.queue_high_water,
-    }
-}
-
-fn ipc_burst_stats_from_wire(wire: proto::WireIpcBurstStats) -> IpcBurstStats {
-    IpcBurstStats {
-        accepted: wire.accepted,
-        queued: wire.queued,
-        backpressured: wire.backpressured,
-        busy_retries: wire.busy_retries,
-        queue_high_water: wire.queue_high_water,
-    }
-}
-
 pub fn status_info_to_wire(info: &StatusInfo) -> proto::WireStatusInfo {
     proto::WireStatusInfo {
         version: info.version,
@@ -384,7 +363,6 @@ pub fn status_info_to_wire(info: &StatusInfo) -> proto::WireStatusInfo {
         request_count: info.request_count,
         cook_stats: info.cook_stats.as_ref().map(cook_stats_to_wire),
         compile_backend: info.compile_backend.clone(),
-        ipc_burst_stats: Some(ipc_burst_stats_to_wire(&info.ipc_burst_stats)),
         compile_jobs: info.compile_jobs,
         compile_jobs_source: info.compile_jobs_source.clone(),
     }
@@ -399,10 +377,6 @@ pub fn status_info_from_wire(wire: proto::WireStatusInfo) -> StatusInfo {
         request_count: wire.request_count,
         cook_stats: wire.cook_stats.map(cook_stats_from_wire),
         compile_backend: wire.compile_backend,
-        ipc_burst_stats: wire
-            .ipc_burst_stats
-            .map(ipc_burst_stats_from_wire)
-            .unwrap_or_default(),
         compile_jobs: wire.compile_jobs,
         compile_jobs_source: wire.compile_jobs_source,
     }
@@ -557,51 +531,8 @@ impl From<&Request> for proto::WireRequest {
                     sha256: sha_to_vec(sha256),
                 })
             }
-            Request::Compile(req) => proto::WireRequestKind::Compile(compile_request_to_wire(req)),
         };
         Self { kind: Some(kind) }
-    }
-}
-
-fn compile_request_to_wire(req: &CompileRequest) -> proto::WireCompileRequest {
-    proto::WireCompileRequest {
-        args: req.args.clone(),
-        cwd: req.cwd.clone(),
-        env: req
-            .env
-            .iter()
-            .map(|(k, v)| proto::WireEnvEntry {
-                key: k.clone(),
-                value: v.clone(),
-            })
-            .collect(),
-        stdin: req.stdin.clone(),
-        lifecycle: req
-            .lifecycle
-            .as_ref()
-            .map(|lifecycle| proto::WireCompileLifecycle {
-                session_id: lifecycle.session_id,
-                crate_name: lifecycle.crate_name.clone(),
-                target_dir: lifecycle.target_dir.clone(),
-                started_at_ms: lifecycle.started_at_ms,
-            }),
-        ipc_busy_retries: req.ipc_busy_retries,
-    }
-}
-
-fn compile_request_from_wire(wire: proto::WireCompileRequest) -> CompileRequest {
-    CompileRequest {
-        args: wire.args,
-        cwd: wire.cwd,
-        env: wire.env.into_iter().map(|e| (e.key, e.value)).collect(),
-        stdin: wire.stdin,
-        lifecycle: wire.lifecycle.map(|lifecycle| CompileLifecycle {
-            session_id: lifecycle.session_id,
-            crate_name: lifecycle.crate_name,
-            target_dir: lifecycle.target_dir,
-            started_at_ms: lifecycle.started_at_ms,
-        }),
-        ipc_busy_retries: wire.ipc_busy_retries,
     }
 }
 
@@ -696,7 +627,6 @@ impl TryFrom<proto::WireRequest> for Request {
             proto::WireRequestKind::CookTouch(m) => Request::CookTouch {
                 sha256: vec_to_sha(&m.sha256)?,
             },
-            proto::WireRequestKind::Compile(m) => Request::Compile(compile_request_from_wire(m)),
         })
     }
 }
@@ -747,11 +677,6 @@ impl From<&Response> for proto::WireResponse {
                 compile_jobs: *compile_jobs,
                 compile_jobs_source: compile_jobs_source.clone(),
             }),
-            Response::Backpressure { retry_after_ms } => {
-                proto::WireResponseKind::Backpressure(proto::WireBackpressure {
-                    retry_after_ms: *retry_after_ms,
-                })
-            }
             Response::Retiring => proto::WireResponseKind::Retiring(proto::WireRetiring {}),
             Response::CookHit {
                 sha256,
@@ -786,36 +711,6 @@ impl From<&Response> for proto::WireResponse {
                     .collect(),
             }),
             Response::Ack => proto::WireResponseKind::Ack(proto::WireUnit {}),
-            Response::Compile(body) => {
-                proto::WireResponseKind::CompileResponse(proto::WireCompileResponse {
-                    exit_code: body.exit_code,
-                    stdout: body.stdout.clone(),
-                    stderr: body.stderr.clone(),
-                    cached: body.cached,
-                    cache_outcome: body.cache_outcome,
-                })
-            }
-            Response::CompileStdoutChunk(bytes) => {
-                proto::WireResponseKind::CompileStdoutChunk(proto::WireCompileStdoutChunk {
-                    bytes: bytes.clone(),
-                })
-            }
-            Response::CompileStderrChunk(bytes) => {
-                proto::WireResponseKind::CompileStderrChunk(proto::WireCompileStderrChunk {
-                    bytes: bytes.clone(),
-                })
-            }
-            Response::CompileDone {
-                exit_code,
-                cached,
-                cache_outcome,
-                compile_id,
-            } => proto::WireResponseKind::CompileDone(proto::WireCompileDone {
-                exit_code: *exit_code,
-                cached: *cached,
-                cache_outcome: *cache_outcome,
-                compile_id: compile_id.clone(),
-            }),
             Response::CompileStats(info) => {
                 proto::WireResponseKind::CompileStats(compile_stats_to_wire(info))
             }
@@ -872,9 +767,6 @@ impl TryFrom<proto::WireResponse> for Response {
                 compile_jobs: m.compile_jobs,
                 compile_jobs_source: m.compile_jobs_source,
             },
-            proto::WireResponseKind::Backpressure(m) => Response::Backpressure {
-                retry_after_ms: m.retry_after_ms,
-            },
             proto::WireResponseKind::Retiring(_) => Response::Retiring,
             proto::WireResponseKind::CookHit(m) => Response::CookHit {
                 sha256: vec_to_sha(&m.sha256)?,
@@ -897,21 +789,6 @@ impl TryFrom<proto::WireResponse> for Response {
                 }
             }
             proto::WireResponseKind::Ack(_) => Response::Ack,
-            proto::WireResponseKind::CompileResponse(m) => Response::Compile(CompileResponseBody {
-                exit_code: m.exit_code,
-                stdout: m.stdout,
-                stderr: m.stderr,
-                cached: m.cached,
-                cache_outcome: m.cache_outcome,
-            }),
-            proto::WireResponseKind::CompileStdoutChunk(m) => Response::CompileStdoutChunk(m.bytes),
-            proto::WireResponseKind::CompileStderrChunk(m) => Response::CompileStderrChunk(m.bytes),
-            proto::WireResponseKind::CompileDone(m) => Response::CompileDone {
-                exit_code: m.exit_code,
-                cached: m.cached,
-                cache_outcome: m.cache_outcome,
-                compile_id: m.compile_id,
-            },
             proto::WireResponseKind::CompileStats(m) => {
                 Response::CompileStats(compile_stats_from_wire(m))
             }

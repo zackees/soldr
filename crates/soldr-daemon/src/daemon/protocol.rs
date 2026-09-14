@@ -109,10 +109,15 @@ use serde::{Deserialize, Serialize};
 /// * v24 (soldr#3024): adds a connection-scoped resident-capacity lease.
 ///   Acquisition reserves embedded compile permits until the same control
 ///   stream releases them or disconnects.
-pub const PROTOCOL_VERSION: u32 = 24;
+/// * v25 (soldr#2424): deletes the legacy direct-IPC compile verb. `Compile`,
+///   its streamed `CompileStdoutChunk` / `CompileStderrChunk` / `CompileDone`
+///   replies, the deprecated single-frame `Compile` reply, `Backpressure`, and
+///   the status `ipc_burst_stats` counters only that verb populated are gone.
+///   Every compile travels the broker SESSION route.
+pub const PROTOCOL_VERSION: u32 = 25;
 
-/// Wire-chunk granularity for the streaming Compile reply (#983 Phase
-/// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
+/// Chunk granularity for streamed compile output (#983 Phase 5b), now
+/// emitted as SESSION frames. 64 KiB is the same buffer size cargo's own pipe readers use
 /// and matches the typical SO_SNDBUF on a Unix socket / named-pipe.
 /// Each frame's prost overhead is a handful of bytes so chunk-size is
 /// effectively the IPC frame size on the wire; rustc emits stdout /
@@ -220,13 +225,6 @@ pub enum Request {
     /// Fire-and-forget: bump the `last_used_unix_ms` field for the
     /// row whose `sha256` matches.
     CookTouch { sha256: [u8; 32] },
-    /// Request-response: dispatch a single rustc invocation to the
-    /// daemon's embedded zccache service (issue #977 Phase 5 / #980 L1).
-    /// The daemon returns [`Response::CompileResponse`] with the
-    /// captured stdout/stderr + exit code, or [`Response::Error`] on
-    /// embedded-service failure. There is no longer a wrapper-side
-    /// fallback to forking `zccache.exe` — embedded is mandatory.
-    Compile(CompileRequest),
     /// Request-response: checkpoint the embedded zccache service's
     /// in-memory state (artifact index, depgraph snapshot, metadata
     /// cache, pending writes) to disk WITHOUT shutting down. Issued by
@@ -303,7 +301,8 @@ pub struct BuildLogHistoryUpdate {
     pub log_paths: Option<BuildLogPaths>,
 }
 
-/// Body of [`Request::Compile`]. Carries the full `rustc` argv plus the
+/// A compile for the daemon's embedded zccache service, built from a SESSION
+/// `SessionStart`. Carries the full `rustc` argv plus the
 /// surrounding environment so the daemon's embedded service can rebuild
 /// the cache key + dispatch the inner compile.
 ///
@@ -325,7 +324,7 @@ pub struct CompileRequest {
     pub stdin: Vec<u8>,
     pub lifecycle: Option<CompileLifecycle>,
     /// Number of transient `ERROR_PIPE_BUSY` retries before this client
-    /// connected. The daemon includes it in its process-local burst report.
+    /// connected.
     pub ipc_busy_retries: u32,
 }
 
@@ -338,7 +337,7 @@ pub struct CompileLifecycle {
     pub started_at_ms: i64,
 }
 
-/// Body of [`Response::CompileResponse`]. Carries the captured rustc
+/// A completed compile's result from the embedded service. Carries the captured rustc
 /// output verbatim so the wrapper can replay it onto its own stdout /
 /// stderr before exiting with `exit_code`. `cache_outcome` mirrors
 /// `zccache::embedded::CacheOutcome` (1=Hit, 2=Miss, 3=Error); the
@@ -374,11 +373,6 @@ pub enum Response {
     ShuttingDown(ShutdownAck),
     Builds(Vec<BuildRecord>),
     Error(String),
-    /// The daemon is alive but its bounded compile-admission queue is full.
-    /// Clients reconnect after the supplied delay; this never means restart.
-    Backpressure {
-        retry_after_ms: u32,
-    },
     /// The daemon is retiring and will not serve this request.
     ///
     /// soldr#1838 Phase 2. Distinct from [`Response::Error`], which means the
@@ -428,33 +422,6 @@ pub enum Response {
     BuildSessionStarted {
         compile_jobs: u32,
         compile_jobs_source: String,
-    },
-    /// Reply to [`Request::Compile`] (issue #977 Phase 5 / #980 L1)
-    /// when the daemon's embedded backend handled the rustc dispatch.
-    ///
-    /// **Deprecated in v7** (#983 Phase 5b): the daemon no longer
-    /// emits this variant; it streams [`Response::CompileStdoutChunk`]
-    /// / [`Response::CompileStderrChunk`] / [`Response::CompileDone`]
-    /// instead. The variant is retained for one release cycle so the
-    /// decode path still admits the legacy shape — useful for tooling
-    /// that replays captured frames.
-    Compile(CompileResponseBody),
-    /// One stdout slice in the streaming Compile reply (#983 Phase 5b).
-    /// Each chunk is at most [`CHUNK_BYTES`] long; the wrapper relays
-    /// it onto its own stdout immediately and discards the buffer.
-    CompileStdoutChunk(Vec<u8>),
-    /// One stderr slice in the streaming Compile reply (#983 Phase 5b).
-    /// Mirrors [`Response::CompileStdoutChunk`] for stderr.
-    CompileStderrChunk(Vec<u8>),
-    /// Terminal frame in the streaming Compile reply (#983 Phase 5b).
-    /// The wrapper reads chunk frames until it sees this variant,
-    /// then exits with `exit_code`. `cache_outcome` mirrors the
-    /// integer encoding used by [`CompileResponseBody`].
-    CompileDone {
-        exit_code: i32,
-        cached: bool,
-        cache_outcome: i32,
-        compile_id: String,
     },
     /// Reply to [`Request::CompileStats`] (soldr#1368): the embedded
     /// zccache service's cumulative compile counters.
@@ -595,8 +562,6 @@ pub struct StatusInfo {
     /// stay stable for telemetry consumers.
     #[serde(default)]
     pub compile_backend: String,
-    #[serde(default)]
-    pub ipc_burst_stats: IpcBurstStats,
     /// soldr#2023: the compile-concurrency limit this daemon applied when it
     /// started, and the precedence tier it came from.
     ///
@@ -609,17 +574,6 @@ pub struct StatusInfo {
     pub compile_jobs: u32,
     #[serde(default)]
     pub compile_jobs_source: String,
-}
-
-/// Process-local named-pipe burst diagnostics. Unix daemons report zeros,
-/// preserving a stable status schema for all callers.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IpcBurstStats {
-    pub accepted: u64,
-    pub queued: u64,
-    pub backpressured: u64,
-    pub busy_retries: u64,
-    pub queue_high_water: u64,
 }
 
 /// Canonical `compile_backend` value emitted by the daemon. The
@@ -705,8 +659,8 @@ mod tests {
     // soldr#2023 renamed this from the v20 spelling when the daemon began
     // publishing its applied compile limit.
     #[test]
-    fn protocol_version_is_v24_after_adding_resident_capacity_leases() {
-        assert_eq!(PROTOCOL_VERSION, 24);
+    fn protocol_version_is_v25_after_deleting_the_direct_ipc_compile_verb() {
+        assert_eq!(PROTOCOL_VERSION, 25);
     }
 
     #[test]
@@ -745,7 +699,6 @@ mod tests {
             request_count: 0,
             cook_stats: None,
             compile_backend: COMPILE_BACKEND_EMBEDDED.to_string(),
-            ipc_burst_stats: IpcBurstStats::default(),
             compile_jobs: 8,
             compile_jobs_source: "default".to_string(),
         };

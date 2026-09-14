@@ -145,7 +145,7 @@ For wrapper mode:
 
 soldr runs exactly one long-lived process: soldr-daemon. The zccache build
 cache is hosted *inside* it as an embedded service — wrapper invocations
-ferry each compile to the daemon over the `Request::Compile` IPC verb. No
+ferry each compile to the daemon over the broker SESSION route. No
 standalone `zccache-daemon` or `zccache-download-daemon` process is ever
 spawned, and nothing in soldr may reach the upstream lazy-spawn entry
 points (enforced by `crates/soldr-cli/tests/guards/no_standalone_spawn_lint.rs`).

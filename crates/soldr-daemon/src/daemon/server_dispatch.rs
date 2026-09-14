@@ -585,52 +585,6 @@ where
             // already moved on.
             let _ = cook_index::touch(&state.db_path, &sha256, current_unix_ms());
         }
-        Request::Compile(req) => {
-            // Issue #977 / #980 L1: dispatch the rustc compile through
-            // the daemon's embedded zccache service. There is no
-            // fallback path — embedded is mandatory.
-            //
-            // #983 Phase 5b: stream the captured stdout/stderr back to
-            // the wrapper as a sequence of chunk frames followed by
-            // exactly one CompileDone frame. `dispatch_compile_streaming`
-            // owns the writer for the duration of the call.
-            //
-            // Cancellation: `dispatch_compile_streaming` watches the IPC
-            // read side for disconnect concurrently with the in-flight
-            // compile. If the client (rustc-wrapper) terminates — Ctrl-C
-            // on the parent cargo, a hung wrapper killed by the user —
-            // the daemon drops the compile future immediately so rustc
-            // is cleaned up by its `kill_on_drop` chain rather than
-            // grinding to completion on output no one will read.
-            // Admission applies on every transport (soldr#1853). This was
-            // `#[cfg(windows)]`-only, which left the AF_UNIX listener with no
-            // bound at all: under `cargo -j N` it admitted every wrapper at
-            // once and shed the excess by resetting sockets, which reached the
-            // client as ECONNRESET and failed the build. Windows passed
-            // precisely because it had this cap. The policy itself was already
-            // written to be portable — see
-            // `windows_burst_policy_keeps_four_pool_sizes_fifo_and_recovers`,
-            // which validates it on Linux — only its application was gated.
-            let _admission = match state.compile_admission.try_admit() {
-                Some(permit) => permit,
-                None => {
-                    let _ = write_frame_async(
-                        &mut stream,
-                        &Response::Backpressure {
-                            retry_after_ms: IPC_BACKPRESSURE_RETRY_AFTER_MS,
-                        },
-                    )
-                    .await;
-                    return Ok(());
-                }
-            };
-            state
-                .compile_admission
-                .record_busy_retries(req.ipc_busy_retries);
-            if let Err(err) = dispatch_compile_streaming(&state, req, &mut stream).await {
-                tracing::warn!("soldr-daemon: streaming compile dispatch failed: {err}");
-            }
-        }
     }
     Ok(())
 }
@@ -738,33 +692,3 @@ mod resident_capacity_tests {
         assert!(dropped.load(Ordering::SeqCst));
     }
 }
-
-// Daemon-side streaming compile dispatcher (issue #983 Phase 5b /
-// soldr#981).
-//
-// Calls `SoldrZccacheService::compile`, then splits the captured
-// stdout/stderr `Vec<u8>` into `CHUNK_BYTES`-sized frames before
-// writing them to the connection. The terminal `CompileDone` frame
-// carries the exit code, cache outcome, and (today empty) compile id.
-//
-// **Wire contract locked in `tests/phase5_contract.rs`** — that
-// regression test asserts the chunked `Response::CompileStdoutChunk`
-// / `CompileStderrChunk` / `CompileDone` variants round-trip
-// byte-for-byte over the prost codec. If anyone re-introduces the
-// single-frame `Response::Compile(body)` shape from the v6-era
-// fork-zccache.exe path, that test fails with a directive message
-// pointing at #981.
-//
-// **Phase 5b1 caveat:** the underlying `compile_service.compile`
-// still returns a fully buffered `CompileResponseBody`, so the
-// daemon briefly holds the entire rustc output in memory before
-// chunking it out. The on-wire saving (smaller per-frame prost
-// encode + zero wrapper-side accumulation) is the immediate win;
-// **Phase 5b2** lifts the daemon-side buffering by switching to the
-// already-published `compile_service.compile_streaming(req,
-// |chunk| …)` API, whose producer side will start emitting chunks
-// incrementally once `zccache#937` (cross-cutting daemon-pipeline
-// streaming) lands upstream in zccache. The consumer surface is
-// already in place: this function chunks output identically to what
-// `compile_streaming` emits today, so the migration is mechanical
-// and the wire bytes don't change.

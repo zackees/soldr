@@ -3,10 +3,9 @@
 //!
 //! Called exactly once per daemon, from
 //! [`SoldrZccacheService::start`](crate::zccache_embedded::SoldrZccacheService::start).
-//! The result is stored on the service, which makes it the one number both
-//! the zccache semaphore and the outer `CompileAdmission` queue size
-//! themselves from, and the value the daemon publishes over `Status` and
-//! `BuildSessionStart`.
+//! The result is stored on the service, which makes it the one number the
+//! zccache semaphore sizes itself from, and the value the daemon publishes
+//! over `Status` and `BuildSessionStart`.
 //!
 //! #1761 already had both layers evaluating the same *expression*; #2023
 //! made them share one *evaluation*. The difference is small but real: two

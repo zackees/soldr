@@ -839,7 +839,7 @@ fn runtime_alias_targets(
 /// (soldr#1081) from the main `soldr` binary. Native-C caching
 /// injects this stable basename into `CC`/`CXX` so cc-rs build-script
 /// compiles route through the soldr-daemon embedded zccache service
-/// over the `Request::Compile` IPC verb.
+/// over the broker SESSION route.
 ///
 /// The shim must be version-scoped just like the Rust compiler shim. A test
 /// process running an older bootstrapped Soldr can overlap the source-built
