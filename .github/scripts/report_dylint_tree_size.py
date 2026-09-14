@@ -54,8 +54,7 @@ modes:
   skipped / rebuilt / did-not-run accordingly.
 
 `--cache-hit LABEL=VALUE` (repeatable) prints one additional row per
-`actions/cache`-restored Dylint layer (the dylint nightly toolchain, the
-libraries+target trees, the dylint driver + prepared-plan marker, plus the
+`actions/cache`-restored Dylint layer (the libraries+target trees, the dylint driver + prepared-plan marker, plus the
 existing rustup 1.95.0 cache), using each step's own `cache-hit` output. A
 cache block nobody can see the hit/miss status of cannot demonstrate "dylint
 is fast".
@@ -66,7 +65,6 @@ Usage:
         --snapshot-library-marker target/dylint/libraries/<nightly>-<host>/.soldr-dylint-library-marker-v1.json
     python3 .github/scripts/report_dylint_tree_size.py \\
         --cache-hit "rustup 1.95.0=true" \\
-        --cache-hit "dylint nightly toolchain=false" \\
         --cache-hit "dylint libraries+target trees=true" \\
         --cache-hit "dylint driver+prepared marker=true" \\
         --library-stage-skip-marker target/dylint/libraries/<nightly>-<host>/.soldr-dylint-library-marker-v1.json \\

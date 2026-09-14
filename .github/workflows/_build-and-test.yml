@@ -167,31 +167,15 @@ jobs:
         shell: bash
         run: python3 .github/scripts/dylint_toolchain_channel.py
 
-      # soldr#2349: `rustc-dev` is the largest component setup-soldr's
-      # `dylint-toolchain:` install pulls, and it was downloaded from scratch
-      # every run because nothing cached the nightly toolchain tree (only the
-      # stable 1.95.0 toolchain above was cached). Mirrors the 1.95.0 pattern:
-      # cache the exact toolchain directory rustup creates for this channel.
-      # Host triple is hard-coded the same way the 1.95.0 cache above hard-codes
-      # it — this template has one caller today (ci.yml's build-linux-x64,
-      # ubuntu-24.04/x86_64-unknown-linux-gnu); a second OS caller needs this
-      # literal parameterized the same day the 1.95.0 one is.
-      #
-      # Assumption flagged: this relies on setup-soldr detecting the nightly +
-      # its rustc-dev/rust-src/llvm-tools-preview components are already present
-      # on disk and skipping its own install/component-add on a cache hit, the
-      # same way it does for the pre-cached 1.95.0 toolchain per the comment
-      # above. setup-soldr is an external action; that behavior could not be
-      # verified here (no build/test allowed in this change). Even if that
-      # assumption is wrong, a cache hit still avoids re-downloading the raw
-      # toolchain archive, and a miss costs exactly what today's uncached run
-      # already costs — there is no regression either way.
-      - name: Cache Dylint nightly toolchain in ~/.rustup
-        id: dylint_nightly_cache
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: ~/.rustup/toolchains/${{ steps.dylint_identity.outputs.channel }}-x86_64-unknown-linux-gnu
-          key: dylint-nightly-v1-${{ inputs.target }}-${{ steps.dylint_identity.outputs.channel }}
+      # soldr#3216: the Dylint nightly toolchain is deliberately NOT cached.
+      # An actions/cache step for it (soldr#2349) held 452 MiB of the
+      # repository's fixed 9 GiB Actions-cache budget and put the
+      # dylint-foundation family over its allocation, with no family able to
+      # spare the difference. Measured on main, it bought about 15 s per run:
+      # "Cook the Dylint UI-test dependency layer" took 60-73 s on a cache miss
+      # (where the nightly installs) against 37-49 s plus a 6-9 s restore on a
+      # hit. Its key prefix is retired in check_cache_budget.py, so a re-added
+      # step fails the budget guard as an unregistered producer.
 
       # soldr#1799: pin the soldr that builds us. This prevents action-default
       # drift from changing build or catalogue behavior between lanes.
@@ -783,7 +767,6 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/report_dylint_tree_size.py \
             --cache-hit "rustup 1.95.0=${{ steps.rustup_cache.outputs.cache-hit }}" \
-            --cache-hit "dylint nightly toolchain=${{ steps.dylint_nightly_cache.outputs.cache-hit }}" \
             --cache-hit "dylint libraries+target trees=${{ steps.dylint_trees.outputs.cache-hit }}" \
             --cache-hit "dylint driver+prepared marker=${{ steps.dylint_driver_cache.outputs.cache-hit }}" \
             --library-stage-skip-marker "target/dylint/libraries/${{ steps.dylint_identity.outputs.channel }}-x86_64-unknown-linux-gnu/.soldr-dylint-library-marker-v1.json" \
