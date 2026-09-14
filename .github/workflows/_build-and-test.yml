@@ -843,27 +843,24 @@ jobs:
           du -sh "$store" || true
 
       # soldr#3120. How much of the store this run touched, per zccache
-      # version tree, and what a Full `gc maintain` pass under the proposed
-      # trim cap does to a real copy of it (the copy costs ~70 s, so the trial
-      # runs on main only; the ~1 s walk runs on every gate). It also prunes
-      # whole version trees this run touched zero files of. soldr#3213 measured
-      # `v1.13.21` at 3.09 GiB and 0 bytes touched once the bootstrap pin
-      # matched, and nothing else ever removes it: zccache maintains only its
-      # current version, and CI never runs soldr's legacy sweep. The Save below
-      # is success-gated, so a failed run's partial measurement is never saved.
+      # version tree (a ~1 s read-only walk), then prune whole version trees
+      # this run touched zero files of. soldr#3213 measured `v1.13.21` at
+      # 3.09 GiB and 0 bytes touched once the bootstrap pin matched, and
+      # nothing else ever removes it: zccache maintains only its current
+      # version, and CI never runs soldr's legacy sweep. The Save below is
+      # success-gated, so a failed run's partial measurement is never saved.
+      # The `gc maintain` copy trial that also ran here on main (~45 s) was
+      # dropped once soldr#3120 closed without a trim cap; the script keeps it
+      # (`--soldr --scratch-root`) for manual measurement.
       - name: Measure and prune the Tier-2 zccache store (soldr#3120)
         if: always()
         continue-on-error: true
         shell: bash
         run: |
-          sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/soldr-zccache-trial || true
           python3 .github/scripts/measure_zccache_working_set.py \
             --store "${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/daemon-state" \
             --since-file "${{ runner.temp }}/zccache-unit-restored-at" \
-            --soldr "${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr" \
-            --scratch-root /mnt/soldr-zccache-trial \
-            --prune-dead-version-dirs \
-            --trial "${{ github.ref == 'refs/heads/main' }}"
+            --prune-dead-version-dirs
 
       # soldr#1799 — surface the per-build XML logs and the JSONL compile
       # journals from CI compiles so toolchain-home leakage and warm-run
