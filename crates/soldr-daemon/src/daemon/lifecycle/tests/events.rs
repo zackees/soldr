@@ -237,7 +237,6 @@ mod status_retry_tests {
             request_count: 1,
             cook_stats: None,
             compile_backend: crate::daemon::protocol::COMPILE_BACKEND_EMBEDDED.to_string(),
-            ipc_burst_stats: Default::default(),
             compile_jobs: 1,
             compile_jobs_source: "test".to_string(),
         }

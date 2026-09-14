@@ -11,8 +11,7 @@ use crate::daemon::ipc::{
     write_frame_sync_for_version,
 };
 use crate::daemon::protocol::{
-    BuildRecord, CacheFlushInfo, CompileRequest, CompileStatsInfo, Request, Response, ShutdownAck,
-    StatusInfo,
+    BuildRecord, CacheFlushInfo, CompileStatsInfo, Request, Response, ShutdownAck, StatusInfo,
 };
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -80,9 +79,9 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(2_000);
 /// longer than the generic status/shutdown request timeout.
 const CACHE_FLUSH_REPLY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Historical protocols that must remain able to retire their daemon during
-/// an in-place upgrade. v23 is the immediately preceding daemon protocol;
+/// an in-place upgrade. v24 is the immediately preceding daemon protocol;
 /// v17 is the last protocol whose shutdown acknowledgement lacked identity.
-const SHUTDOWN_COMPAT_PROTOCOL_VERSIONS: &[u32] = &[23, 17];
+const SHUTDOWN_COMPAT_PROTOCOL_VERSIONS: &[u32] = &[24, 17];
 
 /// Default compile-dispatch timeout — rustc may take minutes for a release
 /// build of a large crate, so the default stays generous (30 minutes): a
@@ -95,12 +94,6 @@ pub const DEFAULT_REPLY_TIMEOUT_SECS: u64 = 30 * 60;
 /// backstop, e.g. `SOLDR_COMPILE_REPLY_TIMEOUT_SECS=30`. `0`, empty, or an
 /// unparseable value falls back to [`DEFAULT_REPLY_TIMEOUT_SECS`].
 pub const REPLY_TIMEOUT_ENV: &str = "SOLDR_COMPILE_REPLY_TIMEOUT_SECS";
-
-/// How many times a client re-dials after the daemon replies
-/// `Response::Backpressure`. Shared by both transports since soldr#1853 —
-/// compile admission is no longer Windows-only, so the AF_UNIX path needs
-/// the same bounded back-off.
-const BACKPRESSURE_RETRY_LIMIT: u32 = 8;
 
 // The Windows named-pipe open policy (`ERROR_PIPE_BUSY` classification,
 // `PIPE_BUSY_RETRY_LIMIT`, exponential busy backoff with jitter, and the
@@ -142,29 +135,6 @@ pub enum ClientError {
     /// attempts remain. The caller must displace the daemon or fall back to a
     /// direct compile rather than burning its retry budget.
     VersionMismatch(String),
-    /// The daemon answered that it is retiring and will not serve the
-    /// request (soldr#1838 Phase 2).
-    ///
-    /// Distinct from [`Self::Protocol`] for the same reason as
-    /// [`Self::VersionMismatch`]: the daemon is not misbehaving, it simply
-    /// cannot help, so degrading to a direct compile masks nothing. Folding
-    /// this into `Protocol` is what failed builds during a normal graceful
-    /// drain (#1837).
-    Retiring,
-    /// A compile reply deadline expired (soldr#1838 Phase 2, bullet 4).
-    ///
-    /// `saw_output` is the whole point: it separates *slow* from *wedged*,
-    /// which need opposite advice. A compile that streamed diagnostics and
-    /// then ran out of clock is a long build hitting the backstop -- raising
-    /// `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` is the fix, and bypassing the cache
-    /// would only make it slower. A compile that produced nothing at all is
-    /// the wedge described in #1364, where bypassing is the fix and raising
-    /// the timeout just prolongs the hang.
-    ///
-    /// Carried as its own variant rather than an enriched `Io` because the
-    /// distinction has to survive to the message-formatting site, and
-    /// `io::Error` can only carry it as prose.
-    CompileStalled { saw_output: bool, elapsed: Duration },
 }
 
 impl From<std::io::Error> for ClientError {
@@ -680,265 +650,7 @@ pub fn build_session_end(
 // retaining the existing `daemon::client::*` paths through lexical inclusion.
 include!("client_cook.rs");
 
-/// Metadata returned by the streaming compile call after the last
-/// chunk frame has been consumed (#983 Phase 5b). Carries everything
-/// the wrapper needs to surface to cargo — the captured rustc output
-/// has already been written through to the caller-provided sinks.
-#[derive(Debug, Clone)]
-pub struct CompileDoneInfo {
-    pub exit_code: i32,
-    #[allow(dead_code)] // forwarded for future telemetry; wrapper does not act on it today
-    pub cached: bool,
-    #[allow(dead_code)] // 1=Hit, 2=Miss, 3=Error — same shape as CompileResponseBody
-    pub cache_outcome: i32,
-    /// Daemon-side audit id for the compile. Empty in Phase 5b1 (the
-    /// embedded zccache service does not yet surface it). Plumbed
-    /// through so Phase 5b2 can fill it without another version bump.
-    #[allow(dead_code)]
-    pub compile_id: String,
-}
-
-/// Dispatch a single rustc compile to the daemon's embedded zccache
-/// service and stream the captured rustc stdout/stderr to the caller's
-/// sinks as they arrive (#983 Phase 5b — superseded the v6 single-frame
-/// reply path).
-///
-/// The reply timeout is generous (30 minutes) because rustc itself may
-/// take many minutes for a release build of a large crate. The function
-/// reads frames in a loop, dispatching `CompileStdoutChunk` /
-/// `CompileStderrChunk` to the matching writer and returning once it
-/// sees the terminal `CompileDone` frame.
-///
-/// On any timeout / IO error the wrapper hard-errors (the legacy
-/// `zccache.exe` fork path was removed in #980 L1's second pass).
-/// Whether an IO error is a reply-deadline expiry rather than a real
-/// transport fault. `WouldBlock` is included because a socket read timeout
-/// surfaces as either kind depending on platform.
-fn is_deadline_error(err: &std::io::Error) -> bool {
-    matches!(
-        err.kind(),
-        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-    )
-}
-
-pub fn compile_streaming<O, E>(
-    sock_path: &Path,
-    req: CompileRequest,
-    stdout: O,
-    stderr: E,
-) -> Result<CompileDoneInfo, ClientError>
-where
-    O: Write,
-    E: Write,
-{
-    compile_streaming_with_timeout(sock_path, req, stdout, stderr, compile_reply_timeout())
-}
-
-/// [`compile_streaming`] with the reply budget passed in rather than resolved
-/// from the process environment.
-///
-/// soldr#2955: [`compile_reply_timeout`] memoizes in a `OnceLock`, so the
-/// first caller in a process fixes the deadline for every later one. A test
-/// that needed a short budget had to win that race by setting
-/// `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` before any sibling read the timeout,
-/// which the consolidated `daemon` test binary cannot guarantee under plain
-/// `cargo test` — and the loser silently inherited a budget it never asked
-/// for. Production callers keep going through [`compile_streaming`], so the
-/// env override and its memoization are unchanged.
-pub fn compile_streaming_with_timeout<O, E>(
-    sock_path: &Path,
-    req: CompileRequest,
-    mut stdout: O,
-    mut stderr: E,
-    reply_timeout: Duration,
-) -> Result<CompileDoneInfo, ClientError>
-where
-    O: Write,
-    E: Write,
-{
-    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-        compile_streaming_windows(sock_path, req, &mut stdout, &mut stderr, reply_timeout)
-    } else {
-        // Honour `Response::Backpressure` (soldr#1853). Compile admission
-        // used to be `#[cfg(windows)]`-only, so this transport accepted every
-        // connection unconditionally and shed load by resetting sockets —
-        // surfacing as ECONNRESET, a burned 30 s budget, and a red build.
-        // Applying admission on Unix needs a client that backs off instead of
-        // treating the reply as a protocol violation, which is exactly what
-        // `open_compile_pipe_with_backpressure` already does for named pipes.
-        //
-        // Synchronous by necessity: this path is sync end to end, so the wait
-        // is a `thread::sleep` and each retry re-dials. The first frame is
-        // carried into the loop below rather than re-read, since reading it
-        // here to test for backpressure consumes it.
-        let (mut stream, first_frame) = {
-            let mut admitted = None;
-            let mut last_retry_after_ms = 0u32;
-            // soldr#1838: how long we have been trying to get a first frame,
-            // reported when that wait is what expires.
-            let dial_started = std::time::Instant::now();
-            for attempt in 0..BACKPRESSURE_RETRY_LIMIT {
-                let mut stream = connect(sock_path, reply_timeout)?;
-                write_frame_sync(&mut stream, &Request::Compile(req.clone()))?;
-                // soldr#1838: `read_frame_sync` blocks for the whole compile
-                // budget (30 min by default). Report progress while it does,
-                // rather than going silent until the backstop expires. The
-                // guard stops on drop, so a fast compile prints nothing.
-                let _heartbeat = super::wait_heartbeat::WaitHeartbeat::start(
-                    "daemon compile reply",
-                    reply_timeout,
-                    Some(REPLY_TIMEOUT_ENV),
-                );
-                // soldr#1838: a daemon that accepts the connection and then
-                // never sends a first frame IS the wedge case -- nothing
-                // arrived at all. The bare `?` here mapped that to a generic
-                // `Io` error, so the slow-vs-wedged signal the Windows
-                // transport already reports was lost on this transport, and
-                // the wrapper could not tell the user which remedy applies.
-                // Found by the #1838 Phase 4 fault-injection harness.
-                let frame: Response = match read_frame_sync(&mut stream) {
-                    Ok(frame) => frame,
-                    Err(err) if is_deadline_error(&err) => {
-                        return Err(ClientError::CompileStalled {
-                            saw_output: false,
-                            elapsed: dial_started.elapsed(),
-                        });
-                    }
-                    Err(err) => return Err(ClientError::from(err)),
-                };
-                match frame {
-                    Response::Backpressure { retry_after_ms } => {
-                        last_retry_after_ms = retry_after_ms;
-                        if attempt + 1 == BACKPRESSURE_RETRY_LIMIT {
-                            break;
-                        }
-                        // Per-process jitter so wrappers released together do
-                        // not re-dial in lockstep; mirrors the Windows spread.
-                        let jitter_ms =
-                            (u64::from(attempt) * 11 + u64::from(std::process::id())) % 4;
-                        std::thread::sleep(Duration::from_millis(
-                            u64::from(retry_after_ms) + jitter_ms,
-                        ));
-                    }
-                    other => {
-                        admitted = Some((stream, other));
-                        break;
-                    }
-                }
-            }
-            match admitted {
-                Some(pair) => pair,
-                // Deliberately `Io`, not `Protocol`: a daemon too busy to
-                // admit us is *unavailable*, and `Protocol` is classified as
-                // "the daemon answered, so do not degrade"
-                // (`compile_dispatch::client_error_indicates_daemon_unavailable`).
-                // Reporting this as Io lets the caller fall back to a direct
-                // uncached rustc instead of failing the build.
-                None => {
-                    return Err(ClientError::Io(std::io::Error::new(
-                        std::io::ErrorKind::WouldBlock,
-                        format!(
-                            "daemon IPC admission stayed backpressured across                              {BACKPRESSURE_RETRY_LIMIT} attempts                              ({last_retry_after_ms}ms apart)"
-                        ),
-                    )))
-                }
-            }
-        };
-        let mut pending = Some(first_frame);
-        // soldr#1838 bullet 4: whether the compile ever spoke separates a slow
-        // build from a wedged daemon, and they need opposite advice. Tracked
-        // here because this is the only place that sees both the chunks and
-        // the deadline.
-        let started = std::time::Instant::now();
-        let mut saw_output = false;
-        // soldr#1838 Phase 1: the streaming phase is where a compile actually
-        // stalls, and it used to run silent -- the heartbeat above only covers
-        // the wait for the first frame. Publish chunk arrivals so each beat can
-        // say whether output is still coming.
-        let progress = super::wait_heartbeat::StreamProgress::new();
-        let _stream_heartbeat = super::wait_heartbeat::WaitHeartbeat::start_streaming(
-            "daemon compile stream",
-            reply_timeout,
-            Some(REPLY_TIMEOUT_ENV),
-            std::sync::Arc::clone(&progress),
-        );
-        loop {
-            let frame: Response = match pending.take() {
-                Some(frame) => frame,
-                // `read_frame_sync` yields `io::Result`, which the original
-                // `?` converted through `From<io::Error>`. Match the io error
-                // directly and keep that conversion for everything that is not
-                // a deadline.
-                None => match read_frame_sync(&mut stream) {
-                    Ok(frame) => frame,
-                    Err(err) if is_deadline_error(&err) => {
-                        return Err(ClientError::CompileStalled {
-                            saw_output,
-                            elapsed: started.elapsed(),
-                        });
-                    }
-                    Err(err) => return Err(ClientError::from(err)),
-                },
-            };
-            match frame {
-                Response::CompileStdoutChunk(bytes) => {
-                    saw_output = true;
-                    progress.record_chunk();
-                    tracing::debug!(
-                        target: "soldr::client::compile_stream",
-                        bytes = bytes.len(),
-                        "stdout chunk received",
-                    );
-                    stdout.write_all(&bytes).map_err(ClientError::Io)?;
-                }
-                Response::CompileStderrChunk(bytes) => {
-                    saw_output = true;
-                    progress.record_chunk();
-                    tracing::debug!(
-                        target: "soldr::client::compile_stream",
-                        bytes = bytes.len(),
-                        "stderr chunk received",
-                    );
-                    stderr.write_all(&bytes).map_err(ClientError::Io)?;
-                }
-                Response::CompileDone {
-                    exit_code,
-                    cached,
-                    cache_outcome,
-                    compile_id,
-                } => {
-                    tracing::debug!(
-                        target: "soldr::client::compile_stream",
-                        exit_code,
-                        cached,
-                        cache_outcome,
-                        "compile done — streaming reply complete",
-                    );
-                    return Ok(CompileDoneInfo {
-                        exit_code,
-                        cached,
-                        cache_outcome,
-                        compile_id,
-                    });
-                }
-                Response::Error(msg) => return Err(ClientError::Protocol(msg)),
-                // soldr#1838 Phase 2: keep this above the catch-all -- falling
-                // through would turn a well-behaved "I am retiring" into a
-                // protocol violation and deny the direct-rustc fallback.
-                Response::Retiring => return Err(ClientError::Retiring),
-                other => {
-                    return Err(ClientError::Protocol(format!(
-                        "unexpected compile stream frame: {other:?}"
-                    )));
-                }
-            }
-        }
-    }
-}
-
-// Same shape as [`submit_request`] but with an explicit reply timeout.
-// Extracted so [`compile`] can use a 30-minute budget without bloating
-// the call surface of the generic helper.
+// Control-wire transports: Unix socket and Windows named pipe.
 include!("client_transport.rs");
 #[cfg(test)]
 #[path = "client_tests.rs"]

@@ -1,6 +1,6 @@
 //! `RUSTC_WRAPPER` invocation path: forwards rustc / clippy-driver through
-//! the daemon's embedded zccache compile service via the `Request::Compile`
-//! IPC verb, spills stdin to a temp file when cargo passes `-`. Extracted
+//! the daemon's embedded zccache compile service via the broker SESSION
+//! route, spills stdin to a temp file when cargo passes `-`. Extracted
 //! from `main.rs` as part of issue #339. The legacy fork-zccache.exe
 //! wrapper path was removed in #980 L1 second pass — embedded is mandatory.
 

@@ -64,8 +64,8 @@ pub fn encode_reject_record(reason: &str) -> Vec<u8> {
 }
 /// Reads on the daemon side (a `RecordTargetTouch` or similar) used to
 /// finish in milliseconds, so a 30 s cap was generous. With the
-/// `Request::Compile` verb added in #977 Phase 5 / #980 L1 the wrapper
-/// holds the daemon's IPC channel open for the lifetime of a rustc
+/// compile verb added in #977 Phase 5 / #980 L1 (since moved to the SESSION
+/// route, soldr#2424) the wrapper held the daemon's IPC channel open for the lifetime of a rustc
 /// invocation, which may take minutes for a large release crate. Bumped
 /// to match `client::COMPILE_REPLY_TIMEOUT` so the same 30 minute
 /// budget governs both directions; the wrapper's own

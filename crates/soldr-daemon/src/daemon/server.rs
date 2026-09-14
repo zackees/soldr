@@ -22,7 +22,7 @@ use crate::daemon::ipc::{read_frame_async_with_prefix, write_frame_async};
 use crate::daemon::ipc_peer::PeerIdentity;
 use crate::daemon::lifecycle::{append_lifecycle_event, claimed_daemon_occupies_route, is_live};
 use crate::daemon::protocol::{
-    BuildRecord, CookStats, IpcBurstStats, Request, Response, ShutdownAck, StatusInfo, CHUNK_BYTES,
+    BuildRecord, CookStats, Request, Response, ShutdownAck, StatusInfo, CHUNK_BYTES,
     COMPILE_BACKEND_EMBEDDED, PROTOCOL_VERSION,
 };
 use crate::zccache_embedded::SoldrZccacheService;
@@ -30,7 +30,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Upper bound on the drift diagnostic returned in [`Response::CookMiss`].
 /// Keeps the body well under [`crate::daemon::protocol::MAX_BODY_BYTES`]
@@ -56,97 +55,6 @@ const COOK_DRIFT_LIMIT: usize = 8;
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(1800);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
-const IPC_BACKPRESSURE_RETRY_AFTER_MS: u32 = 25;
-const IPC_QUEUE_CAPACITY_MAX: usize = 1024;
-
-/// A bounded outer admission queue for compile IPC. Once admitted, callers
-/// wait in the embedded zccache service's fair compile semaphore; holding an
-/// owned permit while waiting makes the total queue bounded without changing
-/// zccache's user-configured `ZCCACHE_MAX_PARALLEL_COMPILES` policy.
-struct CompileAdmission {
-    permits: Arc<Semaphore>,
-    capacity: u64,
-    expected_compile_slots: u64,
-    accepted: AtomicU64,
-    queued: AtomicU64,
-    backpressured: AtomicU64,
-    busy_retries: AtomicU64,
-    active: AtomicU64,
-    queue_high_water: AtomicU64,
-}
-
-struct CompileAdmissionPermit<'a> {
-    _permit: OwnedSemaphorePermit,
-    admission: &'a CompileAdmission,
-}
-
-impl Drop for CompileAdmissionPermit<'_> {
-    fn drop(&mut self) {
-        self.admission.active.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-impl CompileAdmission {
-    fn new(capacity: usize, expected_compile_slots: usize) -> Self {
-        Self {
-            permits: Arc::new(Semaphore::new(capacity)),
-            capacity: capacity as u64,
-            expected_compile_slots: expected_compile_slots.max(1) as u64,
-            accepted: AtomicU64::new(0),
-            queued: AtomicU64::new(0),
-            backpressured: AtomicU64::new(0),
-            busy_retries: AtomicU64::new(0),
-            active: AtomicU64::new(0),
-            queue_high_water: AtomicU64::new(0),
-        }
-    }
-
-    fn try_admit(&self) -> Option<CompileAdmissionPermit<'_>> {
-        let permit = match self.permits.clone().try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(_) => {
-                self.backpressured.fetch_add(1, Ordering::Relaxed);
-                return None;
-            }
-        };
-        let active = self.active.fetch_add(1, Ordering::Relaxed) + 1;
-        self.accepted.fetch_add(1, Ordering::Relaxed);
-        if active > self.expected_compile_slots {
-            self.queued.fetch_add(1, Ordering::Relaxed);
-        }
-        let mut high_water = self.queue_high_water.load(Ordering::Relaxed);
-        while active > high_water {
-            match self.queue_high_water.compare_exchange_weak(
-                high_water,
-                active,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(observed) => high_water = observed,
-            }
-        }
-        Some(CompileAdmissionPermit {
-            _permit: permit,
-            admission: self,
-        })
-    }
-
-    fn record_busy_retries(&self, retries: u32) {
-        self.busy_retries
-            .fetch_add(u64::from(retries), Ordering::Relaxed);
-    }
-
-    fn stats(&self) -> IpcBurstStats {
-        IpcBurstStats {
-            accepted: self.accepted.load(Ordering::Relaxed),
-            queued: self.queued.load(Ordering::Relaxed),
-            backpressured: self.backpressured.load(Ordering::Relaxed),
-            busy_retries: self.busy_retries.load(Ordering::Relaxed),
-            queue_high_water: self.queue_high_water.load(Ordering::Relaxed),
-        }
-    }
-}
 
 fn positive_env_value<F>(name: &str, lookup: F) -> Option<usize>
 where
@@ -173,14 +81,6 @@ fn windows_listener_pool_size() -> usize {
             std::env::var(name).ok()
         }),
     )
-}
-
-fn ipc_queue_capacity(listener_pool_size: usize) -> usize {
-    positive_env_value("SOLDR_WINDOWS_PIPE_QUEUE_CAPACITY", |name| {
-        std::env::var(name).ok()
-    })
-    .unwrap_or_else(|| listener_pool_size.saturating_mul(4))
-    .clamp(1, IPC_QUEUE_CAPACITY_MAX)
 }
 
 /// soldr#3169 test seam: hold a starting daemon between claiming its control
@@ -322,9 +222,8 @@ mod tokio_console_config_tests {
 }
 
 #[cfg(test)]
-mod ipc_burst_tests {
+mod listener_pool_tests {
     use super::*;
-    use tokio::sync::{mpsc, Mutex};
 
     #[test]
     fn listener_pool_defaults_and_override_are_bounded() {
@@ -332,84 +231,6 @@ mod ipc_burst_tests {
         assert_eq!(windows_listener_pool_size_from(12, None), 48);
         assert_eq!(windows_listener_pool_size_from(64, None), 128);
         assert_eq!(windows_listener_pool_size_from(2, Some(3)), 3);
-    }
-
-    #[test]
-    fn compile_admission_is_bounded_and_reports_backpressure() {
-        let admission = CompileAdmission::new(2, 1);
-        let first = admission.try_admit().expect("first request admitted");
-        let second = admission.try_admit().expect("second request queued");
-        assert!(
-            admission.try_admit().is_none(),
-            "third request must backpressure"
-        );
-        let stats = admission.stats();
-        assert_eq!(stats.accepted, 2);
-        assert_eq!(stats.queued, 1);
-        assert_eq!(stats.backpressured, 1);
-        assert_eq!(stats.queue_high_water, 2);
-        drop(first);
-        drop(second);
-        assert!(
-            admission.try_admit().is_some(),
-            "capacity recovers after completion"
-        );
-    }
-
-    #[test]
-    fn windows_burst_policy_keeps_four_pool_sizes_fifo_and_recovers() {
-        // This is intentionally platform-neutral: it exercises the exact
-        // bounded-admission and fair Tokio semaphore policy used by the
-        // Windows named-pipe listener, so Linux Docker can validate it while
-        // the Windows matrix owns the actual pipe transport.
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        runtime.block_on(async {
-            const LISTENER_POOL: usize = 16;
-            const CLIENTS: usize = LISTENER_POOL * 4;
-            let admission = Arc::new(CompileAdmission::new(CLIENTS, 1));
-            let compile_gate = Arc::new(Semaphore::new(1));
-            let held_compile = compile_gate.clone().acquire_owned().await.expect("permit");
-            let completion_order = Arc::new(Mutex::new(Vec::with_capacity(CLIENTS)));
-            let (ready_tx, mut ready_rx) = mpsc::channel(CLIENTS);
-            let mut joins = Vec::with_capacity(CLIENTS);
-
-            // Queue each request in a known order before submitting the next.
-            // Tokio's semaphore preserves this waiter order when the small
-            // compile gate opens, which is the FIFO contract for the burst.
-            for index in 0..CLIENTS {
-                let admission = admission.clone();
-                let compile_gate = compile_gate.clone();
-                let completion_order = completion_order.clone();
-                let ready_tx = ready_tx.clone();
-                joins.push(tokio::spawn(async move {
-                    let _admission = admission.try_admit().expect("queue has room");
-                    ready_tx.send(()).await.expect("ready receiver");
-                    let _compile = compile_gate.acquire_owned().await.expect("compile permit");
-                    completion_order.lock().await.push(index);
-                }));
-                ready_rx.recv().await.expect("request admitted before next");
-            }
-            drop(held_compile);
-            for join in joins {
-                join.await.expect("queued request completes");
-            }
-            assert_eq!(
-                *completion_order.lock().await,
-                (0..CLIENTS).collect::<Vec<_>>(),
-                "bounded waiting line must preserve FIFO order"
-            );
-            let stats = admission.stats();
-            assert_eq!(stats.accepted, CLIENTS as u64);
-            assert_eq!(stats.backpressured, 0);
-            assert_eq!(stats.queue_high_water, CLIENTS as u64);
-            assert!(
-                admission.try_admit().is_some(),
-                "all capacity recovers after the burst drains"
-            );
-        });
     }
 }
 
@@ -522,7 +343,7 @@ struct State {
     cook_hits_this_session: AtomicU64,
     shutdown: Arc<crate::daemon::maintenance::ShutdownSignal>,
     /// L4 (issue soldr#980) — background drain task that coalesces
-    /// per-compile redb event writes. The `Request::Compile` handler
+    /// per-compile redb event writes. The SESSION compile handler
     /// pushes into a tokio mpsc instead of opening redb directly. See
     /// [`crate::daemon::event_batcher`] for the batching contract.
     event_batcher: EventBatcher,
@@ -532,7 +353,6 @@ struct State {
     /// fallible at daemon boot; if it fails the daemon refuses to
     /// start rather than silently degrade.
     compile_service: Arc<SoldrZccacheService>,
-    compile_admission: CompileAdmission,
 }
 
 impl State {
@@ -569,7 +389,6 @@ impl State {
             // Always "embedded" since #980 L1 second pass; field
             // retained for telemetry stability.
             compile_backend: COMPILE_BACKEND_EMBEDDED.to_string(),
-            ipc_burst_stats: self.compile_admission.stats(),
             compile_jobs,
             compile_jobs_source,
         }

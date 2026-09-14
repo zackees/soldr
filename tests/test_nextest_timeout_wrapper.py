@@ -418,7 +418,6 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
         "cli_daemon_single_instance",
         "cli_daemon_target_touch",
         "daemon_cache_maintenance",
-        "daemon_stall_harness",
     ):
         assert module in daemon_modules, filters
     assert "agent_worktree_share" in _module_alternation(filters, "cache_gc"), filters
@@ -429,7 +428,12 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     # without updating the config (soldr#2553 fallout). Since soldr#2934 the
     # stale reference would be a module name rather than a `binary(...)` term,
     # so the name must not appear at all.
-    for deleted in ("cli_daemon_tombstone", "session_multiprocess_smoke"):
+    for deleted in (
+        "cli_daemon_tombstone",
+        "session_multiprocess_smoke",
+        "daemon_stall_harness",
+        "env_dedup_micro_benchmark",
+    ):
         assert deleted not in config
     assert config.count('threads-required = "num-cpus"') == 2
     # Every raised budget must carry the explicit grace period.

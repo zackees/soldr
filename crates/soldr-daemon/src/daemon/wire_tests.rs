@@ -369,13 +369,6 @@ fn status_response_round_trips_with_cook_stats() {
             hits_this_session: 1,
         }),
         compile_backend: "embedded".to_string(),
-        ipc_burst_stats: crate::daemon::protocol::IpcBurstStats {
-            accepted: 16,
-            queued: 7,
-            backpressured: 3,
-            busy_retries: 2,
-            queue_high_water: 16,
-        },
         compile_jobs: 12,
         compile_jobs_source: "SOLDR_JOBS".to_string(),
     };
@@ -508,15 +501,6 @@ fn cook_miss_response_round_trips_with_multiple_hashes() {
 }
 
 #[test]
-fn backpressure_response_round_trips_with_retry_delay() {
-    let bytes = encode_response(&Response::Backpressure { retry_after_ms: 25 });
-    assert!(matches!(
-        decode_response(&bytes).expect("decode"),
-        Response::Backpressure { retry_after_ms: 25 }
-    ));
-}
-
-#[test]
 fn retiring_response_round_trips() {
     let bytes = encode_response(&Response::Retiring);
     assert!(matches!(
@@ -643,159 +627,4 @@ fn prost_tagged_bytes_prepends_the_tag() {
     let payload = proto::WireUnit {};
     let bytes = prost_tagged_bytes(&payload);
     assert_eq!(bytes.first().copied(), Some(REDB_TAG_PROST));
-}
-
-#[test]
-fn compile_request_round_trips_with_env_and_cwd() {
-    let req = Request::Compile(crate::daemon::protocol::CompileRequest {
-        args: vec![
-            "/usr/bin/rustc".into(),
-            "--crate-name=foo".into(),
-            "--edition=2021".into(),
-        ],
-        cwd: "/home/runner/work/soldr".into(),
-        env: vec![
-            ("CARGO_PKG_NAME".into(), "soldr".into()),
-            ("OPT_LEVEL".into(), "3".into()),
-        ],
-        stdin: vec![1, 2, 3, 4],
-        lifecycle: Some(crate::daemon::protocol::CompileLifecycle {
-            session_id: 42,
-            crate_name: "foo".into(),
-            target_dir: "/home/runner/work/soldr/target".into(),
-            started_at_ms: 1_700_000_000_123,
-        }),
-        ipc_busy_retries: 3,
-    });
-    let bytes = encode_request(&req);
-    match decode_request(&bytes).expect("decode") {
-        Request::Compile(decoded) => {
-            assert_eq!(decoded.args.len(), 3);
-            assert_eq!(decoded.cwd, "/home/runner/work/soldr");
-            assert_eq!(decoded.env.len(), 2);
-            assert_eq!(decoded.env[0], ("CARGO_PKG_NAME".into(), "soldr".into()));
-            assert_eq!(decoded.stdin, vec![1, 2, 3, 4]);
-            assert_eq!(decoded.ipc_busy_retries, 3);
-            let lifecycle = decoded.lifecycle.expect("compile lifecycle metadata");
-            assert_eq!(lifecycle.session_id, 42);
-            assert_eq!(lifecycle.crate_name, "foo");
-            assert_eq!(lifecycle.target_dir, "/home/runner/work/soldr/target");
-            assert_eq!(lifecycle.started_at_ms, 1_700_000_000_123);
-        }
-        other => panic!("unexpected variant: {other:?}"),
-    }
-}
-
-#[test]
-fn compile_response_round_trips() {
-    let body = crate::daemon::protocol::CompileResponseBody {
-        exit_code: 0,
-        stdout: b"compiling\n".to_vec(),
-        stderr: b"warning: unused import\n".to_vec(),
-        cached: true,
-        cache_outcome: 1,
-    };
-    let resp = Response::Compile(body.clone());
-    let bytes = encode_response(&resp);
-    match decode_response(&bytes).expect("decode") {
-        Response::Compile(decoded) => {
-            assert_eq!(decoded.exit_code, 0);
-            assert_eq!(decoded.stdout, b"compiling\n");
-            assert_eq!(decoded.stderr, b"warning: unused import\n");
-            assert!(decoded.cached);
-            assert_eq!(decoded.cache_outcome, 1);
-        }
-        other => panic!("unexpected variant: {other:?}"),
-    }
-}
-
-#[test]
-fn compile_stdout_chunk_round_trips() {
-    // #983 Phase 5b — streaming chunk variant. Exercises the
-    // happy path including zero-byte chunks (which the daemon
-    // never emits, but the decode side must still accept).
-    let payload = b"rustc: compiling foo v0.1.0\n".to_vec();
-    let resp = Response::CompileStdoutChunk(payload.clone());
-    let bytes = encode_response(&resp);
-    match decode_response(&bytes).expect("decode") {
-        Response::CompileStdoutChunk(decoded) => {
-            assert_eq!(decoded, payload);
-        }
-        other => panic!("unexpected variant: {other:?}"),
-    }
-
-    let empty = Response::CompileStdoutChunk(Vec::new());
-    let bytes = encode_response(&empty);
-    match decode_response(&bytes).expect("decode") {
-        Response::CompileStdoutChunk(decoded) => assert!(decoded.is_empty()),
-        other => panic!("unexpected variant: {other:?}"),
-    }
-}
-
-#[test]
-fn compile_stderr_chunk_round_trips() {
-    // #983 Phase 5b — the stderr counterpart. Same shape, separate
-    // discriminant so the wrapper-side reader can fan out to the
-    // correct sink without inspecting the payload.
-    let payload = b"warning: unused import `foo`\n".to_vec();
-    let resp = Response::CompileStderrChunk(payload.clone());
-    let bytes = encode_response(&resp);
-    match decode_response(&bytes).expect("decode") {
-        Response::CompileStderrChunk(decoded) => {
-            assert_eq!(decoded, payload);
-        }
-        other => panic!("unexpected variant: {other:?}"),
-    }
-}
-
-#[test]
-fn compile_done_round_trips_with_all_fields() {
-    // #983 Phase 5b — terminal frame in the streaming reply. All
-    // four metadata fields are load-bearing for the wrapper's
-    // exit-code + cache-outcome reporting.
-    let resp = Response::CompileDone {
-        exit_code: 0,
-        cached: true,
-        cache_outcome: 1,
-        compile_id: "abc123-def456".into(),
-    };
-    let bytes = encode_response(&resp);
-    match decode_response(&bytes).expect("decode") {
-        Response::CompileDone {
-            exit_code,
-            cached,
-            cache_outcome,
-            compile_id,
-        } => {
-            assert_eq!(exit_code, 0);
-            assert!(cached);
-            assert_eq!(cache_outcome, 1);
-            assert_eq!(compile_id, "abc123-def456");
-        }
-        other => panic!("unexpected variant: {other:?}"),
-    }
-
-    // Non-zero exit_code + empty compile_id (the daemon emits an
-    // empty string when zccache does not surface an audit id).
-    let resp = Response::CompileDone {
-        exit_code: 101,
-        cached: false,
-        cache_outcome: 2,
-        compile_id: String::new(),
-    };
-    let bytes = encode_response(&resp);
-    match decode_response(&bytes).expect("decode") {
-        Response::CompileDone {
-            exit_code,
-            cached,
-            cache_outcome,
-            compile_id,
-        } => {
-            assert_eq!(exit_code, 101);
-            assert!(!cached);
-            assert_eq!(cache_outcome, 2);
-            assert!(compile_id.is_empty());
-        }
-        other => panic!("unexpected variant: {other:?}"),
-    }
 }

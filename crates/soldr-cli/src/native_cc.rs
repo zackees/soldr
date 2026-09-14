@@ -147,7 +147,7 @@ fn env_is_falsy(value: Option<&OsStr>) -> bool {
 /// `wrapper_shim` must be the path to the `zccache-soldr` shim
 /// (soldr#1368) — the stable RUSTC_WRAPPER/CC shim that forwards a
 /// compile to the soldr-daemon embedded zccache service over the
-/// `Request::Compile` IPC verb. cc-rs will spawn
+/// broker SESSION route. cc-rs will spawn
 /// `zccache-soldr <abs-compiler> <args>`; the shim strips its own argv[0]
 /// and dispatches `[<abs-compiler>, ...args]` to the daemon, which detects
 /// the C/C++ compiler family by basename.

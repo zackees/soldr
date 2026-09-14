@@ -136,12 +136,12 @@ max-threads = 2
 # which needs the per-child instrumentation soldr#3152 asks for.
 
 [[profile.default.overrides]]
-filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_rss_ceiling|daemon_stall_harness)::/))'
+filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_rss_ceiling)::/))'
 platform = { target = 'cfg(target_os = "linux")' }
 test-group = 'soldr-runtime-linux'
 
 [[profile.default.overrides]]
-filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_rss_ceiling|daemon_stall_harness)::/))'
+filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_rss_ceiling)::/))'
 test-group = 'soldr-runtime'
 
 # soldr#3038: `daemon_rss_ceiling` spawns its own broker-owned daemon and
@@ -334,11 +334,9 @@ run-wrapper = "timeout-diagnostics"
 # The three `session_*` tests are soldr-daemon *lib* unit tests living under
 # `crates/soldr-daemon/src/daemon/`, so their names carry the full module path.
 # They were written here as bare names and therefore matched nothing; soldr#2934
-# repaired them alongside the soldr-cli migration. `env_dedup_micro_benchmark`
-# is an integration test in `crates/soldr-daemon/tests/env_dedup_bench.rs`,
-# which did not move and still has its own binary -- the bare name is correct.
+# repaired them alongside the soldr-cli migration.
 [[profile.default.overrides]]
-filter = 'test(=daemon::session_endpoint::tests::session_endpoint_serves_real_compile_via_mux) + test(=daemon::session_serve::tests::session_compile_e2e_real_rustc_through_the_bridge) + test(=daemon::session_serve::tests::session_client_disconnect_mid_compile_aborts_without_reply) + test(=agent_worktree_share::windows_long_path_publication_survives_fresh_worktree_reuse) + test(=agent_worktree_share::windows_deep_cache_root_keeps_staged_linker_path_short) + test(=env_dedup_micro_benchmark) + test(=cli_daemon_lifecycle::cargo_test_recovers_after_daemon_stop_without_herd_spawning) + test(=daemon_restart_warmth::graceful_daemon_restart_serves_the_next_build_warm) + test(=daemon_restart_warmth::hard_killed_daemon_loses_at_most_one_save_batch) + test(=cli_daemon_lifecycle::windows_stop_start_is_immediately_status_ready)'
+filter = 'test(=daemon::session_endpoint::tests::session_endpoint_serves_real_compile_via_mux) + test(=daemon::session_serve::tests::session_compile_e2e_real_rustc_through_the_bridge) + test(=daemon::session_serve::tests::session_client_disconnect_mid_compile_aborts_without_reply) + test(=agent_worktree_share::windows_long_path_publication_survives_fresh_worktree_reuse) + test(=agent_worktree_share::windows_deep_cache_root_keeps_staged_linker_path_short) + test(=cli_daemon_lifecycle::cargo_test_recovers_after_daemon_stop_without_herd_spawning) + test(=daemon_restart_warmth::graceful_daemon_restart_serves_the_next_build_warm) + test(=daemon_restart_warmth::hard_killed_daemon_loses_at_most_one_save_batch) + test(=cli_daemon_lifecycle::windows_stop_start_is_immediately_status_ready)'
 slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
 
 # 240s: daemon single-instance races, which spin up two daemons and wait for

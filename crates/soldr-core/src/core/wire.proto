@@ -39,10 +39,9 @@ message WireRequest {
     WireCookLookup cook_lookup = 10;
     WireCookRecord cook_record = 11;
     WireCookTouch cook_touch = 12;
-    // #977 Phase 5 / #980 L1 — wrapper asks the daemon's embedded
-    // zccache service to run a rustc invocation instead of forking
-    // zccache.exe. v6 protocol.
-    WireCompileRequest compile = 13;
+    // Tag 13 (WireCompileRequest compile) reserved — the legacy direct-IPC
+    // compile verb was deleted in soldr#2424; compiles travel the broker
+    // SESSION route.
     // #1286 F1 — checkpoint the embedded zccache state (artifact
     // index, depgraph snapshot, metadata cache) to disk without
     // shutting down. Replies with ack. v8 protocol.
@@ -165,28 +164,6 @@ message WireCookTouch {
   bytes sha256 = 1;       // exactly 32 bytes
 }
 
-message WireEnvEntry {
-  string key = 1;
-  string value = 2;
-}
-
-message WireCompileRequest {
-  repeated string args = 1;
-  string cwd = 2;
-  repeated WireEnvEntry env = 3;
-  bytes stdin = 4;
-  optional WireCompileLifecycle lifecycle = 5;
-  uint32 ipc_busy_retries = 6;
-}
-
-// soldr#1537: compile telemetry rides the existing compile connection.
-message WireCompileLifecycle {
-  uint64 session_id = 1;
-  string crate_name = 2;
-  string target_dir = 3;
-  int64 started_at_ms = 4;
-}
-
 // =========================================================================
 // Response (daemon -> client)
 // =========================================================================
@@ -200,23 +177,12 @@ message WireResponse {
     WireCookHit cook_hit = 5;
     WireCookMiss cook_miss = 6;
     WireUnit ack = 7;
-    // #977 Phase 5 / #980 L1 — original single-frame Compile reply.
-    // Deprecated in v7 (#983 Phase 5b): the daemon no longer emits
-    // this variant; the wire-format slot is reserved for one release
-    // cycle so an in-flight v7-vs-v6 mismatch surfaces as a
-    // version-mismatch error rather than a silent oneof mis-decode.
-    // Plan to remove the tag in v8.
-    WireCompileResponse compile_response = 8;
-    // #983 Phase 5b — streaming Compile reply: zero or more
-    // {stdout,stderr} chunk frames followed by exactly one
-    // WireCompileDone frame to close the call.
-    WireCompileStdoutChunk compile_stdout_chunk = 9;
-    WireCompileStderrChunk compile_stderr_chunk = 10;
-    WireCompileDone compile_done = 11;
+    // Tags 8-11 (compile_response, compile_stdout_chunk, compile_stderr_chunk,
+    // compile_done) reserved — deleted with the direct-IPC compile verb in
+    // soldr#2424.
     // soldr#1368 — reply to compile_stats.
     WireCompileStats compile_stats = 12;
-    // soldr#1735 — bounded admission is full; retry without restart.
-    WireBackpressure backpressure = 13;
+    // Tag 13 (WireBackpressure backpressure) reserved — deleted in soldr#2424.
     // v17 — structured result for flush_caches.
     WireCacheFlush cache_flushed = 14;
     // v19 / soldr#1814 slice 2a — build-log inputs served by the daemon so
@@ -312,46 +278,11 @@ message WireCompileStats {
   WireStagedProfile staged_profile = 7;
 }
 
-message WireBackpressure {
-  uint32 retry_after_ms = 1;
-}
-
 message WireStagedProfile {
   map<string, uint64> counters = 1;
   map<string, uint64> timings_ns = 2;
   map<string, uint64> bytes = 3;
   map<string, uint64> failures = 4;
-}
-
-message WireCompileResponse {
-  int32 exit_code = 1;
-  bytes stdout = 2;
-  bytes stderr = 3;
-  bool cached = 4;
-  // 1=Hit, 2=Miss, 3=Error. Mirrors zccache::embedded::CacheOutcome.
-  int32 cache_outcome = 5;
-}
-
-// #983 Phase 5b — one slice of rustc's stdout pipe. Each chunk caps at
-// `CHUNK_BYTES` (64 KiB) so peers hold at most one chunk in memory.
-message WireCompileStdoutChunk {
-  bytes bytes = 1;
-}
-
-// #983 Phase 5b — one slice of rustc's stderr pipe; same shape and cap
-// as WireCompileStdoutChunk.
-message WireCompileStderrChunk {
-  bytes bytes = 1;
-}
-
-// #983 Phase 5b — closes the streaming Compile reply. The wrapper-side
-// reader loops on read_frame_async until it sees this variant.
-message WireCompileDone {
-  int32 exit_code = 1;
-  bool cached = 2;
-  // 1=Hit, 2=Miss, 3=Error. Mirrors zccache::embedded::CacheOutcome.
-  int32 cache_outcome = 3;
-  string compile_id = 4;
 }
 
 message WireBuilds {
@@ -391,7 +322,8 @@ message WireStatusInfo {
   // fork-zccache.exe backend was removed in #980 L1's second pass;
   // field retained for telemetry stability.
   string compile_backend = 7;
-  optional WireIpcBurstStats ipc_burst_stats = 8;
+  // Field 8 (ipc_burst_stats) deleted in soldr#2424.
+  reserved 8;
   // v18 — process-start generation shared with WireShuttingDown.
   uint64 generation = 9;
   // v21 (soldr#2023) — the compile-concurrency limit this daemon actually
@@ -400,14 +332,6 @@ message WireStatusInfo {
   // drifted from what the environment now resolves to.
   uint32 compile_jobs = 10;
   string compile_jobs_source = 11;
-}
-
-message WireIpcBurstStats {
-  uint64 accepted = 1;
-  uint64 queued = 2;
-  uint64 backpressured = 3;
-  uint64 busy_retries = 4;
-  uint64 queue_high_water = 5;
 }
 
 message WireCookStats {

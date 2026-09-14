@@ -13,7 +13,7 @@ use prost::{Message, Oneof};
 pub struct WireRequest {
     #[prost(
         oneof = "WireRequestKind",
-        tags = "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22"
+        tags = "1,2,3,4,5,7,8,9,10,11,12,14,15,16,17,18,19,20,21,22"
     )]
     pub kind: Option<WireRequestKind>,
 }
@@ -42,9 +42,8 @@ pub enum WireRequestKind {
     CookRecord(WireCookRecord),
     #[prost(message, tag = "12")]
     CookTouch(WireCookTouch),
-    /// #977 Phase 5 / #980 L1 — wrapper-to-daemon Compile dispatch.
-    #[prost(message, tag = "13")]
-    Compile(WireCompileRequest),
+    // Tag 13 (Compile) reserved — the legacy direct-IPC compile verb was
+    // deleted in soldr#2424; compiles travel the broker SESSION route.
     /// #1286 F1 — checkpoint embedded zccache state to disk.
     #[prost(message, tag = "14")]
     FlushCaches(WireUnit),
@@ -224,46 +223,6 @@ pub struct WireCookTouch {
     pub sha256: Vec<u8>,
 }
 
-/// #977 Phase 5 / #980 L1 — flattened (key, value) pair so
-/// `env: Vec<(String, String)>` rides the wire as a `repeated`
-/// message instead of two parallel `repeated string` fields
-/// (which would lose pairing semantics across the encode boundary).
-#[derive(Clone, PartialEq, Message)]
-pub struct WireEnvEntry {
-    #[prost(string, tag = "1")]
-    pub key: String,
-    #[prost(string, tag = "2")]
-    pub value: String,
-}
-
-#[derive(Clone, PartialEq, Message)]
-pub struct WireCompileRequest {
-    #[prost(string, repeated, tag = "1")]
-    pub args: Vec<String>,
-    #[prost(string, tag = "2")]
-    pub cwd: String,
-    #[prost(message, repeated, tag = "3")]
-    pub env: Vec<WireEnvEntry>,
-    #[prost(bytes = "vec", tag = "4")]
-    pub stdin: Vec<u8>,
-    #[prost(message, optional, tag = "5")]
-    pub lifecycle: Option<WireCompileLifecycle>,
-    #[prost(uint32, tag = "6")]
-    pub ipc_busy_retries: u32,
-}
-
-#[derive(Clone, PartialEq, Message)]
-pub struct WireCompileLifecycle {
-    #[prost(uint64, tag = "1")]
-    pub session_id: u64,
-    #[prost(string, tag = "2")]
-    pub crate_name: String,
-    #[prost(string, tag = "3")]
-    pub target_dir: String,
-    #[prost(int64, tag = "4")]
-    pub started_at_ms: i64,
-}
-
 // -- Response ---------------------------------------------------------
 
 #[derive(Clone, PartialEq, Message)]
@@ -273,7 +232,7 @@ pub struct WireResponse {
         // soldr#1838: a tag missing from this list decodes as EmptyOneof even
         // though the variant exists on the enum below -- prost only accepts
         // tags enumerated here. Keep it in sync when adding a variant.
-        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21"
+        tags = "1,2,3,4,5,6,7,12,14,15,16,17,18,19,20,21"
     )]
     pub kind: Option<WireResponseKind>,
 }
@@ -294,26 +253,13 @@ pub enum WireResponseKind {
     CookMiss(WireCookMiss),
     #[prost(message, tag = "7")]
     Ack(WireUnit),
-    /// #977 Phase 5 / #980 L1 — single-frame reply to
-    /// `WireCompileRequest`. Deprecated in v7 (#983 Phase 5b);
-    /// retained on the wire for one release cycle but no longer
-    /// emitted. Scheduled for removal in v8.
-    #[prost(message, tag = "8")]
-    CompileResponse(WireCompileResponse),
-    /// #983 Phase 5b — one stdout chunk in the streaming Compile reply.
-    #[prost(message, tag = "9")]
-    CompileStdoutChunk(WireCompileStdoutChunk),
-    /// #983 Phase 5b — one stderr chunk in the streaming Compile reply.
-    #[prost(message, tag = "10")]
-    CompileStderrChunk(WireCompileStderrChunk),
-    /// #983 Phase 5b — terminal frame for the streaming Compile reply.
-    #[prost(message, tag = "11")]
-    CompileDone(WireCompileDone),
+    // Tags 8-11 (CompileResponse, CompileStdoutChunk, CompileStderrChunk,
+    // CompileDone) reserved — deleted with the direct-IPC compile verb in
+    // soldr#2424.
     /// soldr#1368 — reply to CompileStats.
     #[prost(message, tag = "12")]
     CompileStats(WireCompileStats),
-    #[prost(message, tag = "13")]
-    Backpressure(WireBackpressure),
+    // Tag 13 (Backpressure) reserved — deleted in soldr#2424.
     /// v17 — structured reply to FlushCaches.
     #[prost(message, tag = "14")]
     CacheFlushed(WireCacheFlush),
@@ -432,12 +378,6 @@ pub struct WireCacheFlushStep {
 }
 
 #[derive(Clone, PartialEq, Message)]
-pub struct WireBackpressure {
-    #[prost(uint32, tag = "1")]
-    pub retry_after_ms: u32,
-}
-
-#[derive(Clone, PartialEq, Message)]
 pub struct WireCompileStats {
     #[prost(uint64, tag = "1")]
     pub total_compilations: u64,
@@ -465,44 +405,6 @@ pub struct WireStagedProfile {
     pub bytes: std::collections::BTreeMap<String, u64>,
     #[prost(btree_map = "string, uint64", tag = "4")]
     pub failures: std::collections::BTreeMap<String, u64>,
-}
-
-#[derive(Clone, PartialEq, Message)]
-pub struct WireCompileResponse {
-    #[prost(int32, tag = "1")]
-    pub exit_code: i32,
-    #[prost(bytes = "vec", tag = "2")]
-    pub stdout: Vec<u8>,
-    #[prost(bytes = "vec", tag = "3")]
-    pub stderr: Vec<u8>,
-    #[prost(bool, tag = "4")]
-    pub cached: bool,
-    #[prost(int32, tag = "5")]
-    pub cache_outcome: i32,
-}
-
-#[derive(Clone, PartialEq, Message)]
-pub struct WireCompileStdoutChunk {
-    #[prost(bytes = "vec", tag = "1")]
-    pub bytes: Vec<u8>,
-}
-
-#[derive(Clone, PartialEq, Message)]
-pub struct WireCompileStderrChunk {
-    #[prost(bytes = "vec", tag = "1")]
-    pub bytes: Vec<u8>,
-}
-
-#[derive(Clone, PartialEq, Message)]
-pub struct WireCompileDone {
-    #[prost(int32, tag = "1")]
-    pub exit_code: i32,
-    #[prost(bool, tag = "2")]
-    pub cached: bool,
-    #[prost(int32, tag = "3")]
-    pub cache_outcome: i32,
-    #[prost(string, tag = "4")]
-    pub compile_id: String,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -560,8 +462,7 @@ pub struct WireStatusInfo {
     /// consumers reading v6 status snapshots stay stable.
     #[prost(string, tag = "7")]
     pub compile_backend: String,
-    #[prost(message, optional, tag = "8")]
-    pub ipc_burst_stats: Option<WireIpcBurstStats>,
+    // Tag 8 (ipc_burst_stats) reserved — deleted in soldr#2424.
     /// v18 — process-start generation shared with `WireShuttingDown`.
     #[prost(uint64, tag = "9")]
     pub generation: u64,
@@ -573,20 +474,6 @@ pub struct WireStatusInfo {
     pub compile_jobs: u32,
     #[prost(string, tag = "11")]
     pub compile_jobs_source: String,
-}
-
-#[derive(Clone, PartialEq, Message)]
-pub struct WireIpcBurstStats {
-    #[prost(uint64, tag = "1")]
-    pub accepted: u64,
-    #[prost(uint64, tag = "2")]
-    pub queued: u64,
-    #[prost(uint64, tag = "3")]
-    pub backpressured: u64,
-    #[prost(uint64, tag = "4")]
-    pub busy_retries: u64,
-    #[prost(uint64, tag = "5")]
-    pub queue_high_water: u64,
 }
 
 #[derive(Clone, PartialEq, Message)]

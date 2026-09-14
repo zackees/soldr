@@ -84,7 +84,6 @@ async fn run_accept_loop_windows(paths: SoldrPaths, control: ControlContext) -> 
     let pool_size = windows_listener_pool_size();
     tracing::info!(
         pool_size,
-        queue_capacity = ipc_queue_capacity(pool_size),
         "soldr-daemon Windows named-pipe listener pool ready"
     );
     for index in 0..pool_size {

@@ -50,13 +50,6 @@ pub(crate) fn render(info: &StatusInfo, paths: &SoldrPaths, json: bool) {
                 "total_bytes": cook.total_bytes,
                 "hits_this_session": cook.hits_this_session,
             },
-            "ipc_burst": {
-                "accepted": info.ipc_burst_stats.accepted,
-                "queued": info.ipc_burst_stats.queued,
-                "backpressured": info.ipc_burst_stats.backpressured,
-                "busy_retries": info.ipc_burst_stats.busy_retries,
-                "queue_high_water": info.ipc_burst_stats.queue_high_water,
-            },
         });
         println!("{}", serde_json::to_string(&payload).unwrap_or_default());
         return;
@@ -89,14 +82,6 @@ pub(crate) fn render(info: &StatusInfo, paths: &SoldrPaths, json: bool) {
     println!(
         "  cook: entries={} total_bytes={} hits_this_session={}",
         cook.entries, cook.total_bytes, cook.hits_this_session
-    );
-    println!(
-        "  ipc burst: accepted={} queued={} backpressured={} busy_retries={} queue_high_water={}",
-        info.ipc_burst_stats.accepted,
-        info.ipc_burst_stats.queued,
-        info.ipc_burst_stats.backpressured,
-        info.ipc_burst_stats.busy_retries,
-        info.ipc_burst_stats.queue_high_water,
     );
 }
 
