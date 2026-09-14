@@ -418,7 +418,13 @@ def build_table(
 # run saves a fresh generation and restores the newest by prefix). Only the
 # newest generation of a lineage is ever restored, so the rest is dead
 # weight -- 1.3 GiB per host-lane run on main (soldr#3102).
-GENERATION_KEY_PREFIXES = ("v0-rust-", "zccache-unit-")
+# `bootstrap-soldr-blessed-*-<sha>` (ci.yml, _ci-cross-build-linux.yml) is
+# keyed on the exact `github.sha` with no restore-keys, so only a re-run of
+# that same commit can restore an older entry; every main merge wrote another
+# ~23 MiB driver that nothing superseded (13 live on 2026-09-14, 0.30 GiB of
+# a 0.15 GiB family). Its two lineages (`...-linux-gnu`, `...-linux-gnu-dev-v1`)
+# now keep only their newest entry.
+GENERATION_KEY_PREFIXES = ("v0-rust-", "zccache-unit-", "bootstrap-soldr-blessed-")
 
 
 def strip_shared_key_hash(key: str) -> str:

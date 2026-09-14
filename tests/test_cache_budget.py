@@ -253,3 +253,29 @@ def test_prune_supersedes_older_zccache_unit_generations_on_main() -> None:
     ]
     candidates = guard.prune_candidates(guard.normalize_entries(raw))
     assert [c.key for c in candidates] == [f"{base}-111"]
+
+
+def test_prune_supersedes_older_sha_keyed_bootstrap_drivers_on_main() -> None:
+    # Exact-SHA keys with no restore-keys: an older commit's driver is only
+    # restorable by re-running that commit, so each lineage keeps its newest.
+    dev = "bootstrap-soldr-blessed-linux-gnu-dev-v1"
+    release = "bootstrap-soldr-blessed-linux-gnu"
+    raw = [
+        {**entry(f"{dev}-aaa1", 23), "id": 1, "createdAt": "2026-09-13T13:45:00Z"},
+        {**entry(f"{dev}-bbb2", 23), "id": 2, "createdAt": "2026-09-13T14:33:00Z"},
+        {**entry(f"{dev}-ccc3", 23), "id": 3, "createdAt": "2026-09-14T01:04:00Z"},
+        {**entry(f"{release}-ddd4", 19), "id": 4, "createdAt": "2026-09-12T10:00:00Z"},
+        {**entry(f"{release}-eee5", 19), "id": 5, "createdAt": "2026-09-13T13:33:00Z"},
+    ]
+    candidates = guard.prune_candidates(guard.normalize_entries(raw))
+    assert sorted(c.key for c in candidates) == sorted(
+        [f"{dev}-aaa1", f"{dev}-bbb2", f"{release}-ddd4"]
+    )
+
+
+def test_a_lone_bootstrap_driver_per_lineage_is_kept() -> None:
+    raw = [
+        {**entry("bootstrap-soldr-blessed-linux-gnu-dev-v1-abc", 23), "id": 1},
+        {**entry("bootstrap-soldr-blessed-linux-gnu-def", 19), "id": 2},
+    ]
+    assert guard.prune_candidates(guard.normalize_entries(raw)) == []
