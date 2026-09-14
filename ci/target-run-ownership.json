@@ -341,8 +341,24 @@
     {
       "id": "worktree-process-share",
       "source_id": "cache-gc-target-replay",
-      "test_prefix": "agent_worktree_share::",
+      "test_name": "agent_worktree_share::windows_long_path_publication_survives_fresh_worktree_reuse",
       "reason": "Replay cross-worktree cache sharing through target-native child processes."
+    },
+    {
+      "id": "worktree-deep-cache-staging",
+      "source_id": "cache-gc-target-replay",
+      "test_name": "agent_worktree_share::windows_deep_cache_root_keeps_staged_linker_path_short",
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-gnu",
+        "aarch64-pc-windows-msvc"
+      ],
+      "reason": "Proves compiler staging stays out of a deep durable cache root, whose subject is the Windows MAX_PATH linker limit. soldr#3136: not replayed on x86_64-apple-darwin, where the Recovery guest has rustup only under its default managed home; this test's isolated SOLDR_CACHE_DIR forces a fresh rustup bootstrap that cannot resolve cargo (`rustup which cargo` produced no output for 60 seconds) before the property under test is reached."
     },
     {
       "id": "windows-delete-semantics",
@@ -391,22 +407,76 @@
       "reason": "All four tests distinguish default, mold, and rust-lld target linker behavior."
     },
     {
-      "id": "cargo-native-cc",
+      "id": "cargo-native-cc-injects-zccache-wrapped-cc-and-cxx-by-default",
       "source_id": "cargo-front-target-replay",
-      "test_prefix": "cli_cargo_native_cc::",
+      "test_name": "cli_cargo_native_cc::injects_zccache_wrapped_cc_and_cxx_by_default",
       "reason": "The compact module covers target-native CC/CXX injection and opt-outs."
+    },
+    {
+      "id": "cargo-native-cc-soldr-native-cache-off-disables-injection",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_native_cc::soldr_native_cache_off_disables_injection",
+      "reason": "The compact module covers target-native CC/CXX injection and opt-outs."
+    },
+    {
+      "id": "cargo-native-cc-explicit-user-cc-is-wrapped-on-every-platform",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_native_cc::explicit_user_cc_is_wrapped_on_every_platform",
+      "reason": "The compact module covers target-native CC/CXX injection and opt-outs."
+    },
+    {
+      "id": "cargo-native-cc-pre-wrapped-user-cc-is-not-double-wrapped",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_native_cc::pre_wrapped_user_cc_is_not_double_wrapped",
+      "reason": "The compact module covers target-native CC/CXX injection and opt-outs."
+    },
+    {
+      "id": "cargo-native-cc-no-cache-global",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_native_cc::no_cache_global_disables_native_too",
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-gnu",
+        "aarch64-pc-windows-msvc"
+      ],
+      "reason": "The compact module covers target-native CC/CXX injection and opt-outs. soldr#3136: not replayed on x86_64-apple-darwin, whose only execution lane is the macOS Recovery guest. That guest has no system C toolchain (no `cc`, no `xcrun`/SDK), so this test's real crate link fails with `linker `cc` not found` on every run."
     },
     {
       "id": "cargo-run-trampoline-cold",
       "source_id": "cargo-front-target-replay",
       "test_name": "cli_cargo_run_trampoline::cold_invocation_writes_sidecar_and_runs_binary",
-      "reason": "Prove a target-native executable and sidecar are materialized and run."
+      "reason": "Prove a target-native executable and sidecar are materialized and run. soldr#3136: not replayed on x86_64-apple-darwin, whose only execution lane is the macOS Recovery guest. That guest has no system C toolchain (no `cc`, no `xcrun`/SDK), so this test's real crate link fails with `linker `cc` not found` on every run.",
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-gnu",
+        "aarch64-pc-windows-msvc"
+      ]
     },
     {
       "id": "cargo-run-trampoline-binary-swap",
       "source_id": "cargo-front-target-replay",
       "test_name": "cli_cargo_run_trampoline::binary_swap_with_matching_mtime_size_is_detected",
-      "reason": "Binary identity and mtime behavior differ across native filesystems."
+      "reason": "Binary identity and mtime behavior differ across native filesystems. soldr#3136: not replayed on x86_64-apple-darwin, whose only execution lane is the macOS Recovery guest. That guest has no system C toolchain (no `cc`, no `xcrun`/SDK), so this test's real crate link fails with `linker `cc` not found` on every run.",
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-gnu",
+        "aarch64-pc-windows-msvc"
+      ]
     },
     {
       "id": "cargo-clippy-wrapper",

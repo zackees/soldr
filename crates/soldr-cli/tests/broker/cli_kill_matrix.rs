@@ -17,8 +17,8 @@
 //! substrate conformance suite.
 //!
 //! Unix-gated at runtime (the platform-cfg boundary lives in
-//! soldr-platform): the matrix drives `kill -9` and pgrep-style process
-//! inspection, so on Windows every test returns immediately — the Windows
+//! soldr-platform): the matrix drives `kill -9`, so on Windows every test
+//! returns immediately — the Windows
 //! containment story is job-object-based and is exercised by the daemon
 //! suites' own lifecycle tests.
 
@@ -131,17 +131,51 @@ fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
     !process_is_alive(pid)
 }
 
-/// Broker pids for an isolated home, by argv (the broker runs from the
-/// home's staged image path, so the home path is a unique argv marker).
-fn broker_pids(home_root: &Path) -> Vec<u32> {
-    let output = Command::new("pgrep")
-        .args(["-f", &format!("{}/.soldr/broker", home_root.display())])
-        .output()
-        .expect("run pgrep");
-    String::from_utf8_lossy(&output.stdout)
+/// The stable broker's pid for an isolated home, as the broker itself reports
+/// it through `soldr broker status --json`.
+///
+/// soldr#3136: this used to be `pgrep -f "<home>/.soldr/broker"`. Inside the
+/// macOS Recovery replay guest that matched nothing, so both tests failed with
+/// `left: 0` against a broker that was running and serving the route. Asking
+/// the broker is portable and names the process that owns the endpoint rather
+/// than any process whose argv happens to mention the path.
+fn broker_pid(cache_root: &Path, home_root: &Path) -> Option<u32> {
+    let out = run_soldr(&["broker", "status", "--json"], cache_root, home_root);
+    if !out.status.success() {
+        return None;
+    }
+    serde_json::from_slice::<serde_json::Value>(&out.stdout)
+        .ok()?
+        .get("broker_pid")?
+        .as_u64()
+        .filter(|pid| *pid != 0)
+        .and_then(|pid| u32::try_from(pid).ok())
+}
+
+/// How many brokers have bound this home's stable endpoint, counted from the
+/// spawn log every detached broker writes into. A second broker cannot bind
+/// the endpoint the first one holds, so binds are the singleton count; the
+/// resurrection and cold-start suites assert "exactly one broker" the same way.
+fn broker_binds(home_root: &Path) -> usize {
+    fs::read_to_string(home_root.join(".soldr/broker/broker-spawn.log"))
+        .unwrap_or_default()
         .lines()
-        .filter_map(|line| line.trim().parse::<u32>().ok())
-        .collect()
+        .filter(|line| line.contains("stable endpoint bound at"))
+        .count()
+}
+
+/// [`broker_binds`] once it reaches `expected` or the deadline passes. The
+/// log line is written by a detached process, so a snapshot taken the moment
+/// status answers can trail it; waiting still reports an excess bind.
+fn wait_for_broker_binds(home_root: &Path, expected: usize) -> usize {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let binds = broker_binds(home_root);
+        if binds >= expected || Instant::now() >= deadline {
+            return binds;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 struct Fixture {
@@ -165,9 +199,9 @@ impl Drop for Fixture {
         // directory. `broker stop` acknowledges before process exit, so wait
         // before deleting either tree; otherwise the still-live broker serves
         // the next test from a definition directory we just removed.
-        let broker_pids = broker_pids(&self.home_root);
+        let pid = broker_pid(&self.cache_root, &self.home_root);
         let _ = run_soldr(&["broker", "stop"], &self.cache_root, &self.home_root);
-        for pid in broker_pids {
+        if let Some(pid) = pid {
             if !wait_for_process_exit(pid, Duration::from_secs(5)) {
                 sigkill(pid);
                 let _ = wait_for_process_exit(pid, Duration::from_secs(5));
@@ -191,9 +225,10 @@ fn daemon_kill_invalidates_only_its_route_and_one_replacement_launches() {
         String::from_utf8_lossy(&start.stderr)
     );
     let old_daemon = daemon_pid(&fx.cache_root).expect("route claim carries the daemon pid");
-    let brokers_before = broker_pids(&fx.home_root);
+    let broker_before =
+        broker_pid(&fx.cache_root, &fx.home_root).expect("a broker answers status after bringup");
     assert_eq!(
-        brokers_before.len(),
+        wait_for_broker_binds(&fx.home_root, 1),
         1,
         "exactly one broker before the kill"
     );
@@ -207,8 +242,8 @@ fn daemon_kill_invalidates_only_its_route_and_one_replacement_launches() {
     // The broker is untouched by its route's daemon dying (soldr#2549:
     // generations belong to the daemon; the broker is a stable singleton).
     assert_eq!(
-        broker_pids(&fx.home_root),
-        brokers_before,
+        broker_pid(&fx.cache_root, &fx.home_root),
+        Some(broker_before),
         "the broker must survive its daemon's death"
     );
 
@@ -224,9 +259,14 @@ fn daemon_kill_invalidates_only_its_route_and_one_replacement_launches() {
         "a replacement generation, not the corpse"
     );
     assert_eq!(
-        broker_pids(&fx.home_root),
-        brokers_before,
+        broker_pid(&fx.cache_root, &fx.home_root),
+        Some(broker_before),
         "the same broker owns the replacement route"
+    );
+    assert_eq!(
+        broker_binds(&fx.home_root),
+        1,
+        "replacing the daemon must not bind a second broker"
     );
 }
 
@@ -243,12 +283,17 @@ fn broker_kill_is_recovered_by_the_next_front_door_with_one_replacement() {
         String::from_utf8_lossy(&start.stdout),
         String::from_utf8_lossy(&start.stderr),
     );
-    let brokers_before = broker_pids(&fx.home_root);
-    assert_eq!(brokers_before.len(), 1, "one broker after bringup");
+    let broker_before =
+        broker_pid(&fx.cache_root, &fx.home_root).expect("a broker answers status after bringup");
+    assert_eq!(
+        wait_for_broker_binds(&fx.home_root, 1),
+        1,
+        "one broker after bringup"
+    );
 
-    sigkill(brokers_before[0]);
+    sigkill(broker_before);
     assert!(
-        wait_for_process_exit(brokers_before[0], Duration::from_secs(10)),
+        wait_for_process_exit(broker_before, Duration::from_secs(10)),
         "SIGKILLed broker must exit"
     );
 
@@ -264,13 +309,17 @@ fn broker_kill_is_recovered_by_the_next_front_door_with_one_replacement() {
         std::thread::sleep(Duration::from_millis(200));
     }
     assert!(recovered, "status must recover after a broker kill");
-    let brokers_after = broker_pids(&fx.home_root);
-    assert_eq!(
-        brokers_after.len(),
-        1,
-        "exactly one replacement broker: {brokers_after:?}"
+    let broker_after =
+        broker_pid(&fx.cache_root, &fx.home_root).expect("the replacement broker answers status");
+    assert_ne!(
+        broker_after, broker_before,
+        "a replacement broker, not the corpse"
     );
-    assert_ne!(brokers_after[0], brokers_before[0]);
+    assert_eq!(
+        wait_for_broker_binds(&fx.home_root, 2),
+        2,
+        "exactly one replacement broker bound after the kill"
+    );
 }
 
 /// Keep the expensive real-process adapter matrix explicit. Generic route
