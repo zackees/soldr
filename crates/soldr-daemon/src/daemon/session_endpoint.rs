@@ -44,6 +44,7 @@ use running_process::broker::backend_sdk::{BackendEndpointMux, LegacyClassificat
 use running_process::broker::protocol::SESSION_PAYLOAD_PROTOCOL;
 
 use crate::core::SoldrPaths;
+use crate::daemon::event_batcher::EventBatcher;
 use crate::daemon::session_serve::serve_session_compile;
 use crate::zccache_embedded::SoldrZccacheService;
 
@@ -62,6 +63,12 @@ type CompileServiceResult = Result<Arc<SoldrZccacheService>, Arc<str>>;
 #[derive(Clone)]
 pub(crate) struct CompileServiceReadiness {
     receiver: watch::Receiver<Option<CompileServiceResult>>,
+    /// soldr#3224: the daemon's build-history event batcher. SESSION compiles
+    /// record CompileStart/CompileEnd through it, which is what
+    /// `soldr daemon builds` aggregates into `crate_count` / `slowest_crate`.
+    /// Only `#[cfg(test)]` constructors may leave it unset, so a production
+    /// daemon cannot silently stop recording build history again.
+    event_batcher: Option<EventBatcher>,
 }
 
 pub(crate) struct CompileServicePublisher {
@@ -69,15 +76,49 @@ pub(crate) struct CompileServicePublisher {
 }
 
 impl CompileServiceReadiness {
-    pub(crate) fn pending() -> (Self, CompileServicePublisher) {
+    pub(crate) fn pending(event_batcher: EventBatcher) -> (Self, CompileServicePublisher) {
         let (sender, receiver) = watch::channel(None);
-        (Self { receiver }, CompileServicePublisher { sender })
+        (
+            Self {
+                receiver,
+                event_batcher: Some(event_batcher),
+            },
+            CompileServicePublisher { sender },
+        )
     }
 
-    pub(crate) fn ready(service: Arc<SoldrZccacheService>) -> Self {
+    pub(crate) fn ready(service: Arc<SoldrZccacheService>, event_batcher: EventBatcher) -> Self {
         let (sender, receiver) = watch::channel(Some(Ok(service)));
         drop(sender);
-        Self { receiver }
+        Self {
+            receiver,
+            event_batcher: Some(event_batcher),
+        }
+    }
+
+    /// [`Self::pending`] for tests that never compile, so need no runtime to
+    /// start an [`EventBatcher`] on.
+    #[cfg(test)]
+    pub(crate) fn pending_without_events() -> (Self, CompileServicePublisher) {
+        let (sender, receiver) = watch::channel(None);
+        (
+            Self {
+                receiver,
+                event_batcher: None,
+            },
+            CompileServicePublisher { sender },
+        )
+    }
+
+    /// [`Self::ready`] for tests that do not assert build history.
+    #[cfg(test)]
+    pub(crate) fn ready_without_events(service: Arc<SoldrZccacheService>) -> Self {
+        let (sender, receiver) = watch::channel(Some(Ok(service)));
+        drop(sender);
+        Self {
+            receiver,
+            event_batcher: None,
+        }
     }
 
     async fn wait(&self) -> io::Result<Arc<SoldrZccacheService>> {
@@ -235,8 +276,10 @@ where
                 // SessionStart frame + any trailing bytes) so serve_session_compile
                 // can re-read the opening SessionStart via session_codec.
                 let replay = ReplayReader::new(buf, io);
+                let event_batcher = service.event_batcher.clone();
                 let service = service.wait().await?;
-                return serve_session_compile(replay, &service, paths).await;
+                return serve_session_compile(replay, &service, paths, event_batcher.as_ref())
+                    .await;
             }
             MuxPoll::Legacy => {
                 return Err(io::Error::other(
@@ -379,12 +422,13 @@ fn local_session_name(socket_path: &str) -> io::Result<interprocess::local_socke
 pub async fn serve_session_endpoint(
     listener: SessionListener,
     service: Arc<SoldrZccacheService>,
+    event_batcher: EventBatcher,
     paths: SoldrPaths,
     mux: Arc<SessionMux>,
 ) -> io::Result<()> {
     serve_session_endpoint_with_readiness(
         listener,
-        CompileServiceReadiness::ready(service),
+        CompileServiceReadiness::ready(service, event_batcher),
         paths,
         mux,
     )
