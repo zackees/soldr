@@ -58,6 +58,17 @@ fn combined(output: &Output) -> String {
     )
 }
 
+/// A refusal prints its own explanation, so the soldr#2024 exit guard must
+/// not follow it with "soldr emitted no diagnostic ... a fault in soldr
+/// itself" -- that line would contradict the message directly above it and
+/// send the reader to file a soldr bug for an unsupported subcommand.
+fn assert_explained(text: &str) {
+    assert!(
+        !text.contains("emitted no diagnostic"),
+        "a refusal that explained itself was annotated as unexplained: {text}"
+    );
+}
+
 #[test]
 fn spawning_subcommand_is_refused_with_embedded_hint() {
     let env = EntryEnv::new("start");
@@ -70,6 +81,7 @@ fn spawning_subcommand_is_refused_with_embedded_hint() {
         "output: {text}"
     );
     assert!(!text.contains("upstream"), "output: {text}");
+    assert_explained(&text);
 }
 
 #[test]
@@ -82,6 +94,7 @@ fn status_subcommand_is_refused() {
         "output: {text}"
     );
     assert!(!text.contains("fetch"), "output: {text}");
+    assert_explained(&text);
 }
 
 #[test]
@@ -157,6 +170,7 @@ fn help_and_no_args_are_reserved_without_fetching() {
         "output: {bare_text}"
     );
     assert!(!bare_text.contains("fetch"), "output: {bare_text}");
+    assert_explained(&bare_text);
 }
 
 #[test]
@@ -170,6 +184,7 @@ fn version_selector_is_rejected_without_external_resolution() {
     );
     assert!(text.contains("embedded in soldr"), "output: {text}");
     assert!(!text.contains("fetch"), "output: {text}");
+    assert_explained(&text);
 }
 
 #[test]
@@ -187,6 +202,7 @@ fn retired_and_unsupported_forms_have_migration_guidance() {
         );
         assert!(text.contains("soldr cargo"), "args={args:?} output: {text}");
         assert!(!text.contains("fetch"), "args={args:?} output: {text}");
+        assert_explained(&text);
     }
 }
 

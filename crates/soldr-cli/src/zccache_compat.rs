@@ -10,12 +10,12 @@ use crate::fetch::VersionSpec;
 pub(crate) async fn run(args: &[String], version: VersionSpec) -> Result<i32, SoldrError> {
     if !matches!(version, VersionSpec::Latest) {
         eprintln!("soldr zccache: version selectors are unsupported; zccache is embedded in soldr");
-        return Ok(2);
+        return Ok(explained(2));
     }
 
     let Some(command) = args.first().map(String::as_str) else {
         print_help();
-        return Ok(2);
+        return Ok(explained(2));
     };
     match command {
         "--help" | "-h" | "help" => {
@@ -37,7 +37,7 @@ pub(crate) async fn run(args: &[String], version: VersionSpec) -> Result<i32, So
         }
         "rust-plan" => {
             eprintln!("soldr zccache rust-plan is retired; Soldr runs artifact-plan save/restore around `soldr cargo <verb>`.");
-            Ok(2)
+            Ok(explained(2))
         }
         _ => Ok(refuse(command)),
     }
@@ -97,5 +97,13 @@ fn print_help() {
 fn refuse(command: &str) -> i32 {
     eprintln!("soldr zccache: `{command}` is not supported by Soldr's embedded cache.");
     eprintln!("Use `soldr status`, `soldr cache`, `soldr session-end`, or `soldr daemon stop`; `soldr cargo <verb>` owns artifact-plan work.");
-    2
+    explained(2)
+}
+
+/// Every non-zero exit from this adapter has just printed its own reason.
+/// Record that, or the soldr#2024 exit guard follows it with "soldr emitted no
+/// diagnostic ... a fault in soldr itself" directly under the explanation.
+fn explained(code: i32) -> i32 {
+    crate::exit_guard::mark_spoke();
+    code
 }
