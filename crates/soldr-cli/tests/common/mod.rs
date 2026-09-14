@@ -291,6 +291,25 @@ pub(crate) fn stop_fixture_broker(cache_root: &std::path::Path, home_root: &std:
     let _ = command.output();
 }
 
+/// Stop the broker-routed daemon generation a fixture's front-door compiles
+/// launched under its temp HOME and cache root.
+///
+/// soldr#3136: a fixture that talks to its own directly spawned daemon over
+/// the private control endpoint still compiles through the broker's SESSION
+/// route, and the broker launches a separate daemon generation for that
+/// route. `broker stop` retains daemon routes by design (soldr#2549), so this
+/// must run before [`stop_fixture_broker`]. Best effort: with no routed
+/// daemon it is a cheap no-op.
+pub(crate) fn stop_fixture_daemon_route(cache_root: &std::path::Path, home_root: &std::path::Path) {
+    let mut command = isolated_soldr_command();
+    command
+        .args(["daemon", "stop"])
+        .env("SOLDR_CACHE_DIR", cache_root)
+        .env("HOME", home_root)
+        .env("USERPROFILE", home_root);
+    let _ = command.output();
+}
+
 /// Drop guard for fixtures that have no other teardown struct. Declare it
 /// FIRST in the test body so it drops LAST — after any daemon guard has
 /// already stopped the daemon the broker fronts.

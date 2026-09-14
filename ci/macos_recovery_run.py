@@ -567,6 +567,12 @@ def _memory_sampler_function() -> list[str]:
     first, since they separate "processes accumulate across tests" from "one
     process grows", which is the question run 34847511968 left open. `name=N/SM`
     is the count and summed RSS of processes with that executable name.
+
+    `reclaim_spec/purge/ext` is speculative, purgeable and file-backed pageable
+    memory in MiB, and `comp` is compressor occupancy. Run 34863589272 showed
+    `free` at 3M while the pressure level stayed normal: macOS keeps
+    reclaimable cache out of `free`, so these separate a real exhaustion from a
+    full cache (soldr#3136).
     """
     return [
         "# soldr#3136: memory evidence for a guest freeze; see _memory_sampler_function.",
@@ -600,8 +606,17 @@ def _memory_sampler_function() -> list[str]:
         "  printf ' cargo=%s/%sM rustc=%s/%sM' \\",
         '    "$cn" "$((ck / 1024))" "$rn" "$((rk / 1024))"',
         "}",
+        "# sysctl_mib KEY PAGESIZE: a page-count sysctl in MiB, empty when absent.",
+        "sysctl_mib() {",
+        '  sm_pages=$(sysctl -n "$1" 2>/dev/null)',
+        '  case "$sm_pages$2" in',
+        "    ''|*[!0-9]*) ;;",
+        "    *) printf '%s' \"$((sm_pages * $2 / 1048576))\" ;;",
+        "  esac",
+        "}",
         "mem_sample() {",
         '  ms_free=""; ms_pressure=""; ms_swap=""; ms_load=""; ms_procs=""; ms_top=""',
+        '  ms_reclaim=""; ms_comp=""',
         "  if command -v sysctl >/dev/null 2>&1; then",
         "    ms_pages=$(sysctl -n vm.page_free_count 2>/dev/null)",
         "    ms_pagesize=$(sysctl -n hw.pagesize 2>/dev/null)",
@@ -610,6 +625,14 @@ def _memory_sampler_function() -> list[str]:
         '      *) ms_free="$((ms_pages * ms_pagesize / 1048576))M" ;;',
         "    esac",
         "    ms_pressure=$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null)",
+        '    ms_reclaim=$(sysctl_mib vm.page_speculative_count "$ms_pagesize")/$(sysctl_mib \\',
+        '      vm.page_purgeable_count "$ms_pagesize")/$(sysctl_mib \\',
+        '      vm.page_pageable_external_count "$ms_pagesize")',
+        "    ms_comp=$(sysctl -n vm.compressor_bytes_used 2>/dev/null)",
+        '    case "$ms_comp" in',
+        "      ''|*[!0-9]*) ms_comp='' ;;",
+        '      *) ms_comp="$((ms_comp / 1048576))M" ;;',
+        "    esac",
         "    ms_swap=$(sysctl -n vm.swapusage 2>/dev/null \\",
         "      | sed -n 's/.*used = \\([^ ]*\\).*/\\1/p')",
         "    ms_load=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | tr -s ' ')",
@@ -621,7 +644,8 @@ def _memory_sampler_function() -> list[str]:
         '          printf \'%s:%sM \' "${ms_comm##*/}" "$((ms_rss / 1024))"; done)',
         "  fi",
         '  echo "[mem] t=$(date +%H:%M:%S) free=$(na "$ms_free")" \\',
-        '    "pressure=$(na "$ms_pressure") procs=$(na "$ms_procs")" \\',
+        '    "pressure=$(na "$ms_pressure") reclaim_spec/purge/ext=$(na "$ms_reclaim")M" \\',
+        '    "comp=$(na "$ms_comp") procs=$(na "$ms_procs")" \\',
         '    "top=[$(na "$ms_top")] swap_used=$(na "$ms_swap") load=[$(na "$ms_load")]"',
         "}",
     ]
