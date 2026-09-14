@@ -96,8 +96,8 @@ concurrency:
   # Never cancel a perf run in flight — every measurement is a data
   # point we want to keep, even if a follow-up push lands before this
   # one finishes. Runs queue per-ref instead of superseding.
-  group: perf-matrix-${{ github.ref }}
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # soldr#1203 + soldr#1213 — Perf Matrix reconciles two concerns:

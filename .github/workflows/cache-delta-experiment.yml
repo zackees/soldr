@@ -46,8 +46,8 @@ env:
 
 # soldr#1985 - stop superseded runs from holding runner slots.
 concurrency:
-  group: cache-delta-experiment-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   delta:
