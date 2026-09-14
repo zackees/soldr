@@ -121,6 +121,10 @@ def test_mem_sample_reports_macos_memory_probes(tmp_path: Path) -> None:
         "  vm.page_free_count) echo 2560 ;;\n"
         "  hw.pagesize) echo 4096 ;;\n"
         "  kern.memorystatus_vm_pressure_level) echo 4 ;;\n"
+        "  vm.page_speculative_count) echo 256 ;;\n"
+        "  vm.page_purgeable_count) echo 512 ;;\n"
+        "  vm.page_pageable_external_count) echo 25600 ;;\n"
+        "  vm.compressor_bytes_used) echo 314572800 ;;\n"
         "  vm.swapusage) echo 'total = 2048.00M  used = 1024.00M  free = 1024.00M' ;;\n"
         "  vm.loadavg) echo '{ 3.10 2.00 1.50 }' ;;\n"
         "  *) exit 1 ;;\n"
@@ -143,6 +147,8 @@ def test_mem_sample_reports_macos_memory_probes(tmp_path: Path) -> None:
     assert line.startswith("[mem] t=")
     assert "free=10M" in line
     assert "pressure=4" in line
+    assert "reclaim_spec/purge/ext=1/2/100M" in line
+    assert "comp=300M" in line
     assert (
         "procs=7 daemon=1/10M broker=2/350M soldr=1/500M rustup=1/4M"
         " cargo=0/0M rustc=1/2048M"
@@ -162,9 +168,11 @@ def test_mem_sample_degrades_to_na_when_probes_fail(tmp_path: Path) -> None:
     _stub(stubs, "ps", "exit 1")
     line = _run_mem_sample(tmp_path, stubs)
     assert line.startswith("[mem] t=")
+    assert "reclaim_spec/purge/ext=//M" in line, line
     for probe in (
         "free=n/a",
         "pressure=n/a",
+        "comp=n/a",
         "procs=n/a",
         "top=[n/a]",
         "swap_used=n/a",

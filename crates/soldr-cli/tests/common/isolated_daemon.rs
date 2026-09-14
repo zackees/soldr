@@ -111,6 +111,13 @@ impl Drop for IsolatedDaemon {
         // design (soldr#2549). Without this the broker outlived the test,
         // one per fixture; the macOS Recovery replay accumulated 11 of them
         // with no swap and froze.
+        //
+        // The `daemon stop` above dials this fixture's direct child over its
+        // private control endpoint. A test's compiles go through the broker's
+        // SESSION route instead, and the broker launches its own daemon
+        // generation for them (about 160 MiB). Stop that routed generation
+        // first, because `broker stop` keeps daemon routes alive.
+        super::stop_fixture_daemon_route(&self.root, &self.home);
         super::stop_fixture_broker(&self.root, &self.home);
     }
 }
