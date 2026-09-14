@@ -173,6 +173,37 @@ def test_mem_sample_degrades_to_na_when_probes_fail(tmp_path: Path) -> None:
         assert probe in line, line
 
 
+def _command_substitutions(script: str) -> list[str]:
+    """Every `$( ... )` span, matched by parenthesis depth."""
+    spans = []
+    start = script.find("$(")
+    while start != -1:
+        depth, index = 0, start + 1
+        while index < len(script):
+            if script[index] == "(":
+                depth += 1
+            elif script[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            index += 1
+        spans.append(script[start : index + 1])
+        start = script.find("$(", start + 2)
+    return spans
+
+
+def test_no_case_statement_inside_a_command_substitution() -> None:
+    """Recovery's bash 3.2 cannot parse `case` inside `$( )`.
+
+    `bash -n` here is bash 5, which accepts it, so only a replay could catch
+    it: run 34853028731 died in `nextest_run` with `syntax error near
+    unexpected token ;;` and no suite ran at all.
+    """
+    script = MODULE.build_guest_script()
+    offenders = [span for span in _command_substitutions(script) if "case " in span]
+    assert not offenders, offenders
+
+
 def test_build_guest_script_is_valid_posix_sh_syntax() -> None:
     """`bash -n` catches gross syntax breakage even though this is /bin/sh."""
     script = MODULE.build_guest_script()
