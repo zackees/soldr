@@ -152,6 +152,10 @@ impl Drop for DaemonProc {
             let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);
             let _ = child.wait_bounded(Duration::from_secs(5));
         }
+        // soldr#3136: the readiness probe (`daemon status`) starts a stable
+        // broker under `home_root`, and neither `daemon stop` nor a test that
+        // took the child stops it. Stop it unconditionally.
+        common::stop_fixture_broker(&self.cache_root, &self.home_root);
     }
 }
 
