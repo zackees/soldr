@@ -34,6 +34,7 @@ bind-mount error → fix mapping ([soldr#885](https://github.com/zackees/soldr/i
 | Linux → Windows MSVC | `soldr build` ([Section 2](#2-linux--windows-msvc-via-soldr-build)) |
 | **Windows/Linux -> Linux** | `soldr build --target <linux-triple>` |
 | **Windows/Linux -> Mac** | `soldr build` + target-shaped Apple SDK ([Section 1a](#1a-canonical-linux-and-macos-targets-through-soldr-build)) |
+| TLS for Windows MSVC without OpenSSL | nothing to install ([Section 3.6](#36-tls-on-windows-msvc-needs-no-openssl)) |
 | Declare cross targets up-front | `[toolchain].targets` + `[soldr.plugins]` ([Section 3](#3-pinned-host-triples-per-project-current-state)) |
 
 ## Canonical target aliases
@@ -386,6 +387,33 @@ Upstream-able in principle, but ring's `c.compiler("clang")` is
 intentional and cargo-xwin's `CC_*=clang-cl` gets overridden by
 cc-rs's `compiler_family()` probe. The shim is the surgical fix that
 lives in soldr's toolchain story. See soldr#886.
+
+---
+
+## 3.6. TLS on Windows MSVC needs no OpenSSL
+
+`native-tls` (and therefore reqwest's `default-tls`) uses SChannel on every
+Windows target, and `rustls` is pure Rust. Neither puts `openssl-sys` in a
+`*-pc-windows-msvc` dependency graph, so a Windows consumer of those stacks has
+nothing to install. Check before adding anything to CI:
+
+```sh
+soldr cargo tree --target x86_64-pc-windows-msvc -e features -i openssl-sys
+# "warning: nothing to print." means the graph does not use OpenSSL.
+```
+
+soldr ships no vcpkg OpenSSL bundle for consumers: the vcpkg producer workflow
+was retired in soldr#2814, and the `openssl_sysroot` fetcher is not wired into
+any build path. A per-job `vcpkg install openssl` rebuilds the port from source;
+Bosn's Windows wheel lane spent 7m47s in it for a graph that never contained
+`openssl-sys` (soldr#3231).
+
+When the tree is not empty, a crate requests OpenSSL on Windows explicitly. Fix
+it at that dependency: select its native-tls/SChannel or rustls feature, or, if
+OpenSSL is genuinely required, enable `openssl/vendored` or point `OPENSSL_DIR`
+at an existing install. When cargo's output is captured (CI logs, pipes), soldr
+prints this guidance after an `openssl-sys` "Could not find directory of OpenSSL
+installation" failure for a `*-windows-msvc` target.
 
 ---
 
