@@ -49,8 +49,6 @@ jobs:
       # Use soldr's explicit opt-in token env so release metadata requests
       # are authenticated without weakening the generic GITHUB_TOKEN guard.
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
-      CARGO_BUILD_JOBS: "1"
-      SOLDR_JOBS: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -194,7 +192,14 @@ jobs:
 
       - name: Build through soldr
         shell: pwsh
+        # Rung-4 cap, step-scoped (CLAUDE.md, soldr#3148): the soldr this
+        # action installs is a release that predates soldr#3211, so an
+        # uncapped wrapped build can have its compiler children SIGTERMed
+        # mid-compile (soldr#3210). Lift once the action installs a release
+        # carrying soldr#3211.
         env:
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
@@ -210,7 +215,11 @@ jobs:
 
       - name: Test through soldr
         shell: pwsh
+        # Rung-4 cap, step-scoped (CLAUDE.md): this runs with `--no-cache`, so
+        # no embedded compiler service and no admission gate to ask.
         env:
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
         run: |
           Remove-Item Env:ZCCACHE_CACHE_DIR -ErrorAction SilentlyContinue
