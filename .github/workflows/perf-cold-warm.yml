@@ -58,8 +58,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: perf-cold-warm-${{ github.ref }}-${{ inputs.fixture }}
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   # Suffix in cache keys we own, so `purge-demo-caches` can find

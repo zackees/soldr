@@ -65,8 +65,8 @@ env:
 
 # soldr#1985 - stop superseded runs from holding runner slots.
 concurrency:
-  group: cross-compile-all-targets-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   bootstrap-and-linux-x86:

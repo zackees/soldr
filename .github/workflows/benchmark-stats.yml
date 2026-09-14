@@ -23,8 +23,8 @@ on:
 concurrency:
   # Only one publish at a time per ref; cancel a stale in-flight when a
   # newer main-merge arrives.
-  group: benchmark-stats-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: write

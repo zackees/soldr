@@ -32,8 +32,8 @@ permissions:
 # push events because the pull_request payload is null there.
 # soldr#1985 - stop superseded runs from holding runner slots.
 concurrency:
-  group: baseline-zero-deps-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # soldr#1978 item 5. Both `build-soldr` legs used to run this identical
