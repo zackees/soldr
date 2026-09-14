@@ -150,6 +150,10 @@ has no Xcode CLT, no Homebrew, and no persistent state across boots, so only
 binary execution happens there — the wheel is never exercised in the guest
 (no Python) and stays a Linux-side METADATA check.
 
+PyPI wheels cross-built this way must be `abi3-py310` PyO3 extensions — the
+fleet-wide policy, and the only ABI `soldr wheel` supports without a
+target-side CPython. See [API.md](API.md#pyo3-abi-policy-abi3-py310-always).
+
 ### Recipe
 
 ```powershell
