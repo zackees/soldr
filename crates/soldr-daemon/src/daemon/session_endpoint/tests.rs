@@ -154,7 +154,7 @@ fn session_endpoint_serves_real_compile_via_mux() {
             let service = SoldrZccacheService::start(&paths, &daemon)
                 .await
                 .expect("start embedded zccache service");
-            let service = CompileServiceReadiness::ready(Arc::new(service));
+            let service = CompileServiceReadiness::ready_without_events(Arc::new(service));
             let mux = soldr_session_endpoint_mux(daemon);
 
             let (mut client, server) = tokio::io::duplex(1 << 20);
@@ -210,7 +210,7 @@ fn session_endpoint_answers_backend_handle_probe() {
             // probe must never await the heavyweight compile service.
             let temp = tempfile::tempdir().expect("tempdir");
             let paths = SoldrPaths::with_root(temp.path().join("root"));
-            let (service, _publisher) = CompileServiceReadiness::pending();
+            let (service, _publisher) = CompileServiceReadiness::pending_without_events();
 
             // Build a BackendHandle endpoint probe request: Frame{0xB232, nonce}.
             let nonce = vec![7u8; PROBE_NONCE_BYTES];
@@ -288,7 +288,7 @@ fn session_endpoint_accept_loop_binds_and_dispatches_probe() {
             let listener = bind_session_listener(&socket).expect("bind SESSION listener");
 
             let paths = SoldrPaths::with_root(temp.path().join("root"));
-            let service = CompileServiceReadiness::ready(Arc::new(
+            let service = CompileServiceReadiness::ready_without_events(Arc::new(
                 SoldrZccacheService::start(&paths, &test_daemon_identity())
                     .await
                     .expect("start embedded zccache service"),
@@ -455,7 +455,7 @@ fn handoff_ack_does_not_wait_for_a_saturated_compile_runtime() {
     let stall = DEFAULT_HANDOFF_ACK_DEADLINE + std::time::Duration::from_secs(3);
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().join("root"));
-    let (readiness, _publisher) = CompileServiceReadiness::pending();
+    let (readiness, _publisher) = CompileServiceReadiness::pending_without_events();
     let mux = Arc::new(soldr_session_endpoint_mux(test_daemon_identity()));
 
     // The Windows transport is DuplicateHandle; the descriptor fixture

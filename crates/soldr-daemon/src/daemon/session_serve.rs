@@ -24,7 +24,10 @@ use crate::core::SoldrPaths;
 use crate::daemon::compile_delivery::UndeliveredKind;
 use crate::daemon::compile_request::build_compile_request_from;
 use crate::daemon::compile_sink::CompileOutputSink;
-use crate::daemon::disconnect::{race_against_disconnect, record_undelivered, DispatchOutcome};
+use crate::daemon::disconnect::{
+    race_against_disconnect, race_compile_with_lifecycle, record_undelivered, DispatchOutcome,
+};
+use crate::daemon::event_batcher::EventBatcher;
 use crate::daemon::server::{next_compile_id, stream_compile_output};
 use crate::daemon::session_sink::SessionCompileSink;
 use crate::zccache_embedded::SoldrZccacheService;
@@ -50,6 +53,7 @@ pub(crate) async fn serve_session_compile<IO>(
     mut io: IO,
     compile_service: &SoldrZccacheService,
     paths: &SoldrPaths,
+    event_batcher: Option<&EventBatcher>,
 ) -> std::io::Result<()>
 where
     IO: AsyncRead + AsyncWrite + Unpin,
@@ -72,7 +76,7 @@ where
         .collect();
     let req = build_compile_request_from(&argv, start.cwd, env);
 
-    dispatch_compile_session(compile_service, paths, req, &mut io).await
+    dispatch_compile_session(compile_service, paths, req, &mut io, event_batcher).await
 }
 
 #[cfg(debug_assertions)]
@@ -115,6 +119,7 @@ async fn dispatch_compile_session<IO>(
     paths: &SoldrPaths,
     req: crate::daemon::protocol::CompileRequest,
     io: &mut IO,
+    event_batcher: Option<&EventBatcher>,
 ) -> std::io::Result<()>
 where
     IO: AsyncRead + AsyncWrite + Unpin,
@@ -129,7 +134,17 @@ where
     // staged-output future is large and carrying it inline through the generic
     // race helper can exhaust Tokio's worker stack under a parallel cold build.
     let compile_fut = Box::pin(compile_service.compile(req));
-    let body = match race_against_disconnect(io, compile_fut).await {
+    // soldr#3224: record CompileStart/CompileEnd for build history. This is
+    // the route every cacheable compile takes; the legacy control-wire path was
+    // the only one recording them, so every `soldr daemon builds` row read
+    // `crates=0 slowest=(none)`.
+    let outcome = match event_batcher {
+        Some(batcher) => {
+            race_compile_with_lifecycle(io, compile_fut, lifecycle.as_ref(), batcher).await
+        }
+        None => race_against_disconnect(io, compile_fut).await,
+    };
+    let body = match outcome {
         DispatchOutcome::Completed(Ok(body)) => body,
         DispatchOutcome::Completed(Err(err)) => {
             // Infra failure — report it to the client, never a silent close and

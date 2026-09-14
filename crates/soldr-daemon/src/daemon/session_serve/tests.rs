@@ -16,7 +16,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::serve_session_compile;
 use crate::core::SoldrPaths;
+use crate::daemon::db::EventKind;
+use crate::daemon::event_batcher::EventBatcher;
 use crate::zccache_embedded::SoldrZccacheService;
+
+/// Build session the e2e compile reports its lifecycle under.
+const SESSION_ID: u64 = 3224;
 
 fn test_daemon_identity() -> DaemonProcess {
     let endpoint = Endpoint {
@@ -121,16 +126,25 @@ fn session_compile_e2e_real_rustc_through_the_bridge() {
                 "-C".into(),
                 "metadata=ses1".into(),
                 "--out-dir".into(),
-                "target/debug/deps".into(),
+                // Absolute, so the compile's lifecycle resolves a workspace
+                // target dir the way a cargo-driven compile does (soldr#3224).
+                project.join("target/debug/deps").display().to_string(),
                 "src/lib.rs".into(),
             ];
             let mut env: Vec<SessionEnvVar> = std::env::vars()
-                .filter(|(k, _)| k != "RUSTUP_TOOLCHAIN")
+                .filter(|(k, _)| {
+                    k != "RUSTUP_TOOLCHAIN"
+                        && k != soldr_cache::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR
+                })
                 .map(|(key, value)| SessionEnvVar { key, value })
                 .collect();
             env.push(SessionEnvVar {
                 key: "RUSTUP_TOOLCHAIN".into(),
                 value: pinned,
+            });
+            env.push(SessionEnvVar {
+                key: soldr_cache::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR.into(),
+                value: SESSION_ID.to_string(),
             });
             let start = super::SessionStart {
                 program: rustc.display().to_string(),
@@ -148,6 +162,8 @@ fn session_compile_e2e_real_rustc_through_the_bridge() {
             let service = SoldrZccacheService::start(&paths, &daemon)
                 .await
                 .expect("start embedded zccache service");
+            let db_path = temp.path().join("state.sqlite3");
+            let batcher = EventBatcher::start(db_path.clone());
 
             // Drive the bridge and the client concurrently over one duplex
             // (join!, not spawn: the bridge borrows &service/&paths).
@@ -165,8 +181,10 @@ fn session_compile_e2e_real_rustc_through_the_bridge() {
                 read_until_exit(&mut client).await
             };
 
-            let (bridge_res, (stdout, exit)) =
-                tokio::join!(serve_session_compile(server, &service, &paths), client_fut);
+            let (bridge_res, (stdout, exit)) = tokio::join!(
+                serve_session_compile(server, &service, &paths, Some(&batcher)),
+                client_fut
+            );
             bridge_res.expect("bridge serve ok");
 
             assert_eq!(
@@ -184,6 +202,26 @@ fn session_compile_e2e_real_rustc_through_the_bridge() {
                 exit.metadata
                     .contains_key(crate::daemon::session_sink::META_COMPILE_ID),
                 "SessionExit.metadata carries compile_id"
+            );
+
+            // soldr#3224: build history is aggregated from these events.
+            // Before the fix the SESSION route recorded none, so every
+            // `soldr daemon builds` row read `crates=0 slowest=(none)`.
+            batcher.flush().await.expect("flush build-history events");
+            let events = crate::daemon::db::list_events_for_session(&db_path, SESSION_ID)
+                .expect("list build-history events");
+            let kinds: Vec<EventKind> = events.iter().map(|event| event.kind.clone()).collect();
+            assert_eq!(
+                kinds,
+                [EventKind::CompileStart, EventKind::CompileEnd],
+                "a SESSION compile records one CompileStart and one CompileEnd"
+            );
+            for event in &events {
+                assert_eq!(event.crate_name.as_deref(), Some("soldr_session_e2e"));
+            }
+            assert!(
+                events[1].duration_us.is_some(),
+                "CompileEnd carries the duration `builds slow` ranks by"
             );
         });
 }
@@ -277,8 +315,10 @@ fn session_client_disconnect_mid_compile_aborts_without_reply() {
                 drain_frames_saw_exit(&mut client).await
             };
 
-            let (bridge_res, saw_exit) =
-                tokio::join!(serve_session_compile(server, &service, &paths), client_fut);
+            let (bridge_res, saw_exit) = tokio::join!(
+                serve_session_compile(server, &service, &paths, None),
+                client_fut
+            );
             bridge_res.expect("bridge serve returns Ok even on client disconnect");
             assert!(
                 !saw_exit,

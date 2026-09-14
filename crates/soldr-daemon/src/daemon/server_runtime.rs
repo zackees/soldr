@@ -287,8 +287,16 @@ async fn run_async_recording(
     let session_mux = Arc::new(crate::daemon::session_endpoint::soldr_session_endpoint_mux(
         session_identity,
     ));
+    // L4 (issue soldr#980): start the background event-flusher BEFORE we
+    // accept any IPC traffic so the very first compile event lands on
+    // a live channel. The drain task lives in the daemon's tokio runtime
+    // and exits cleanly via `shutdown()` below. soldr#3224: that includes the
+    // SESSION endpoint, which records every compile's lifecycle through it; a
+    // write that races the database initialization below is retained and
+    // retried by the batcher.
+    let event_batcher = EventBatcher::start(db_path.clone());
     let (compile_readiness, compile_publisher) =
-        crate::daemon::session_endpoint::CompileServiceReadiness::pending();
+        crate::daemon::session_endpoint::CompileServiceReadiness::pending(event_batcher.clone());
     // soldr#3102: the handoff endpoint runs on its own control-plane
     // runtime so the broker's 5 s ACK budget never competes with compile
     // runtime workers parked in the embedded cache's synchronous hit path.
@@ -366,11 +374,6 @@ async fn run_async_recording(
     bringup.compile_service_breakdown(&compile_service.start_timings());
     bringup.phase(crate::daemon::bringup::phase::COMPILE_SERVICE);
 
-    // L4 (issue soldr#980): start the background event-flusher BEFORE we
-    // accept any IPC traffic so the very first compile event lands on
-    // a live channel. The drain task lives in the daemon's tokio runtime
-    // and exits cleanly via `shutdown()` below.
-    let event_batcher = EventBatcher::start(db_path.clone());
 
     let state = Arc::new(State {
         db_path,
