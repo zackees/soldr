@@ -1,7 +1,7 @@
 //! Post-failure cargo output scanner that rewraps recognizable build
 //! errors with actionable, platform-aware hints.
 //!
-//! Today the module recognizes ONE category — `MissingHostTool` — where
+//! The module recognizes two categories. `MissingHostTool` is where
 //! a `build.rs` panicked because it tried to spawn an executable that's
 //! not on PATH. The canonical trigger is a C-sys crate like
 //! `tikv-jemalloc-sys` on a minimal Rust container (`rust:slim`,
@@ -11,6 +11,12 @@
 //! or directory (os error 2)`, cargo bubbles that up as
 //! `error: failed to run custom build command for \`<crate>\``, and
 //! the user is left guessing which apt package they need.
+//!
+//! `WindowsMsvcOpenSslNotFound` is where `openssl-sys` found no OpenSSL
+//! for a `*-windows-msvc` target. openssl-sys's own advice (install
+//! `libssl-dev`, set `OPENSSL_DIR`, try vcpkg) sends Windows consumers
+//! into a per-job `vcpkg install openssl`, when the usual TLS stacks
+//! need no OpenSSL there at all (soldr#3231).
 //!
 //! soldr already has cargo's stderr captured (for the CI/non-TTY path
 //! in `cargo_front_door::run_cargo_capturing_failure_diagnostic_tail`)
@@ -38,6 +44,9 @@ pub(crate) struct BuildScriptDiagnosis {
     /// `None` when the build script didn't log the spawn (e.g. it
     /// called `Command::new` directly without a preceding `println!`).
     pub command_name: Option<String>,
+    /// Cargo target the build script reported (`$TARGET = ...`), when the
+    /// category depends on it.
+    pub target: Option<String>,
     pub category: DiagnosisCategory,
 }
 
@@ -48,6 +57,9 @@ pub(crate) enum DiagnosisCategory {
     /// system cannot find the file specified" on Windows) class of
     /// IO error escaping a `build.rs` panic.
     MissingHostTool,
+    /// `openssl-sys` could not locate OpenSSL while building for a
+    /// `*-windows-msvc` target.
+    WindowsMsvcOpenSslNotFound,
 }
 
 /// Marker line cargo prints when a `build.rs` exits non-zero.
@@ -74,6 +86,17 @@ const MISSING_TOOL_PANIC_NEEDLES: &[&str] = &[
 /// double-quoted first token is the binary name.
 const RUNNING_PREFIX: &str = "running: ";
 
+const OPENSSL_SYS_CRATE: &str = "openssl-sys";
+
+/// Header `openssl-sys` prints (as a `cargo:warning` and on stderr) when
+/// neither `OPENSSL_DIR`, pkg-config, nor vcpkg located OpenSSL.
+const OPENSSL_NOT_FOUND_NEEDLE: &str = "Could not find directory of OpenSSL installation";
+
+/// `openssl-sys` echoes the Cargo target inside that message.
+const BUILD_SCRIPT_TARGET_PREFIX: &str = "$TARGET = ";
+
+const WINDOWS_MSVC_TARGET_SUFFIX: &str = "-windows-msvc";
+
 /// Scan cargo's captured combined stdout+stderr for a recognizable
 /// build-script failure pattern. Cheap, allocation-light, line-oriented.
 ///
@@ -88,7 +111,12 @@ const RUNNING_PREFIX: &str = "running: ";
 ///    and the following panic message. If the panic message contains
 ///    any of [`MISSING_TOOL_PANIC_NEEDLES`], we classify as
 ///    `MissingHostTool` and return.
-/// 4. If no panic in the failure block matches, return `None`.
+/// 4. Independently, an `openssl-sys` block whose output carries
+///    [`OPENSSL_NOT_FOUND_NEEDLE`] and a `*-windows-msvc` `$TARGET` is
+///    classified as `WindowsMsvcOpenSslNotFound` once the block ends
+///    (next failure marker or end of output), because the target line
+///    follows the message.
+/// 5. If nothing in any failure block matches, return `None`.
 ///
 /// The scanner is intentionally conservative — false positives would
 /// crowd out cargo's own diagnostics. Better to under-diagnose than
@@ -97,11 +125,21 @@ pub(crate) fn detect_build_script_failure(captured: &str) -> Option<BuildScriptD
     let mut crate_name: Option<String> = None;
     let mut most_recent_running: Option<String> = None;
     let mut saw_build_rs_panic = false;
+    let mut saw_openssl_not_found = false;
+    let mut build_target: Option<String> = None;
 
     for line in captured.lines() {
         let trimmed = line.trim_start();
 
         if let Some(rest) = trimmed.strip_prefix(CARGO_BUILD_SCRIPT_FAILURE_MARKER) {
+            // A new marker closes the previous block.
+            if let Some(diag) = windows_msvc_openssl_diagnosis(
+                crate_name.as_deref(),
+                saw_openssl_not_found,
+                build_target.as_deref(),
+            ) {
+                return Some(diag);
+            }
             // The remainder is ` \`<crate name> <version>\``. Trim
             // whitespace, then extract the chunk between backticks.
             crate_name = parse_crate_name_from_marker(rest);
@@ -110,11 +148,23 @@ pub(crate) fn detect_build_script_failure(captured: &str) -> Option<BuildScriptD
             // multiple in one run if `--keep-going` etc.
             most_recent_running = None;
             saw_build_rs_panic = false;
+            saw_openssl_not_found = false;
+            build_target = None;
             continue;
         }
 
         if crate_name.is_none() {
             // We haven't entered a failure block yet; ignore everything.
+            continue;
+        }
+
+        if trimmed.contains(OPENSSL_NOT_FOUND_NEEDLE) {
+            saw_openssl_not_found = true;
+            continue;
+        }
+
+        if let Some(target) = trimmed.strip_prefix(BUILD_SCRIPT_TARGET_PREFIX) {
+            build_target = Some(target.trim().to_string());
             continue;
         }
 
@@ -132,12 +182,37 @@ pub(crate) fn detect_build_script_failure(captured: &str) -> Option<BuildScriptD
             return Some(BuildScriptDiagnosis {
                 crate_name: crate_name.unwrap_or_default(),
                 command_name: most_recent_running,
+                target: None,
                 category: DiagnosisCategory::MissingHostTool,
             });
         }
     }
 
-    None
+    windows_msvc_openssl_diagnosis(
+        crate_name.as_deref(),
+        saw_openssl_not_found,
+        build_target.as_deref(),
+    )
+}
+
+/// Only the `*-windows-msvc` case is claimed: on other targets
+/// openssl-sys's own message (install the dev package, set
+/// `OPENSSL_DIR`) is already the right advice.
+fn windows_msvc_openssl_diagnosis(
+    crate_name: Option<&str>,
+    saw_openssl_not_found: bool,
+    build_target: Option<&str>,
+) -> Option<BuildScriptDiagnosis> {
+    let target = build_target.filter(|target| target.ends_with(WINDOWS_MSVC_TARGET_SUFFIX))?;
+    if crate_name != Some(OPENSSL_SYS_CRATE) || !saw_openssl_not_found {
+        return None;
+    }
+    Some(BuildScriptDiagnosis {
+        crate_name: OPENSSL_SYS_CRATE.to_string(),
+        command_name: None,
+        target: Some(target.to_string()),
+        category: DiagnosisCategory::WindowsMsvcOpenSslNotFound,
+    })
 }
 
 /// Cargo prints the failing-crate line as:
@@ -200,7 +275,39 @@ fn line_indicates_missing_host_tool(line: &str) -> bool {
 pub(crate) fn render_diagnosis(diag: &BuildScriptDiagnosis) -> String {
     match diag.category {
         DiagnosisCategory::MissingHostTool => render_missing_host_tool(diag),
+        DiagnosisCategory::WindowsMsvcOpenSslNotFound => {
+            render_windows_msvc_openssl_not_found(diag)
+        }
     }
+}
+
+fn render_windows_msvc_openssl_not_found(diag: &BuildScriptDiagnosis) -> String {
+    let target = diag.target.as_deref().unwrap_or("<windows-msvc target>");
+    let mut out = String::new();
+    out.push_str("\nsoldr: `openssl-sys` found no OpenSSL for `");
+    out.push_str(target);
+    out.push_str("`.\n");
+    out.push_str(
+        "soldr: Rust TLS does not need OpenSSL on Windows MSVC — `native-tls` (and reqwest's \
+`default-tls`) uses SChannel there, and `rustls` is pure Rust. A crate in this graph asks \
+for OpenSSL on Windows explicitly.\n",
+    );
+    out.push_str("soldr: find it with:\n  soldr cargo tree --target ");
+    out.push_str(target);
+    out.push_str(" -e features -i openssl-sys\n");
+    out.push_str("soldr: fix it at that dependency, not in CI:\n");
+    out.push_str(
+        "  - select its native-tls/SChannel or rustls feature instead of the OpenSSL one, or\n",
+    );
+    out.push_str(
+        "  - if OpenSSL is genuinely required, enable `openssl/vendored` or set `OPENSSL_DIR` \
+to an existing install.\n",
+    );
+    out.push_str(
+        "soldr: a per-job `vcpkg install openssl` rebuilds OpenSSL from source (8-10 minutes \
+per CI job) and is not a supported path; see soldr#3231.\n",
+    );
+    out
 }
 
 fn render_missing_host_tool(diag: &BuildScriptDiagnosis) -> String {
@@ -283,6 +390,145 @@ Caused by:
         let diag = detect_build_script_failure(input).expect("windows-shaped panic must match");
         assert_eq!(diag.crate_name, "openssl-sys");
         assert_eq!(diag.category, DiagnosisCategory::MissingHostTool);
+    }
+
+    /// Real cargo stderr (check-cfg lines elided) from
+    /// `soldr cargo check --target x86_64-pc-windows-msvc` on a crate that
+    /// depends on `openssl-sys 0.9.117`, run from a Linux host with no
+    /// OpenSSL install and no vcpkg tree (soldr#3231).
+    const OPENSSL_SYS_WINDOWS_MSVC_NOT_FOUND: &str = "\
+   Compiling openssl-sys v0.9.117
+warning: openssl-sys@0.9.117: Could not find directory of OpenSSL installation, and this `-sys` crate cannot proceed without this knowledge. If OpenSSL is installed and this crate had trouble finding it,  you can set the `OPENSSL_DIR` environment variable for the compilation process. See stderr section below for further information.
+error: failed to run custom build command for `openssl-sys v0.9.117`
+
+Caused by:
+  process didn't exit successfully: `/w/target/debug/build/openssl-sys-b687cbb470ee37bf/build-script-main` (exit status: 101)
+  --- stdout
+  cargo:rustc-check-cfg=cfg(openssl)
+  cargo:rerun-if-env-changed=X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR
+  X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR unset
+  cargo:rerun-if-env-changed=OPENSSL_DIR
+  OPENSSL_DIR unset
+  note: vcpkg did not find openssl: Could not find Vcpkg tree: No vcpkg installation found. Set the VCPKG_ROOT environment variable or run 'vcpkg integrate install'
+  cargo:warning=Could not find directory of OpenSSL installation, and this `-sys` crate cannot proceed without this knowledge. If OpenSSL is installed and this crate had trouble finding it,  you can set the `OPENSSL_DIR` environment variable for the compilation process. See stderr section below for further information.
+
+  --- stderr
+
+
+  Could not find directory of OpenSSL installation, and this `-sys` crate cannot
+  proceed without this knowledge. If OpenSSL is installed and this crate had
+  trouble finding it,  you can set the `OPENSSL_DIR` environment variable for the
+  compilation process.
+
+  Make sure you also have the development packages of openssl installed.
+  For example, `libssl-dev` on Ubuntu or `openssl-devel` on Fedora.
+
+  If you're in a situation where you think the directory *should* be found
+  automatically, please open a bug at https://github.com/rust-openssl/rust-openssl
+  and include information about your system as well as this message.
+
+  $HOST = x86_64-unknown-linux-gnu
+  $TARGET = x86_64-pc-windows-msvc
+  openssl-sys = 0.9.117
+
+";
+
+    #[test]
+    fn detects_openssl_sys_without_openssl_on_windows_msvc() {
+        let diag = detect_build_script_failure(OPENSSL_SYS_WINDOWS_MSVC_NOT_FOUND)
+            .expect("openssl-sys not-found failure on windows-msvc must match");
+        assert_eq!(diag.crate_name, "openssl-sys");
+        assert_eq!(diag.category, DiagnosisCategory::WindowsMsvcOpenSslNotFound);
+        assert_eq!(diag.target.as_deref(), Some("x86_64-pc-windows-msvc"));
+        assert!(diag.command_name.is_none());
+    }
+
+    #[test]
+    fn detects_openssl_sys_without_openssl_on_native_windows_host() {
+        // A native Windows runner adds openssl-sys's MSVC paragraph after
+        // the target lines, and the target may be ARM64.
+        let input = "\
+error: failed to run custom build command for `openssl-sys v0.9.117`
+
+Caused by:
+  process didn't exit successfully: `D:\\a\\app\\target\\release\\build\\openssl-sys-1\\build-script-main` (exit status: 101)
+  --- stdout
+  note: vcpkg did not find openssl: Could not find Vcpkg tree: No vcpkg installation found.
+  --- stderr
+  Could not find directory of OpenSSL installation, and this `-sys` crate cannot
+  proceed without this knowledge.
+
+  $HOST = aarch64-pc-windows-msvc
+  $TARGET = aarch64-pc-windows-msvc
+  openssl-sys = 0.9.117
+
+  It looks like you're compiling for MSVC but we couldn't detect an OpenSSL
+  installation.
+";
+        let diag = detect_build_script_failure(input).expect("native windows host must match");
+        assert_eq!(diag.category, DiagnosisCategory::WindowsMsvcOpenSslNotFound);
+        assert_eq!(diag.target.as_deref(), Some("aarch64-pc-windows-msvc"));
+    }
+
+    #[test]
+    fn leaves_openssl_sys_not_found_on_linux_targets_to_openssl_sys() {
+        // openssl-sys's own `libssl-dev` advice is right off Windows.
+        let input = OPENSSL_SYS_WINDOWS_MSVC_NOT_FOUND.replace(
+            "$TARGET = x86_64-pc-windows-msvc",
+            "$TARGET = x86_64-unknown-linux-gnu",
+        );
+        assert_eq!(detect_build_script_failure(&input), None);
+    }
+
+    #[test]
+    fn openssl_not_found_outside_an_openssl_sys_block_is_ignored() {
+        // cargo prints openssl-sys's `warning:` line before any failure
+        // marker; a different crate then fails for windows-msvc.
+        let input = "\
+warning: openssl-sys@0.9.117: Could not find directory of OpenSSL installation, and this `-sys` crate cannot proceed without this knowledge.
+error: failed to run custom build command for `ring v0.17.14`
+
+Caused by:
+  --- stderr
+  $TARGET = x86_64-pc-windows-msvc
+  some unrelated ring failure
+";
+        assert_eq!(detect_build_script_failure(input), None);
+    }
+
+    #[test]
+    fn openssl_sys_block_is_reported_when_a_later_block_follows() {
+        let input = format!(
+            "{OPENSSL_SYS_WINDOWS_MSVC_NOT_FOUND}\
+error: failed to run custom build command for `ring v0.17.14`
+
+Caused by:
+  --- stderr
+  some unrelated ring failure
+"
+        );
+        let diag = detect_build_script_failure(&input)
+            .expect("earlier openssl-sys block must still match");
+        assert_eq!(diag.category, DiagnosisCategory::WindowsMsvcOpenSslNotFound);
+    }
+
+    #[test]
+    fn rendered_windows_msvc_openssl_diagnosis_points_at_the_dependency() {
+        let diag =
+            detect_build_script_failure(OPENSSL_SYS_WINDOWS_MSVC_NOT_FOUND).expect("must match");
+        let rendered = render_diagnosis(&diag);
+        assert!(rendered.contains(
+            "soldr cargo tree --target x86_64-pc-windows-msvc -e features -i openssl-sys"
+        ));
+        assert!(rendered.contains("SChannel"));
+        assert!(rendered.contains("rustls"));
+        assert!(rendered.contains("openssl/vendored"));
+        assert!(rendered.contains("OPENSSL_DIR"));
+        assert!(rendered.contains("soldr#3231"));
+        assert!(
+            !rendered.contains("apt-get"),
+            "not a missing-C-toolchain problem; got:\n{rendered}",
+        );
     }
 
     #[test]
@@ -421,6 +667,7 @@ Caused by:
         let diag = BuildScriptDiagnosis {
             crate_name: "tikv-jemalloc-sys".to_string(),
             command_name: Some("autogen.sh".to_string()),
+            target: None,
             category: DiagnosisCategory::MissingHostTool,
         };
         let rendered = render_diagnosis(&diag);
@@ -439,6 +686,7 @@ Caused by:
         let diag = BuildScriptDiagnosis {
             crate_name: "bzip2-sys".to_string(),
             command_name: None,
+            target: None,
             category: DiagnosisCategory::MissingHostTool,
         };
         let rendered = render_diagnosis(&diag);
