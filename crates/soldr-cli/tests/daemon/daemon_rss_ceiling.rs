@@ -640,7 +640,9 @@ fn daemon_stays_under_the_512mib_target_while_serving_a_chained_build() {
 /// wide enough that this is a noisy signal, not a precise one -- expected
 /// at 27 compiles on a shared, contended dev host -- but every run is
 /// roughly an order of magnitude over the budget below, which is the
-/// property this test actually needs. (One caveat: this test forwards a
+/// property this test actually needs. (That was the unfixed daemon; see the
+/// test's `#[ignore]` reason for the warm-baseline rates measured on main
+/// since.) (One caveat: this test forwards a
 /// ceiling env var to arm the watchdog for `pid` discovery, and that also
 /// starts `mimalloc-pprof`'s sampled profiler -- a source of extra
 /// retention the field measurement did not carry. Distinguishing "the same
@@ -662,6 +664,27 @@ fn daemon_stays_under_the_512mib_target_while_serving_a_chained_build() {
 /// daemon's own measured rate as the new floor -- do not lower it
 /// pre-emptively for a leak that has not been fixed yet.
 const RETENTION_RATE_BUDGET_BYTES_PER_COMPILE: u64 = 32 * 1024;
+
+/// Rebuild passes measured by
+/// [`daemon_rss_retention_rate_per_compile_stays_within_budget`]. Touching
+/// crate 0 recompiles the whole chain; a mid-chain touch recompiles the tail,
+/// so the window serves a warm, known compile load.
+const RATE_WINDOW_TOUCHES: [usize; 8] = [
+    0,
+    CRATE_COUNT / 3,
+    0,
+    CRATE_COUNT / 3,
+    0,
+    CRATE_COUNT / 3,
+    0,
+    CRATE_COUNT / 3,
+];
+
+/// How far daemon RSS may *fall* across the measured window before the
+/// baseline is judged to still contain a warm-up transient. mimalloc returns
+/// memory in multi-MiB segments, so a small shrink is ordinary. soldr#3059
+/// observed an ~80 MiB drop with the old one-crate warm-up.
+const BASELINE_SHRINK_TOLERANCE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Count records in the daemon's own compile journal
 /// (`compile_journal.jsonl` under `embedded_compile_journal_path`) rather
@@ -719,29 +742,28 @@ fn count_compile_journal_lines(cache_root: &Path) -> u64 {
 /// rate). See [`RETENTION_RATE_BUDGET_BYTES_PER_COMPILE`] for the budget
 /// and [`count_compile_journal_lines`] for the denominator.
 ///
-/// # Known-red by design (soldr#3059)
+/// # Ignored, with a valid instrument (soldr#3059)
 ///
-/// This test currently FAILS against the unfixed daemon: that is the point,
-/// not a bug in the test. It is marked `#[ignore]` -- this repo's existing
-/// convention for a documented, known-red regression test kept in-tree
-/// rather than deleted or silently commented out (see
-/// `cli_cargo_basic.rs`'s
-/// `cargo_front_door_defaults_non_msvc_dev_debug_off_and_warns_once_per_repo`
-/// for the same pattern) -- so it does not block CI. Run it explicitly with
-/// `soldr cargo nextest run -p soldr-cli --test daemon -- --run-ignored all
-/// -E 'test(daemon_rss_retention_rate_per_compile_stays_within_budget)'` (or
-/// plain `--ignored`) to observe the measured rate. Un-ignore only once the
-/// daemon's actual per-compile retention has been fixed, not once this test
-/// has been made to pass by loosening the budget.
+/// This used to fail on the unfixed daemon at 438-915 KiB/compile. On main
+/// (2026-09-13), with the warm-up baseline below, ten local runs measured
+/// 9-73 KiB/compile. RSS growth is bimodal and one run in ten crossed the
+/// budget, so the test stays `#[ignore]` (this repo's convention for a
+/// documented regression instrument kept in-tree; see `cli_cargo_basic.rs`'s
+/// `cargo_front_door_defaults_non_msvc_dev_debug_off_and_warns_once_per_repo`)
+/// rather than becoming a flaky gate. Run it explicitly with
+/// `soldr cargo nextest run -p soldr-cli --test daemon --run-ignored all
+/// -E 'test(daemon_rss_retention_rate_per_compile_stays_within_budget)'`. Do
+/// not un-ignore it by loosening the budget: first explain the ~6 MiB tail
+/// with a heap profile.
 #[test]
-#[ignore = "soldr#3059: RED by design -- the daemon retains hundreds of \
-    KiB of RSS per compile served, measured by this test itself across its \
-    27-compile window (four runs: 438.5, 467.3, 472.6, 914.7 KiB/compile; \
-    ~407 KiB/compile in the field), far over this test's 32 KiB/compile \
-    budget. This is the honest instrument for a real, unfixed leak, not a \
-    demonstration of a fix. Run explicitly with `--ignored` (or \
-    `--run-ignored all`) to see the measured rate; do not un-ignore until \
-    the retention itself is fixed."]
+#[ignore = "soldr#3059: not a CI gate yet. With a warm baseline on main \
+    (2026-09-13) the rate is 9-73 KiB/compile (ten local runs: 40 compiles \
+    9.1/10.9/14.0/25.3/26.3, 80 compiles 9.2/17.3/9.5/25.9/72.75), down from \
+    438-915 KiB/compile when the leak was filed, but RSS growth is bimodal \
+    (usually under 2 MiB, sometimes ~6 MiB) and one run in ten exceeds the \
+    32 KiB/compile budget. Un-ignoring would flake. Telling allocator segment \
+    growth apart from residual retention needs a heap profile. Run \
+    explicitly with `--run-ignored all` to see the measured rate."]
 fn daemon_rss_retention_rate_per_compile_stays_within_budget() {
     let cache_root = unique_temp_dir("rss-rate-cache");
     let home_root = unique_temp_dir("rss-rate-home");
@@ -750,17 +772,14 @@ fn daemon_rss_retention_rate_per_compile_stays_within_budget() {
         home_root: home_root.clone(),
     };
 
-    // Warm-up: a single trivial crate, deliberately NOT the chained
-    // workload -- this is what spawns the daemon and settles one-time
-    // startup costs (async runtime + allocator arena growth, dep-graph
-    // bootstrap) that would otherwise be misattributed to compile-driven
-    // retention if they landed inside the measured window. Kept to exactly
-    // one compile (rather than reusing the 12-crate cold build the ceiling
-    // test warms up with) so the whole chained build -- the bulk of the
-    // compiles this test can afford -- counts toward the measured window
-    // instead of being spent on warm-up. See
-    // [`daemon_dies_and_dumps_memory_when_the_ceiling_is_breached`] for the
-    // same one-trivial-crate priming pattern used for the same reason.
+    // Warm-up (soldr#3059 follow-up): the baseline has to come after the
+    // daemon has served real compiles. The previous one-trivial-crate warm-up
+    // left a startup transient in the "before" sample. On main (688eac21) RSS
+    // *fell* from ~160 MiB to ~80 MiB across the window, and a saturating
+    // subtraction turned that into "0 KiB retained": a pass that measured
+    // nothing. So the trivial crate (which spawns the daemon), the cold
+    // chained build and one rebuild pass are all warm-up, and only rebuild
+    // passes are measured.
     let trivial = write_trivial_crate(&cache_root);
     run_soldr_build(
         &["cargo", "build", "--quiet"],
@@ -770,29 +789,6 @@ fn daemon_rss_retention_rate_per_compile_stays_within_budget() {
         CEILING_BYTES,
         Duration::from_secs(120),
     );
-
-    let paths = SoldrPaths::with_root(cache_root.clone());
-    let warm_status = wait_for_status(&paths, Instant::now() + Duration::from_secs(15));
-    // Let RSS settle past the warm-up build before taking the "before"
-    // sample -- same reasoning as the ceiling test's trailing sample wait.
-    std::thread::sleep(rss_ceiling::RSS_SAMPLE_INTERVAL * 2);
-
-    let rss_before = soldr_platform::host::resources::process_rss_bytes(warm_status.pid)
-        .expect("daemon RSS must be readable before the measured window");
-    let compiles_before = count_compile_journal_lines(&cache_root);
-
-    // Measured window: the cold 12-crate chained build (CRATE_COUNT
-    // distinct rustc invocations, sequential because each crate depends on
-    // the last) plus the same three touch-and-rebuild passes the ceiling
-    // test above runs -- a genuine content-hash change (new functions
-    // appended) forces a real cache miss + recompile of the touched crate
-    // and everything downstream of it each pass, not a warm no-op that
-    // skips the wrapper. Folding the cold build in here (rather than
-    // spending it on warm-up, as the ceiling test does) maximizes the
-    // compile count this test can afford within its nextest budget, which
-    // matters because [`RETENTION_RATE_BUDGET_BYTES_PER_COMPILE`] is a
-    // per-compile rate: too few compiles in the window lets allocator-level
-    // rounding noise dominate the measurement.
     let project = write_workload_workspace(&cache_root);
     run_soldr_build(
         &["cargo", "build", "--quiet"],
@@ -802,12 +798,32 @@ fn daemon_rss_retention_rate_per_compile_stays_within_budget() {
         CEILING_BYTES,
         Duration::from_secs(180),
     );
-    for (pass, touch_index) in [
-        (1, CRATE_COUNT / 3),
-        (2, CRATE_COUNT / 2),
-        (3, CRATE_COUNT - 1),
-    ] {
-        write_workload_crate(&project, touch_index, pass * 5);
+    write_workload_crate(&project, 0, 1);
+    run_soldr_build(
+        &["cargo", "build", "--quiet"],
+        &cache_root,
+        &home_root,
+        &project,
+        CEILING_BYTES,
+        Duration::from_secs(120),
+    );
+
+    let paths = SoldrPaths::with_root(cache_root.clone());
+    let warm_status = wait_for_status(&paths, Instant::now() + Duration::from_secs(15));
+    // Let RSS settle past the warm-up builds before taking the "before"
+    // sample -- same reasoning as the ceiling test's trailing sample wait.
+    std::thread::sleep(rss_ceiling::RSS_SAMPLE_INTERVAL * 2);
+
+    let rss_before = soldr_platform::host::resources::process_rss_bytes(warm_status.pid)
+        .expect("daemon RSS must be readable before the measured window");
+    let compiles_before = count_compile_journal_lines(&cache_root);
+
+    // Measured window: rebuild passes only. Touching crate `k` appends fresh
+    // functions (a real content-hash change, so a genuine miss) and
+    // recompiles `k..CRATE_COUNT` down the chain, so the touches in
+    // [`RATE_WINDOW_TOUCHES`] serve a known, warm, repeatable compile load.
+    for (pass, &touch_index) in RATE_WINDOW_TOUCHES.iter().enumerate() {
+        write_workload_crate(&project, touch_index, (pass + 2) * 5);
         run_soldr_build(
             &["cargo", "build", "--quiet"],
             &cache_root,
@@ -853,6 +869,7 @@ fn daemon_rss_retention_rate_per_compile_stays_within_budget() {
     );
 
     let retained_bytes = rss_after.saturating_sub(rss_before);
+    let shrunk_bytes = rss_before.saturating_sub(rss_after);
     let rate_bytes_per_compile = retained_bytes / compiles_served;
 
     // Report the measured rate regardless of pass/fail -- soldr#3059 asks
@@ -861,14 +878,29 @@ fn daemon_rss_retention_rate_per_compile_stays_within_budget() {
     println!(
         "soldr#3059 daemon RSS retention rate: pid={pid} rss_before={rss_before_kib:.1}KiB \
          rss_after={rss_after_kib:.1}KiB compiles_served={compiles_served} \
-         retained={retained_kib:.1}KiB rate={rate_kib:.2}KiB/compile \
+         delta={delta_kib:+.1}KiB retained={retained_kib:.1}KiB rate={rate_kib:.2}KiB/compile \
          budget={budget_kib:.1}KiB/compile",
         pid = warm_status.pid,
         rss_before_kib = rss_before as f64 / 1024.0,
         rss_after_kib = rss_after as f64 / 1024.0,
+        delta_kib = (rss_after as f64 - rss_before as f64) / 1024.0,
         retained_kib = retained_bytes as f64 / 1024.0,
         rate_kib = rate_bytes_per_compile as f64 / 1024.0,
         budget_kib = RETENTION_RATE_BUDGET_BYTES_PER_COMPILE as f64 / 1024.0,
+    );
+
+    // A shrink beyond allocator noise means the baseline still carried a
+    // transient. A rate computed from it reads as zero however much the
+    // daemon retains, so refuse to report one rather than pass.
+    assert!(
+        shrunk_bytes <= BASELINE_SHRINK_TOLERANCE_BYTES,
+        "daemon RSS fell {:.1} KiB across the measured window ({:.1} -> {:.1} KiB), more \
+         than the {:.1} KiB tolerance: the warm-up baseline still included a transient, so \
+         this run cannot measure retention (soldr#3059)",
+        shrunk_bytes as f64 / 1024.0,
+        rss_before as f64 / 1024.0,
+        rss_after as f64 / 1024.0,
+        BASELINE_SHRINK_TOLERANCE_BYTES as f64 / 1024.0,
     );
 
     assert!(
