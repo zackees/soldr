@@ -548,12 +548,57 @@ def _stage_nextest_list_selected() -> list[str]:
     ]
 
 
+# Seconds between guest memory samples printed during `nextest run`.
+MEM_SAMPLE_SECS = 30
+
+
+def _memory_sampler_function() -> list[str]:
+    """`mem_sample`: print one `[mem] ...` line describing guest memory.
+
+    soldr#3136: the Recovery guest intermittently freezes mid-suite (5 of 8
+    nightly replays 09-07..09-14) and the stall-collect cannot open a second
+    Terminal, so nothing under `/tmp/results` survives a freeze. The only
+    channel that does is the heartbeat tail of this script's stdout, so the
+    sample goes there. Every probe degrades to `n/a` when Recovery lacks the
+    tool or the key, rather than failing the stage.
+    """
+    return [
+        "# soldr#3136: memory evidence for a guest freeze; see _memory_sampler_function.",
+        "na() {",
+        "  if [ -n \"$1\" ]; then printf '%s' \"$1\"; else printf 'n/a'; fi",
+        "}",
+        "mem_sample() {",
+        '  ms_free=""; ms_pressure=""; ms_swap=""; ms_load=""; ms_top=""',
+        "  if command -v sysctl >/dev/null 2>&1; then",
+        "    ms_free=$(sysctl -n vm.page_free_count 2>/dev/null)",
+        "    ms_pressure=$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null)",
+        "    ms_swap=$(sysctl -n vm.swapusage 2>/dev/null | tr -s ' ')",
+        "    ms_load=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | tr -s ' ')",
+        "  fi",
+        "  if command -v ps >/dev/null 2>&1; then",
+        "    ms_top=$(ps -Ao rss=,comm= 2>/dev/null | sort -rn | head -n 3 \\",
+        "      | while read -r ms_rss ms_comm; do \\",
+        '          printf \'%s:%sM \' "${ms_comm##*/}" "$((ms_rss / 1024))"; done)',
+        "  fi",
+        '  echo "[mem] t=$(date +%H:%M:%S) free_pages=$(na "$ms_free")" \\',
+        '    "pressure=$(na "$ms_pressure") swap=[$(na "$ms_swap")]" \\',
+        '    "load=[$(na "$ms_load")] top=[$(na "$ms_top")]"',
+        "}",
+    ]
+
+
 def _stage_nextest_run() -> list[str]:
     return [
         "stage_start nextest_run",
+        *_memory_sampler_function(),
         'if [ "$LIST_SELECTED_OK" -eq 0 ] && [ "$TOOLCHAIN_LINK_OK" -eq 0 ] \\',
         '  && [ "$FETCH_SOLDR_DAEMON_OK" -eq 0 ] && [ "$EXTRACT_FIXTURES_OK" -eq 0 ]; then',
         '  FILTER=$(cat "$WORK/filter.txt")',
+        "  mem_sample",
+        "  # The sleep's output is detached so a sampler killed mid-sleep cannot",
+        "  # hold this script's stdout pipe open after the suite ends.",
+        f"  ( while :; do sleep {MEM_SAMPLE_SECS} >/dev/null 2>&1; mem_sample; done ) &",
+        "  MEM_SAMPLER_PID=$!",
         "  # --no-fail-fast, unlike the native lanes' --max-fail 3: one guest boot",
         "  # costs minutes, so a run must report every failure it can find.",
         "  # (Comments must stay OUT of the continued command below: PR #3087's",
@@ -573,6 +618,8 @@ def _stage_nextest_run() -> list[str]:
         "      --no-fail-fast 2>&1; \\",
         '    echo $? > "$WORK/nextest-run.rc" ) | tee "$WORK/nextest-run.log"',
         '  NR_RC=$(cat "$WORK/nextest-run.rc" 2>/dev/null || echo 1)',
+        '  kill "$MEM_SAMPLER_PID" 2>/dev/null',
+        "  mem_sample",
         '  if [ "$NR_RC" -eq 0 ]; then',
         "    record nextest_run pass",
         "  else",
