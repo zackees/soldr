@@ -10,6 +10,7 @@ the pure/subprocess-only surfaces this module exposes.
 """
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -62,6 +63,95 @@ def test_build_guest_script_replay_stages_are_present() -> None:
     assert "SOLDR_TEST_WORKSPACE_ROOT" in script
     assert "SOLDR_TEST_FIXTURES_DIR" in script
     assert "SOLDR_USE_SYSTEM_CMAKE=1" in script
+
+
+def test_guest_script_samples_memory_around_nextest_run() -> None:
+    """soldr#3136: memory evidence must bracket the suite and stop with it."""
+    script = MODULE.build_guest_script()
+    run = script.index("nextest run $REUSE_ARGS \\")
+    start = script.index("MEM_SAMPLER_PID=$!")
+    stop = script.index('kill "$MEM_SAMPLER_PID" 2>/dev/null')
+    assert script.index("mem_sample() {") < start < run < stop
+    assert (
+        f"( while :; do sleep {MODULE.MEM_SAMPLE_SECS} >/dev/null 2>&1; "
+        "mem_sample; done ) &"
+    ) in script
+    # Outside the continued nextest command, which comments would split.
+    assert script.index('echo $? > "$WORK/nextest-run.rc"') < stop
+
+
+def _mem_sample_functions(script: str) -> str:
+    start = script.index("na() {")
+    end = script.index("\n}\n", script.index("mem_sample() {")) + len("\n}\n")
+    return script[start:end]
+
+
+def _run_mem_sample(tmp_path: Path, stub_dir: Path) -> str:
+    runner = tmp_path / "run.sh"
+    runner.write_text(
+        _mem_sample_functions(MODULE.build_guest_script()) + "mem_sample\n",
+        encoding="utf-8",
+    )
+    # Stubs shadow `sysctl`/`ps`; the text tools resolve from the real PATH.
+    path = f"{stub_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    result = subprocess.run(
+        ["sh", str(runner)],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"PATH": path},
+    )
+    return result.stdout.strip()
+
+
+def _stub(stub_dir: Path, name: str, body: str) -> None:
+    tool = stub_dir / name
+    tool.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    tool.chmod(0o755)
+
+
+def test_mem_sample_reports_macos_memory_probes(tmp_path: Path) -> None:
+    """The sample line carries each probe's value, one line, top RSS first."""
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    _stub(
+        stubs,
+        "sysctl",
+        'case "$2" in\n'
+        "  vm.page_free_count) echo 4242 ;;\n"
+        "  kern.memorystatus_vm_pressure_level) echo 4 ;;\n"
+        "  vm.swapusage) echo 'total = 2048.00M  used = 1024.00M' ;;\n"
+        "  vm.loadavg) echo '{ 3.10 2.00 1.50 }' ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac",
+    )
+    _stub(stubs, "ps", "printf '%s\\n' '2097152 /usr/bin/rustc' '10240 soldr-daemon'")
+    line = _run_mem_sample(tmp_path, stubs)
+    assert "\n" not in line
+    assert line.startswith("[mem] t=")
+    assert "free_pages=4242" in line
+    assert "pressure=4" in line
+    assert "swap=[total = 2048.00M used = 1024.00M]" in line
+    assert "load=[ 3.10 2.00 1.50 ]" in line
+    assert "top=[rustc:2048M soldr-daemon:10M ]" in line
+
+
+def test_mem_sample_degrades_to_na_when_probes_fail(tmp_path: Path) -> None:
+    """A Recovery guest missing a tool or sysctl key still prints a line."""
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    _stub(stubs, "sysctl", "exit 1")
+    _stub(stubs, "ps", "exit 1")
+    line = _run_mem_sample(tmp_path, stubs)
+    assert line.startswith("[mem] t=")
+    for probe in (
+        "free_pages=n/a",
+        "pressure=n/a",
+        "swap=[n/a]",
+        "load=[n/a]",
+        "top=[n/a]",
+    ):
+        assert probe in line, line
 
 
 def test_build_guest_script_is_valid_posix_sh_syntax() -> None:
