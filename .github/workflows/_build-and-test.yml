@@ -842,12 +842,16 @@ jobs:
           echo "object store staged for the cache save:"
           du -sh "$store" || true
 
-      # soldr#3120: report-only. How much of the store this run touched, and
-      # what a Full `gc maintain` pass under the proposed trim cap does to a
-      # real copy of it. The saved store is never modified. The copy goes on
-      # /mnt, the runner's large ephemeral disk, and costs ~70 s, so the trial
-      # runs on main only; the ~1 s walk runs on every gate.
-      - name: Measure Tier-2 zccache working set (soldr#3120)
+      # soldr#3120. How much of the store this run touched, per zccache
+      # version tree, and what a Full `gc maintain` pass under the proposed
+      # trim cap does to a real copy of it (the copy costs ~70 s, so the trial
+      # runs on main only; the ~1 s walk runs on every gate). It also prunes
+      # whole version trees this run touched zero files of. soldr#3213 measured
+      # `v1.13.21` at 3.09 GiB and 0 bytes touched once the bootstrap pin
+      # matched, and nothing else ever removes it: zccache maintains only its
+      # current version, and CI never runs soldr's legacy sweep. The Save below
+      # is success-gated, so a failed run's partial measurement is never saved.
+      - name: Measure and prune the Tier-2 zccache store (soldr#3120)
         if: always()
         continue-on-error: true
         shell: bash
@@ -858,6 +862,7 @@ jobs:
             --since-file "${{ runner.temp }}/zccache-unit-restored-at" \
             --soldr "${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr" \
             --scratch-root /mnt/soldr-zccache-trial \
+            --prune-dead-version-dirs \
             --trial "${{ github.ref == 'refs/heads/main' }}"
 
       # soldr#1799 — surface the per-build XML logs and the JSONL compile
