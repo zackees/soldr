@@ -73,4 +73,3 @@ def test_cook_size_gate_caps_only_the_cache_disabled_cook() -> None:
     cook = steps["Run soldr cook against zccache (release profile)"]["env"]
     assert cook["ZCCACHE_DISABLE"] == "1"
     assert cook["CARGO_BUILD_JOBS"] == "1" and cook["SOLDR_JOBS"] == "1"
-
