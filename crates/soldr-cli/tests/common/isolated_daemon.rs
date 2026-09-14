@@ -92,15 +92,26 @@ impl Drop for IsolatedDaemon {
             self.configure_client(&mut stop);
             let _ = stop.args(["daemon", "stop"]).output();
             let deadline = Instant::now() + Duration::from_secs(2);
+            let mut exited = false;
             while Instant::now() < deadline {
                 if child.try_wait().ok().flatten().is_some() {
-                    return;
+                    exited = true;
+                    break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            let _ = child.kill();
-            let _ = child.wait();
+            if !exited {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
+        // soldr#3136: every client call above (`daemon status`, `daemon
+        // stop`) enters the front door under `home`, which starts a stable
+        // broker there, and `daemon stop` leaves that broker running by
+        // design (soldr#2549). Without this the broker outlived the test,
+        // one per fixture; the macOS Recovery replay accumulated 11 of them
+        // with no swap and froze.
+        super::stop_fixture_broker(&self.root, &self.home);
     }
 }
 

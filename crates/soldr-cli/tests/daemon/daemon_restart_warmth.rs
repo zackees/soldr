@@ -84,6 +84,12 @@ impl Drop for DaemonGuard {
             let _ = self.stop_daemon();
             let _ = self.wait_for_daemon_exit(pid);
         }
+        // soldr#3136: stop the broker the front-door calls started under
+        // `home_dir` *before* removing `workdir`, which contains that home.
+        // A `BrokerHomeGuard` dropped after this guard ran `broker stop`
+        // against an already-deleted home, could not reach the broker, and
+        // left it running for the rest of the suite.
+        common::stop_fixture_broker(&self.cache_dir, &self.home_dir);
         if let Err(error) = fs::remove_dir_all(&self.workdir) {
             eprintln!(
                 "warning: could not remove fixture root {}: {error}",
@@ -110,9 +116,6 @@ fn graceful_daemon_restart_serves_the_next_build_warm() {
     let home_dir = workdir.join("home");
     fs::create_dir_all(&cache_dir).expect("create cache dir");
     fs::create_dir_all(&home_dir).expect("create home dir");
-    // Declared first so it drops last: the broker outlives `daemon stop`
-    // by design (soldr#2549) and must be stopped after the daemon guard.
-    let _broker = common::BrokerHomeGuard::new(&cache_dir, &home_dir);
     let guard = DaemonGuard {
         workdir: workdir.clone(),
         cache_dir: cache_dir.clone(),
@@ -422,7 +425,6 @@ fn hard_killed_daemon_loses_at_most_one_save_batch() {
     let home_dir = workdir.join("home");
     fs::create_dir_all(&cache_dir).expect("create cache dir");
     fs::create_dir_all(&home_dir).expect("create home dir");
-    let _broker = common::BrokerHomeGuard::new(&cache_dir, &home_dir);
     let guard = DaemonGuard {
         workdir: workdir.clone(),
         cache_dir: cache_dir.clone(),

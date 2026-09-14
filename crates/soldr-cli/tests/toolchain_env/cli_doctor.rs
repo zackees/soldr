@@ -148,6 +148,8 @@ fn doctor_fake_rustup_script(
 #[test]
 fn doctor_reports_drift_when_component_missing() {
     let workspace = unique_temp_dir("doctor-drift-component");
+    // soldr#3136: `soldr doctor` under this HOME starts a stable broker.
+    let _broker = common::BrokerHomeGuard::new(&workspace, &workspace);
     seed_rust_toolchain_toml(
         &workspace,
         "[toolchain]\n\
@@ -222,6 +224,8 @@ fn doctor_reports_drift_when_component_missing() {
 #[test]
 fn doctor_reports_no_drift_when_everything_installed() {
     let workspace = unique_temp_dir("doctor-no-drift");
+    // soldr#3136: `soldr doctor` under this HOME starts a stable broker.
+    let _broker = common::BrokerHomeGuard::new(&workspace, &workspace);
     seed_rust_toolchain_toml(
         &workspace,
         "[toolchain]\n\
@@ -379,6 +383,8 @@ fn issue_2476_doctor_json_reports_broker_deadline_provenance() {
 #[test]
 fn doctor_reports_missing_target() {
     let workspace = unique_temp_dir("doctor-missing-target");
+    // soldr#3136: `soldr doctor` under this HOME starts a stable broker.
+    let _broker = common::BrokerHomeGuard::new(&workspace, &workspace);
     seed_rust_toolchain_toml(
         &workspace,
         "[toolchain]\n\
