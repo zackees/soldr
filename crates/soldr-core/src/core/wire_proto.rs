@@ -564,6 +564,19 @@ pub struct WireBuildMissReason {
     pub count: u64,
 }
 
+/// soldr#3152 step 4: one unit's last measured peak memory.
+#[derive(Clone, PartialEq, Message)]
+pub struct WireUnitMemory {
+    #[prost(uint64, tag = "1")]
+    pub peak_rss_bytes: u64,
+    #[prost(uint64, tag = "2")]
+    pub tree_peak_rss_bytes: u64,
+    #[prost(int64, tag = "3")]
+    pub updated_ms: i64,
+    #[prost(uint64, tag = "4")]
+    pub samples: u64,
+}
+
 #[derive(Clone, PartialEq, Message)]
 pub struct WireEvent {
     #[prost(int64, tag = "1")]

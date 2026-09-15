@@ -81,6 +81,9 @@ pub struct SoldrZccacheService {
     disk_policy: EmbeddedDiskPolicy,
     applied_jobs: crate::core::jobs::ResolvedJobs,
     start_timings: ServiceStartTimings,
+    /// soldr#3152 step 4: each unit's last measured peak memory. Admission
+    /// holds a clone for its shadow lookup; `compile` records into this one.
+    unit_history: crate::daemon::unit_memory_history::UnitMemoryHistory,
 }
 
 /// Where [`SoldrZccacheService::start`] spent its time, in milliseconds.
@@ -244,9 +247,13 @@ impl SoldrZccacheService {
         // acquires capacity -> resource admission immediately before spawning
         // a real compiler child. Keeping no Soldr-side gate here ensures an
         // eligible cache hit never drains ordinary compiler work.
+        let unit_history = crate::daemon::unit_memory_history::UnitMemoryHistory::start(
+            crate::cache_lib::state_db_path(paths),
+        );
         let compile_admission = Arc::new(
             crate::resident_compile_admission::ResidentCompileAdmission::new(resolved_jobs.jobs)
-                .with_estimate_log(crate::memory_estimate::estimate_log_path(paths)),
+                .with_estimate_log(crate::memory_estimate::estimate_log_path(paths))
+                .with_unit_history(unit_history.clone()),
         );
         let host_admission: Arc<dyn zccache::embedded::HostAdmissionClassifier> =
             compile_admission.clone();
@@ -271,6 +278,7 @@ impl SoldrZccacheService {
                 scrub_journals_ms,
                 zccache_start_ms,
             },
+            unit_history,
         })
     }
 
@@ -366,6 +374,16 @@ impl SoldrZccacheService {
         let zresp = Box::pin(self.inner.compile(zreq))
             .await
             .map_err(|e| EmbeddedServiceError::Compile(e.to_string()))?;
+        // soldr#3152 step 4: remember this unit's measured memory (zccache
+        // 1.13.24 reports it per compile). A cache hit spawned no compiler and
+        // reports nothing, which the history ignores.
+        if let Some(unit) = crate::memory_estimate::unit_key(&req.args) {
+            self.unit_history.record(
+                &unit,
+                zresp.child_memory.peak_rss_bytes.unwrap_or(0),
+                zresp.child_memory.tree_peak_rss_bytes.unwrap_or(0),
+            );
+        }
         let stderr = if zresp.cached {
             strip_internal_soldr_fallback_notices(zresp.stderr)
         } else {

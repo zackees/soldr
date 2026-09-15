@@ -382,11 +382,17 @@ async fn real_rustc_hit_survives_full_and_ci_save_load_relocation() {
     let temp = tempfile::tempdir().expect("tempdir");
     let project = temp.path().join("workspace");
     std::fs::create_dir_all(project.join("src")).expect("create source directory");
-    std::fs::write(
-        project.join("src/lib.rs"),
-        "pub fn portable_cache_answer() -> u32 { 1651 }\n",
-    )
-    .expect("write source");
+    // Enough code that rustc runs well past one 250 ms watchdog tick and its
+    // measured peak is a real one: the unit memory history ignores readings
+    // under 8 MiB, which a one-function crate finishing within a tick produces.
+    let mut source = String::from("pub fn portable_cache_answer() -> u32 { 1651 }\n");
+    for index in 0..4000 {
+        source.push_str(&format!(
+            "pub fn weight_{index}(value: u64) -> u64 {{ value.wrapping_mul({index}).rotate_left({shift}) ^ {index} }}\n",
+            shift = index % 63
+        ));
+    }
+    std::fs::write(project.join("src/lib.rs"), source).expect("write source");
 
     let rustc_args = vec![
         rustc.display().to_string(),
@@ -433,6 +439,16 @@ async fn real_rustc_hit_survives_full_and_ci_save_load_relocation() {
     );
     assert!(!first.cached, "first compile must populate the cache");
     assert_eq!(first.cache_outcome, 2, "first compile must be a miss");
+    // soldr#3152 step 4: a compile that ran records its measured memory under
+    // the unit's `<crate name>/<cargo -C metadata>` key.
+    let remembered = cold_service
+        .unit_history
+        .lookup("soldr_portable_cache/z1651")
+        .expect("the cold compile's measured memory must be remembered");
+    assert!(
+        remembered.tree_peak_rss_bytes > 0,
+        "a real rustc compile has a non-zero tree peak: {remembered:?}"
+    );
     let flush = cold_service
         .flush()
         .await

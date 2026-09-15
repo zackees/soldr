@@ -398,6 +398,18 @@ message WireEvent {
   optional int32 exit_code = 7;
 }
 
+// soldr#3152 step 4: the last measured peak memory of one compile unit,
+// keyed in `unit_memory_history` by `<crate name>/<cargo -C metadata>`.
+message WireUnitMemory {
+  // The compiler process's own resident high-water mark.
+  uint64 peak_rss_bytes = 1;
+  // Sampled peak of the compiler plus its live descendants (the linker).
+  uint64 tree_peak_rss_bytes = 2;
+  int64 updated_ms = 3;
+  // How many measurements have replaced this row.
+  uint64 samples = 4;
+}
+
 message WireCookKey {
   bytes recipe_hash = 1;  // exactly 32 bytes
   string target_triple = 2;

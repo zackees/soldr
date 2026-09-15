@@ -36,7 +36,7 @@ use crate::core::SoldrPaths;
 
 /// Bumped on any field removal or meaning change so offline readers can refuse
 /// rows they cannot parse.
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 const MIB: u64 = 1024 * 1024;
 
@@ -270,6 +270,11 @@ struct Row<'a> {
     /// What admission actually decided, so a row shows where the estimate
     /// and today's name-list classifier disagree.
     exclusive: bool,
+    /// soldr#3152 step 4 (schema 3): the unit's remembered tree peak, when
+    /// this daemon has measured it before. The per-unit history estimator is
+    /// judged by comparing this against the measured peak of the same compile.
+    history_tree_peak_bytes: Option<u64>,
+    history_samples: Option<u64>,
 }
 
 /// Append one row. Best-effort: a diagnostic must never fail a compile, so
@@ -280,6 +285,18 @@ pub(crate) fn record(
     features: &UnitFeatures,
     estimate_bytes: u64,
     exclusive: bool,
+) {
+    record_with_history(log, args, features, estimate_bytes, exclusive, None);
+}
+
+/// [`record`] plus the unit's remembered peak, when there is one.
+pub(crate) fn record_with_history(
+    log: &Path,
+    args: &[String],
+    features: &UnitFeatures,
+    estimate_bytes: u64,
+    exclusive: bool,
+    history: Option<crate::daemon::unit_memory_history::UnitMemory>,
 ) {
     let ts_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -301,6 +318,8 @@ pub(crate) fn record(
         codegen_units: features.codegen_units,
         estimate_bytes,
         exclusive,
+        history_tree_peak_bytes: history.map(|unit| unit.tree_peak_rss_bytes),
+        history_samples: history.map(|unit| unit.samples),
     }) else {
         return;
     };
@@ -316,16 +335,31 @@ pub(crate) fn record(
 /// its admission. Non-Rust compilers are skipped; their shape is judged by
 /// `amalgamation::detect` today.
 pub(crate) fn shadow(log: &Path, is_rustc: bool, args: &[String], exclusive: bool) {
+    shadow_with_history(log, is_rustc, args, exclusive, None);
+}
+
+/// [`shadow`] that also records the unit's remembered peak from `history`,
+/// looked up by [`unit_key`] (soldr#3152 step 4, shadow mode).
+pub(crate) fn shadow_with_history(
+    log: &Path,
+    is_rustc: bool,
+    args: &[String],
+    exclusive: bool,
+    history: Option<&crate::daemon::unit_memory_history::UnitMemoryHistory>,
+) {
     if !is_rustc {
         return;
     }
     let features = features_with(args, crate::amalgamation::file_len);
-    record(
+    let remembered =
+        history.and_then(|history| unit_key(args).and_then(|key| history.lookup(&key)));
+    record_with_history(
         log,
         args,
         &features,
         estimate_peak_bytes(&features),
         exclusive,
+        remembered,
     );
 }
 

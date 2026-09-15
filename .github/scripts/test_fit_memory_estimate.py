@@ -85,6 +85,62 @@ class UnitKeyTests(unittest.TestCase):
             self.assertEqual(report["under_predicted"], 1)
 
 
+class TreePeakAndHistoryTests(unittest.TestCase):
+    """soldr#3152 step 4: judge the per-unit history against link-inclusive peaks."""
+
+    def setUp(self) -> None:
+        self._stack = contextlib.ExitStack()
+        self.root = Path(self._stack.enter_context(tempfile.TemporaryDirectory()))
+
+    def tearDown(self) -> None:
+        self._stack.close()
+
+    def _write(self, estimates: list[dict], journal: list[dict]) -> dict:
+        _write_jsonl(self.root / "admission-estimate.jsonl", estimates)
+        _write_jsonl(self.root / "compile_journal.jsonl", journal)
+        return fit.analyze([self.root / "admission-estimate.jsonl"], [self.root])
+
+    def test_the_tree_peak_is_the_measurement_when_present(self) -> None:
+        # zccache 1.13.24 journals the compiler plus its descendants; that is the
+        # figure that includes a linker grandchild, so it must win.
+        args = ["--crate-name", "soldr_cli", "-C", "metadata=aaaa"]
+        row = _estimate(args, 1_000, crate_name="soldr_cli")
+        row["unit_key"] = "soldr_cli/aaaa"
+        journal = _journal(args, "miss", 800)
+        journal["tree_peak_rss_bytes"] = 5_000
+        report = self._write([row], [journal])
+        self.assertEqual(report["measured_source"], "tree")
+        worst = report["worst_under_predictions"][0]
+        self.assertEqual(worst["measured_bytes"], 5_000)
+
+    def test_history_rows_are_scored_against_the_measured_peak(self) -> None:
+        heavy = ["--crate-name", "zccache", "-C", "metadata=bbbb"]
+        light = ["--crate-name", "anyhow", "-C", "metadata=cccc"]
+        unseen = ["--crate-name", "serde", "-C", "metadata=dddd"]
+        rows = []
+        for args, name, history in (
+            (heavy, "zccache", 1_000),
+            (light, "anyhow", 900),
+            (unseen, "serde", None),
+        ):
+            row = _estimate(args, 50, crate_name=name)
+            row["schema_version"] = 3
+            row["unit_key"] = f"{name}/{args[-1].split('=')[1]}"
+            row["history_tree_peak_bytes"] = history
+            rows.append(row)
+        journal = []
+        for args, tree in ((heavy, 1_400), (light, 300), (unseen, 200)):
+            entry = _journal(args, "miss", 100)
+            entry["tree_peak_rss_bytes"] = tree
+            journal.append(entry)
+        report = self._write(rows, journal)
+        history = report["history"]
+        self.assertEqual(history["joined"], 2)
+        self.assertEqual(history["without_history"], 1)
+        self.assertEqual(history["under_predicted"], 1)
+        self.assertAlmostEqual(history["max_measured_over_history"], 1.4)
+
+
 class JoinTests(unittest.TestCase):
     def setUp(self) -> None:
         self._stack = contextlib.ExitStack()

@@ -81,6 +81,7 @@ pub(crate) mod session_serve;
 /// broker-relayed SESSION wire.
 pub(crate) mod session_sink;
 pub mod shutdown_signal;
+pub mod unit_memory_history;
 /// soldr#1838 Phase 1 -- progressive heartbeats so a long daemon wait
 /// says what it is waiting on instead of going silent to the backstop.
 pub(crate) mod wait_heartbeat;
