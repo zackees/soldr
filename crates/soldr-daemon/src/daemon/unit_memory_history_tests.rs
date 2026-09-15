@@ -120,3 +120,29 @@ async fn an_all_zero_measurement_is_not_recorded() {
     history.flush().await.expect("flush");
     assert!(history.lookup("hit/eeee").is_none());
 }
+
+#[tokio::test]
+async fn a_spawn_instant_reading_is_not_remembered() {
+    // soldr#3152 two-pass data: compiles shorter than ~one watchdog tick
+    // recorded only the sample taken at spawn (36-40 KiB for units that really
+    // peak at 1-144 MiB). Such a reading is not a measurement of the unit.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let history = UnitMemoryHistory::start(temp.path().join("state.sqlite3"));
+    history.record("tempfile/a1ec", 40 * 1024, 40 * 1024);
+    history.flush().await.expect("flush");
+    assert!(history.lookup("tempfile/a1ec").is_none());
+}
+
+#[tokio::test]
+async fn a_spawn_instant_reading_never_overwrites_a_real_peak() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let history = UnitMemoryHistory::start(temp.path().join("state.sqlite3"));
+    history.record("running_process/1643", 487 * MIB, 500 * MIB);
+    history.record("running_process/1643", 40 * 1024, 40 * 1024);
+    history.flush().await.expect("flush");
+    let unit = history
+        .lookup("running_process/1643")
+        .expect("real peak kept");
+    assert_eq!(unit.tree_peak_rss_bytes, 500 * MIB);
+    assert_eq!(unit.samples, 1);
+}

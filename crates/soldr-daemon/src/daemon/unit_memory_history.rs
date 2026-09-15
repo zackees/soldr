@@ -121,6 +121,18 @@ const CHANNEL_CAPACITY: usize = 1024;
 /// Most rows written in one SQLite transaction batch.
 const MAX_BATCH_ROWS: usize = 256;
 
+/// Smallest peak treated as a real measurement of a unit (soldr#3152).
+///
+/// zccache's watchdog takes its first memory sample at spawn, before rustc has
+/// grown. A compile that finishes within about one 250 ms tick reports only
+/// that reading. In a local two-pass build of `soldr-core`, the 90 first-pass
+/// rows below 8 MiB ran a median 212 ms (max 338 ms) and read as little as
+/// 36-40 KiB for units whose next compile peaked at 1-144 MiB, while every
+/// healthy row read above it. Below this floor a reading is ignored, so it can
+/// neither create a history nor overwrite a real one; a unit that genuinely
+/// peaks lower simply has no history and admission falls back to the classifier.
+pub const MIN_TRUSTED_PEAK_BYTES: u64 = 8 * 1024 * 1024;
+
 enum Command {
     Record {
         unit_key: String,
@@ -164,10 +176,11 @@ impl UnitMemoryHistory {
             .and_then(|units| units.get(unit_key).copied())
     }
 
-    /// Record a compile's measured memory. An all-zero measurement is the
-    /// absence of one (a cache hit spawns no compiler) and is ignored.
+    /// Record a compile's measured memory. A measurement whose larger peak is
+    /// below [`MIN_TRUSTED_PEAK_BYTES`] is ignored: that covers both a cache hit
+    /// (no compiler ran, so nothing was measured) and a spawn-instant reading.
     pub fn record(&self, unit_key: &str, peak_rss_bytes: u64, tree_peak_rss_bytes: u64) {
-        if peak_rss_bytes == 0 && tree_peak_rss_bytes == 0 {
+        if peak_rss_bytes.max(tree_peak_rss_bytes) < MIN_TRUSTED_PEAK_BYTES {
             return;
         }
         let now_ms = SystemTime::now()

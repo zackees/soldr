@@ -304,7 +304,13 @@ async fn shadow_looks_up_the_units_history_by_unit_key() {
     let history = crate::daemon::unit_memory_history::UnitMemoryHistory::start(
         temp.path().join("state.sqlite3"),
     );
-    history.record("anyhow/0123456789abcdef", 10, 42);
+    // Realistic peaks: readings under the history's 8 MiB trust floor are
+    // spawn-instant samples and are deliberately not remembered.
+    history.record(
+        "anyhow/0123456789abcdef",
+        10 * 1024 * 1024,
+        42 * 1024 * 1024,
+    );
     let command = args(&["--crate-name", "anyhow", "-C", "metadata=0123456789abcdef"]);
 
     shadow_with_history(&log, true, &command, false, Some(&history));
@@ -312,5 +318,5 @@ async fn shadow_looks_up_the_units_history_by_unit_key() {
     let row: serde_json::Value =
         serde_json::from_str(std::fs::read_to_string(&log).expect("row").trim()).expect("json");
     assert_eq!(row["unit_key"], "anyhow/0123456789abcdef");
-    assert_eq!(row["history_tree_peak_bytes"], 42);
+    assert_eq!(row["history_tree_peak_bytes"], 42 * 1024 * 1024);
 }
