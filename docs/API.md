@@ -217,6 +217,37 @@ config settings are also applied to delegated builds. For example,
 profile; without an explicit setting, the fast local `dev` policy remains in
 effect.
 
+#### Bundling Cargo bins into a PyO3 wheel (soldr#3239)
+
+maturin builds one artifact kind per wheel — a PyO3 extension or a
+`bindings = "bin"` executable — so a project that needs both declares its
+extra bins instead of writing a delegate:
+
+```toml
+[tool.soldr.pep517]
+bundle-bins = [
+  { bin = "mytool", package = "mytool" },
+  { bin = "helper", dest = "platlib/mypkg/_bin" },
+]
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `bin` | yes | Cargo `[[bin]]` target name (`--bin`). |
+| `package` | no | Cargo package that owns the bin (`--package`). |
+| `dest` | no | `<scheme>[/<subdir>]`; scheme is `scripts` (default), `platlib`, `purelib`, `data`, or `headers`. |
+
+After maturin writes the wheel (or editable wheel), each entry runs
+`soldr build --bin <bin> --message-format=json-render-diagnostics` with the
+backend's prepared environment, the `[tool.maturin] manifest-path`, the PEP
+`--target`, and the profile maturin used (maturin's own default is `--release`
+for wheels and `dev` for editables). Host builds also receive
+`PYO3_PYTHON=<frontend interpreter>` unless the caller set it. The executable
+Cargo reports is added with mode `0755` at its scheme path and `RECORD` is
+regenerated; a path that already exists in the wheel is refused. Shared
+libraries the bin links are not repaired. Combining `bundle-bins` with
+`delegate-backend` is an error.
+
 For local PEP 517 wheel and editable builds, the backend defaults to Cargo's
 `dev` profile and sets `opt-level = 0`, `codegen-units = 256`,
 `debug = "line-tables-only"`, `lto = false`, and `incremental = true` for

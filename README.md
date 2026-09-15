@@ -433,6 +433,26 @@ The same explicit profile settings work for delegates as for maturin; for
 example, `pip install . --config-settings profile=release` selects the
 release profile, while an ordinary install uses the fast local `dev` profile.
 
+A maturin project that ships a PyO3 extension **and** a Cargo `[[bin]]` in
+one wheel does not need a delegate. maturin packages only one artifact kind
+per wheel, so list the extra bins and soldr builds and stages them after the
+extension:
+
+```toml
+[tool.soldr.pep517]
+bundle-bins = [
+  { bin = "mytool", package = "mytool" },            # -> scripts, on PATH
+  { bin = "helper", dest = "platlib/mypkg/_bin" },   # -> site-packages/mypkg/_bin/
+]
+```
+
+Each bin is built with `soldr build` under the same target, profile, and cache
+environment as the extension, then added to the wheel with a regenerated
+`RECORD`. `dest` is `<scheme>[/<subdir>]` with scheme `scripts` (default),
+`platlib`, `purelib`, `data`, or `headers`. soldr does not repair a bundled
+bin's shared-library dependencies, so link it statically or give it an rpath.
+`bundle-bins` cannot be combined with `delegate-backend`.
+
 The backend also asks soldr to try its fastest supported linker locally. If
 that linker fails with a linker-availability error, soldr retries once with
 the platform linker and remembers the successful fallback in its cache. An
