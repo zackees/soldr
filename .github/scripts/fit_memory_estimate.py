@@ -37,6 +37,14 @@ WHAT IT REPORTS
     * `unjoined`: no journal row at all for the digest.
     * `under_predicted` and `worst_under_predictions`: rows whose measured
       peak exceeds the estimate, ranked by measured/estimate.
+    * `measured_source`: `tree` when any joined measurement used zccache
+      1.13.24's `tree_peak_rss_bytes` (compiler plus live descendants, so a
+      linker grandchild counts), otherwise `child` (the compiler alone).
+    * `history`: schema-3 rows score the per-unit history estimator
+      (soldr#3152 step 4) the same way: `joined` units had a remembered
+      `history_tree_peak_bytes`, `without_history` were first sightings, and
+      `under_predicted` / `max_measured_over_history` measure how far the
+      remembered peak fell short of the compile's measured peak.
 """
 
 from __future__ import annotations
@@ -121,37 +129,50 @@ def _merge_peak(peaks: dict[str, int | None], key: str, peak: object) -> None:
         peaks.setdefault(key, None)
 
 
-def measured_peaks(journals: Iterable[Path]) -> dict[str, int | None]:
-    """Largest measured peak per join key; None when never measured.
+def _journal_peaks(
+    journals: Iterable[Path],
+) -> tuple[dict[str, int | None], dict[str, int | None]]:
+    """(child peaks, tree peaks) per join key; None when never measured.
 
     Each journal row is indexed under both its `args_digest` and, when cargo
-    supplied one, its `unit_key`, so schema-1 and schema-2 estimate rows can
-    both be joined from the same map.
+    supplied one, its `unit_key`, so every estimate schema joins from the same
+    maps.
     """
-    peaks: dict[str, int | None] = {}
+    child: dict[str, int | None] = {}
+    tree: dict[str, int | None] = {}
     for journal in journals:
         for row in _read_jsonl(journal):
             args = row.get("args")
             if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
                 continue
-            peak = row.get("child_peak_rss_bytes")
-            _merge_peak(peaks, args_digest(args), peak)
+            keys = [args_digest(args)]
             key = unit_key(args)
             if key is not None:
-                _merge_peak(peaks, key, peak)
-    return peaks
+                keys.append(key)
+            for join_key in keys:
+                _merge_peak(child, join_key, row.get("child_peak_rss_bytes"))
+                _merge_peak(tree, join_key, row.get("tree_peak_rss_bytes"))
+    return child, tree
+
+
+def measured_peaks(journals: Iterable[Path]) -> dict[str, int | None]:
+    """Largest measured compiler-child peak per join key (schema-1/2 view)."""
+    return _journal_peaks(journals)[0]
 
 
 def analyze(
     estimate_logs: Iterable[Path], journal_paths: Iterable[Path], top: int = 10
 ) -> dict[str, Any]:
     """Join estimates to measured peaks and summarise prediction error."""
-    peaks = measured_peaks(discover_journals(journal_paths))
+    child_peaks, tree_peaks = _journal_peaks(discover_journals(journal_paths))
     estimates = 0
     joined = 0
     unmeasured = 0
     unjoined = 0
+    used_tree = False
     pairs: list[dict[str, Any]] = []
+    history_pairs: list[tuple[int, int]] = []
+    without_history = 0
     for log in estimate_logs:
         for row in _read_jsonl(log):
             estimate = row.get("estimate_bytes")
@@ -159,14 +180,22 @@ def analyze(
             if not isinstance(estimate, int) or not isinstance(key, str):
                 continue
             estimates += 1
-            if key not in peaks:
+            if key not in child_peaks:
                 unjoined += 1
                 continue
-            measured = peaks[key]
+            tree = tree_peaks.get(key)
+            measured = tree if tree is not None else child_peaks[key]
             if measured is None:
                 unmeasured += 1
                 continue
+            used_tree = used_tree or tree is not None
             joined += 1
+            if row.get("schema_version", 1) >= 3:
+                history = row.get("history_tree_peak_bytes")
+                if isinstance(history, int) and history > 0:
+                    history_pairs.append((history, measured))
+                else:
+                    without_history += 1
             pairs.append(
                 {
                     "crate_name": row.get("crate_name"),
@@ -182,14 +211,26 @@ def analyze(
     under = [p for p in pairs if p["measured_bytes"] > p["estimate_bytes"]]
     under.sort(key=lambda p: p["measured_over_estimate"] or 0.0, reverse=True)
     ratios = [p["measured_over_estimate"] for p in pairs if p["measured_over_estimate"]]
+    history_ratios = [measured / history for history, measured in history_pairs]
     return {
         "estimates": estimates,
         "joined": joined,
         "unmeasured": unmeasured,
         "unjoined": unjoined,
+        "measured_source": "tree" if used_tree else "child",
         "under_predicted": len(under),
         "max_measured_over_estimate": max(ratios) if ratios else None,
         "worst_under_predictions": under[:top],
+        "history": {
+            "joined": len(history_pairs),
+            "without_history": without_history,
+            "under_predicted": sum(
+                1 for history, measured in history_pairs if measured > history
+            ),
+            "max_measured_over_history": (
+                max(history_ratios) if history_ratios else None
+            ),
+        },
     }
 
 
@@ -199,9 +240,17 @@ def _format_text(report: dict[str, Any]) -> str:
         f"joined (measured peak): {report['joined']}",
         f"unmeasured (no peak on any matching journal row): {report['unmeasured']}",
         f"unjoined (no matching journal row): {report['unjoined']}",
+        f"measured source: {report['measured_source']}",
         f"under-predicted: {report['under_predicted']}",
         f"max measured/estimate: {report['max_measured_over_estimate']}",
     ]
+    history = report["history"]
+    lines.append(
+        f"history: joined {history['joined']}, first sightings "
+        f"{history['without_history']}, under-predicted "
+        f"{history['under_predicted']}, max measured/history "
+        f"{history['max_measured_over_history']}"
+    )
     for pair in report["worst_under_predictions"]:
         lines.append(
             f"  {pair['crate_name']}: measured {pair['measured_bytes']} > "
