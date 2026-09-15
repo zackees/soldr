@@ -22,6 +22,7 @@ acquisition itself.
 import codecs
 import hashlib
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -189,6 +190,11 @@ def _delegate_backend() -> object | None:
     name = _delegate_backend_name()
     if not name:
         return None
+    if _project_bundle_bins():
+        raise RuntimeError(
+            "soldr PEP 517 bundle-bins is applied by soldr's native maturin build; "
+            "remove delegate-backend or stage the bins inside the delegate"
+        )
     module_name, separator, attribute = name.partition(":")
     if module_name == "soldr" or module_name.startswith("soldr."):
         raise RuntimeError(
@@ -1714,6 +1720,86 @@ def _target_args(config_settings: Optional[dict]) -> "list[str]":
     return []
 
 
+def _bundle_bins_module() -> Any:
+    """Load the sibling bundle-bins helper (soldr#3239).
+
+    Tests load this file standalone, outside the ``soldr`` package, where a
+    relative import cannot resolve, so fall back to loading it by path.
+    """
+    if __package__:
+        return importlib.import_module(f"{__package__}._bundle_bins")
+    name = "_soldr_bundle_bins"
+    module = sys.modules.get(name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).with_name("_bundle_bins.py")
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError("cannot load soldr's _bundle_bins helper")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return module
+
+
+def _project_bundle_bins() -> "list[Any]":
+    return _bundle_bins_module().read_bundle_bins(_project_root() / "pyproject.toml")
+
+
+def _bundle_bin_profile_args(
+    config_settings: Optional[dict], *, editable: bool
+) -> "list[str]":
+    """Pick the Cargo profile maturin used, so the bin matches the extension."""
+    selected = _profile_args(config_settings, editable=editable)
+    if selected:
+        return selected
+    options = _project_maturin_options()
+    configured = options.get(
+        "editable-profile" if editable else "profile"
+    ) or options.get("profile")
+    if configured:
+        return ["--profile", configured]
+    # maturin's own default: release wheels, dev editables.
+    return [] if editable else ["--release"]
+
+
+def _stage_bundle_bins(
+    wheel_directory: str,
+    filename: str,
+    config_settings: Optional[dict],
+    *,
+    editable: bool,
+) -> str:
+    """Build `[tool.soldr.pep517] bundle-bins` and stage them into the wheel."""
+    helper = _bundle_bins_module()
+    entries = _project_bundle_bins()
+    if not entries:
+        return filename
+    env = _prep_env(config_settings, editable=editable)
+    target_args = _target_args(config_settings)
+    if not target_args:
+        # Same interpreter maturin was given, so PyO3's build script resolves
+        # an identical configuration and Cargo reuses the extension's units.
+        env.setdefault("PYO3_PYTHON", sys.executable)
+    manifest = _project_maturin_options().get("manifest-path")
+    manifest_path = _project_root() / manifest if manifest else None
+    profile_args = _bundle_bin_profile_args(config_settings, editable=editable)
+
+    def build(entry: Any) -> Path:
+        command = helper.cargo_build_command(
+            entry,
+            manifest_path=manifest_path,
+            profile_args=profile_args,
+            target_args=target_args,
+        )
+        with _hold_build_lease(env):
+            return helper.build_bundle_bin(entry, command, env)
+
+    added = helper.bundle_into_wheel(Path(wheel_directory, filename), entries, build)
+    print(f"soldr PEP 517: bundled {', '.join(added)}", file=sys.stderr)
+    return filename
+
+
 def _newest_entry(directory: str, suffix: str, *, want_dir: bool) -> str:
     entries = []
     for name in os.listdir(directory):
@@ -1856,7 +1942,12 @@ def build_wheel(
         wheel_directory,
         config_settings,
         metadata_directory,
-        _newest_entry(wheel_directory, ".whl", want_dir=False),
+        _stage_bundle_bins(
+            wheel_directory,
+            _newest_entry(wheel_directory, ".whl", want_dir=False),
+            config_settings,
+            editable=False,
+        ),
     )
 
 
@@ -1905,7 +1996,12 @@ def build_editable(
         wheel_directory,
         config_settings,
         metadata_directory,
-        _newest_entry(wheel_directory, ".whl", want_dir=False),
+        _stage_bundle_bins(
+            wheel_directory,
+            _newest_entry(wheel_directory, ".whl", want_dir=False),
+            config_settings,
+            editable=True,
+        ),
     )
 
 
