@@ -283,6 +283,12 @@ impl RouteOwnership {
     pub(crate) fn len(&self) -> usize {
         self.routes.len()
     }
+
+    /// Every tracked route, live or draining. The daemon-disk sweep treats
+    /// all of them as in use (soldr#3251).
+    pub(crate) fn service_names(&self) -> impl Iterator<Item = &str> {
+        self.routes.keys().map(String::as_str)
+    }
 }
 
 /// Resolve `pid` into a [`RequesterKey`] right now.
@@ -409,28 +415,52 @@ pub(crate) async fn run_route_reaper(
     shutdown: Arc<crate::daemon::shutdown_signal::ShutdownSignal>,
 ) {
     let grace = DEFAULT_GRACE;
+    // soldr#3251: daemon-disk reclamation shares this loop at its own slower
+    // cadence. Starting from `None` runs the first pass on the first tick.
+    let mut last_disk_sweep: Option<Instant> = None;
     loop {
         tokio::select! {
             () = shutdown.wait() => return,
             _ = tokio::time::sleep(REAP_SWEEP_INTERVAL) => {}
         }
+        let disk_sweep_due = last_disk_sweep.is_none_or(|last| {
+            last.elapsed() >= crate::broker_daemon_disk::DAEMON_DISK_SWEEP_INTERVAL
+        });
+        if disk_sweep_due {
+            last_disk_sweep = Some(Instant::now());
+        }
         // The sweep signals other processes, so keep it off the async worker.
         let sweep_owners = Arc::clone(&route_owners);
         let sweep_registry = Arc::clone(&registry);
-        let (reaped, removed_images) = tokio::task::spawn_blocking(move || {
+        let (reaped, removed_images, disk) = tokio::task::spawn_blocking(move || {
             let reaped = reap_orphaned_routes(&sweep_owners, &sweep_registry, grace);
             // soldr#3164: reclaim daemon images no route has run for the
             // stale window. Each route rescans at most once a day.
             let removed = crate::self_relocate::sweep_route_runtime_copies(
                 &crate::broker_launcher::routes_root(),
             );
-            (reaped, removed)
+            // soldr#3251: reclaim whole routes, and their registrations, for
+            // daemon generations that are neither live nor recently used.
+            let disk = disk_sweep_due.then(|| {
+                crate::broker_daemon_disk::sweep_broker_daemon_disk(&sweep_owners, &sweep_registry)
+            });
+            (reaped, removed, disk)
         })
         .await
         .unwrap_or_default();
         if removed_images > 0 {
             println!(
                 "soldr broker: removed {removed_images} stale daemon image(s) from route runtimes"
+            );
+        }
+        if let Some(disk) = disk.filter(|report| !report.is_empty()) {
+            println!(
+                "soldr broker: reclaimed {} idle daemon route(s) ({} MiB) and {} stale \
+                 registration(s); {} removal(s) failed and will be retried",
+                disk.routes_removed,
+                disk.bytes_reclaimed / (1024 * 1024),
+                disk.registrations_removed,
+                disk.failed
             );
         }
         for service_name in reaped {
