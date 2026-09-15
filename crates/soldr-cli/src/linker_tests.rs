@@ -48,6 +48,7 @@ fn parses_known_values_case_insensitively() {
         LinkerChoice::from_str("RUST-LLD").unwrap(),
         LinkerChoice::RustLld
     );
+    assert_eq!(LinkerChoice::from_str("reld").unwrap(), LinkerChoice::Reld);
     assert_eq!(LinkerChoice::from_str("fast").unwrap(), LinkerChoice::Fast);
 }
 
@@ -148,6 +149,18 @@ fn rust_lld_on_msvc_uses_rust_lld_directly() {
     let i = resolve_for_target_with_probe(LinkerChoice::RustLld, WIN_MSVC, &always_false).unwrap();
     assert_eq!(i.linker.as_deref(), Some("rust-lld"));
     assert!(i.rustflags.is_none());
+}
+
+#[test]
+fn reld_injects_reld_linker_on_every_target() {
+    // reld is a drop-in linker with a native ELF backend (Linux) plus an
+    // lld bridge for COFF/Mach-O, so it is injected directly on `PATH` with
+    // no `-fuse-ld` for every supported target kind.
+    for triple in [LINUX, LINUX_MUSL, MAC_X64, MAC_ARM, WIN_MSVC, WIN_GNU] {
+        let i = resolve_for_target_with_probe(LinkerChoice::Reld, triple, &always_false).unwrap();
+        assert_eq!(i.linker.as_deref(), Some("reld"), "{triple}");
+        assert!(i.rustflags.is_none(), "{triple}");
+    }
 }
 
 #[test]
