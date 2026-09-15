@@ -19,6 +19,9 @@ use zccache::embedded::{
 pub(crate) struct ResidentCompileAdmission {
     capacity: Arc<Semaphore>,
     max: usize,
+    /// soldr#3152 shadow mode: where each admitted Rust compile's estimated
+    /// peak memory is logged. `None` disables the log.
+    estimate_log: Option<std::path::PathBuf>,
 }
 
 impl ResidentCompileAdmission {
@@ -27,7 +30,16 @@ impl ResidentCompileAdmission {
         Self {
             capacity: Arc::new(Semaphore::new(max)),
             max,
+            estimate_log: None,
         }
+    }
+
+    /// Log a shadow-mode memory estimate for every compile this classifies
+    /// (soldr#3152). Admission decisions are unchanged.
+    #[must_use]
+    pub(crate) fn with_estimate_log(mut self, log: std::path::PathBuf) -> Self {
+        self.estimate_log = Some(log);
+        self
     }
 
     async fn acquire_compiler(&self) -> Result<OwnedSemaphorePermit, HostAdmissionError> {
@@ -69,7 +81,17 @@ impl HostAdmissionClassifier for ResidentCompileAdmission {
         &self,
         request: &HostCompilerRequest<'_>,
     ) -> Result<bool, HostAdmissionError> {
-        crate::amalgamation::SoldrHostAdmissionClassifier.requires_exclusive(request)
+        let exclusive =
+            crate::amalgamation::SoldrHostAdmissionClassifier.requires_exclusive(request)?;
+        if let Some(log) = &self.estimate_log {
+            crate::memory_estimate::shadow(
+                log,
+                request.family() == zccache::compiler::CompilerFamily::Rustc,
+                request.args(),
+                exclusive,
+            );
+        }
+        Ok(exclusive)
     }
 
     fn acquire<'a>(

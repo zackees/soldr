@@ -245,7 +245,8 @@ impl SoldrZccacheService {
         // a real compiler child. Keeping no Soldr-side gate here ensures an
         // eligible cache hit never drains ordinary compiler work.
         let compile_admission = Arc::new(
-            crate::resident_compile_admission::ResidentCompileAdmission::new(resolved_jobs.jobs),
+            crate::resident_compile_admission::ResidentCompileAdmission::new(resolved_jobs.jobs)
+                .with_estimate_log(crate::memory_estimate::estimate_log_path(paths)),
         );
         let host_admission: Arc<dyn zccache::embedded::HostAdmissionClassifier> =
             compile_admission.clone();
