@@ -151,7 +151,7 @@ fn record_appends_one_parseable_row_per_admission_decision() {
         .collect();
     assert_eq!(rows.len(), 2);
     let row = &rows[0];
-    assert_eq!(row["schema_version"], 1);
+    assert_eq!(row["schema_version"], 2);
     assert_eq!(row["crate_name"], "broker");
     assert_eq!(row["args_digest"], args_digest(&command));
     assert_eq!(row["is_test"], true);
@@ -203,4 +203,49 @@ fn the_args_digest_matches_the_offline_fitter() {
         args_digest(&args(&["--crate-name", "unit"])),
         "24bd102264f931a80336bf1378360965954b9c77d2ab1576c44cebda09e61176"
     );
+}
+
+/// soldr#3152: the first CI data joined only 92 of 1,235 estimates by
+/// `args_digest`, because zccache hands admission a different argument vector
+/// than the one it journals. Cargo's `-C metadata=` is unique per unit and
+/// survives in both, so it keys the join.
+#[test]
+fn the_unit_key_is_crate_name_and_cargo_metadata() {
+    let both_spellings = [
+        args(&[
+            "--crate-name",
+            "thiserror",
+            "-C",
+            "metadata=a811629650414cac",
+        ]),
+        args(&["--crate-name=thiserror", "-Cmetadata=a811629650414cac"]),
+    ];
+    for command in &both_spellings {
+        assert_eq!(
+            unit_key(command).as_deref(),
+            Some("thiserror/a811629650414cac")
+        );
+    }
+    // Without cargo's metadata there is no stable unit identity to join on.
+    assert_eq!(unit_key(&args(&["--crate-name", "thiserror"])), None);
+    assert_eq!(unit_key(&args(&["-C", "metadata=a811629650414cac"])), None);
+}
+
+#[test]
+fn schema_two_rows_carry_the_unit_key() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log = temp.path().join("admission-estimate.jsonl");
+    let command = args(&["--crate-name", "anyhow", "-C", "metadata=0123456789abcdef"]);
+    let features = features_with(&command, no_sizes);
+    record(
+        &log,
+        &command,
+        &features,
+        estimate_peak_bytes(&features),
+        false,
+    );
+    let row: serde_json::Value =
+        serde_json::from_str(std::fs::read_to_string(&log).expect("row").trim()).expect("json");
+    assert_eq!(row["schema_version"], 2);
+    assert_eq!(row["unit_key"], "anyhow/0123456789abcdef");
 }

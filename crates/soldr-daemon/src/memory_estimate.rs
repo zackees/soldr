@@ -10,9 +10,15 @@
 //! zccache is about to admit, it computes the estimate and appends one row to
 //! `admission-estimate.jsonl`. Admission itself does not read the estimate.
 //! zccache 1.13.23 journals each compile's measured `child_peak_rss_bytes`,
-//! and [`args_digest`] is the join key between the two files, so the
+//! and [`unit_key`] is the join key between the two files, so the
 //! coefficients below can be fitted and under-prediction measured before any
 //! semaphore spends them.
+//!
+//! The key is not a hash of the whole command line. zccache hands admission
+//! the argument vector it is about to execute, which it may have rewritten, but
+//! journals the client's original arguments; the first CI data joined only 92
+//! of 1,235 estimates on [`args_digest`]. Cargo's `-C metadata=` is unique per
+//! unit and survives in both, so `<crate name>/<metadata>` pairs them.
 //!
 //! The coefficients are **uncalibrated placeholders**. They are deliberately
 //! monotone in every feature: fitting may change their magnitude, but more
@@ -30,7 +36,7 @@ use crate::core::SoldrPaths;
 
 /// Bumped on any field removal or meaning change so offline readers can refuse
 /// rows they cannot parse.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 const MIB: u64 = 1024 * 1024;
 
@@ -219,6 +225,23 @@ pub(crate) fn args_digest(args: &[String]) -> String {
     out
 }
 
+/// `<crate name>/<cargo -C metadata>`: the unit identity that survives zccache
+/// rewriting the argument vector between admission and the journal. `None` when
+/// either part is missing (a non-cargo invocation has no stable identity).
+pub(crate) fn unit_key(args: &[String]) -> Option<String> {
+    let name = crate::amalgamation::rust_crate_name(args)?;
+    let mut metadata = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(value) = flag_value(arg, "-C", &mut iter) {
+            if let Some(hash) = value.strip_prefix("metadata=") {
+                metadata = Some(hash);
+            }
+        }
+    }
+    Some(format!("{name}/{}", metadata?))
+}
+
 /// Append-only JSONL of shadow estimates, beside the daemon's other logs.
 #[must_use]
 pub(crate) fn estimate_log_path(paths: &SoldrPaths) -> PathBuf {
@@ -233,6 +256,8 @@ struct Row<'a> {
     ts_ms: i64,
     pid: u32,
     args_digest: String,
+    /// Join key against the compile journal; see [`unit_key`].
+    unit_key: Option<String>,
     crate_name: Option<&'a str>,
     is_test: bool,
     emit_metadata_only: bool,
@@ -265,6 +290,7 @@ pub(crate) fn record(
         ts_ms,
         pid: std::process::id(),
         args_digest: args_digest(args),
+        unit_key: unit_key(args),
         crate_name: features.crate_name.as_deref(),
         is_test: features.is_test,
         emit_metadata_only: features.emit_metadata_only,

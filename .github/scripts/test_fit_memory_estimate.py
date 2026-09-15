@@ -56,6 +56,35 @@ class ArgsDigestTests(unittest.TestCase):
         self.assertNotEqual(fit.args_digest(["ab", "c"]), fit.args_digest(["a", "bc"]))
 
 
+class UnitKeyTests(unittest.TestCase):
+    def test_matches_the_daemon_unit_key_for_both_spellings(self) -> None:
+        for args in (
+            ["--crate-name", "thiserror", "-C", "metadata=a811629650414cac"],
+            ["--crate-name=thiserror", "-Cmetadata=a811629650414cac"],
+        ):
+            self.assertEqual(fit.unit_key(args), "thiserror/a811629650414cac")
+        self.assertIsNone(fit.unit_key(["--crate-name", "thiserror"]))
+
+    def test_unit_key_joins_when_admission_saw_rewritten_args(self) -> None:
+        # zccache journals the client's args but admits a rewritten vector, so
+        # the digests differ. The unit key must still pair them.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            journaled = ["--crate-name", "anyhow", "-C", "metadata=0123456789abcdef"]
+            admitted = [*journaled, "--remap-path-prefix", "/w=."]
+            row = _estimate(admitted, 100, crate_name="anyhow")
+            row["schema_version"] = 2
+            row["unit_key"] = "anyhow/0123456789abcdef"
+            _write_jsonl(root / "admission-estimate.jsonl", [row])
+            _write_jsonl(
+                root / "compile_journal.jsonl", [_journal(journaled, "miss", 400)]
+            )
+            report = fit.analyze([root / "admission-estimate.jsonl"], [root])
+            self.assertEqual(report["joined"], 1)
+            self.assertEqual(report["unjoined"], 0)
+            self.assertEqual(report["under_predicted"], 1)
+
+
 class JoinTests(unittest.TestCase):
     def setUp(self) -> None:
         self._stack = contextlib.ExitStack()
