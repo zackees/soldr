@@ -70,3 +70,53 @@ fn rows_are_tagged_prost_and_untagged_bytes_are_refused() {
         "an untagged row must be refused"
     );
 }
+
+#[test]
+fn load_all_reads_every_recorded_unit() {
+    let db = open_state_db_in_memory().expect("in-memory state db");
+    record_in(&db, "a/1", 1, 2, 10).expect("a");
+    record_in(&db, "b/2", 3, 4, 20).expect("b");
+    let mut all = load_all_in(&db).expect("load all");
+    all.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].0, "a/1");
+    assert_eq!(all[0].1.tree_peak_rss_bytes, 2);
+    assert_eq!(all[1].0, "b/2");
+    assert_eq!(all[1].1.peak_rss_bytes, 3);
+}
+
+#[tokio::test]
+async fn the_recorder_answers_lookups_immediately_and_persists_on_flush() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db_path = temp.path().join("state.sqlite3");
+
+    let history = UnitMemoryHistory::start(db_path.clone());
+    history.record("zccache/abcd", 90 * MIB, 1_356 * MIB);
+    // Admission reads the in-memory map, so a lookup must not wait for SQLite.
+    let unit = history
+        .lookup("zccache/abcd")
+        .expect("recorded unit visible at once");
+    assert_eq!(unit.tree_peak_rss_bytes, 1_356 * MIB);
+    history.flush().await.expect("flush");
+
+    // A fresh daemon generation warms its map from the table.
+    let restarted = UnitMemoryHistory::start(db_path);
+    restarted.ready().await.expect("warm load");
+    let unit = restarted
+        .lookup("zccache/abcd")
+        .expect("persisted across restart");
+    assert_eq!(unit.peak_rss_bytes, 90 * MIB);
+    assert_eq!(unit.tree_peak_rss_bytes, 1_356 * MIB);
+    assert_eq!(unit.samples, 1);
+}
+
+#[tokio::test]
+async fn an_all_zero_measurement_is_not_recorded() {
+    // A cache hit spawns no compiler, so zccache reports no memory. That is an
+    // absence of a measurement, not a zero-byte unit.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let history = UnitMemoryHistory::start(temp.path().join("state.sqlite3"));
+    history.record("hit/eeee", 0, 0);
+    history.flush().await.expect("flush");
+    assert!(history.lookup("hit/eeee").is_none());
+}
