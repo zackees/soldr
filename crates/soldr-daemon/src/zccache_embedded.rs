@@ -374,6 +374,16 @@ impl SoldrZccacheService {
         let zresp = Box::pin(self.inner.compile(zreq))
             .await
             .map_err(|e| EmbeddedServiceError::Compile(e.to_string()))?;
+        // soldr#3152 step 4: remember this unit's measured memory (zccache
+        // 1.13.24 reports it per compile). A cache hit spawned no compiler and
+        // reports nothing, which the history ignores.
+        if let Some(unit) = crate::memory_estimate::unit_key(&req.args) {
+            self.unit_history.record(
+                &unit,
+                zresp.child_memory.peak_rss_bytes.unwrap_or(0),
+                zresp.child_memory.tree_peak_rss_bytes.unwrap_or(0),
+            );
+        }
         let stderr = if zresp.cached {
             strip_internal_soldr_fallback_notices(zresp.stderr)
         } else {
