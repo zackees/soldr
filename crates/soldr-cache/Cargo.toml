@@ -27,7 +27,7 @@ tar = { workspace = true }
 tracing = { workspace = true }
 # soldr#2899: cache_lib only reads zccache's hashing, config, and embedded
 # service types, all of which are unconditional. No zccache feature is enabled.
-zccache = { version = "=1.13.22", default-features = false }
+zccache = { version = "=1.13.23", default-features = false }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }

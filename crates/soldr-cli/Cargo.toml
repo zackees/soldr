@@ -80,7 +80,7 @@ zstd = { workspace = true }
 # callback, so enabling `cli` would pull in a second command dispatcher,
 # a second daemon lifecycle, clap, tracing-subscriber, reqwest, and the
 # download-client archive stack for no reachable code path.
-zccache = { version = "=1.13.22", default-features = false, features = ["formatter"] }
+zccache = { version = "=1.13.23", default-features = false, features = ["formatter"] }
 
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
 # and detached spawn (setsid). On Windows the equivalent
