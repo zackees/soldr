@@ -333,6 +333,10 @@ jobs:
           # Keep in sync with `.github/scripts/index_build_logs.py`. The
           # non-`logs/` entries carry the archived compile journals and the
           # broker/daemon spawn + bringup logs.
+          # soldr#3152: `cache/soldr-daemon/logs/` carries the daemon's
+          # shadow-mode `admission-estimate.jsonl`, which
+          # `.github/scripts/fit_memory_estimate.py` joins to the compile
+          # journals in this same artifact.
           path: |
             ~/.soldr/logs/
             ~/.soldr-dev/logs/
@@ -348,4 +352,6 @@ jobs:
             ~/.soldr-dev/broker/*.log
             ~/.soldr/broker/*.jsonl
             ~/.soldr-dev/broker/*.jsonl
+            ~/.soldr/cache/soldr-daemon/logs/
+            ~/.soldr-dev/cache/soldr-daemon/logs/
             ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}/**/logs/

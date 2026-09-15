@@ -492,9 +492,9 @@ dependencies = [
 
 [[package]]
 name = "crash-handler"
-version = "0.6.3"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2066907075af649bcb8bcb1b9b986329b243677e6918b2d920aa64b0aac5ace3"
+checksum = "0df5c9639f4942eb7702b964b3f9adf03a55724a57558cc177407388a8b936e2"
 dependencies = [
  "cfg-if",
  "crash-context",
@@ -3207,6 +3207,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "typed-path"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3746,9 +3752,9 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.13.22"
+version = "1.13.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a25d00d777eb3d42b7f50081985b90e8764735c30d89aec3f2145748e510fcd"
+checksum = "2f81d6b80845cb817cbf81431b5ab3def4b8fa82b4c86a940b3231191d16762f"
 dependencies = [
  "arc-swap",
  "bincode",
@@ -3784,6 +3790,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "typed-path",
  "uuid",
  "windows-sys 0.61.2",
 ]

@@ -221,8 +221,13 @@ jobs:
           name: cook-size-gate-soldr-logs
           if-no-files-found: ignore
           # setup-soldr points SOLDR_CACHE_DIR here, not at ~/.soldr.
+          # soldr#3152: `cache/soldr-daemon/logs/` carries the daemon's
+          # shadow-mode `admission-estimate.jsonl`, which
+          # `.github/scripts/fit_memory_estimate.py` joins to the compile
+          # journals in this same artifact.
           path: |
             ${{ runner.temp }}/setup-soldr-soldr/logs/
             ${{ runner.temp }}/setup-soldr-soldr/cache/zccache/logs/
             ${{ runner.temp }}/setup-soldr-soldr/cache/zccache/history/**/*.json
             ${{ runner.temp }}/setup-soldr-soldr/cache/zccache/history/**/*.jsonl
+            ${{ runner.temp }}/setup-soldr-soldr/cache/soldr-daemon/logs/

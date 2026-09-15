@@ -481,6 +481,26 @@ def test_the_object_store_entry_excludes_the_compile_journals() -> None:
     assert "daemon-state" not in artifact
 
 
+def test_log_artifacts_carry_the_shadow_admission_estimates() -> None:
+    """soldr#3152: every lane that uploads compile journals also uploads the
+    daemon's `admission-estimate.jsonl`, so `fit_memory_estimate.py` can join
+    an estimate to its measured peak from one artifact."""
+    workflows = REPO_ROOT / ".github" / "workflows"
+    uploads = {
+        "_build-and-test.yml": "${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/soldr-daemon/logs/",
+        "_ci-cross-build-linux.yml": "~/.soldr/cache/soldr-daemon/logs/",
+        "_bootstrap-e2e.yml": "~/.soldr/cache/soldr-daemon/logs/",
+        "cook-size-gate.yml": "${{ runner.temp }}/setup-soldr-soldr/cache/soldr-daemon/logs/",
+    }
+    for name, daemon_logs in uploads.items():
+        text = (workflows / name).read_text(encoding="utf-8")
+        assert "cache/zccache/logs/" in text, name
+        path_blocks = [
+            line.strip() for line in text.splitlines() if line.strip() == daemon_logs
+        ]
+        assert path_blocks, f"{name} does not upload {daemon_logs}"
+
+
 def test_the_object_store_key_rotates_and_falls_back() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     body = _step_body(workflow, ZCCACHE_STORE)
