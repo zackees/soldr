@@ -19,10 +19,14 @@ WHAT IT READS
       from the compiler children that request spawned.
 
 JOIN KEY
-    `args_digest` = lower-case hex SHA-256 of every argument followed by one
-    NUL byte. The daemon computes it at admission; this script recomputes it
-    from the journal's `args`. Both sides pin the same test vector, so they
-    cannot drift silently.
+    `unit_key` = `<crate name>/<cargo -C metadata>`. zccache hands admission
+    the argument vector it executes, which it may have rewritten, but journals
+    the client's original arguments, so a hash of the whole command line does
+    not survive: the first CI data joined 92 of 1,235 estimates that way.
+    Cargo's per-unit metadata hash survives in both. Schema-1 rows, which have
+    no `unit_key`, fall back to `args_digest` (lower-case hex SHA-256 of every
+    argument followed by one NUL byte). Both keys pin the same test vectors in
+    Rust and Python, so neither side can drift silently.
 
 WHAT IT REPORTS
     * `joined`: estimates matched to a journal row that carries a measured
@@ -70,6 +74,32 @@ def _read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
                 yield row
 
 
+def unit_key(args: list[str]) -> str | None:
+    """`<crate name>/<cargo -C metadata>`, or None without both parts."""
+    name = None
+    metadata = None
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        value = None
+        if arg == "--crate-name" and index + 1 < len(args):
+            name = args[index + 1]
+            index += 1
+        elif arg.startswith("--crate-name="):
+            name = arg.split("=", 1)[1]
+        elif arg == "-C" and index + 1 < len(args):
+            value = args[index + 1]
+            index += 1
+        elif arg.startswith("-C") and len(arg) > 2:
+            value = arg[2:]
+        if value is not None and value.startswith("metadata="):
+            metadata = value.split("=", 1)[1]
+        index += 1
+    if name is None or metadata is None:
+        return None
+    return f"{name}/{metadata}"
+
+
 def discover_journals(paths: Iterable[Path]) -> list[Path]:
     """Journal files named directly, or found under directories."""
     found: set[Path] = set()
@@ -83,21 +113,32 @@ def discover_journals(paths: Iterable[Path]) -> list[Path]:
     return sorted(found)
 
 
+def _merge_peak(peaks: dict[str, int | None], key: str, peak: object) -> None:
+    current = peaks.get(key)
+    if isinstance(peak, int) and peak > 0:
+        peaks[key] = peak if current is None else max(current, peak)
+    else:
+        peaks.setdefault(key, None)
+
+
 def measured_peaks(journals: Iterable[Path]) -> dict[str, int | None]:
-    """Largest measured peak per args digest; None when never measured."""
+    """Largest measured peak per join key; None when never measured.
+
+    Each journal row is indexed under both its `args_digest` and, when cargo
+    supplied one, its `unit_key`, so schema-1 and schema-2 estimate rows can
+    both be joined from the same map.
+    """
     peaks: dict[str, int | None] = {}
     for journal in journals:
         for row in _read_jsonl(journal):
             args = row.get("args")
             if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
                 continue
-            digest = args_digest(args)
             peak = row.get("child_peak_rss_bytes")
-            current = peaks.get(digest)
-            if isinstance(peak, int) and peak > 0:
-                peaks[digest] = peak if current is None else max(current, peak)
-            else:
-                peaks.setdefault(digest, None)
+            _merge_peak(peaks, args_digest(args), peak)
+            key = unit_key(args)
+            if key is not None:
+                _merge_peak(peaks, key, peak)
     return peaks
 
 
@@ -114,14 +155,14 @@ def analyze(
     for log in estimate_logs:
         for row in _read_jsonl(log):
             estimate = row.get("estimate_bytes")
-            digest = row.get("args_digest")
-            if not isinstance(estimate, int) or not isinstance(digest, str):
+            key = row.get("unit_key") or row.get("args_digest")
+            if not isinstance(estimate, int) or not isinstance(key, str):
                 continue
             estimates += 1
-            if digest not in peaks:
+            if key not in peaks:
                 unjoined += 1
                 continue
-            measured = peaks[digest]
+            measured = peaks[key]
             if measured is None:
                 unmeasured += 1
                 continue
