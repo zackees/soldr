@@ -202,7 +202,7 @@ fn heavy_test_link_threshold() -> u64 {
         .unwrap_or(HEAVY_TEST_LINK_EXTERN_BYTES)
 }
 
-fn file_len(path: &Path) -> Option<u64> {
+pub(crate) fn file_len(path: &Path) -> Option<u64> {
     std::fs::metadata(path).ok().map(|meta| meta.len())
 }
 
@@ -225,7 +225,7 @@ fn extern_rlib_bytes(args: &[String], size_of: impl Fn(&Path) -> Option<u64>) ->
         .sum()
 }
 
-fn extern_values(args: &[String]) -> impl Iterator<Item = &str> {
+pub(crate) fn extern_values(args: &[String]) -> impl Iterator<Item = &str> {
     let mut out = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -240,7 +240,7 @@ fn extern_values(args: &[String]) -> impl Iterator<Item = &str> {
     out.into_iter()
 }
 
-fn rust_crate_name(args: &[String]) -> Option<&str> {
+pub(crate) fn rust_crate_name(args: &[String]) -> Option<&str> {
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg == "--crate-name" {
