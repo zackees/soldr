@@ -235,6 +235,16 @@ fn write_service_definition_v2_atomic(
         service_definition_path_v2(root, &definition.service_name).map_err(servicedef_io_error)?;
     let bytes = definition.encode_to_vec();
     if std::fs::read(&path).is_ok_and(|existing| existing == bytes) {
+        // soldr#3251: an unchanged re-registration still renews it. The broker
+        // reclaims registrations nobody has renewed within its protection
+        // window, so a front door re-registering a daemon right before asking
+        // for it must not look abandoned. Best effort: an unrenewable
+        // registration can only be reclaimed early, and the next
+        // re-registration writes it back.
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.set_modified(std::time::SystemTime::now()));
         return Ok(path);
     }
     let temp = root.join(format!(
@@ -337,6 +347,42 @@ mod tests {
             .load(&installed.definition.service_name)
             .expect("load service definition");
         assert_eq!(loaded, installed.definition);
+    }
+
+    /// soldr#3251: the broker reclaims registrations nobody has renewed within
+    /// its protection window, so re-registering an unchanged definition, which
+    /// skips the write, must still renew the registration's time.
+    #[test]
+    fn an_unchanged_reregistration_renews_the_registration_time() {
+        let temp = TempDir::new().expect("tempdir");
+        let service_root = temp.path().join("services");
+        let binary = fake_daemon_binary(temp.path());
+        let definition = ServiceDefinitionBuilder::shared_broker(
+            "soldr-daemon-renewal",
+            binary.display().to_string(),
+        )
+        .build();
+        let path = write_service_definition_v2_atomic(&service_root, &definition).expect("write");
+        let aged = filetime::FileTime::from_unix_time(1_000_000_000, 0);
+        filetime::set_file_mtime(&path, aged).expect("age the registration");
+        let bytes_before = std::fs::read(&path).expect("read registration");
+
+        let renewed =
+            write_service_definition_v2_atomic(&service_root, &definition).expect("re-register");
+
+        assert_eq!(renewed, path);
+        assert_eq!(
+            std::fs::read(&path).expect("read registration"),
+            bytes_before,
+            "an unchanged re-registration must not rewrite the definition"
+        );
+        let modified = filetime::FileTime::from_last_modification_time(
+            &std::fs::metadata(&path).expect("registration metadata"),
+        );
+        assert!(
+            modified > aged,
+            "an unchanged re-registration must renew the registration time"
+        );
     }
 
     /// soldr#3172: a broker loading the definition while a front door

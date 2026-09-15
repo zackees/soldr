@@ -540,6 +540,27 @@ fn route_sweep_leaves_non_route_entries_untouched() {
     assert_eq!(absent.removed_dirs, 0);
 }
 
+// soldr#3251: the broker's daemon-disk sweep ages a whole route by its newest
+// image ledger, read through the same layout the runtime sweep uses.
+#[test]
+fn route_image_last_used_is_the_newest_ledger_in_the_route() {
+    let temp = TempDir::new().expect("tempdir");
+    let routes = temp.path().join("routes");
+    seed_route_copy(&routes, "soldr-daemon-a", "v0.9.11", 10);
+    seed_route_copy(&routes, "soldr-daemon-a", "v0.9.14", 95);
+    fs::create_dir_all(routes.join("soldr-daemon-empty")).expect("route without images");
+
+    assert_eq!(
+        route_image_last_used(&routes.join("soldr-daemon-a")),
+        Some(95)
+    );
+    assert_eq!(
+        route_image_last_used(&routes.join("soldr-daemon-empty")),
+        None
+    );
+    assert_eq!(route_image_last_used(&routes.join("absent")), None);
+}
+
 // soldr#3164: a long-running daemon keeps its own image out of the sweep.
 #[test]
 fn running_image_ledger_is_refreshed_only_where_one_exists() {

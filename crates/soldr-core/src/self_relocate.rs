@@ -454,6 +454,20 @@ fn sweep_route_runtime_copies_at(
     total
 }
 
+/// Newest `last-used` ledger stamp, in Unix seconds, among the daemon images
+/// staged in one broker route, or `None` when no image carries one.
+///
+/// The broker's daemon-disk sweep (soldr#3251) ages whole routes by this, and
+/// reads it through here so the route layout and ledger format stay defined in
+/// one place.
+pub fn route_image_last_used(route: &Path) -> Option<u64> {
+    fs::read_dir(route.join(RUNTIME_DIR).join(DAEMON_DIR))
+        .ok()?
+        .flatten()
+        .filter_map(|entry| runtime_copy_last_used(&entry.path()))
+        .max()
+}
+
 /// Re-stamp the `last-used` ledger beside a running daemon's own image.
 ///
 /// The ledger is written when an image is placed. A daemon that stays up for
