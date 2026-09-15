@@ -135,7 +135,20 @@ pub struct LegacyCacheSweepReport {
     pub removed: usize,
     pub failed: usize,
     pub bytes_reclaimed: u64,
+    /// Retired stores left in place because a running service still holds
+    /// their writer lock (soldr#3251). Not a failure: they are reclaimed once
+    /// that service exits.
+    pub live_retained: usize,
 }
+
+/// zccache's cache-root writer lock, `CACHE_ROOT_WRITER_LOCK_FILE` in zccache's
+/// `daemon_core::daemon::server::state`, which zccache does not export.
+///
+/// A running embedded service holds it exclusively on its version root for its
+/// whole life, so a held lock proves a store is live (soldr#3251). The
+/// maintenance tests check this name against a real running service, so a
+/// rename upstream fails loudly instead of silently disarming the check.
+pub const ZCCACHE_WRITER_LOCK_FILE: &str = ".writer.lock";
 
 /// Errors raised while starting or stopping the embedded service. Wrap
 /// the upstream `EmbeddedError` into a plain string so soldr crates

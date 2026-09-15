@@ -229,15 +229,61 @@ pub fn sweep_legacy_cache_roots(
             continue;
         }
         let bytes = crate::cache_lib::target_registry::directory_size(&path);
-        match std::fs::remove_dir_all(&path) {
-            Ok(()) => {
+        match remove_retired_store(&path) {
+            RetiredStoreRemoval::Removed => {
                 report.removed += 1;
                 report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(bytes);
             }
-            Err(_) => report.failed += 1,
+            RetiredStoreRemoval::Live => report.live_retained += 1,
+            RetiredStoreRemoval::Failed => report.failed += 1,
         }
     }
     report
+}
+
+enum RetiredStoreRemoval {
+    Removed,
+    Live,
+    Failed,
+}
+
+/// Remove one retired store unless a running service still owns it (soldr#3251).
+///
+/// The age gate alone cannot prove a store is dead: a long-idle service of an
+/// older zccache version can sit on a store whose files have not changed for
+/// days. The writer lock is the proof. It is held for the whole removal, so a
+/// service of that version cannot claim the store halfway through.
+fn remove_retired_store(path: &std::path::Path) -> RetiredStoreRemoval {
+    use fs2::FileExt;
+
+    let lock = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path.join(ZCCACHE_WRITER_LOCK_FILE))
+    {
+        Ok(file) => match file.try_lock_exclusive() {
+            Ok(()) => Some(file),
+            Err(error) if crate::cache_lib::cargo_lock::lock_is_held(&error) => {
+                return RetiredStoreRemoval::Live
+            }
+            Err(_) => return RetiredStoreRemoval::Failed,
+        },
+        // A store that never ran a service, or a layout from before the lock
+        // existed: nothing can own it.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return RetiredStoreRemoval::Failed,
+    };
+    if std::fs::remove_dir_all(path).is_ok() {
+        return RetiredStoreRemoval::Removed;
+    }
+    // Windows will not delete a file this process holds open, so the lock file
+    // itself blocks the removal above. Release the lock and retry once. The
+    // remaining window is the one zccache's own version pruning accepts.
+    drop(lock);
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => RetiredStoreRemoval::Removed,
+        Err(_) => RetiredStoreRemoval::Failed,
+    }
 }
 
 #[cfg(test)]
@@ -288,5 +334,35 @@ mod legacy_gc_tests {
         assert!(current.join("artifact").is_file());
         assert!(malformed.join("artifact").is_file());
         assert!(sibling_sentinel.is_file());
+    }
+
+    /// soldr#3251: a retired store whose writer lock is held belongs to a
+    /// running service, however old its files look.
+    #[test]
+    fn legacy_sweep_refuses_a_store_whose_writer_lock_is_held() {
+        use fs2::FileExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let owned = SoldrPaths::with_root(temp.path().join(".soldr"));
+        let retired = owned.cache.join("zccache/daemon-state/embedded-v1/v0.0.1");
+        std::fs::create_dir_all(&retired).unwrap();
+        std::fs::write(retired.join("artifact"), b"payload").unwrap();
+        let lock = std::fs::File::create(retired.join(ZCCACHE_WRITER_LOCK_FILE)).unwrap();
+        lock.try_lock_exclusive().unwrap();
+
+        let held = sweep_legacy_cache_roots(&owned, SystemTime::now(), std::time::Duration::ZERO);
+
+        assert_eq!(held.live_retained, 1, "{held:?}");
+        assert_eq!(held.removed, 0, "{held:?}");
+        assert_eq!(held.failed, 0, "a live store is not a failure: {held:?}");
+        assert!(retired.join("artifact").is_file());
+
+        drop(lock);
+        let released =
+            sweep_legacy_cache_roots(&owned, SystemTime::now(), std::time::Duration::ZERO);
+
+        assert_eq!(released.removed, 1, "{released:?}");
+        assert_eq!(released.live_retained, 0, "{released:?}");
+        assert!(!retired.exists());
     }
 }

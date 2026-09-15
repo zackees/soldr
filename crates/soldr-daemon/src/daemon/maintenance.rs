@@ -26,6 +26,10 @@ const FULL_STALE_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const STATUS_SCHEMA_VERSION: u32 = 2;
 const FULL_MARKER: &str = "last-full-v1";
 const FULL_ATTEMPT_MARKER: &str = "last-full-attempt-v1";
+/// How often a pass deferred by an active build still maintains the embedded
+/// store (soldr#3251). Each store pass scans the whole store, so it is throttled
+/// unless the store is already over its budget.
+const STORE_PASS_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone)]
 pub struct MaintenanceContext {
@@ -241,7 +245,14 @@ async fn run_once_with_lease_state(
     let _maintenance_lease =
         match crate::cache_lib::build_active::MaintenanceLease::try_acquire(&context.paths) {
             Ok(None) => {
+                // The build defers soldr's own destructive collectors, which
+                // need the exclusive root lease. The store pass does not
+                // (soldr#3251): on a host that is always building, deferring it
+                // too meant it never ran.
                 status.deferred_reason = Some("build_active".to_string());
+                if store_pass_due(read_status(&context.paths).as_ref(), now) {
+                    run_store_pass(context, kind, now, &mut status).await;
+                }
                 return RunOnceOutcome {
                     status,
                     lease_acquired: false,
@@ -257,17 +268,7 @@ async fn run_once_with_lease_state(
             Ok(Some(lease)) => lease,
         };
 
-    match context
-        .compile_service
-        .maintain_disk(kind == MaintenanceKind::Full)
-        .await
-    {
-        Ok(report) => {
-            status.zccache = Some(report);
-            status.zccache_measured_at_ms = Some(unix_millis(now));
-        }
-        Err(error) => status.zccache_error = Some(error.to_string()),
-    }
+    measure_store(context, kind == MaintenanceKind::Full, now, &mut status).await;
     let zccache_pressure = status
         .zccache
         .as_ref()
@@ -384,6 +385,123 @@ pub async fn run_manual_root(root: PathBuf) -> Result<MaintenanceStatus, String>
     Ok(status)
 }
 
+/// Run the embedded store's disk pass and record its report or error.
+async fn measure_store(
+    context: &MaintenanceContext,
+    full: bool,
+    now: SystemTime,
+    status: &mut MaintenanceStatus,
+) {
+    match context.compile_service.maintain_disk(full).await {
+        Ok(report) => {
+            status.zccache = Some(report);
+            status.zccache_measured_at_ms = Some(unix_millis(now));
+        }
+        Err(error) => status.zccache_error = Some(error.to_string()),
+    }
+}
+
+/// Whether a pass deferred by an active build should still run the store pass
+/// (soldr#3251).
+///
+/// Throttled to [`STORE_PASS_INTERVAL`] from the last measurement. The
+/// exception is a store the last measurement put at or over its budget: that
+/// runs every tick, because it is exactly the store a busy host lets grow.
+fn store_pass_due(previous: Option<&MaintenanceStatus>, now: SystemTime) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    let (Some(report), Some(measured_at)) =
+        (previous.zccache.as_ref(), previous.zccache_measured_at_ms)
+    else {
+        return true;
+    };
+    if report.usage_after_bytes >= report.budget_bytes {
+        return true;
+    }
+    unix_millis(now).saturating_sub(measured_at) >= STORE_PASS_INTERVAL.as_millis() as i64
+}
+
+/// The part of a pass that is safe while builds hold the root lease
+/// (soldr#3251).
+///
+/// The embedded store serializes its own eviction against publication and cache
+/// hits (zccache#1148), which is why zccache runs it during compiles whenever it
+/// owns scheduling. Retired version stores are never the current version and
+/// are refused while their writer lock is held. Neither needs the exclusive root
+/// lease that soldr's own destructive collectors take.
+async fn run_store_pass(
+    context: &MaintenanceContext,
+    kind: MaintenanceKind,
+    now: SystemTime,
+    status: &mut MaintenanceStatus,
+) {
+    // A pressure pass, never a full one: the full pass and its marker stay with
+    // the lease-held pass, so a deferred full pass remains due.
+    measure_store(context, false, now, status).await;
+    let paths = context.paths.clone();
+    let legacy = tokio::task::spawn_blocking(move || {
+        let config = paths.load_config().unwrap_or_default();
+        legacy_zccache_outcome(&paths, kind, now, &daemon_policy_actions(config, kind))
+    })
+    .await;
+    match legacy {
+        Ok(Some(outcome)) => status.legacy_zccache = outcome,
+        Ok(None) => {}
+        Err(error) => {
+            status.legacy_zccache.error = Some(format!("legacy_sweep_worker_failed: {error}"));
+        }
+    }
+}
+
+/// The daemon's reclamation plan for one tick kind.
+fn daemon_policy_actions(
+    config: crate::core::SoldrConfig,
+    kind: MaintenanceKind,
+) -> Vec<crate::cache_lib::gc_policy::EvictionAction> {
+    let policy_context = crate::cache_lib::gc_policy::GcContext {
+        driver: crate::cache_lib::gc_policy::Driver::Daemon,
+        tick: if kind == MaintenanceKind::Full {
+            crate::cache_lib::gc_policy::TickKind::Full
+        } else {
+            crate::cache_lib::gc_policy::TickKind::Pressure
+        },
+        free_by_volume: Vec::new(),
+        config,
+        daemon_events_available: true,
+        daemon_live: true,
+    };
+    crate::cache_lib::gc_policy::plan(&crate::cache_lib::gc_policy::registry(), &policy_context)
+}
+
+/// Reclaim retired embedded stores and legacy identity roots, when the plan
+/// calls for it.
+fn legacy_zccache_outcome(
+    paths: &SoldrPaths,
+    kind: MaintenanceKind,
+    now: SystemTime,
+    policy_actions: &[crate::cache_lib::gc_policy::EvictionAction],
+) -> Option<ComponentOutcome> {
+    let action = policy_actions
+        .iter()
+        .find(|action| action.category_id == "legacy_zccache")?;
+    let default_age = if kind == MaintenanceKind::Full {
+        FULL_STALE_AGE
+    } else {
+        PRESSURE_STALE_AGE
+    };
+    let legacy = crate::zccache_embedded::sweep_legacy_cache_roots(
+        paths,
+        now,
+        action.older_than.unwrap_or(default_age),
+    );
+    Some(ComponentOutcome {
+        items_removed: legacy.removed as u64,
+        bytes_reclaimed: legacy.bytes_reclaimed,
+        error: (legacy.failed > 0).then(|| format!("{} legacy roots retained", legacy.failed)),
+    })
+}
+
 #[derive(Default)]
 struct LocalOutcomes {
     cook: ComponentOutcome,
@@ -405,22 +523,7 @@ fn run_local_components(
 ) -> LocalOutcomes {
     let mut out = LocalOutcomes::default();
     let config = paths.load_config();
-    let policy_context = crate::cache_lib::gc_policy::GcContext {
-        driver: crate::cache_lib::gc_policy::Driver::Daemon,
-        tick: if kind == MaintenanceKind::Full {
-            crate::cache_lib::gc_policy::TickKind::Full
-        } else {
-            crate::cache_lib::gc_policy::TickKind::Pressure
-        },
-        free_by_volume: Vec::new(),
-        config: config.as_ref().cloned().unwrap_or_default(),
-        daemon_events_available: true,
-        daemon_live: true,
-    };
-    let policy_actions = crate::cache_lib::gc_policy::plan(
-        &crate::cache_lib::gc_policy::registry(),
-        &policy_context,
-    );
+    let policy_actions = daemon_policy_actions(config.as_ref().cloned().unwrap_or_default(), kind);
     let has_action = |id: &str| policy_actions.iter().any(|action| action.category_id == id);
     match &config {
         Ok(config) if has_action("cook") => {
@@ -509,23 +612,8 @@ fn run_local_components(
             Err(error) => out.daemon_events.error = Some(error.to_string()),
         }
     }
-    let legacy_age = if kind == MaintenanceKind::Full {
-        FULL_STALE_AGE
-    } else {
-        PRESSURE_STALE_AGE
-    };
-    if has_action("legacy_zccache") {
-        let legacy_age = policy_actions
-            .iter()
-            .find(|action| action.category_id == "legacy_zccache")
-            .and_then(|action| action.older_than)
-            .unwrap_or(legacy_age);
-        let legacy = crate::zccache_embedded::sweep_legacy_cache_roots(paths, now, legacy_age);
-        out.legacy_zccache = ComponentOutcome {
-            items_removed: legacy.removed as u64,
-            bytes_reclaimed: legacy.bytes_reclaimed,
-            error: (legacy.failed > 0).then(|| format!("{} legacy roots retained", legacy.failed)),
-        };
+    if let Some(legacy) = legacy_zccache_outcome(paths, kind, now, &policy_actions) {
+        out.legacy_zccache = legacy;
     }
     out
 }
@@ -688,12 +776,22 @@ fn maintenance_dir(paths: &SoldrPaths) -> PathBuf {
     paths.cache.join("soldr-daemon").join("maintenance")
 }
 
+/// Full-pass schedule directory for the store this daemon maintains.
+///
+/// soldr#3251: each daemon maintains only its own zccache version's store, so
+/// the schedule is keyed by that version. A single root-wide marker let a daemon
+/// of an old version, maintaining a 1 GiB store, reset the 24-hour clock for a
+/// newer version's 216 GiB store that no full pass had touched in days.
+fn store_marker_dir(paths: &SoldrPaths) -> PathBuf {
+    maintenance_dir(paths).join(zccache::core::config::versioned_subdir())
+}
+
 fn full_marker_path(paths: &SoldrPaths) -> PathBuf {
-    maintenance_dir(paths).join(FULL_MARKER)
+    store_marker_dir(paths).join(FULL_MARKER)
 }
 
 fn full_attempt_marker_path(paths: &SoldrPaths) -> PathBuf {
-    maintenance_dir(paths).join(FULL_ATTEMPT_MARKER)
+    store_marker_dir(paths).join(FULL_ATTEMPT_MARKER)
 }
 
 fn read_last_full(paths: &SoldrPaths) -> Option<SystemTime> {
@@ -709,7 +807,7 @@ fn read_last_full_attempt(paths: &SoldrPaths) -> Option<SystemTime> {
 }
 
 fn record_last_full(paths: &SoldrPaths, now: SystemTime) -> std::io::Result<()> {
-    let dir = maintenance_dir(paths);
+    let dir = store_marker_dir(paths);
     std::fs::create_dir_all(&dir)?;
     atomic_write(
         &full_marker_path(paths),
@@ -718,7 +816,7 @@ fn record_last_full(paths: &SoldrPaths, now: SystemTime) -> std::io::Result<()> 
 }
 
 fn record_last_full_attempt(paths: &SoldrPaths, now: SystemTime) -> std::io::Result<()> {
-    let dir = maintenance_dir(paths);
+    let dir = store_marker_dir(paths);
     std::fs::create_dir_all(&dir)?;
     atomic_write(
         &full_attempt_marker_path(paths),
