@@ -37,7 +37,12 @@ def _estimate(args: list[str], estimate: int, **extra) -> dict:
 
 
 def _journal(args: list[str], outcome: str, peak: int | None) -> dict:
-    row = {"outcome": outcome, "compiler": "/r/rustc", "args": args, "cwd": "/w"}
+    row: dict[str, object] = {
+        "outcome": outcome,
+        "compiler": "/r/rustc",
+        "args": args,
+        "cwd": "/w",
+    }
     if peak is not None:
         row["child_peak_rss_bytes"] = peak
     return row
