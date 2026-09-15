@@ -151,7 +151,7 @@ fn record_appends_one_parseable_row_per_admission_decision() {
         .collect();
     assert_eq!(rows.len(), 2);
     let row = &rows[0];
-    assert_eq!(row["schema_version"], 2);
+    assert_eq!(row["schema_version"], 3);
     assert_eq!(row["crate_name"], "broker");
     assert_eq!(row["args_digest"], args_digest(&command));
     assert_eq!(row["is_test"], true);
@@ -246,6 +246,71 @@ fn schema_two_rows_carry_the_unit_key() {
     );
     let row: serde_json::Value =
         serde_json::from_str(std::fs::read_to_string(&log).expect("row").trim()).expect("json");
-    assert_eq!(row["schema_version"], 2);
+    assert_eq!(row["schema_version"], 3);
     assert_eq!(row["unit_key"], "anyhow/0123456789abcdef");
+}
+
+/// soldr#3152 step 4, shadow mode: rows carry the unit's remembered peak so
+/// the history estimator can be compared against measured peaks before
+/// admission spends it.
+#[test]
+fn schema_three_rows_carry_the_units_remembered_peak() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log = temp.path().join("admission-estimate.jsonl");
+    let command = args(&["--crate-name", "zccache", "-C", "metadata=0123456789abcdef"]);
+    let features = features_with(&command, no_sizes);
+    let remembered = crate::daemon::unit_memory_history::UnitMemory {
+        peak_rss_bytes: 90,
+        tree_peak_rss_bytes: 1_356,
+        updated_ms: 7,
+        samples: 3,
+    };
+
+    record_with_history(
+        &log,
+        &command,
+        &features,
+        estimate_peak_bytes(&features),
+        true,
+        Some(remembered),
+    );
+    record_with_history(
+        &log,
+        &command,
+        &features,
+        estimate_peak_bytes(&features),
+        false,
+        None,
+    );
+
+    let text = std::fs::read_to_string(&log).expect("rows");
+    let rows: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("json"))
+        .collect();
+    assert_eq!(rows[0]["schema_version"], 3);
+    assert_eq!(rows[0]["history_tree_peak_bytes"], 1_356);
+    assert_eq!(rows[0]["history_samples"], 3);
+    assert!(
+        rows[1]["history_tree_peak_bytes"].is_null(),
+        "an unseen unit has no history"
+    );
+}
+
+#[tokio::test]
+async fn shadow_looks_up_the_units_history_by_unit_key() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log = temp.path().join("admission-estimate.jsonl");
+    let history = crate::daemon::unit_memory_history::UnitMemoryHistory::start(
+        temp.path().join("state.sqlite3"),
+    );
+    history.record("anyhow/0123456789abcdef", 10, 42);
+    let command = args(&["--crate-name", "anyhow", "-C", "metadata=0123456789abcdef"]);
+
+    shadow_with_history(&log, true, &command, false, Some(&history));
+
+    let row: serde_json::Value =
+        serde_json::from_str(std::fs::read_to_string(&log).expect("row").trim()).expect("json");
+    assert_eq!(row["unit_key"], "anyhow/0123456789abcdef");
+    assert_eq!(row["history_tree_peak_bytes"], 42);
 }

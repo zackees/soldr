@@ -246,7 +246,12 @@ impl SoldrZccacheService {
         // eligible cache hit never drains ordinary compiler work.
         let compile_admission = Arc::new(
             crate::resident_compile_admission::ResidentCompileAdmission::new(resolved_jobs.jobs)
-                .with_estimate_log(crate::memory_estimate::estimate_log_path(paths)),
+                .with_estimate_log(crate::memory_estimate::estimate_log_path(paths))
+                .with_unit_history(
+                    crate::daemon::unit_memory_history::UnitMemoryHistory::start(
+                        crate::cache_lib::state_db_path(paths),
+                    ),
+                ),
         );
         let host_admission: Arc<dyn zccache::embedded::HostAdmissionClassifier> =
             compile_admission.clone();

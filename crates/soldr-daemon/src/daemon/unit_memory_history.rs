@@ -139,7 +139,7 @@ enum Command {
 /// the database. It warms the map from the table at start, then writes
 /// recorded measurements in batches through `spawn_blocking`, the same shape
 /// as the event batcher (soldr#980).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct UnitMemoryHistory {
     units: Arc<Mutex<HashMap<String, UnitMemory>>>,
     tx: mpsc::Sender<Command>,

@@ -22,6 +22,8 @@ pub(crate) struct ResidentCompileAdmission {
     /// soldr#3152 shadow mode: where each admitted Rust compile's estimated
     /// peak memory is logged. `None` disables the log.
     estimate_log: Option<std::path::PathBuf>,
+    /// soldr#3152 step 4: each unit's remembered peak, logged in shadow mode.
+    unit_history: Option<crate::daemon::unit_memory_history::UnitMemoryHistory>,
 }
 
 impl ResidentCompileAdmission {
@@ -31,11 +33,22 @@ impl ResidentCompileAdmission {
             capacity: Arc::new(Semaphore::new(max)),
             max,
             estimate_log: None,
+            unit_history: None,
         }
     }
 
     /// Log a shadow-mode memory estimate for every compile this classifies
     /// (soldr#3152). Admission decisions are unchanged.
+    /// Include each unit's remembered peak in the shadow estimate rows.
+    #[must_use]
+    pub(crate) fn with_unit_history(
+        mut self,
+        history: crate::daemon::unit_memory_history::UnitMemoryHistory,
+    ) -> Self {
+        self.unit_history = Some(history);
+        self
+    }
+
     #[must_use]
     pub(crate) fn with_estimate_log(mut self, log: std::path::PathBuf) -> Self {
         self.estimate_log = Some(log);
@@ -84,11 +97,12 @@ impl HostAdmissionClassifier for ResidentCompileAdmission {
         let exclusive =
             crate::amalgamation::SoldrHostAdmissionClassifier.requires_exclusive(request)?;
         if let Some(log) = &self.estimate_log {
-            crate::memory_estimate::shadow(
+            crate::memory_estimate::shadow_with_history(
                 log,
                 request.family() == zccache::compiler::CompilerFamily::Rustc,
                 request.args(),
                 exclusive,
+                self.unit_history.as_ref(),
             );
         }
         Ok(exclusive)
