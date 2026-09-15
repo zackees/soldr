@@ -933,6 +933,11 @@ jobs:
           # along inside `daemon-spawn.log` either way; this pattern is what
           # makes the machine-readable one downloadable, which is the whole
           # point of having built it.
+          #
+          # soldr#3152: `cache/soldr-daemon/logs/` carries the daemon's
+          # shadow-mode `admission-estimate.jsonl`, which
+          # `.github/scripts/fit_memory_estimate.py` joins to the compile
+          # journals in this same artifact.
           path: |
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/logs/
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/logs/
@@ -942,6 +947,7 @@ jobs:
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/*-bringup.jsonl
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/broker/*.log
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/broker/*.jsonl
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/soldr-daemon/logs/
             ~/.soldr/broker/*.log
             ~/.soldr/broker/*.jsonl
 
