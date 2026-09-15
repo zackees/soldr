@@ -41,6 +41,11 @@ mod darwin_arch;
 mod links_provider;
 mod lzma_override;
 mod mimalloc_override;
+mod openssl_override;
+
+#[cfg(test)]
+pub(crate) use links_provider::prime_metadata_for_test as prime_links_metadata_for_test;
+pub(crate) use openssl_override::openssl_env_prefix;
 
 /// soldr#1543 test seam: sleep this many milliseconds at the top of
 /// [`prepare`] to simulate slow catalogue/SDK materialization, so the
@@ -743,7 +748,7 @@ fn legacy_vendored_sys_opt_out() -> bool {
 /// shape: call the consumer module's `ensure_<lib>_sysroot`, and on
 /// success push the override env vars. Failures are logged but never
 /// fatal — the *-sys crate's vendored compile remains the safety net.
-async fn inject_sys_library_overrides(
+pub(crate) async fn inject_sys_library_overrides(
     paths: &SoldrPaths,
     target_triple: &str,
     prep: &mut BlessedPrep,
@@ -801,6 +806,11 @@ async fn inject_sys_library_overrides(
         Ok(sysroot) => prepend_pkg_config_path_for_target(prep, target_triple, &sysroot),
         Err(e) => log_sys_unavailable("bzip2", target_triple, &e),
     }
+
+    // openssl-sys → target-scoped `<T>_OPENSSL_{DIR,NO_VENDOR,STATIC}`
+    // (+ PKG_CONFIG_PATH_<triple> off MSVC). Gated on `openssl-sys`
+    // providing `links = "openssl"`; see the module docs (soldr#3246).
+    openssl_override::inject(paths, target_triple, prep).await;
 }
 
 /// Prepend `<sysroot>/lib/pkgconfig` to the **target-scoped**

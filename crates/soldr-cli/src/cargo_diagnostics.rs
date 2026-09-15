@@ -300,8 +300,19 @@ for OpenSSL on Windows explicitly.\n",
         "  - select its native-tls/SChannel or rustls feature instead of the OpenSSL one, or\n",
     );
     out.push_str(
-        "  - if OpenSSL is genuinely required, enable `openssl/vendored` or set `OPENSSL_DIR` \
-to an existing install.\n",
+        "  - if OpenSSL is genuinely required, build through `soldr build` or `soldr prepare`: \
+they export soldr's managed static OpenSSL syslib for this target as `",
+    );
+    out.push_str(&crate::blessed_build::openssl_env_prefix(target));
+    out.push_str(
+        "_OPENSSL_{DIR,NO_VENDOR,STATIC}` whenever `openssl-sys` provides `links = \"openssl\"`, \
+which also covers `openssl/vendored` (soldr#3246).\n",
+    );
+    out.push_str(
+        "soldr: if that export is missing, the log above says why: \
+`SOLDR_USE_LEGACY_VENDORED_SYS` opts out of managed syslibs, a caller-set `OPENSSL_DIR` \
+(or `OPENSSL_LIB_DIR`/`OPENSSL_INCLUDE_DIR`/`OPENSSL_NO_VENDOR`) takes precedence, another \
+crate claims `links = \"openssl\"`, or the catalogue bundle was unavailable.\n",
     );
     out.push_str(
         "soldr: a per-job `vcpkg install openssl` rebuilds OpenSSL from source (8-10 minutes \
@@ -525,6 +536,12 @@ Caused by:
         assert!(rendered.contains("openssl/vendored"));
         assert!(rendered.contains("OPENSSL_DIR"));
         assert!(rendered.contains("soldr#3231"));
+        // soldr#3246: point at the managed syslib, by the exact target-scoped
+        // names openssl-sys reads, and at the opt-out that disables it.
+        assert!(rendered.contains("managed static OpenSSL syslib"));
+        assert!(rendered.contains("X86_64_PC_WINDOWS_MSVC_OPENSSL_{DIR,NO_VENDOR,STATIC}"));
+        assert!(rendered.contains("SOLDR_USE_LEGACY_VENDORED_SYS"));
+        assert!(rendered.contains("soldr#3246"));
         assert!(
             !rendered.contains("apt-get"),
             "not a missing-C-toolchain problem; got:\n{rendered}",
