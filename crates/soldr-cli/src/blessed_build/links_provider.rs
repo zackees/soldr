@@ -62,19 +62,44 @@ impl LinksProvider {
 /// about several `links` names costs one subprocess, not several.
 pub(crate) fn resolve(workspace_root: &Path, links: &str, target: &str) -> LinksProvider {
     match links_map(workspace_root, target) {
-        Ok(map) => match map.get(links) {
-            Some(names) if names.len() == 1 => {
-                LinksProvider::Package(names.iter().next().cloned().unwrap_or_default())
-            }
-            Some(names) => LinksProvider::Unknown(format!(
-                "{} packages claim links = \"{links}\": {}",
-                names.len(),
-                names.iter().cloned().collect::<Vec<_>>().join(", ")
-            )),
-            None => LinksProvider::Absent,
-        },
+        Ok(map) => provider_in(&map, links),
         Err(error) => LinksProvider::Unknown(error),
     }
+}
+
+fn provider_in(map: &LinksMap, links: &str) -> LinksProvider {
+    match map.get(links) {
+        Some(names) if names.len() == 1 => {
+            LinksProvider::Package(names.iter().next().cloned().unwrap_or_default())
+        }
+        Some(names) => LinksProvider::Unknown(format!(
+            "{} packages claim links = \"{links}\": {}",
+            names.len(),
+            names.iter().cloned().collect::<Vec<_>>().join(", ")
+        )),
+        None => LinksProvider::Absent,
+    }
+}
+
+/// Resolve `links` against a `cargo metadata` JSON document without
+/// spawning cargo. Test fixture seam for gated overrides.
+#[cfg(test)]
+pub(crate) fn provider_from_metadata_json(bytes: &[u8], links: &str) -> LinksProvider {
+    match links_map_from_metadata_json(bytes) {
+        Ok(map) => provider_in(&map, links),
+        Err(error) => LinksProvider::Unknown(error),
+    }
+}
+
+/// Seed the per-process probe memo for `(workspace_root, target)` with a
+/// fake `cargo metadata` document, so a test can drive the real
+/// `blessed_build::prepare` path without a cargo subprocess.
+#[cfg(test)]
+pub(crate) fn prime_metadata_for_test(workspace_root: &Path, target: &str, metadata_json: &[u8]) {
+    let result = links_map_from_metadata_json(metadata_json);
+    let cache = LINKS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().unwrap_or_else(|error| error.into_inner());
+    guard.insert((workspace_root.to_path_buf(), target.to_string()), result);
 }
 
 /// `links` name -> set of package names claiming it.

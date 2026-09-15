@@ -55,8 +55,8 @@ pub mod manifest_v6;
 /// soldr#997 Phase A — Node.js node.lib bundle for Windows MSVC
 /// cross-compile (closes #944).
 pub mod nodelib;
-/// soldr#997 Phase A — OpenSSL libs/headers bundle for Windows MSVC
-/// cross-compile (closes #943).
+/// soldr#3246 — managed static, source-built OpenSSL sysroot for every
+/// syslib shape, exposed to `openssl-sys` by `blessed_build::prepare`.
 pub mod openssl_sysroot;
 /// Target Python compatibility assets for older PyO3, embedding, and other
 /// explicitly selected build shapes. Ordinary ABI3 extension cross-builds do

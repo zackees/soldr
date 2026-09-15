@@ -393,6 +393,150 @@ fn managed_musl_toolchain_is_exported_without_zig_or_host_tools() {
     );
 }
 
+/// soldr#3246 contract: for a graph whose `links = "openssl"` provider is
+/// `openssl-sys`, `soldr prepare --github-env` exports exactly these
+/// target-scoped keys, and none for a graph without it:
+///
+/// | key | value |
+/// |---|---|
+/// | `<T>_OPENSSL_DIR` | `~/.soldr/bin/syslib/openssl/3.5.8/<slug>/package` |
+/// | `<T>_OPENSSL_NO_VENDOR` | `1` |
+/// | `<T>_OPENSSL_STATIC` | `1` |
+/// | `PKG_CONFIG_PATH_<triple>` | `<package>/lib/pkgconfig` (not on MSVC) |
+///
+/// `<T>` is the triple uppercased with `-` → `_`, openssl-sys's own prefix.
+/// No unscoped `OPENSSL_*` key is ever exported: GitHub env reaches host
+/// build scripts too.
+#[test]
+fn managed_openssl_is_exported_only_for_graphs_linking_openssl_sys() {
+    let _lock = TEST_PROCESS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let msvc = "x86_64-pc-windows-msvc";
+    let gnu = "x86_64-unknown-linux-gnu";
+    let _no_network = EnvVarGuard::set("SOLDR_TEST_NO_NETWORK", "1");
+    let _legacy_sys = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_VENDORED_SYS_ENV_VAR);
+    let _flags: Vec<_> = ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]
+        .into_iter()
+        .map(EnvVarGuard::remove)
+        .collect();
+    let _output_guards: Vec<_> = [msvc, gnu]
+        .into_iter()
+        .flat_map(|triple| {
+            let prefix = crate::blessed_build::openssl_env_prefix(triple);
+            ["DIR", "LIB_DIR", "INCLUDE_DIR", "NO_VENDOR", "STATIC"]
+                .into_iter()
+                .map(move |suffix| format!("{prefix}_OPENSSL_{suffix}"))
+                .chain([format!("PKG_CONFIG_PATH_{triple}")])
+        })
+        .chain(
+            ["DIR", "LIB_DIR", "INCLUDE_DIR", "NO_VENDOR", "STATIC"]
+                .into_iter()
+                .map(|suffix| format!("OPENSSL_{suffix}")),
+        )
+        .map(DynamicEnvVarGuard::remove)
+        .collect();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let paths = crate::core::SoldrPaths::with_root(dir.path().join("soldr"));
+    let seed = |slug: &str| {
+        let install_root = paths
+            .bin
+            .join("syslib")
+            .join("openssl")
+            .join(crate::fetch::openssl_sysroot::MANAGED_OPENSSL_VERSION)
+            .join(slug);
+        let package = install_root.join("package");
+        std::fs::create_dir_all(package.join("lib").join("pkgconfig")).expect("seed bundle");
+        std::fs::write(install_root.join(".complete"), "test bundle").expect("seed stamp");
+        package
+    };
+    let msvc_package = seed("windows-x64");
+    let gnu_package = seed("linux-x64-gnu");
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+
+    // Export one graph for one target, returning the GitHub env file body.
+    let export = |workspace: &str, triple: &str, packages: &str| {
+        let root = dir.path().join(workspace);
+        std::fs::create_dir_all(&root).expect("workspace");
+        let _cwd = crate::CwdGuard::enter(&root);
+        crate::blessed_build::prime_links_metadata_for_test(
+            &std::env::current_dir().expect("cwd"),
+            triple,
+            format!("{{\"packages\":[{packages}]}}").as_bytes(),
+        );
+        let mut prep = BlessedPrep::default();
+        runtime.block_on(crate::blessed_build::inject_sys_library_overrides(
+            &paths, triple, &mut prep,
+        ));
+        let github_env = root.join(format!("{triple}.env"));
+        apply_blessed_prep_env(Some(&github_env), &prep, triple).expect("export prepared env");
+        std::fs::read_to_string(&github_env).unwrap_or_default()
+    };
+
+    // Graphs without openssl-sys go first: a positive export sets
+    // `<T>_OPENSSL_*` in this process, and soldr treats an already-set
+    // `<T>_OPENSSL_DIR` as the caller's choice, which would make a later
+    // negative case pass vacuously.
+    for triple in [msvc, gnu] {
+        let exported = export(
+            &format!("no-openssl-{triple}"),
+            triple,
+            r#"{"name":"serde","links":null}"#,
+        );
+        assert!(
+            !exported.contains("OPENSSL"),
+            "{triple}: no openssl-sys, no OpenSSL keys: {exported}"
+        );
+    }
+
+    let openssl_sys = r#"{"name":"openssl","links":null},{"name":"openssl-sys","links":"openssl"}"#;
+    let msvc_exported = export("openssl-msvc", msvc, openssl_sys);
+    let exported = &msvc_exported;
+    let lines: Vec<&str> = exported.lines().collect();
+    for expected in [
+        format!(
+            "X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR={}",
+            msvc_package.display()
+        ),
+        "X86_64_PC_WINDOWS_MSVC_OPENSSL_NO_VENDOR=1".to_string(),
+        "X86_64_PC_WINDOWS_MSVC_OPENSSL_STATIC=1".to_string(),
+    ] {
+        assert!(lines.contains(&expected.as_str()), "{expected}: {exported}");
+    }
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.starts_with("PKG_CONFIG_PATH_x86_64-pc-windows-msvc=")),
+        "openssl-sys never uses pkg-config for MSVC: {exported}"
+    );
+
+    let gnu_exported = export("openssl-gnu", gnu, openssl_sys);
+    let exported = &gnu_exported;
+    let lines: Vec<&str> = exported.lines().collect();
+    for expected in [
+        format!(
+            "X86_64_UNKNOWN_LINUX_GNU_OPENSSL_DIR={}",
+            gnu_package.display()
+        ),
+        "X86_64_UNKNOWN_LINUX_GNU_OPENSSL_NO_VENDOR=1".to_string(),
+        "X86_64_UNKNOWN_LINUX_GNU_OPENSSL_STATIC=1".to_string(),
+        format!(
+            "PKG_CONFIG_PATH_x86_64-unknown-linux-gnu={}",
+            gnu_package.join("lib").join("pkgconfig").display()
+        ),
+    ] {
+        assert!(lines.contains(&expected.as_str()), "{expected}: {exported}");
+    }
+
+    for exported in [&msvc_exported, &gnu_exported] {
+        assert!(
+            !exported.lines().any(|line| line.starts_with("OPENSSL_")),
+            "unscoped OPENSSL_* must never be exported: {exported}"
+        );
+    }
+}
+
 #[test]
 fn exported_encoded_rustflags_keep_caller_target_flags() {
     let _lock = TEST_PROCESS_ENV_LOCK

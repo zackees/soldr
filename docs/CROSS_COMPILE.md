@@ -402,18 +402,44 @@ soldr cargo tree --target x86_64-pc-windows-msvc -e features -i openssl-sys
 # "warning: nothing to print." means the graph does not use OpenSSL.
 ```
 
-soldr ships no vcpkg OpenSSL bundle for consumers: the vcpkg producer workflow
-was retired in soldr#2814, and the `openssl_sysroot` fetcher is not wired into
-any build path. A per-job `vcpkg install openssl` rebuilds the port from source;
+soldr ships no vcpkg OpenSSL bundle: the vcpkg producer workflow was retired in
+soldr#2814. A per-job `vcpkg install openssl` rebuilds the port from source;
 Bosn's Windows wheel lane spent 7m47s in it for a graph that never contained
 `openssl-sys` (soldr#3231).
 
-When the tree is not empty, a crate requests OpenSSL on Windows explicitly. Fix
-it at that dependency: select its native-tls/SChannel or rustls feature, or, if
-OpenSSL is genuinely required, enable `openssl/vendored` or point `OPENSSL_DIR`
-at an existing install. When cargo's output is captured (CI logs, pipes), soldr
-prints this guidance after an `openssl-sys` "Could not find directory of OpenSSL
-installation" failure for a `*-windows-msvc` target.
+When the tree is not empty, a crate requests OpenSSL on Windows explicitly.
+Prefer fixing it at that dependency by selecting its native-tls/SChannel or
+rustls feature. If OpenSSL is genuinely required, `soldr build` and
+`soldr prepare` provide it (soldr#3246). Whenever `openssl-sys` is the crate
+that provides `links = "openssl"` for the target, they fetch the catalogue's
+static, source-built OpenSSL 3.5.8 (sha256-verified) and export three
+target-scoped variables that `openssl-sys` reads before the unscoped ones:
+
+```sh
+X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR=~/.soldr/bin/syslib/openssl/3.5.8/windows-x64/package
+X86_64_PC_WINDOWS_MSVC_OPENSSL_NO_VENDOR=1   # overrides `openssl/vendored`
+X86_64_PC_WINDOWS_MSVC_OPENSSL_STATIC=1
+```
+
+This works for all nine syslib shapes. For targets other than MSVC,
+`PKG_CONFIG_PATH_<triple>` also gets the bundle's `lib/pkgconfig`. No unscoped
+`OPENSSL_*` variable is set, so host build scripts are unaffected. As a result,
+crates that use `openssl = { features = ["vendored"] }` build for
+`*-pc-windows-msvc` from Linux without manifest changes. `openssl-src` cannot
+do that itself, because it looks up `nmake.exe` in the Windows registry.
+
+soldr skips the managed OpenSSL in these cases:
+
+- `SOLDR_USE_LEGACY_VENDORED_SYS` is set.
+- The caller already set `OPENSSL_DIR`, `OPENSSL_LIB_DIR`,
+  `OPENSSL_INCLUDE_DIR`, or `OPENSSL_NO_VENDOR`, either scoped to the target or
+  unscoped.
+- Another crate claims `links = "openssl"`.
+- The bundle is unavailable. soldr logs why and the build continues.
+
+When cargo's output is captured (CI logs, pipes), soldr prints this guidance
+after an `openssl-sys` "Could not find directory of OpenSSL installation"
+failure for a `*-windows-msvc` target.
 
 ---
 
