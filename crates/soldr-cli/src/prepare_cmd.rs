@@ -573,6 +573,27 @@ pub(crate) fn expected_state_paths(
             path: package,
         });
     }
+    if attrs.needs_mingw_w64_gcc
+        && crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_cross()
+    {
+        let cross = paths
+            .bin
+            .join("syslib")
+            .join(crate::fetch::mingw_w64_gcc::MINGW_W64_CROSS_TOOL)
+            .join(crate::fetch::mingw_w64_gcc::MINGW_W64_CROSS_VERSION)
+            .join(crate::fetch::mingw_w64_gcc::MINGW_W64_CROSS_HOST_SLUG);
+        let package = cross.join("package");
+        entries.push(RestoreEntry {
+            label: format!(
+                "MinGW-w64 cross gcc {}",
+                crate::fetch::mingw_w64_gcc::MINGW_W64_CROSS_VERSION
+            ),
+            present: cross.join(".complete").is_file()
+                && crate::fetch::mingw_w64_gcc::cross_tool_path(&package, "gcc").is_file()
+                && crate::fetch::mingw_w64_gcc::cross_tool_path(&package, "dlltool").is_file(),
+            path: package,
+        });
+    }
     if attrs.needs_apple_sdk {
         let selection = crate::fetch::apple_sdk::resolve_apple_sdk_selection(Some(&attrs.triple));
         let sdk = crate::fetch::apple_sdk::install_dir_for_selection(paths, &selection);
@@ -644,7 +665,7 @@ fn num_cpus_for_zstd() -> u32 {
 /// accidentally pull in zccache binaries or anything unrelated.
 pub(crate) fn prepare_state_roots(paths: &SoldrPaths) -> Result<Vec<PathBuf>, SoldrError> {
     let mut roots = Vec::new();
-    // ~/.soldr/bin/{zig-<ver>,llvm-<ver>,apple-sdk/<ver>,syslib/{mingw-w64-gcc,gnu-linux-toolchain,musl-linux-toolchain}}
+    // ~/.soldr/bin/{zig-<ver>,llvm-<ver>,apple-sdk/<ver>,syslib/{mingw-w64-gcc,mingw-w64-cross,gnu-linux-toolchain,musl-linux-toolchain}}
     if let Ok(entries) = std::fs::read_dir(&paths.bin) {
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -660,6 +681,17 @@ pub(crate) fn prepare_state_roots(paths: &SoldrPaths) -> Result<Vec<PathBuf>, So
         .join(crate::fetch::mingw_w64_gcc::MINGW_W64_GCC_TOOL);
     if mingw_root.is_dir() {
         roots.push(mingw_root);
+    }
+    // Linux-hosted mingw cross toolchain (soldr#2336): `prepare` on a Linux
+    // host fetches `mingw-w64-cross`, not the Windows-host `mingw-w64-gcc`
+    // bundle, so it must be captured here too or the save emits an empty
+    // archive (soldr#3257).
+    let mingw_cross_root = paths
+        .bin
+        .join("syslib")
+        .join(crate::fetch::mingw_w64_gcc::MINGW_W64_CROSS_TOOL);
+    if mingw_cross_root.is_dir() {
+        roots.push(mingw_cross_root);
     }
     let gnu_linux_root = paths.bin.join("syslib").join("gnu-linux-toolchain");
     if gnu_linux_root.is_dir() {

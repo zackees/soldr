@@ -44,6 +44,42 @@ fn prepare_state_roots_includes_blessed_sdk_root() {
 }
 
 #[test]
+fn prepare_state_roots_includes_mingw_w64_cross_root() {
+    // soldr#3257: `soldr prepare --target x86_64-pc-windows-gnu` on a Linux
+    // host fetches `mingw-w64-cross` (not the Windows-host `mingw-w64-gcc`),
+    // so it must be captured or the save emits an empty archive.
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let paths = SoldrPaths::with_root(tmp.path().join("soldr"));
+    let cross_root = paths
+        .bin
+        .join("syslib")
+        .join(crate::fetch::mingw_w64_gcc::MINGW_W64_CROSS_TOOL);
+    std::fs::create_dir_all(&cross_root).expect("mkdir mingw cross root");
+    let roots = prepare_state_roots(&paths).expect("prepare roots");
+    assert!(
+        roots.iter().any(|root| root == &cross_root),
+        "mingw-w64-cross must be captured for a Linux-hosted win-gnu prepare"
+    );
+}
+
+#[test]
+fn expected_state_paths_includes_mingw_w64_cross_on_linux_host() {
+    if !crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_cross() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let paths = SoldrPaths::with_root(tmp.path().join("soldr"));
+    let attrs = classify_target("x86_64-pc-windows-gnu").expect("classify win-gnu");
+    let entries = expected_state_paths(&attrs, &paths).expect("expected paths");
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.label.contains("MinGW-w64 cross")),
+        "Linux-hosted win-gnu prepare must audit the mingw-w64-cross toolchain"
+    );
+}
+
+#[test]
 fn gnu_restore_state_uses_the_catalogue_bundle_not_zig() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let paths = SoldrPaths::with_root(tmp.path().join("soldr"));
