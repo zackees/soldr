@@ -21,7 +21,6 @@ CAP_KEYS = ("CARGO_BUILD_JOBS", "SOLDR_JOBS")
 JOBS = [
     ("cook-size-gate.yml", "cook-size-gate"),
     ("release-auto.yml", "build"),
-    ("perf-matrix.yml", "bench"),
 ]
 
 
@@ -53,6 +52,14 @@ def test_swap_is_enabled_before_the_first_compile_cap(workflow: str, job: str) -
         f"{workflow}:{job} enlarges swap at step {swap[0]}, after its first cap at "
         f"step {capped[0]}"
     )
+
+
+def test_perf_matrix_bench_keeps_swap_and_sets_no_cap() -> None:
+    # soldr#3148: the sqlite-link fixture's GITHUB_ENV cap is gone; exclusive
+    # admission serializes the sqlite3.c amalgamation on its own.
+    steps = _steps("perf-matrix.yml", "bench")
+    assert not any(_sets_cap(step) for step in steps)
+    assert any(_enlarges_swap(step) for step in steps)
 
 
 def test_the_cap_detector_sees_both_spellings() -> None:

@@ -158,7 +158,7 @@ jobs:
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every
           # build, so the next build recompiles the world. See
           # tests/test_setup_soldr_version_pins.py.
-          version: 0.9.15
+          version: 0.9.16
           toolchain-file: rust-toolchain.ci.toml
           # soldr#2451: turn off every setup-soldr reuse layer, not just the
           # `cache` umbrella (which does not gate soldr-mini / solo-toolchain /
@@ -190,15 +190,12 @@ jobs:
       - name: Build soldr-cli
         shell: pwsh
         working-directory: soldr
-        # Rung-4 cap, step-scoped (CLAUDE.md, soldr#3148). This step builds
-        # soldr through the RELEASED soldr pinned above, which predates
-        # soldr#3211: uncapped, its compiler children can be SIGTERMed
-        # mid-compile (soldr#3210), and swap or exclusive admission cannot
-        # prevent that. Lift once the pin carries soldr#3211. The third-party
-        # build below runs the freshly built source soldr, so it is uncapped.
-        env:
-          CARGO_BUILD_JOBS: "1"
-          SOLDR_JOBS: "1"
+        # Uncapped (soldr#3148). This step builds soldr through the RELEASED
+        # soldr pinned above; it ran at jobs=1 while that release predated
+        # soldr#3211, whose fix keeps compiler children from being SIGTERMed
+        # mid-compile (soldr#3210). The 0.9.16 pin carries soldr#3211, so
+        # exclusive admission owns concurrency, as it does for the
+        # third-party build below.
         run: |
           $timer = [Diagnostics.Stopwatch]::StartNew()
           soldr cargo build --package soldr-cli --target "${{ inputs.target }}"

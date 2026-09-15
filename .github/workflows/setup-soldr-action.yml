@@ -192,14 +192,11 @@ jobs:
 
       - name: Build through soldr
         shell: pwsh
-        # Rung-4 cap, step-scoped (CLAUDE.md, soldr#3148): the soldr this
-        # action installs is a release that predates soldr#3211, so an
-        # uncapped wrapped build can have its compiler children SIGTERMed
-        # mid-compile (soldr#3210). Lift once the action installs a release
-        # carrying soldr#3211.
+        # Uncapped (soldr#3148). The action installs the latest soldr release;
+        # this step ran at jobs=1 while that release predated soldr#3211
+        # (compiler children SIGTERMed mid-compile, soldr#3210). 0.9.16
+        # carries soldr#3211, so exclusive admission owns concurrency.
         env:
-          CARGO_BUILD_JOBS: "1"
-          SOLDR_JOBS: "1"
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"

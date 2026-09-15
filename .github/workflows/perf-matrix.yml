@@ -492,11 +492,12 @@ jobs:
           # this row.
           which gcc || sudo apt-get install -y gcc
 
-      - name: Serialize the bundled SQLite compile
-        if: steps.gate.outputs.selected == 'true' && matrix.fixture == 'sqlite-link'
-        run: |
-          echo "CARGO_BUILD_JOBS=1" >> "$GITHUB_ENV"
-          echo "SOLDR_JOBS=1" >> "$GITHUB_ENV"
+      # soldr#3148: the bundled sqlite3.c compile used to be serialized by a
+      # job-wide CARGO_BUILD_JOBS=1 / SOLDR_JOBS=1 GITHUB_ENV write, which
+      # also serialized every other unit in the fixture. The soldr under test
+      # is built from this checkout, and sqlite3.c is a known C amalgamation,
+      # so exclusive admission runs exactly that translation unit alone while
+      # the rest stays parallel.
 
       - name: Download soldr binary
         if: steps.gate.outputs.selected == 'true'

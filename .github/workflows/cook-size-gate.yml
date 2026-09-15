@@ -87,7 +87,7 @@ jobs:
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every
           # build, so the next build recompiles the world. See
           # tests/test_setup_soldr_version_pins.py.
-          version: 0.9.15
+          version: 0.9.16
           toolchain: 1.95.0
           # soldr#2451: `cache: false` alone does NOT gate setup-soldr's
           # soldr-mini / build-cache / target-cache reuse layers, and this
@@ -105,18 +105,16 @@ jobs:
       # below; the thing the gate measures is cook's output over the zccache
       # fixture, not this binary. The `--release` on `soldr cook --release` is
       # a separate, load-bearing flag and stays.
-      # Rung-4 cap, reason: soldr#3210. Uncapped (soldr#3148, PR #3209) this
-      # build failed 3 of 4 runs: rustc for soldr_daemon was SIGTERMed mid-
-      # compile with 0 swap used and oom_kill=0. zccache arms PR_SET_PDEATHSIG
-      # on compiler children, which fires when the *spawning tokio thread*
-      # retires; at jobs=1 nothing overlaps the long unit, so no thread
-      # retires under it. Swap (soldr#3207) and exclusive admission are in
-      # place but cannot help here. Lift this once soldr#3210 is fixed.
+      # Uncapped (soldr#3148). This build used to run at jobs=1 because the
+      # pinned soldr predated soldr#3211: compiler children carried
+      # PR_SET_PDEATHSIG, which fired when the spawning tokio thread retired,
+      # and rustc for soldr_daemon was SIGTERMed mid-compile in 3 of 4 uncapped
+      # runs (soldr#3210, PR #3209). The 0.9.16 pin above carries soldr#3211,
+      # so exclusive admission owns concurrency here again. The job log's
+      # `soldr: daemon compile concurrency =` line (soldr#3206) shows the
+      # limit actually applied.
       - name: Build soldr CLI (ci-release)
         working-directory: soldr
-        env:
-          CARGO_BUILD_JOBS: "1"
-          SOLDR_JOBS: "1"
         run: soldr cargo build -p soldr-cli --profile ci-release
 
       - name: Checkout zccache fixture
