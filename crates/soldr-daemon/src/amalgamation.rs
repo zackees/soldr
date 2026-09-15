@@ -51,6 +51,13 @@ const KNOWN_AMALGAMATIONS: &[&str] = &["sqlite3.c", "zstd.c", "rocksdb.cc"];
 /// zccache itself owns the built-in names `zccache`, `zccache_cli_core`, and
 /// `zccache_daemon_core`. Repeating them here would put the two predicates back
 /// on a drift path even though there is now only one lock.
+///
+/// **Cold-start fallback, not debt (soldr#3152).** Measured memory history
+/// (`history_admission`) also grants exclusivity, but only to a unit with at
+/// least two recorded measurements. A fresh soldr root has none, and every CI
+/// run starts from one: in #3254's CI no unit reached a trusted history. These
+/// names are what protects such roots, so they stay. History can only add
+/// exclusivity on top of them, never remove it.
 const SOLDR_RUST_EXCLUSIVE_NON_LINKING_UNITS: &[&str] = &["kernal_api", "soldr_cli"];
 
 /// Summed `--extern` rlib bytes at or above which a Rust `--test` link is
@@ -81,9 +88,10 @@ const SOLDR_RUST_EXCLUSIVE_NON_LINKING_UNITS: &[&str] = &["kernal_api", "soldr_c
 /// documented invariant is about ("these measured heavy links must not overlap
 /// any other compiler child") and where the observed kills happened. Ordinary
 /// `--crate-type lib` compiles list their externs without linking them and have
-/// a much flatter profile, so they keep shared admission. Widening this to real
-/// `bin` links is soldr#3152's job, with a measured estimate rather than a
-/// second threshold.
+/// a much flatter profile, so they keep shared admission. soldr#3152 measured a
+/// command-line estimate for wider use and rejected it (R² 0.09 on `--extern`
+/// bytes across 1,161 CI units); heavy `bin` links are covered instead by the
+/// per-unit measured history once a machine has compiled them twice.
 const HEAVY_TEST_LINK_EXTERN_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Override for [`HEAVY_TEST_LINK_EXTERN_BYTES`], in bytes.
@@ -105,6 +113,10 @@ const HEAVY_TEST_LINK_BYTES_ENV: &str = "SOLDR_HEAVY_TEST_LINK_BYTES";
 /// that these measured heavy links must not overlap any other compiler child.
 /// Giving only these exact test-link forms exclusive admission preserves
 /// parallelism for ordinary first-party crate compilation.
+///
+/// **Cold-start fallback, not debt (soldr#3152).** Same reasoning as
+/// [`SOLDR_RUST_EXCLUSIVE_NON_LINKING_UNITS`]: measured history cannot protect a
+/// fresh root, which includes every CI runner, so this list stays.
 const SOLDR_HEAVY_TEST_LINKS: &[&str] = &["soldr_daemon", "soldr_cli"];
 
 /// Extensions that name a C/C++ translation unit on a compiler command line.

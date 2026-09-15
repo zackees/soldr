@@ -184,13 +184,14 @@ Work down it. Stop at the first rung that actually fits the problem.
 1. **Make the unit itself cheaper.** `codegen-units = 1`, `debug = false`,
    `lto = false`, a smaller profile. See `[profile.*.package.zccache]`.
 2. **Size the unit's actual resource need and let admission schedule it.**
-   Exclusive access is the blunt form of this and is what exists today
-   (`SoldrHostAdmissionClassifier`). The better form — designed in soldr#3152 —
-   estimates a unit's peak memory from its command line (summed and max
-   `--extern` rlib bytes, object count, LTO mode, `codegen-units`, `--emit`) and
-   spends it against live headroom, so exclusivity becomes the emergent case for
-   a unit that genuinely needs the whole machine rather than a name on a list.
-   Prefer a measured predicate over a name in either form (see below).
+   Exclusive access is the blunt form of this (`SoldrHostAdmissionClassifier`).
+   Since soldr#3152, admission also spends each unit's **measured** memory
+   history (`crates/soldr-daemon/src/history_admission.rs`): a unit with at
+   least two recorded measurements becomes exclusive when 1.5x its remembered
+   tree peak exceeds half the memory available right now. The history can only
+   add exclusivity. A fresh root (every CI run) has no history, so the name
+   lists remain the cold-start fallback there. Prefer a measured predicate over
+   a name either way (see below).
 3. **Give the machine headroom.** `.github/scripts/setup_ci_swap.sh` — 14 GB of
    swap for <1 s. Note that soldr#2453's own workflow comment records which rung
    did the work: "Bounding CARGO_BUILD_JOBS/SOLDR_JOBS narrowed but did not close
@@ -269,11 +270,26 @@ counts are bimodal (42-43 for genuine test links versus 0-4 for trivial ones) an
 rlib sizes span 65x between median and max, so the information needed to
 discriminate is present on the command line and merely unused.
 
-So the ladder's rung 2 has a floor and a ceiling: exclusivity today, memory-aware
-scheduling (soldr#3152) once a compiler child's peak RSS is actually measured.
-Nothing measures it now — the journal has no memory field, `rss_ceiling.rs`
-watches only the daemon's own RSS, and cgroup counters missed these exact kills.
-`wait4`'s `ru_maxrss` is free at reap time and is the missing foundation.
+So the ladder's rung 2 has a floor and a ceiling: exclusivity, and memory-aware
+scheduling from measurement (soldr#3152). The measurement now exists. zccache
+1.13.24 journals `child_peak_rss_bytes` (the compiler alone) and
+`tree_peak_rss_bytes` (the compiler plus its live descendants, so a linking
+`rustc`'s `ld` counts) and returns both on each compile's response. soldr keeps
+the last trusted peak per unit (`<crate name>/<cargo -C metadata>`) in
+`state.sqlite3`. `.github/scripts/fit_memory_estimate.py` scores it from the
+`build-logs-*` artifacts.
+
+What soldr#3152 measured, so nobody re-derives it:
+
+- A command-line-feature estimate does not work: R² 0.09 on `--extern` bytes
+  across 1,161 CI units. The heaviest units are large first-party source trees
+  the command line cannot see.
+- A unit's own measured peak is stable. Every unit ≥ 256 MiB was within 1.35x of
+  its remembered peak.
+- Short compiles report a spawn-instant sample (tens of KiB). The history ignores
+  readings under 8 MiB and trusts a unit only after two measurements.
+- CI roots are fresh, so CI never reaches a trusted history. That is why the name
+  lists stay as the cold-start fallback rather than being retired.
 
 ## Agent Development Environment Rule (issue #1105)
 

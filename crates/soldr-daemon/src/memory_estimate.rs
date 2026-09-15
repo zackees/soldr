@@ -1,10 +1,12 @@
 //! Shadow-mode per-unit peak-memory estimate for compiler admission (soldr#3152).
 //!
-//! soldr#3152 replaces the admission name lists (`SOLDR_HEAVY_TEST_LINKS`,
-//! `SOLDR_RUST_EXCLUSIVE_NON_LINKING_UNITS`) with a measured predicate:
-//! estimate a Rust unit's peak memory from its command line, then spend that
-//! estimate against live headroom so exclusivity becomes the emergent case for
-//! a unit that genuinely needs the machine.
+//! soldr#3152 set out to replace the admission name lists
+//! (`SOLDR_HEAVY_TEST_LINKS`, `SOLDR_RUST_EXCLUSIVE_NON_LINKING_UNITS`) with an
+//! estimate of a unit's peak memory from its command line. Measured against
+//! 1,161 CI units, that estimate barely predicted peak memory (R² 0.09 on
+//! `--extern` bytes), so admission spends a per-unit *measured* history
+//! instead (`history_admission`), and the name lists remain as the cold-start
+//! fallback. This module stays as shadow-mode telemetry beside that history.
 //!
 //! This module is step 3 of that plan, *shadow mode*. For every compiler child
 //! zccache is about to admit, it computes the estimate and appends one row to
