@@ -154,6 +154,10 @@ fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
          CREATE TABLE IF NOT EXISTS cook_index_v2 (
              key   BLOB PRIMARY KEY,
              value BLOB NOT NULL
+         ) WITHOUT ROWID;
+         CREATE TABLE IF NOT EXISTS unit_memory_history (
+             key   TEXT PRIMARY KEY,
+             value BLOB NOT NULL
          ) WITHOUT ROWID;",
     )
 }
