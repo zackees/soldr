@@ -53,8 +53,8 @@ class ArgsDigestTests(unittest.TestCase):
 
 class JoinTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
+        self._stack = contextlib.ExitStack()
+        self.root = Path(self._stack.enter_context(tempfile.TemporaryDirectory()))
         self.heavy = ["--crate-name", "broker", "--test"]
         self.light = ["--crate-name", "tap"]
         self.unmeasured = ["--crate-name", "hit_only"]
@@ -80,7 +80,7 @@ class JoinTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
-        self.tmp.cleanup()
+        self._stack.close()
 
     def test_pairs_each_estimate_with_the_measured_compile(self) -> None:
         report = fit.analyze([self.root / "admission-estimate.jsonl"], [self.root])
