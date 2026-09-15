@@ -83,6 +83,36 @@ impl ResidentCompileAdmission {
             .map_err(|error| ResidentCapacityError::Closed(error.to_string()))
     }
 
+    /// soldr#3152 step 4b: additive exclusivity from the unit's measured
+    /// history. Only a trusted, large remembered unit pays for a memory probe.
+    fn history_requires_exclusive(&self, request: &HostCompilerRequest<'_>) -> bool {
+        if request.family() != zccache::compiler::CompilerFamily::Rustc {
+            return false;
+        }
+        let Some(history) = self.unit_history.as_ref() else {
+            return false;
+        };
+        let Some(unit_key) = crate::memory_estimate::unit_key(request.args()) else {
+            return false;
+        };
+        let remembered = history.lookup(&unit_key);
+        if !crate::history_admission::worth_probing(remembered) {
+            return false;
+        }
+        let snapshot = soldr_platform::host::resources::HostResourceSnapshot::capture();
+        let available = crate::history_admission::available_bytes(&snapshot);
+        let exclusive = crate::history_admission::history_requires_exclusive(remembered, available);
+        if exclusive {
+            // Rare and decision-relevant, like the classifier's own line.
+            eprintln!(
+                "soldr-daemon: compiler admission requests exclusive access for {unit_key}: remembered tree peak {} MiB does not fit twice in {} MiB available",
+                remembered.map_or(0, |unit| unit.tree_peak_rss_bytes) / (1024 * 1024),
+                available.unwrap_or(0) / (1024 * 1024)
+            );
+        }
+        exclusive
+    }
+
     #[cfg(test)]
     fn available_permits(&self) -> usize {
         self.capacity.available_permits()
@@ -94,8 +124,9 @@ impl HostAdmissionClassifier for ResidentCompileAdmission {
         &self,
         request: &HostCompilerRequest<'_>,
     ) -> Result<bool, HostAdmissionError> {
-        let exclusive =
+        let classified =
             crate::amalgamation::SoldrHostAdmissionClassifier.requires_exclusive(request)?;
+        let exclusive = classified || self.history_requires_exclusive(request);
         if let Some(log) = &self.estimate_log {
             crate::memory_estimate::shadow_with_history(
                 log,

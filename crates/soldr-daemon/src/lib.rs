@@ -26,6 +26,7 @@ pub(crate) mod ci_test_report;
 pub(crate) mod compile_limit;
 mod compiler_exit;
 pub mod daemon;
+pub(crate) mod history_admission;
 pub(crate) mod memory_estimate;
 pub(crate) mod oom_evidence;
 pub(crate) mod resident_compile_admission;
