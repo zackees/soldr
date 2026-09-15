@@ -40,6 +40,11 @@ pub enum LinkerChoice {
     /// Use rustup's bundled `rust-lld`. Available on every supported
     /// platform.
     RustLld,
+    /// Use the [reld](https://github.com/zackees/reld) linker. Available on
+    /// every supported platform — a native ELF backend on Linux, and an
+    /// `lld` bridge for Windows/COFF and macOS/Mach-O. Invoked directly on
+    /// `PATH`.
+    Reld,
     /// Pick the fastest available linker per platform: mold on Linux if
     /// it is on `PATH`, otherwise rust-lld; rust-lld everywhere else.
     Fast,
@@ -58,9 +63,10 @@ impl FromStr for LinkerChoice {
             "ld" => Ok(LinkerChoice::Ld),
             "mold" => Ok(LinkerChoice::Mold),
             "rust-lld" | "rustlld" | "rust_lld" => Ok(LinkerChoice::RustLld),
+            "reld" => Ok(LinkerChoice::Reld),
             "fast" => Ok(LinkerChoice::Fast),
             other => Err(SoldrError::Other(format!(
-                "invalid SOLDR_LINKER value `{other}` (expected one of: default, ld, mold, rust-lld, fast)"
+                "invalid SOLDR_LINKER value `{other}` (expected one of: default, ld, mold, rust-lld, reld, fast)"
             ))),
         }
     }
@@ -114,6 +120,13 @@ impl LinkerInjection {
     fn rust_lld_msvc() -> Self {
         Self {
             linker: Some("rust-lld".to_string()),
+            rustflags: None,
+        }
+    }
+
+    fn reld() -> Self {
+        Self {
+            linker: Some("reld".to_string()),
             rustflags: None,
         }
     }
@@ -212,6 +225,7 @@ pub fn resolve_for_target_with_probe(
                 Ok(LinkerInjection::clang_with_fuse("lld"))
             }
         },
+        LinkerChoice::Reld => Ok(LinkerInjection::reld()),
         LinkerChoice::Fast => match kind {
             TargetKind::Linux => {
                 if mold_present() {
