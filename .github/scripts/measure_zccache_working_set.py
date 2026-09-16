@@ -313,6 +313,7 @@ def render(
     cap_bytes: int,
     trial: dict | None,
     pruned: list[tuple[str, int]] | None = None,
+    *,
     trim: dict | None = None,
 ) -> str:
     lines = [
@@ -469,7 +470,7 @@ def main(argv: list[str] | None = None) -> int:
             if trim.get("stderr_tail") and trim.get("exit_code"):
                 print(trim["stderr_tail"], file=sys.stderr)
 
-    text = render(walk, verdict, cap_bytes, trial, pruned, trim)
+    text = render(walk, verdict, cap_bytes, trial, pruned, trim=trim)
     print(text)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
