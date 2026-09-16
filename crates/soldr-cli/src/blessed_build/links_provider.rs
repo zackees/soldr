@@ -55,13 +55,20 @@ impl LinksProvider {
 }
 
 /// Resolve the provider of `links` for the graph rooted at
-/// `workspace_root`, built for `target` (empty string = no filter).
+/// `workspace_root`, built for `target` (empty string = no filter) with the
+/// given `feature_args` (the `--features` / `--all-features` /
+/// `--no-default-features` the caller is actually building with).
 ///
 /// The underlying `cargo metadata` probe is memoized per
-/// `(workspace_root, target)` for the life of the process, so asking
-/// about several `links` names costs one subprocess, not several.
-pub(crate) fn resolve(workspace_root: &Path, links: &str, target: &str) -> LinksProvider {
-    match links_map(workspace_root, target) {
+/// `(workspace_root, target, feature_args)` for the life of the process, so
+/// asking about several `links` names costs one subprocess, not several.
+pub(crate) fn resolve(
+    workspace_root: &Path,
+    links: &str,
+    target: &str,
+    feature_args: &[String],
+) -> LinksProvider {
+    match links_map(workspace_root, target, feature_args) {
         Ok(map) => provider_in(&map, links),
         Err(error) => LinksProvider::Unknown(error),
     }
@@ -99,18 +106,30 @@ pub(crate) fn prime_metadata_for_test(workspace_root: &Path, target: &str, metad
     let result = links_map_from_metadata_json(metadata_json);
     let cache = LINKS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = cache.lock().unwrap_or_else(|error| error.into_inner());
-    guard.insert((workspace_root.to_path_buf(), target.to_string()), result);
+    guard.insert(
+        (workspace_root.to_path_buf(), target.to_string(), Vec::new()),
+        result,
+    );
 }
 
 /// `links` name -> set of package names claiming it.
 type LinksMap = HashMap<String, BTreeSet<String>>;
 
 #[allow(clippy::type_complexity)]
-static LINKS_CACHE: OnceLock<Mutex<HashMap<(PathBuf, String), Result<LinksMap, String>>>> =
-    OnceLock::new();
+static LINKS_CACHE: OnceLock<
+    Mutex<HashMap<(PathBuf, String, Vec<String>), Result<LinksMap, String>>>,
+> = OnceLock::new();
 
-fn links_map(workspace_root: &Path, target: &str) -> Result<LinksMap, String> {
-    let key = (workspace_root.to_path_buf(), target.to_string());
+fn links_map(
+    workspace_root: &Path,
+    target: &str,
+    feature_args: &[String],
+) -> Result<LinksMap, String> {
+    let key = (
+        workspace_root.to_path_buf(),
+        target.to_string(),
+        feature_args.to_vec(),
+    );
     let cache = LINKS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     // A poisoned lock means some other caller panicked mid-probe. That
     // is not a reason to mis-link, so fall through to a fresh probe
@@ -120,14 +139,18 @@ fn links_map(workspace_root: &Path, target: &str) -> Result<LinksMap, String> {
             return cached.clone();
         }
     }
-    let result = probe_links_map(workspace_root, target);
+    let result = probe_links_map(workspace_root, target, feature_args);
     if let Ok(mut guard) = cache.lock() {
         guard.insert(key, result.clone());
     }
     result
 }
 
-fn probe_links_map(workspace_root: &Path, target: &str) -> Result<LinksMap, String> {
+fn probe_links_map(
+    workspace_root: &Path,
+    target: &str,
+    feature_args: &[String],
+) -> Result<LinksMap, String> {
     // Answer without a subprocess when there is plainly nothing to
     // resolve. `blessed_build::prepare` runs on paths that do not all
     // start from a workspace, and spawning cargo only to have it fail
@@ -165,12 +188,19 @@ fn probe_links_map(workspace_root: &Path, target: &str) -> Result<LinksMap, Stri
     if !target.is_empty() {
         command.args(["--filter-platform", target]);
     }
-    // Feature selection is deliberately NOT forwarded. Without it the
-    // graph is a superset of what will actually build, so an optional
-    // fork dependency still shows up and we conservatively skip the
-    // substitution. The reverse error — resolving a narrower graph,
-    // missing the fork, and injecting upstream anyway — is the one that
-    // breaks the link.
+    // Forward the caller's feature selection so the probed graph matches
+    // what will actually build (soldr#3270). A default-graph probe is a
+    // *subset*, not a superset: an optional `-sys` dependency enabled only
+    // by a non-default feature (e.g. `openssl` behind `--all-features`) is
+    // absent from the default graph, so the override silently did nothing
+    // and the cross-build fell back to a source build that cannot work.
+    //
+    // Forwarding the actual features keeps the fork-safety property intact:
+    // a fork enabled by a forwarded feature still shows up, and the
+    // conservative multi-provider skip (or the fork's own `links` name) still
+    // refuses the substitution. It only stops missing dependencies that the
+    // requested features pull in.
+    command.args(feature_args);
     let output = crate::core::command_output_with_timeout(&mut command, "cargo metadata links")
         .map_err(|error| error.to_string())?;
     if !output.status.success() {
@@ -267,7 +297,7 @@ mod tests {
         // The point is that this returns promptly and does not depend
         // on a cargo binary being resolvable at all.
         let tmp = tempfile::tempdir().expect("tmpdir");
-        let provider = resolve(tmp.path(), "mimalloc", "x86_64-pc-windows-msvc");
+        let provider = resolve(tmp.path(), "mimalloc", "x86_64-pc-windows-msvc", &[]);
         match provider {
             LinksProvider::Unknown(reason) => assert!(
                 reason.contains("no Cargo.toml"),

@@ -50,8 +50,13 @@ async fn run_blessed_build(
         // real dependency errors.
         let dep_prefetch =
             crate::fetch_overlap::spawn_for_blessed_build(&full_args, &target_triple);
-        let prep =
-            crate::target_lifecycle::prepare_for_invocation(&paths, &target_triple).await?;
+        let feature_args = crate::target_lifecycle::cargo_feature_flags(&full_args);
+        let prep = crate::target_lifecycle::prepare_for_invocation(
+            &paths,
+            &target_triple,
+            &feature_args,
+        )
+        .await?;
         let cargo_args = prep.cargo_args.clone();
         crate::target_lifecycle::apply_to_process(&prep);
 

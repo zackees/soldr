@@ -165,7 +165,7 @@ fn managed_gnu_toolchain_is_exported_for_later_github_steps() {
 
     let prep = tokio::runtime::Runtime::new()
         .expect("runtime")
-        .block_on(crate::target_lifecycle::prepare_target(&paths, target))
+        .block_on(crate::target_lifecycle::prepare_target(&paths, target, &[]))
         .expect("prepare managed GNU target");
     assert!(
         prep.path_dirs.contains(&managed_bin),
@@ -226,7 +226,7 @@ fn managed_gnu_toolchain_is_exported_for_later_github_steps() {
     // caller decision and inject no stdlib pin at all.
     let reprep = tokio::runtime::Runtime::new()
         .expect("runtime")
-        .block_on(crate::target_lifecycle::prepare_target(&paths, target))
+        .block_on(crate::target_lifecycle::prepare_target(&paths, target, &[]))
         .expect("re-prepare managed GNU target");
     assert!(
         !reprep
@@ -355,7 +355,7 @@ fn managed_musl_toolchain_is_exported_without_zig_or_host_tools() {
 
     let prep = tokio::runtime::Runtime::new()
         .expect("runtime")
-        .block_on(crate::target_lifecycle::prepare_target(&paths, target))
+        .block_on(crate::target_lifecycle::prepare_target(&paths, target, &[]))
         .expect("prepare managed musl target");
     assert!(prep.path_dirs.contains(&managed_bin));
     assert!(
@@ -467,7 +467,10 @@ fn managed_openssl_is_exported_only_for_graphs_linking_openssl_sys() {
         );
         let mut prep = BlessedPrep::default();
         runtime.block_on(crate::blessed_build::inject_sys_library_overrides(
-            &paths, triple, &mut prep,
+            &paths,
+            triple,
+            &mut prep,
+            &[],
         ));
         let github_env = root.join(format!("{triple}.env"));
         apply_blessed_prep_env(Some(&github_env), &prep, triple).expect("export prepared env");

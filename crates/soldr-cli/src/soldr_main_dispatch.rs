@@ -813,7 +813,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 // PyO3 plan decides whether any Python variables are valid.
                 if maturin_build && maturin_target != crate::pyo3_detect::host_triple() {
                     let target_prep =
-                        crate::target_lifecycle::prepare_for_invocation(&paths, &maturin_target)
+                        crate::target_lifecycle::prepare_for_invocation(&paths, &maturin_target, &[])
                             .await?;
                     crate::target_lifecycle::apply_to_process(&target_prep);
                     // Maturin forwards Cargo's unstable --config option.

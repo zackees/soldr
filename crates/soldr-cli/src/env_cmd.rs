@@ -63,7 +63,7 @@ pub async fn run_env_command(
         std::env::set_var(crate::core::quiet::QUIET_DIAGNOSTICS_ENV_VAR, "1");
     }
     let paths = SoldrPaths::new()?;
-    let prep = crate::target_lifecycle::prepare_target(&paths, &resolved.rust_triple).await?;
+    let prep = crate::target_lifecycle::prepare_target(&paths, &resolved.rust_triple, &[]).await?;
     let pairs = crate::prepare_github_env::exported_env_pairs(&prep, &resolved.rust_triple)?;
 
     if json {

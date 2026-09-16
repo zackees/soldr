@@ -19,8 +19,13 @@ use crate::core::SoldrPaths;
 /// The crate soldr's prebuilt mimalloc was cut to match.
 const MIMALLOC_SYS_CRATE: &str = "libmimalloc-sys";
 
-pub(super) async fn inject(paths: &SoldrPaths, target_triple: &str, prep: &mut BlessedPrep) {
-    if !override_applies(target_triple) {
+pub(super) async fn inject(
+    paths: &SoldrPaths,
+    target_triple: &str,
+    prep: &mut BlessedPrep,
+    feature_args: &[String],
+) {
+    if !override_applies(target_triple, feature_args) {
         return;
     }
     match crate::fetch::mimalloc_sysroot::ensure_mimalloc_sysroot(paths, target_triple).await {
@@ -39,9 +44,10 @@ pub(super) async fn inject(paths: &SoldrPaths, target_triple: &str, prep: &mut B
 /// fails. When the graph cannot be resolved we skip rather than guess:
 /// the crate's own vendored compile still produces a working build,
 /// which a mis-substitution does not.
-fn override_applies(target_triple: &str) -> bool {
+fn override_applies(target_triple: &str, feature_args: &[String]) -> bool {
     let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let provider = links_provider::resolve(&workspace_root, "mimalloc", target_triple);
+    let provider =
+        links_provider::resolve(&workspace_root, "mimalloc", target_triple, feature_args);
     match provider {
         links_provider::LinksProvider::Package(name) if name == MIMALLOC_SYS_CRATE => true,
         // Nothing claims the name — the override would be inert, and
