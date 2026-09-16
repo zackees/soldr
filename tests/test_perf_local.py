@@ -46,7 +46,7 @@ def test_docker_image_bootstraps_with_amalgamation_safe_published_soldr() -> Non
     assert version == (
         0,
         9,
-        10,
+        19,
     ), "keep the bootstrap on the repository's current published release"
     assert '"soldr==${SOLDR_BOOTSTRAP_VERSION}"' in dockerfile
     assert "/opt/soldr-bootstrap/bin/soldr --version" in dockerfile
