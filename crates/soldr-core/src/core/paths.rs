@@ -181,8 +181,9 @@ pub struct SoldrConfig {
     #[serde(default)]
     pub auto_gc: AutoGcConfig,
     /// User-configured linker choice for `soldr cargo ...`. Mirrors the
-    /// `SOLDR_LINKER` env var; the env var wins when both are set.
-    /// Accepted values: `default`, `ld`, `mold`, `rust-lld`, `fast`.
+    /// `SOLDR_LINKER` env var; the env var wins when both are set. When
+    /// neither is set, reld (`fast`) is the default linker.
+    /// Accepted values: `default`, `ld`, `mold`, `rust-lld`, `reld`, `fast`.
     #[serde(default)]
     pub linker: Option<String>,
     /// Cross-repo shared `soldr cook` artifact cache (issue #578, meta

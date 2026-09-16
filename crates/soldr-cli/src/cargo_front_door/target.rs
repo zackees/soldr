@@ -130,7 +130,7 @@ pub(super) fn apply_linker_override(
     // convenience linker selection. This matters for cross builds: the
     // workflow may already have installed a target-aware Zig wrapper while
     // SOLDR_LINKER=fast is inherited from setup-soldr. Do not replace an
-    // explicit target toolchain with the host clang/LLD fallback.
+    // explicit target toolchain with the host clang/reld injection.
     if let Some(linker_path) = injection.linker {
         if !effective_command_env_is_non_empty(command, &linker_key) {
             command.env(&linker_key, linker_path);
