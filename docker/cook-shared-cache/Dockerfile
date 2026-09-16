@@ -82,8 +82,10 @@ RUN rustup default 1.95.0 \
 # this isolated from the warm runner volumes as immutable image state. The
 # bootstrap must include zccache's amalgamation admission gate (Soldr 0.9.6+):
 # this image invokes it to compile current Soldr before the current source can
-# provide that protection itself.
-ARG SOLDR_BOOTSTRAP_VERSION=0.9.10
+# provide that protection itself. It must also carry the PDEATHSIG fix
+# (soldr#3211), which landed after 0.9.15, so a cold bootstrap compile cannot
+# be SIGTERMed mid-run (soldr#2930).
+ARG SOLDR_BOOTSTRAP_VERSION=0.9.19
 RUN python3 -m venv /opt/soldr-bootstrap \
     && /opt/soldr-bootstrap/bin/pip install --disable-pip-version-check \
        "soldr==${SOLDR_BOOTSTRAP_VERSION}" \
