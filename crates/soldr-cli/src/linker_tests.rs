@@ -195,31 +195,65 @@ fn rust_lld_on_apple_uses_a_macho_capable_linker() {
 fn fast_on_linux_uses_reld_via_clang_ld_path() {
     // reld's native ELF backend does not inject CRT startup objects, so
     // `Fast` (reld) is driven through clang (`--ld-path=reld`) on Linux.
-    let i = resolve_for_target(LinkerChoice::Fast, LINUX).unwrap();
+    let i = resolve_for_target_with_probe(LinkerChoice::Fast, LINUX, &|| true).unwrap();
     assert_eq!(i.linker.as_deref(), Some("clang"));
     assert_eq!(i.rustflags.as_deref(), Some("-C link-arg=--ld-path=reld"));
 }
 
 #[test]
+fn fast_on_linux_without_reld_falls_back_to_lld() {
+    // reld is not yet bundled or universally installed (soldr#3262); `Fast`
+    // must degrade to rust-lld rather than fail the link with
+    // `invalid linker name in argument '--ld-path=reld'`.
+    let i = resolve_for_target_with_probe(LinkerChoice::Fast, LINUX, &|| false).unwrap();
+    assert_eq!(i.linker.as_deref(), Some("clang"));
+    assert_eq!(i.rustflags.as_deref(), Some("-C link-arg=-fuse-ld=lld"));
+}
+
+#[test]
 fn fast_on_apple_uses_reld() {
     for triple in [MAC_X64, MAC_ARM] {
-        let i = resolve_for_target(LinkerChoice::Fast, triple).unwrap();
+        let i = resolve_for_target_with_probe(LinkerChoice::Fast, triple, &|| true).unwrap();
         assert_eq!(i.linker.as_deref(), Some("reld"), "{triple}");
         assert!(i.rustflags.is_none(), "{triple}");
     }
 }
 
 #[test]
+fn fast_on_apple_without_reld_falls_back_to_platform_linker() {
+    for triple in [MAC_X64, MAC_ARM] {
+        let i = resolve_for_target_with_probe(LinkerChoice::Fast, triple, &|| false).unwrap();
+        assert_apple_fast_linker(&i, triple);
+    }
+}
+
+#[test]
 fn fast_on_windows_msvc_uses_reld() {
-    let i = resolve_for_target(LinkerChoice::Fast, WIN_MSVC).unwrap();
+    let i = resolve_for_target_with_probe(LinkerChoice::Fast, WIN_MSVC, &|| true).unwrap();
     assert_eq!(i.linker.as_deref(), Some("reld"));
     assert!(i.rustflags.is_none());
 }
 
 #[test]
+fn fast_on_windows_msvc_without_reld_falls_back_to_rust_lld() {
+    let i = resolve_for_target_with_probe(LinkerChoice::Fast, WIN_MSVC, &|| false).unwrap();
+    assert_eq!(i.linker.as_deref(), Some("rust-lld"));
+    assert!(i.rustflags.is_none());
+}
+
+#[test]
 fn fast_on_windows_gnu_uses_reld() {
-    let i = resolve_for_target(LinkerChoice::Fast, WIN_GNU).unwrap();
+    let i = resolve_for_target_with_probe(LinkerChoice::Fast, WIN_GNU, &|| true).unwrap();
     assert_eq!(i.linker.as_deref(), Some("reld"));
+    assert!(i.rustflags.is_none());
+}
+
+#[test]
+fn fast_on_windows_gnu_without_reld_uses_the_bundle_linker() {
+    // The blessed Windows GNU lifecycle provisions a relocatable GCC bundle
+    // with its matching binutils, so the portable fallback is no injection.
+    let i = resolve_for_target_with_probe(LinkerChoice::Fast, WIN_GNU, &|| false).unwrap();
+    assert!(i.linker.is_none());
     assert!(i.rustflags.is_none());
 }
 

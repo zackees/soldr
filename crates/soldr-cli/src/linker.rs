@@ -207,6 +207,17 @@ pub fn resolve_for_target(
     choice: LinkerChoice,
     target: &str,
 ) -> Result<LinkerInjection, SoldrError> {
+    let reld_present = || reld_on_path();
+    resolve_for_target_with_probe(choice, target, &reld_present)
+}
+
+/// Same as [`resolve_for_target`] but with the reld-on-PATH probe injected so
+/// tests can exercise both branches of `fast`.
+pub fn resolve_for_target_with_probe(
+    choice: LinkerChoice,
+    target: &str,
+    reld_present: &dyn Fn() -> bool,
+) -> Result<LinkerInjection, SoldrError> {
     let kind = target_kind(target);
     match choice {
         LinkerChoice::Default | LinkerChoice::Ld => Ok(LinkerInjection::none()),
@@ -228,16 +239,61 @@ pub fn resolve_for_target(
                 Ok(LinkerInjection::clang_with_fuse("lld"))
             }
         },
-        // reld is both the explicit choice and the `Fast`/default choice
-        // (soldr#3262). On Linux its native ELF backend does not inject the
-        // CRT startup objects, so a direct `-C linker=reld` would link a
-        // binary with no `_start`: drive reld through clang (`--ld-path=reld`)
-        // so the driver injects CRT and the interpreter. On Windows/macOS reld
-        // bridges to lld-link/ld64.lld, which handle the CRT themselves, so
-        // the direct `reld` injection is fine there.
-        LinkerChoice::Reld | LinkerChoice::Fast => match kind {
+        // reld is the explicit choice (`SOLDR_LINKER=reld`): no probe, the
+        // caller asked for reld specifically. On Linux its native ELF backend
+        // does not inject the CRT startup objects, so a direct
+        // `-C linker=reld` would link a binary with no `_start`: drive reld
+        // through clang (`--ld-path=reld`) so the driver injects CRT and the
+        // interpreter. On Windows/macOS reld bridges to lld-link/ld64.lld,
+        // which handle the CRT themselves, so the direct `reld` injection is
+        // fine there.
+        LinkerChoice::Reld => match kind {
             TargetKind::Linux => Ok(LinkerInjection::clang_with_ld_path("reld")),
             _ => Ok(LinkerInjection::reld()),
+        },
+        // `Fast` is the automatic/default choice (soldr#3262): prefer reld,
+        // but reld is not yet bundled or universally installed, so probe for
+        // it and fall back to the prior per-platform fast linker rather than
+        // failing the link with `invalid linker name in argument
+        // '--ld-path=reld'`.
+        LinkerChoice::Fast => match kind {
+            TargetKind::Linux => {
+                if reld_present() {
+                    Ok(LinkerInjection::clang_with_ld_path("reld"))
+                } else {
+                    Ok(LinkerInjection::clang_with_fuse("lld"))
+                }
+            }
+            TargetKind::WindowsMsvc => {
+                if reld_present() {
+                    Ok(LinkerInjection::reld())
+                } else {
+                    Ok(LinkerInjection::rust_lld_msvc())
+                }
+            }
+            TargetKind::Apple => {
+                if reld_present() {
+                    Ok(LinkerInjection::reld())
+                } else {
+                    Ok(LinkerInjection::apple_fast_linker())
+                }
+            }
+            TargetKind::WindowsGnu => {
+                if reld_present() {
+                    Ok(LinkerInjection::reld())
+                } else {
+                    // The blessed Windows GNU lifecycle provisions a
+                    // relocatable GCC bundle with its matching binutils.
+                    Ok(LinkerInjection::none())
+                }
+            }
+            TargetKind::Other => {
+                if reld_present() {
+                    Ok(LinkerInjection::reld())
+                } else {
+                    Ok(LinkerInjection::clang_with_fuse("lld"))
+                }
+            }
         },
     }
 }
@@ -713,6 +769,20 @@ fn looks_like_linker_failure_text(text: &str) -> bool {
     ];
     linker_signal.iter().any(|needle| text.contains(needle))
         && failure_signal.iter().any(|needle| text.contains(needle))
+}
+
+/// Whether the `reld` linker is available on `PATH` (probed by running
+/// `reld --version`). `Fast`/the default linker falls back to rust-lld (or the
+/// platform default) when reld is not installed, since reld is not yet bundled
+/// or universally shipped (soldr#3262).
+fn reld_on_path() -> bool {
+    let mut command = std::process::Command::new("reld");
+    command.arg("--version");
+    suppress_windows_console_window(&mut command);
+    match command.output() {
+        Ok(out) => out.status.success(),
+        Err(_) => false,
+    }
 }
 
 /// Convert a target triple to the uppercase underscore form Cargo uses

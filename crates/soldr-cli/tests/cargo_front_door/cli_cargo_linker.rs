@@ -42,6 +42,30 @@ fn log_has_any_cargo_target_env(log: &str) -> bool {
         .any(|line| line.starts_with("cargo_target_env "))
 }
 
+/// Install a fake `reld` that exits 0 on `--version`, so the `Fast`/default
+/// probe sees it as available. Returns the directory to prepend to PATH.
+fn install_fake_reld() -> PathBuf {
+    let dir = unique_temp_dir("fake-reld");
+    let reld = fake_script_path(&dir, "reld");
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        write_fake_script(&reld, "@echo off\nexit /b 0\n");
+    } else {
+        write_fake_script(&reld, "#!/bin/sh\nexit 0\n");
+    }
+    dir
+}
+
+/// Prepend `dir` to `command`'s `PATH` so a fake binary there shadows the host's.
+fn prepend_to_path(command: &mut Command, dir: &Path) {
+    let mut paths =
+        std::env::split_paths(&std::env::var("PATH").unwrap_or_default()).collect::<Vec<_>>();
+    paths.insert(0, dir.to_path_buf());
+    command.env("PATH", std::env::join_paths(paths).expect("join PATH"));
+}
+
 /// soldr#3262: reld is the default (and `fast`) linker. Assert it is injected
 /// the way `resolve_for_target` prescribes for the host: through clang
 /// `--ld-path=reld` on Linux (so the driver injects CRT), direct on
@@ -68,11 +92,12 @@ fn assert_reld_injected(log: &str) {
 }
 
 #[test]
-fn cargo_front_door_default_injects_reld() {
+fn cargo_front_door_default_injects_reld_when_available() {
     let cache_root = unique_temp_dir("cargo-default-linker");
     let home_root = cache_root.join("home");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
+    let reld_dir = install_fake_reld();
     let daemon = common::isolated_daemon::IsolatedDaemon::spawn(
         &common::soldr_daemon_bin(),
         &cache_root,
@@ -81,6 +106,7 @@ fn cargo_front_door_default_injects_reld() {
     let mut command = isolated_soldr_command();
     // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
     command.current_dir(&cache_root);
+    prepend_to_path(&mut command, &reld_dir);
     daemon.configure_client(&mut command);
     let output = command
         .args(["cargo", "build"])
@@ -102,6 +128,75 @@ fn cargo_front_door_default_injects_reld() {
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
     assert_reld_injected(&log);
+}
+
+#[test]
+fn cargo_front_door_default_falls_back_to_rust_lld_without_reld() {
+    // reld is not yet bundled or universally installed (soldr#3262): when it is
+    // absent from PATH the default (`Fast`) degrades to rust-lld rather than
+    // failing the link. On Linux that is `clang -fuse-ld=lld`; on Windows it is
+    // `rust-lld`; on macOS the platform default (no injection, issue #509).
+    let cache_root = unique_temp_dir("cargo-default-linker-fallback");
+    let home_root = cache_root.join("home");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
+    let daemon = common::isolated_daemon::IsolatedDaemon::spawn(
+        &common::soldr_daemon_bin(),
+        &cache_root,
+        &home_root,
+    );
+    let mut command = isolated_soldr_command();
+    command.current_dir(&cache_root);
+    daemon.configure_client(&mut command);
+    let output = command
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .env_remove("SOLDR_LINKER")
+        .output()
+        .expect("failed to run soldr cargo build with no SOLDR_LINKER");
+
+    assert!(
+        output.status.success(),
+        "default-linker fallback front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Linux
+    ) {
+        let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
+            panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
+        });
+        assert_eq!(linker_value, "clang", "linux fallback drives clang: {log}");
+        assert_eq!(
+            extract_rustflags_env_value(&log).as_deref(),
+            Some("-C link-arg=-fuse-ld=lld"),
+            "linux fallback injects -fuse-ld=lld: {log}"
+        );
+    } else if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
+            panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
+        });
+        assert_eq!(
+            linker_value, "rust-lld",
+            "windows fallback injects rust-lld directly: {log}"
+        );
+    } else {
+        assert!(
+            !log_has_any_cargo_target_env(&log),
+            "macOS fallback should not inject any CARGO_TARGET_* env (issue #509): {log}"
+        );
+    }
 }
 
 #[test]
@@ -225,22 +320,24 @@ fn cargo_front_door_mold_on_non_linux_returns_clear_error() {
     );
 }
 
-/// `SOLDR_LINKER=fast` resolves to reld everywhere (soldr#3262): clang
-/// `--ld-path=reld` on Linux, direct `reld` on Windows/macOS. Same as the
-/// default, so this asserts the explicit `fast` spelling reaches the same
-/// injection.
+/// `SOLDR_LINKER=fast` resolves to reld when it is available (soldr#3262):
+/// clang `--ld-path=reld` on Linux, direct `reld` on Windows/macOS. Same as
+/// the default, so this asserts the explicit `fast` spelling reaches the same
+/// injection when a fake `reld` is on PATH.
 #[test]
 fn cargo_front_door_fast_uses_reld() {
     let cache_root = unique_temp_dir("cargo-fast-linker");
     let home_root = cache_root.join("home");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
+    let reld_dir = install_fake_reld();
     let daemon = common::isolated_daemon::IsolatedDaemon::spawn(
         &common::soldr_daemon_bin(),
         &cache_root,
         &home_root,
     );
     let mut command = isolated_soldr_command();
+    prepend_to_path(&mut command, &reld_dir);
     daemon.configure_client(&mut command);
     let output = command
         .args(["cargo", "build"])
