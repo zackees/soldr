@@ -662,3 +662,175 @@ fn daemon_reclaim_ages_are_the_shared_72h_staleness_gate() {
         "pep517 targets and wheels"
     );
 }
+
+/// soldr#3251: under a build, the store pass is throttled, but a store the last
+/// measurement put over its budget is maintained on every tick.
+#[test]
+fn store_pass_under_a_build_is_throttled_unless_the_store_is_over_budget() {
+    let now = UNIX_EPOCH + Duration::from_secs(10 * 24 * 60 * 60);
+    let now_ms = unix_millis(now);
+    let minute_ago = now_ms - 60_000;
+    // `disk_report` budgets 100 GiB.
+    assert!(store_pass_due(None, now), "no status yet");
+    assert!(
+        store_pass_due(Some(&deferred_pass(minute_ago)), now),
+        "never measured"
+    );
+    assert!(
+        !store_pass_due(Some(&completed_pass(minute_ago, 1 << 30)), now),
+        "measured a minute ago and under budget"
+    );
+    assert!(
+        store_pass_due(
+            Some(&completed_pass(
+                now_ms - STORE_PASS_INTERVAL.as_millis() as i64,
+                1 << 30
+            )),
+            now
+        ),
+        "measured a full interval ago"
+    );
+    assert!(
+        store_pass_due(Some(&completed_pass(minute_ago, 216 << 30)), now),
+        "over budget, however recent the measurement"
+    );
+}
+
+/// soldr#3251: a daemon of one zccache version must not mark another version's
+/// store as maintained.
+#[test]
+fn full_pass_markers_are_keyed_by_the_embedded_zccache_version() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(temp.path().join("owned"));
+    let now = UNIX_EPOCH + Duration::from_secs(10 * 24 * 60 * 60);
+    let stamp = format!("{}\n", unix_millis(now));
+    // Markers left by the root-wide schedule, and by a daemon of another version.
+    let shared = maintenance_dir(&paths);
+    let other_version = shared.join("v0.0.1");
+    std::fs::create_dir_all(&other_version).expect("marker dirs");
+    for dir in [&shared, &other_version] {
+        std::fs::write(dir.join(FULL_MARKER), &stamp).expect("full marker");
+        std::fs::write(dir.join(FULL_ATTEMPT_MARKER), &stamp).expect("attempt marker");
+    }
+
+    assert_eq!(read_last_full(&paths), None);
+    assert_eq!(read_last_full_attempt(&paths), None);
+
+    record_last_full(&paths, now).expect("record full");
+    record_last_full_attempt(&paths, now).expect("record attempt");
+    assert_eq!(read_last_full(&paths), Some(now));
+    assert_eq!(read_last_full_attempt(&paths), Some(now));
+    let own = shared.join(zccache::core::config::versioned_subdir());
+    assert!(full_marker_path(&paths).starts_with(&own));
+    assert!(full_attempt_marker_path(&paths).starts_with(&own));
+}
+
+fn store_test_daemon_identity() -> running_process::broker::backend_handle::DaemonProcess {
+    let endpoint = running_process::broker::protocol::Endpoint {
+        namespace_id: "shared".into(),
+        path: "soldr-maintenance-store-pass".into(),
+    };
+    running_process::broker::backend_handle::DaemonProcess::current_process(endpoint, Some(30))
+        .expect("current-process identity")
+}
+
+/// Age every entry under `root`, directories included, so the retired-store
+/// sweep's newest-mtime gate sees the whole tree as old.
+fn age_tree(root: &Path, age: Duration) {
+    let old = filetime::FileTime::from_system_time(SystemTime::now() - age);
+    let mut entries = vec![root.to_path_buf()];
+    let mut index = 0;
+    while index < entries.len() {
+        if entries[index].is_dir() {
+            for entry in std::fs::read_dir(&entries[index]).expect("read tree") {
+                entries.push(entry.expect("entry").path());
+            }
+        }
+        index += 1;
+    }
+    // Deepest first, so aging a child does not refresh its parent afterwards.
+    for path in entries.iter().rev() {
+        filetime::set_file_mtime(path, old).expect("age entry");
+    }
+}
+
+/// soldr#3251: the lease-gated pass deferred the whole pass, store included,
+/// whenever any build held the root lease, so on a busy host the store was
+/// never maintained. With a real embedded service and a build holding the
+/// lease, the store pass and the retired-store sweep must now still run, while
+/// soldr's own collectors stay deferred.
+#[test]
+fn a_build_holding_the_root_lease_no_longer_starves_the_store_pass() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("owned"));
+        std::fs::create_dir_all(&paths.root).expect("root");
+        let service = Arc::new(
+            SoldrZccacheService::start(&paths, &store_test_daemon_identity())
+                .await
+                .expect("start embedded zccache service"),
+        );
+        let retired = crate::zccache_embedded::embedded_cache_root(&paths).join("v0.0.1");
+        std::fs::create_dir_all(&retired).expect("retired store");
+        std::fs::write(retired.join("artifact"), b"payload").expect("retired artifact");
+        age_tree(
+            &retired,
+            30 * 24 * 60 * 60 * Duration::from_secs(1) + Duration::from_secs(60),
+        );
+        let context = MaintenanceContext {
+            paths: paths.clone(),
+            db_path: crate::cache_lib::data_db_path(&paths),
+            compile_service: Arc::clone(&service),
+            shutdown: Arc::new(ShutdownSignal::default()),
+        };
+        let build = crate::cache_lib::build_active::BuildActivityLease::acquire(&paths, 7)
+            .expect("build lease");
+
+        let status = run_once(&context, MaintenanceKind::Pressure, SystemTime::now()).await;
+
+        assert_eq!(status.deferred_reason.as_deref(), Some("build_active"));
+        assert_eq!(
+            status.successful_at_ms, None,
+            "local collectors stay deferred"
+        );
+        assert!(
+            status.zccache.is_some() && status.zccache_measured_at_ms.is_some(),
+            "the store pass must run while a build holds the lease: {status:?}"
+        );
+        assert_eq!(
+            status.legacy_zccache.items_removed, 1,
+            "the retired store must be reclaimed while a build holds the lease: {status:?}"
+        );
+        assert!(!retired.exists());
+
+        // The live service holds the writer lock under the name the retired-store
+        // sweep checks, so an upstream rename cannot silently disarm that check.
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(
+                crate::zccache_embedded::embedded_version_root(&paths)
+                    .join(crate::zccache_embedded::ZCCACHE_WRITER_LOCK_FILE),
+            )
+            .expect("live service writer lock");
+        assert!(
+            fs2::FileExt::try_lock_exclusive(&lock).is_err(),
+            "a running service must hold its writer lock"
+        );
+
+        drop(lock);
+        drop(build);
+        drop(context);
+        if let Ok(service) = Arc::try_unwrap(service) {
+            service
+                .shutdown(zccache::embedded::ShutdownMode::Graceful)
+                .await
+                .expect("shutdown");
+        }
+    });
+}
