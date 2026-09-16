@@ -2621,7 +2621,6 @@ dependencies = [
  "interprocess",
  "jwalk",
  "libc",
- "mimalloc-pprof",
  "prost",
  "rayon",
  "reqwest",
@@ -2680,7 +2679,6 @@ dependencies = [
  "hex",
  "interprocess",
  "libc",
- "mimalloc-pprof",
  "prost",
  "running-process",
  "rusqlite",
@@ -3752,9 +3750,9 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.13.25"
+version = "1.13.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "629e4a30e5cebb6597afdbd6e78d24049c32b84012e9ccd1e5f749bcbf7e0a44"
+checksum = "72c5d40a6b8b3279b6e38665b35d5b7d4dc2b02e611075dd0f847fa17b24cd0d"
 dependencies = [
  "arc-swap",
  "bincode",
@@ -3772,6 +3770,7 @@ dependencies = [
  "jwalk",
  "libc",
  "memmap2",
+ "mimalloc-pprof",
  "notify",
  "prost",
  "prost-build",

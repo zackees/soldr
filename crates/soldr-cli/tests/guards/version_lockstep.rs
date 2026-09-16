@@ -191,7 +191,7 @@ fn externalized_dependencies_are_exact_and_consistent() {
     for (dependency, version, manifests) in [
         (
             "zccache",
-            "1.13.24",
+            "1.13.27",
             &[
                 "crates/soldr-cli/Cargo.toml",
                 "crates/soldr-cache/Cargo.toml",
@@ -205,19 +205,6 @@ fn externalized_dependencies_are_exact_and_consistent() {
                 "crates/soldr-cli/Cargo.toml",
                 "crates/soldr-daemon/Cargo.toml",
                 "crates/soldr-platform/Cargo.toml",
-            ][..],
-        ),
-        (
-            // soldr#3038: the `#[global_allocator]` dependency. Pinned to
-            // the newest release satisfying zccache's own (unenabled,
-            // optional) `"0.9.3"` requirement, so the two never resolve to
-            // two different copies in the same binary if a future zccache
-            // feature turns its dependency on.
-            "mimalloc-pprof",
-            "0.9.5",
-            &[
-                "crates/soldr-cli/Cargo.toml",
-                "crates/soldr-daemon/Cargo.toml",
             ][..],
         ),
     ] {

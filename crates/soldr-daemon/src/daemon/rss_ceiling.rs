@@ -35,7 +35,7 @@
 //!   The sampling task itself is spawned only when a positive ceiling is
 //!   configured (see `server_runtime.rs` for the daemon, `broker_server.rs`
 //!   for the broker), so an ordinary run pays no extra timer, no extra file
-//!   write, no extra `mimalloc_pprof::prof::stats()` call, and — see below —
+//!   write, no extra `zccache::mimalloc_pprof::prof::stats()` call, and — see below —
 //!   no sampled-profiler overhead either.
 //! - **A dedicated, fast cadence — not the existing 5-minute maintenance
 //!   loop.** `maintenance::PRESSURE_INTERVAL` (5 min) exists to bound how
@@ -53,7 +53,7 @@
 //!   delay the exit the ceiling exists to force. [`die_on_breach`] calls
 //!   `std::process::exit` directly, bypassing `ShutdownSignal` entirely.
 //! - **The sampled profiler is opt-in at runtime, gated on the same env
-//!   var.** `mimalloc_pprof::prof::dump_file` only produces a useful heap
+//!   var.** `zccache::mimalloc_pprof::prof::dump_file` only produces a useful heap
 //!   profile if `prof::start` was called first. Starting it unconditionally
 //!   would tax every ordinary build with sampling overhead for a dump that
 //!   is thrown away 99.9% of the time, so [`start_sampled_profiler_if_configured`]
@@ -172,7 +172,7 @@ pub fn start_sampled_profiler_if_configured(ceiling_bytes: Option<u64>) -> bool 
     let Some(ceiling_bytes) = ceiling_bytes else {
         return false;
     };
-    if !mimalloc_pprof::prof::start(HEAP_PROFILE_SAMPLE_INTERVAL_BYTES) {
+    if !zccache::mimalloc_pprof::prof::start(HEAP_PROFILE_SAMPLE_INTERVAL_BYTES) {
         tracing::warn!(
             ceiling_bytes,
             "SOLDR_DAEMON_RSS_CEILING_BYTES is set but mimalloc-pprof's sampled profiler \
@@ -216,7 +216,7 @@ pub struct RssCeilingStatus {
     pub sample_count: u64,
     pub breached: bool,
     pub first_breach_at_ms: Option<i64>,
-    /// `mimalloc_pprof::prof::stats().heap.committed` at the last sample:
+    /// `zccache::mimalloc_pprof::prof::stats().heap.committed` at the last sample:
     /// bytes mimalloc currently holds committed from the OS. Compares
     /// directly against `last_rss_bytes` — a daemon where these two track
     /// each other closely is holding live data; one where RSS keeps growing
@@ -248,7 +248,7 @@ pub struct BreachSummary {
     pub peak_rss_bytes: u64,
     pub created_at_ms: i64,
     pub dump_dir: PathBuf,
-    /// `Some` iff `mimalloc_pprof::prof::dump_file` succeeded.
+    /// `Some` iff `zccache::mimalloc_pprof::prof::dump_file` succeeded.
     pub heap_profile_path: Option<PathBuf>,
     /// `Some` iff the dump call failed -- e.g. the sampled profiler was
     /// never started (see [`start_sampled_profiler_if_configured`]).
@@ -295,7 +295,7 @@ pub fn write_breach_dump(
 
     let heap_profile_dest = dir.join("heap.pprof");
     let (heap_profile_path, heap_profile_error) =
-        match mimalloc_pprof::prof::dump_file(&heap_profile_dest) {
+        match zccache::mimalloc_pprof::prof::dump_file(&heap_profile_dest) {
             Ok(()) => (Some(heap_profile_dest), None),
             Err(error) => (None, Some(error.to_string())),
         };
@@ -333,12 +333,12 @@ pub fn write_breach_dump(
     Ok(summary)
 }
 
-/// `mimalloc_pprof::prof::stats()`, flattened into a plain JSON object.
+/// `zccache::mimalloc_pprof::prof::stats()`, flattened into a plain JSON object.
 /// Kept separate from [`BreachSummary`] (rather than embedding `ProfStats`
 /// directly) because `ProfStats`/`HeapStats` derive neither `Serialize` nor
 /// `Deserialize` upstream.
 fn exact_counters_json() -> serde_json::Value {
-    let stats = mimalloc_pprof::prof::stats();
+    let stats = zccache::mimalloc_pprof::prof::stats();
     serde_json::json!({
         "enabled": stats.enabled,
         "accum": stats.accum,
@@ -483,7 +483,7 @@ fn sample_tick(pid: u32, ceiling_bytes: u64, status: &mut RssCeilingStatus) -> T
     status.sample_count += 1;
     status.last_rss_bytes = rss;
     status.peak_rss_bytes = status.peak_rss_bytes.max(rss);
-    let mimalloc = mimalloc_pprof::prof::stats();
+    let mimalloc = zccache::mimalloc_pprof::prof::stats();
     status.mimalloc_heap_committed_bytes = Some(mimalloc.heap.committed as u64);
     status.mimalloc_stats_detailed = mimalloc.heap.detailed;
     status.updated_at_ms = unix_millis();

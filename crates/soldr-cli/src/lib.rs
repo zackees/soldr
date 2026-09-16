@@ -44,13 +44,14 @@
 /// enforcement that keeps this the only one.
 ///
 /// This wires in the allocator and its always-on exact counters
-/// unconditionally (see `Cargo.toml`'s `mimalloc-pprof` entry for why
-/// default features — `pprof`, which compiles mimalloc's C build with
-/// `MI_PPROF=1` — stay on). It does **not** start the crate's *sampled*
-/// heap profiler: nothing here calls `mimalloc_pprof::prof::start`, so that
-/// stays opt-in at runtime, off by default.
+/// unconditionally (see `Cargo.toml`'s `zccache` entry for why the
+/// `mimalloc-allocator` feature — which pulls `mimalloc-pprof` with its
+/// default `pprof`/`MI_PPROF=1` — stays on). It does **not** start the
+/// crate's *sampled* heap profiler: nothing here calls
+/// `mimalloc_pprof::prof::start`, so that stays opt-in at runtime, off by
+/// default.
 #[global_allocator]
-static GLOBAL_ALLOCATOR: mimalloc_pprof::MiMalloc = mimalloc_pprof::MiMalloc;
+static GLOBAL_ALLOCATOR: ::zccache::mimalloc_pprof::MiMalloc = ::zccache::mimalloc_pprof::MiMalloc;
 
 /// Neutral host-platform facade (#2493): the single selection site lives
 /// in `soldr-platform`; this crate calls only `crate::platform::…`.
