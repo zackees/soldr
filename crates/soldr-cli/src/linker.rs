@@ -208,6 +208,28 @@ pub fn resolve_for_target(
     choice: LinkerChoice,
     target: &str,
 ) -> Result<LinkerInjection, SoldrError> {
+    resolve_for_target_with_reld_path(choice, target, &default_reld_ld_path)
+}
+
+/// Resolve the absolute path to the `reld` binary for clang's `--ld-path`.
+/// `--ld-path` requires a path — a bare name is rejected as an "invalid linker
+/// name" (the same `-fuse-ld` name validation) — so look `reld` up on `PATH`
+/// and inject the resolved path. Fall back to the bare name when `reld` is
+/// absent; the link then fails with a clang error rather than mislinking.
+fn default_reld_ld_path() -> String {
+    crate::msvc_host::which_on_path("reld")
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "reld".to_string())
+}
+
+/// Same as `resolve_for_target` but with the reld `--ld-path` resolution
+/// injected so tests can exercise the Linux branch without a real `reld` on
+/// `PATH`.
+pub fn resolve_for_target_with_reld_path(
+    choice: LinkerChoice,
+    target: &str,
+    reld_ld_path: &dyn Fn() -> String,
+) -> Result<LinkerInjection, SoldrError> {
     let kind = target_kind(target);
     match choice {
         LinkerChoice::Default | LinkerChoice::Ld => Ok(LinkerInjection::none()),
@@ -232,12 +254,13 @@ pub fn resolve_for_target(
         LinkerChoice::Reld | LinkerChoice::Fast => match kind {
             // reld's native ELF backend does not inject the CRT startup
             // objects, so a direct `-C linker=reld` would link a binary with no
-            // `_start`. Drive reld through clang (`--ld-path=reld`) on Linux so
-            // the driver injects CRT and the interpreter. On Windows/macOS reld
-            // bridges to lld-link/ld64.lld, which handle the CRT themselves, so
-            // the direct `reld` injection is fine there. `Fast` and `Reld` are
-            // the same linker now that reld is the fast choice.
-            TargetKind::Linux => Ok(LinkerInjection::clang_with_ld_path("reld")),
+            // `_start`. Drive reld through clang (`--ld-path=<reld path>`) on
+            // Linux so the driver injects CRT and the interpreter. On
+            // Windows/macOS reld bridges to lld-link/ld64.lld, which handle the
+            // CRT themselves, so the direct `reld` injection is fine there.
+            // `Fast` and `Reld` are the same linker now that reld is the fast
+            // choice.
+            TargetKind::Linux => Ok(LinkerInjection::clang_with_ld_path(&reld_ld_path())),
             _ => Ok(LinkerInjection::reld()),
         },
     }

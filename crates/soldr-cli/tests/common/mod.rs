@@ -384,7 +384,10 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
             "1",
         )
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
-        .env_remove("SOLDR_LINKER")
+        // reld is soldr's default linker now; pin test fixtures to the explicit
+        // no-injection choice so unrelated tests don't depend on `reld` being
+        // on PATH. Tests that exercise the linker set SOLDR_LINKER explicitly.
+        .env("SOLDR_LINKER", "default")
         .env_remove("CARGO_BUILD_TARGET")
         // Local Docker builders keep the outer compilation cache in a named
         // /target volume. Test fixtures must still exercise their own
