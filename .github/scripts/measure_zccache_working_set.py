@@ -266,6 +266,43 @@ def trial_trim(
         shutil.rmtree(root, ignore_errors=True)
 
 
+def trim_store(store: pathlib.Path, soldr: pathlib.Path, cap_bytes: int) -> dict:
+    """Evict units from the real store until it fits `cap_bytes` (soldr#3252).
+
+    Unlike `trial_trim`, this modifies the store the Save step archives, so the
+    saved generation fits the `zccache-unit` allocation instead of exceeding it
+    — the one lever that un-reds the budget gate. The store lives at
+    `<root>/cache/zccache/daemon-state`, so the root is `store.parents[2]` and
+    the maintain pass is run in place, not on a copy. Never raises.
+    """
+    root = store.parents[2]
+    try:
+        env = dict(os.environ)
+        env.pop("ZCCACHE_CACHE_SIZE_PERCENT", None)
+        env.pop("ZCCACHE_CACHE_DIR", None)
+        env["ZCCACHE_CACHE_SIZE_BYTES"] = str(cap_bytes)
+        env["SOLDR_CACHE_DIR"] = str(root)
+        started = time.monotonic()
+        proc = subprocess.run(
+            [str(soldr), "gc", "maintain", "--root", str(root), "--json"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=TRIAL_TIMEOUT_SECONDS,
+            check=False,
+        )
+        status = parse_status(proc.stdout)
+        return {
+            "maintain_seconds": round(time.monotonic() - started, 1),
+            "exit_code": proc.returncode,
+            "report": (status or {}).get("zccache"),
+            "deferred_reason": (status or {}).get("deferred_reason"),
+            "stderr_tail": proc.stderr[-800:],
+        }
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"skipped": f"trim failed: {error}"}
+
+
 def gib(value: int) -> str:
     return f"{value / GIB:.2f} GiB"
 
@@ -276,6 +313,7 @@ def render(
     cap_bytes: int,
     trial: dict | None,
     pruned: list[tuple[str, int]] | None = None,
+    trim: dict | None = None,
 ) -> str:
     lines = [
         "## Tier-2 zccache working set (soldr#3120)",
@@ -328,6 +366,30 @@ def render(
                 lines.append(f"| {field} | {report.get(field, 'n/a')} |")
             if trial.get("deferred_reason"):
                 lines.append(f"\ndeferred: {trial['deferred_reason']}")
+    if trim is not None:
+        if "skipped" in trim:
+            lines.append(f"Trim before save: skipped ({trim['skipped']})")
+        else:
+            report = trim.get("report") or {}
+            lines += [
+                f"Trim before save (maintain {trim['maintain_seconds']} s, "
+                f"exit {trim['exit_code']}):",
+                "",
+                "| field | value |",
+                "| --- | ---: |",
+            ]
+            for field in (
+                "pressure",
+                "budget_bytes",
+                "usage_before_bytes",
+                "usage_after_bytes",
+                "bytes_reclaimed",
+                "artifacts_removed",
+                "expired_artifacts_removed",
+            ):
+                lines.append(f"| {field} | {report.get(field, 'n/a')} |")
+            if trim.get("deferred_reason"):
+                lines.append(f"\ndeferred: {trim['deferred_reason']}")
     return "\n".join(lines) + "\n"
 
 
@@ -349,6 +411,12 @@ def main(argv: list[str] | None = None) -> int:
         "--prune-dead-version-dirs",
         action="store_true",
         help="remove version trees this run never touched (modifies the store)",
+    )
+    parser.add_argument(
+        "--trim",
+        action="store_true",
+        help="run `soldr gc maintain` on the real store to fit --cap-bytes "
+        "before the save (modifies the store, soldr#3252)",
     )
     parser.add_argument("--cap-bytes", type=int)
     parser.add_argument("--reserve-bytes", type=int, default=DEFAULT_RESERVE_BYTES)
@@ -392,7 +460,16 @@ def main(argv: list[str] | None = None) -> int:
         if trial.get("stderr_tail") and trial.get("exit_code"):
             print(trial["stderr_tail"], file=sys.stderr)
 
-    text = render(walk, verdict, cap_bytes, trial, pruned)
+    trim = None
+    if args.trim:
+        if args.soldr is None:
+            trim = {"skipped": "--trim needs --soldr"}
+        else:
+            trim = trim_store(args.store, args.soldr, cap_bytes)
+            if trim.get("stderr_tail") and trim.get("exit_code"):
+                print(trim["stderr_tail"], file=sys.stderr)
+
+    text = render(walk, verdict, cap_bytes, trial, pruned, trim)
     print(text)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:

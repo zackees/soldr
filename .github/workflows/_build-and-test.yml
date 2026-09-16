@@ -844,10 +844,13 @@ jobs:
       # nothing else ever removes it: zccache maintains only its current
       # version, and CI never runs soldr's legacy sweep. The Save below is
       # success-gated, so a failed run's partial measurement is never saved.
-      # The `gc maintain` copy trial that also ran here on main (~45 s) was
-      # dropped once soldr#3120 closed without a trim cap; the script keeps it
-      # (`--soldr --scratch-root`) for manual measurement.
-      - name: Measure and prune the Tier-2 zccache store (soldr#3120)
+      #
+      # soldr#3252: --trim evicts units from the real store until it fits the
+      # zccache-unit allocation (the family budget minus the stable-cook
+      # reserve), so a saved generation no longer exceeds the 2 GiB budget the
+      # gate checks. It runs `soldr gc maintain` in place (no copy) against the
+      # source-built soldr, whose embedded zccache matches the store's version.
+      - name: Measure, prune and trim the Tier-2 zccache store (soldr#3120, soldr#3252)
         if: always()
         continue-on-error: true
         shell: bash
@@ -855,7 +858,9 @@ jobs:
           python3 .github/scripts/measure_zccache_working_set.py \
             --store "${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/daemon-state" \
             --since-file "${{ runner.temp }}/zccache-unit-restored-at" \
-            --prune-dead-version-dirs
+            --prune-dead-version-dirs \
+            --trim \
+            --soldr "${{ runner.temp }}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
 
       # soldr#1799 — surface the per-build XML logs and the JSONL compile
       # journals from CI compiles so toolchain-home leakage and warm-run

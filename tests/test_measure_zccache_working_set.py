@@ -158,6 +158,74 @@ def test_the_trial_skips_when_the_copy_would_not_fit(
     assert "skipped" in trial and "need" in trial["skipped"]
 
 
+def _fake_trim_soldr(tmp_path: Path) -> Path:
+    """A `soldr` that records the root it was asked to maintain in place."""
+    record = tmp_path / "fake-trim-record.json"
+    script = tmp_path / "soldr-trim"
+    script.write_text(
+        f"""#!{sys.executable}
+import json, os, pathlib, sys
+root = pathlib.Path(sys.argv[sys.argv.index("--root") + 1])
+pathlib.Path({str(record)!r}).write_text(json.dumps({{
+    "argv": sys.argv[1:],
+    "cap": os.environ.get("ZCCACHE_CACHE_SIZE_BYTES"),
+    "percent": os.environ.get("ZCCACHE_CACHE_SIZE_PERCENT"),
+    "soldr_cache_dir": os.environ.get("SOLDR_CACHE_DIR"),
+    "root": str(root),
+}}))
+print("noise before json")
+print(json.dumps({{"deferred_reason": None, "zccache": {{"pressure": "hard", "usage_after_bytes": 7}}}}))
+""",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    return script
+
+
+def test_the_trim_maintains_the_real_store_in_place(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # The store sits at <root>/cache/zccache/daemon-state, so the maintain pass
+    # must be driven at <root>, in place — never on a copy.
+    root = tmp_path / "root"
+    store = root / "cache" / "zccache" / "daemon-state"
+    hit = _file(store / "embedded-v1" / "v1.13.22" / "artifacts" / "hit", 100)
+    monkeypatch.setenv("ZCCACHE_CACHE_SIZE_PERCENT", "50")
+    soldr = _fake_trim_soldr(tmp_path)
+
+    trim = measure.trim_store(store, soldr, 1234)
+
+    record = json.loads(
+        (tmp_path / "fake-trim-record.json").read_text(encoding="utf-8")
+    )
+    assert (
+        record["argv"][:3] == ["gc", "maintain", "--root"]
+        and record["argv"][-1] == "--json"
+    )
+    assert record["root"] == str(root)
+    assert record["cap"] == "1234" and record["percent"] is None
+    assert record["soldr_cache_dir"] == str(root)
+    assert trim["report"] == {"pressure": "hard", "usage_after_bytes": 7}
+    assert hit.read_bytes() == b"x" * 100, "the store is maintained in place"
+
+
+def test_main_trim_requires_soldr(tmp_path: Path, capsys) -> None:
+    store = _store(tmp_path)
+    code = measure.main(
+        [
+            "--store",
+            str(store),
+            "--since-file",
+            str(tmp_path / "absent"),
+            "--cap-bytes",
+            "100",
+            "--trim",
+        ]
+    )
+    assert code == 0
+    assert "--trim needs --soldr" in capsys.readouterr().out
+
+
 def test_main_reports_without_a_marker_and_writes_the_summary(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
