@@ -24,6 +24,10 @@ fn assert_apple_fast_linker(injection: &LinkerInjection, triple: &str) {
     }
 }
 
+fn reld_path() -> String {
+    "/usr/bin/reld".to_string()
+}
+
 #[test]
 fn parses_known_values_case_insensitively() {
     assert_eq!(
@@ -146,21 +150,21 @@ fn rust_lld_on_msvc_uses_rust_lld_directly() {
 fn reld_injects_reld_linker_on_every_target() {
     // reld is a drop-in linker with a native ELF backend (Linux) plus an lld
     // bridge for COFF/Mach-O. On Linux its native backend does not inject the
-    // CRT startup objects, so reld is driven through clang (`--ld-path=reld`,
+    // CRT startup objects, so reld is driven through clang (`--ld-path=/usr/bin/reld`,
     // since `-fuse-ld` rejects unknown linker names) there; on Windows/macOS it
     // bridges to lld-link/ld64.lld, which handle the CRT, so reld is injected
     // directly on PATH with no extra flags.
     for triple in [LINUX, LINUX_MUSL] {
-        let i = resolve_for_target(LinkerChoice::Reld, triple).unwrap();
+        let i = resolve_for_target_with_reld_path(LinkerChoice::Reld, triple, &reld_path).unwrap();
         assert_eq!(i.linker.as_deref(), Some("clang"), "{triple}");
         assert_eq!(
             i.rustflags.as_deref(),
-            Some("-C link-arg=--ld-path=reld"),
+            Some("-C link-arg=--ld-path=/usr/bin/reld"),
             "{triple}"
         );
     }
     for triple in [MAC_X64, MAC_ARM, WIN_MSVC, WIN_GNU] {
-        let i = resolve_for_target(LinkerChoice::Reld, triple).unwrap();
+        let i = resolve_for_target_with_reld_path(LinkerChoice::Reld, triple, &reld_path).unwrap();
         assert_eq!(i.linker.as_deref(), Some("reld"), "{triple}");
         assert!(i.rustflags.is_none(), "{triple}");
     }
@@ -195,19 +199,19 @@ fn rust_lld_on_apple_uses_a_macho_capable_linker() {
 #[test]
 fn fast_resolves_to_reld_on_every_target() {
     // `fast` is reld now: the same per-platform injection as `Reld` — clang
-    // `--ld-path=reld` on Linux (native ELF backend, driver injects CRT), and
+    // `--ld-path=/usr/bin/reld` on Linux (native ELF backend, driver injects CRT), and
     // direct `reld` elsewhere (lld-link/ld64.lld bridge handles CRT itself).
     for triple in [LINUX, LINUX_MUSL] {
-        let i = resolve_for_target(LinkerChoice::Fast, triple).unwrap();
+        let i = resolve_for_target_with_reld_path(LinkerChoice::Fast, triple, &reld_path).unwrap();
         assert_eq!(i.linker.as_deref(), Some("clang"), "{triple}");
         assert_eq!(
             i.rustflags.as_deref(),
-            Some("-C link-arg=--ld-path=reld"),
+            Some("-C link-arg=--ld-path=/usr/bin/reld"),
             "{triple}"
         );
     }
     for triple in [MAC_X64, MAC_ARM, WIN_MSVC, WIN_GNU] {
-        let i = resolve_for_target(LinkerChoice::Fast, triple).unwrap();
+        let i = resolve_for_target_with_reld_path(LinkerChoice::Fast, triple, &reld_path).unwrap();
         assert_eq!(i.linker.as_deref(), Some("reld"), "{triple}");
         assert!(i.rustflags.is_none(), "{triple}");
     }
