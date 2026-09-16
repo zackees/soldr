@@ -153,10 +153,22 @@ fn rust_lld_on_msvc_uses_rust_lld_directly() {
 
 #[test]
 fn reld_injects_reld_linker_on_every_target() {
-    // reld is a drop-in linker with a native ELF backend (Linux) plus an
-    // lld bridge for COFF/Mach-O, so it is injected directly on `PATH` with
-    // no `-fuse-ld` for every supported target kind.
-    for triple in [LINUX, LINUX_MUSL, MAC_X64, MAC_ARM, WIN_MSVC, WIN_GNU] {
+    // reld is a drop-in linker with a native ELF backend (Linux) plus an lld
+    // bridge for COFF/Mach-O. On Linux its native backend does not inject the
+    // CRT startup objects, so reld is driven through clang (`--ld-path=reld`,
+    // since `-fuse-ld` rejects unknown linker names) there; on Windows/macOS it
+    // bridges to lld-link/ld64.lld, which handle the CRT, so reld is injected
+    // directly on PATH with no extra flags.
+    for triple in [LINUX, LINUX_MUSL] {
+        let i = resolve_for_target_with_probe(LinkerChoice::Reld, triple, &always_false).unwrap();
+        assert_eq!(i.linker.as_deref(), Some("clang"), "{triple}");
+        assert_eq!(
+            i.rustflags.as_deref(),
+            Some("-C link-arg=--ld-path=reld"),
+            "{triple}"
+        );
+    }
+    for triple in [MAC_X64, MAC_ARM, WIN_MSVC, WIN_GNU] {
         let i = resolve_for_target_with_probe(LinkerChoice::Reld, triple, &always_false).unwrap();
         assert_eq!(i.linker.as_deref(), Some("reld"), "{triple}");
         assert!(i.rustflags.is_none(), "{triple}");

@@ -117,6 +117,18 @@ impl LinkerInjection {
         }
     }
 
+    /// Drive clang with `--ld-path` pointing at a specific linker binary.
+    ///
+    /// `-fuse-ld` only accepts a closed set of well-known linker names (bfd,
+    /// gold, lld, mold, …) and rejects arbitrary ones like `reld`, so a
+    /// third-party linker must be selected via `--ld-path=<name>` instead.
+    fn clang_with_ld_path(path: &str) -> Self {
+        Self {
+            linker: Some("clang".to_string()),
+            rustflags: Some(format!("-C link-arg=--ld-path={path}")),
+        }
+    }
+
     fn rust_lld_msvc() -> Self {
         Self {
             linker: Some("rust-lld".to_string()),
@@ -225,7 +237,16 @@ pub fn resolve_for_target_with_probe(
                 Ok(LinkerInjection::clang_with_fuse("lld"))
             }
         },
-        LinkerChoice::Reld => Ok(LinkerInjection::reld()),
+        LinkerChoice::Reld => match kind {
+            // reld's native ELF backend does not inject the CRT startup
+            // objects, so a direct `-C linker=reld` would link a binary with no
+            // `_start`. Drive reld through clang (`--ld-path=reld`) on Linux so
+            // the driver injects CRT and the interpreter. On Windows/macOS reld
+            // bridges to lld-link/ld64.lld, which handle the CRT themselves, so
+            // the direct `reld` injection is fine there.
+            TargetKind::Linux => Ok(LinkerInjection::clang_with_ld_path("reld")),
+            _ => Ok(LinkerInjection::reld()),
+        },
         LinkerChoice::Fast => match kind {
             TargetKind::Linux => {
                 if mold_present() {
