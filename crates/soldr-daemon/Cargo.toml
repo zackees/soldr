@@ -43,7 +43,7 @@ console-subscriber = { workspace = true, optional = true }
 # soldr#2899: the daemon hosts zccache's embedded service, which is
 # unconditional API. It never enters zccache's standalone CLI or daemon
 # entry point, so no zccache feature is enabled here.
-zccache = { version = "=1.13.24", default-features = false }
+zccache = { version = "=1.13.25", default-features = false }
 
 [dev-dependencies]
 filetime = { workspace = true }
