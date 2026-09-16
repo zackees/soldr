@@ -30,6 +30,8 @@ const PEP517_LINKER_FALLBACK_FILE: &str = "pep517-linker-fallback-v1.tsv";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkerChoice {
     /// Do nothing: leave whatever the rust-toolchain default is in place.
+    /// This is the explicit opt-out now that reld (`Fast`) is the default
+    /// when neither `SOLDR_LINKER` nor the config `linker` field is set.
     Default,
     /// Use the platform's system linker (`ld` / `ld64` / `link.exe`). On
     /// every supported platform this is the platform default, so it is
@@ -45,8 +47,9 @@ pub enum LinkerChoice {
     /// `lld` bridge for Windows/COFF and macOS/Mach-O. Invoked directly on
     /// `PATH`.
     Reld,
-    /// Pick the fastest available linker per platform: mold on Linux if
-    /// it is on `PATH`, otherwise rust-lld; rust-lld everywhere else.
+    /// Pick the fastest available linker per platform: reld on every
+    /// supported platform (native ELF on Linux, an `lld` bridge for
+    /// Windows/COFF and macOS/Mach-O).
     Fast,
 }
 
@@ -156,7 +159,7 @@ impl LinkerInjection {
 }
 
 /// Resolve a `LinkerChoice` from (in order): the env var if set, the
-/// config string if set, otherwise `Default`.
+/// config string if set, otherwise `Fast` (reld is soldr's default linker).
 pub fn from_env_and_config(
     env: Option<&OsStr>,
     config: Option<&str>,
@@ -170,7 +173,7 @@ pub fn from_env_and_config(
     if let Some(config) = config {
         return LinkerChoice::from_str(config);
     }
-    Ok(LinkerChoice::Default)
+    Ok(LinkerChoice::Fast)
 }
 
 fn target_kind(target: &str) -> TargetKind {
@@ -205,17 +208,6 @@ pub fn resolve_for_target(
     choice: LinkerChoice,
     target: &str,
 ) -> Result<LinkerInjection, SoldrError> {
-    let mold_present = || mold_on_path();
-    resolve_for_target_with_probe(choice, target, &mold_present)
-}
-
-/// Same as `resolve_for_target` but with the mold-on-PATH probe injected
-/// so tests can exercise both branches of `fast` on Linux.
-pub fn resolve_for_target_with_probe(
-    choice: LinkerChoice,
-    target: &str,
-    mold_present: &dyn Fn() -> bool,
-) -> Result<LinkerInjection, SoldrError> {
     let kind = target_kind(target);
     match choice {
         LinkerChoice::Default | LinkerChoice::Ld => Ok(LinkerInjection::none()),
@@ -237,36 +229,16 @@ pub fn resolve_for_target_with_probe(
                 Ok(LinkerInjection::clang_with_fuse("lld"))
             }
         },
-        LinkerChoice::Reld => match kind {
+        LinkerChoice::Reld | LinkerChoice::Fast => match kind {
             // reld's native ELF backend does not inject the CRT startup
             // objects, so a direct `-C linker=reld` would link a binary with no
             // `_start`. Drive reld through clang (`--ld-path=reld`) on Linux so
             // the driver injects CRT and the interpreter. On Windows/macOS reld
             // bridges to lld-link/ld64.lld, which handle the CRT themselves, so
-            // the direct `reld` injection is fine there.
+            // the direct `reld` injection is fine there. `Fast` and `Reld` are
+            // the same linker now that reld is the fast choice.
             TargetKind::Linux => Ok(LinkerInjection::clang_with_ld_path("reld")),
             _ => Ok(LinkerInjection::reld()),
-        },
-        LinkerChoice::Fast => match kind {
-            TargetKind::Linux => {
-                if mold_present() {
-                    Ok(LinkerInjection::clang_with_fuse("mold"))
-                } else {
-                    Ok(LinkerInjection::clang_with_fuse("lld"))
-                }
-            }
-            TargetKind::WindowsMsvc => Ok(LinkerInjection::rust_lld_msvc()),
-            // See the `RustLld` arm above — `-fuse-ld=lld` is not valid on
-            // Apple clang and silently dropping to the platform default
-            // keeps `SOLDR_LINKER=fast` portable across hosts (issue #509).
-            TargetKind::Apple => Ok(LinkerInjection::apple_fast_linker()),
-            // The blessed Windows GNU lifecycle provisions a relocatable GCC
-            // bundle together with its matching binutils. Appending
-            // `-fuse-ld=lld` leaves GCC as the driver but makes collect2 look
-            // for an unbundled `ld`, so the portable fast choice is the
-            // bundle's own linker.
-            TargetKind::WindowsGnu => Ok(LinkerInjection::none()),
-            TargetKind::Other => Ok(LinkerInjection::clang_with_fuse("lld")),
         },
     }
 }
@@ -486,6 +458,18 @@ fn linker_candidate_identity(injection: &LinkerInjection) -> Vec<u8> {
                 candidates.push(candidate.to_string());
             }
         }
+        // `--ld-path=<name>` (how reld is driven through clang on Linux)
+        // names a concrete linker binary; probe it so its version is part of
+        // the cache identity too.
+        if let Some(pos) = rustflags.find("--ld-path=") {
+            let name = rustflags[pos + "--ld-path=".len()..]
+                .split_whitespace()
+                .next()
+                .unwrap_or("");
+            if !name.is_empty() {
+                candidates.push(name.to_string());
+            }
+        }
     }
 
     let mut identity = Vec::new();
@@ -586,13 +570,14 @@ fn effective_target(args: &[String], host: &str) -> String {
     host.to_string()
 }
 
-/// Drop an injected `-C linker=rust-lld` when this invocation builds a
-/// proc-macro for an MSVC target (soldr#1992).
+/// Drop an injected `-C linker=<lld-backed linker>` when this invocation
+/// builds a proc-macro for an MSVC target (soldr#1992).
 ///
-/// `SOLDR_LINKER=fast` injects the linker through
-/// `CARGO_TARGET_<TRIPLE>_LINKER`, which cargo applies to *every* crate for
-/// that target. Proc-macros are the one kind that cannot take it: they build
-/// as DLLs via `-C prefer-dynamic`, and rust-lld reliably fails that link on
+/// `SOLDR_LINKER=fast` (now reld) and `SOLDR_LINKER=rust-lld` both inject a
+/// linker through `CARGO_TARGET_<TRIPLE>_LINKER`, which cargo applies to
+/// *every* crate for that target. Proc-macros are the one kind that cannot
+/// take it: they build as DLLs via `-C prefer-dynamic`, and both rust-lld and
+/// reld (which bridges to lld-link on MSVC) reliably fail that link on
 /// `x86_64-pc-windows-msvc`. The build dies with a bare `exit code: 1`.
 ///
 /// Because the env var is per-invocation, the exclusion cannot live at the
@@ -601,7 +586,7 @@ fn effective_target(args: &[String], host: &str) -> String {
 /// removed here, leaving rustc to use the platform default exactly as
 /// `SOLDR_LINKER=default` would.
 ///
-/// Scoped to MSVC deliberately. rust-lld links proc-macro dylibs fine
+/// Scoped to MSVC deliberately. These linkers link proc-macro dylibs fine
 /// elsewhere, and stripping it there would silently forfeit the fast linker
 /// for every derive crate.
 pub fn strip_fast_linker_for_proc_macro<'a>(args: &'a [String], host: &str) -> Cow<'a, [String]> {
@@ -616,7 +601,7 @@ pub fn strip_fast_linker_for_proc_macro<'a>(args: &'a [String], host: &str) -> C
         if arg
             .strip_prefix("-C")
             .and_then(|rest| rest.strip_prefix("linker="))
-            .is_some_and(|v| v.trim() == "rust-lld")
+            .is_some_and(|v| matches!(v.trim(), "rust-lld" | "reld"))
         {
             removed = true;
             continue;
@@ -625,7 +610,7 @@ pub fn strip_fast_linker_for_proc_macro<'a>(args: &'a [String], host: &str) -> C
         if arg == "-C"
             && iter.peek().is_some_and(|next| {
                 next.strip_prefix("linker=")
-                    .is_some_and(|v| v.trim() == "rust-lld")
+                    .is_some_and(|v| matches!(v.trim(), "rust-lld" | "reld"))
             })
         {
             iter.next();
@@ -715,18 +700,6 @@ fn looks_like_linker_failure_text(text: &str) -> bool {
     ];
     linker_signal.iter().any(|needle| text.contains(needle))
         && failure_signal.iter().any(|needle| text.contains(needle))
-}
-
-/// Probe whether `mold` is on `PATH`. Best-effort: any failure (missing
-/// binary, non-zero exit, IO error) returns `false`.
-fn mold_on_path() -> bool {
-    let mut command = std::process::Command::new("mold");
-    command.arg("--version");
-    suppress_windows_console_window(&mut command);
-    match command.output() {
-        Ok(out) => out.status.success(),
-        Err(_) => false,
-    }
 }
 
 /// Convert a target triple to the uppercase underscore form Cargo uses

@@ -10,10 +10,6 @@ const MAC_ARM: &str = "aarch64-apple-darwin";
 const WIN_MSVC: &str = "x86_64-pc-windows-msvc";
 const WIN_GNU: &str = "x86_64-pc-windows-gnu";
 
-fn always_false() -> bool {
-    false
-}
-
 fn assert_apple_fast_linker(injection: &LinkerInjection, triple: &str) {
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::MacOs {
         assert!(injection.linker.is_none(), "{triple}");
@@ -26,10 +22,6 @@ fn assert_apple_fast_linker(injection: &LinkerInjection, triple: &str) {
             "{triple}"
         );
     }
-}
-
-fn always_true() -> bool {
-    true
 }
 
 #[test]
@@ -89,40 +81,40 @@ fn config_fallback_when_env_unset() {
 }
 
 #[test]
-fn nothing_falls_back_to_default() {
+fn nothing_falls_back_to_fast_reld() {
     let choice = from_env_and_config(None, None).unwrap();
-    assert_eq!(choice, LinkerChoice::Default);
+    assert_eq!(choice, LinkerChoice::Fast);
 }
 
 #[test]
 fn empty_env_string_falls_back_to_default() {
     let choice = from_env_and_config(Some(OsStr::new("")), Some("mold")).unwrap();
-    // Empty env string is treated as "no explicit choice" -> Default.
+    // An empty env string is not a value; `from_str("")` maps it to `Default`
+    // (the explicit no-injection choice), which is distinct from the reld
+    // default reached only when the env var is entirely unset.
     assert_eq!(choice, LinkerChoice::Default);
 }
 
 #[test]
 fn default_and_ld_inject_nothing_on_every_target() {
     for triple in [LINUX, LINUX_MUSL, MAC_X64, MAC_ARM, WIN_MSVC, WIN_GNU] {
-        let i =
-            resolve_for_target_with_probe(LinkerChoice::Default, triple, &always_false).unwrap();
+        let i = resolve_for_target(LinkerChoice::Default, triple).unwrap();
         assert_eq!(i, LinkerInjection::default(), "default/{triple}");
-        let i = resolve_for_target_with_probe(LinkerChoice::Ld, triple, &always_false).unwrap();
+        let i = resolve_for_target(LinkerChoice::Ld, triple).unwrap();
         assert_eq!(i, LinkerInjection::default(), "ld/{triple}");
     }
 }
 
 #[test]
 fn mold_on_linux_uses_clang_with_fuse_mold() {
-    let i = resolve_for_target_with_probe(LinkerChoice::Mold, LINUX, &always_false).unwrap();
+    let i = resolve_for_target(LinkerChoice::Mold, LINUX).unwrap();
     assert_eq!(i.linker.as_deref(), Some("clang"));
     assert_eq!(i.rustflags.as_deref(), Some("-C link-arg=-fuse-ld=mold"));
 }
 
 #[test]
 fn mold_on_macos_returns_clear_error() {
-    let err =
-        resolve_for_target_with_probe(LinkerChoice::Mold, MAC_X64, &always_false).unwrap_err();
+    let err = resolve_for_target(LinkerChoice::Mold, MAC_X64).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("mold is not supported"),
@@ -134,8 +126,7 @@ fn mold_on_macos_returns_clear_error() {
 
 #[test]
 fn mold_on_windows_returns_clear_error() {
-    let err =
-        resolve_for_target_with_probe(LinkerChoice::Mold, WIN_MSVC, &always_false).unwrap_err();
+    let err = resolve_for_target(LinkerChoice::Mold, WIN_MSVC).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("mold is not supported"),
@@ -146,7 +137,7 @@ fn mold_on_windows_returns_clear_error() {
 
 #[test]
 fn rust_lld_on_msvc_uses_rust_lld_directly() {
-    let i = resolve_for_target_with_probe(LinkerChoice::RustLld, WIN_MSVC, &always_false).unwrap();
+    let i = resolve_for_target(LinkerChoice::RustLld, WIN_MSVC).unwrap();
     assert_eq!(i.linker.as_deref(), Some("rust-lld"));
     assert!(i.rustflags.is_none());
 }
@@ -160,7 +151,7 @@ fn reld_injects_reld_linker_on_every_target() {
     // bridges to lld-link/ld64.lld, which handle the CRT, so reld is injected
     // directly on PATH with no extra flags.
     for triple in [LINUX, LINUX_MUSL] {
-        let i = resolve_for_target_with_probe(LinkerChoice::Reld, triple, &always_false).unwrap();
+        let i = resolve_for_target(LinkerChoice::Reld, triple).unwrap();
         assert_eq!(i.linker.as_deref(), Some("clang"), "{triple}");
         assert_eq!(
             i.rustflags.as_deref(),
@@ -169,7 +160,7 @@ fn reld_injects_reld_linker_on_every_target() {
         );
     }
     for triple in [MAC_X64, MAC_ARM, WIN_MSVC, WIN_GNU] {
-        let i = resolve_for_target_with_probe(LinkerChoice::Reld, triple, &always_false).unwrap();
+        let i = resolve_for_target(LinkerChoice::Reld, triple).unwrap();
         assert_eq!(i.linker.as_deref(), Some("reld"), "{triple}");
         assert!(i.rustflags.is_none(), "{triple}");
     }
@@ -178,8 +169,7 @@ fn reld_injects_reld_linker_on_every_target() {
 #[test]
 fn rust_lld_on_non_msvc_non_apple_uses_clang_with_fuse_lld() {
     for triple in [LINUX, LINUX_MUSL, WIN_GNU] {
-        let i =
-            resolve_for_target_with_probe(LinkerChoice::RustLld, triple, &always_false).unwrap();
+        let i = resolve_for_target(LinkerChoice::RustLld, triple).unwrap();
         assert_eq!(i.linker.as_deref(), Some("clang"), "{triple}");
         assert_eq!(
             i.rustflags.as_deref(),
@@ -197,56 +187,30 @@ fn rust_lld_on_non_msvc_non_apple_uses_clang_with_fuse_lld() {
 #[test]
 fn rust_lld_on_apple_uses_a_macho_capable_linker() {
     for triple in [MAC_X64, MAC_ARM] {
-        let i =
-            resolve_for_target_with_probe(LinkerChoice::RustLld, triple, &always_false).unwrap();
+        let i = resolve_for_target(LinkerChoice::RustLld, triple).unwrap();
         assert_apple_fast_linker(&i, triple);
     }
 }
 
 #[test]
-fn fast_on_linux_prefers_mold_when_present() {
-    let i = resolve_for_target_with_probe(LinkerChoice::Fast, LINUX, &always_true).unwrap();
-    assert_eq!(i.linker.as_deref(), Some("clang"));
-    assert_eq!(i.rustflags.as_deref(), Some("-C link-arg=-fuse-ld=mold"));
-}
-
-#[test]
-fn fast_on_linux_falls_back_to_rust_lld_when_mold_absent() {
-    let i = resolve_for_target_with_probe(LinkerChoice::Fast, LINUX, &always_false).unwrap();
-    assert_eq!(i.linker.as_deref(), Some("clang"));
-    assert_eq!(i.rustflags.as_deref(), Some("-C link-arg=-fuse-ld=lld"));
-}
-
-/// Issue #509: `SOLDR_LINKER=fast` on macOS used to inject
-/// `-fuse-ld=lld`, which breaks Apple-clang-driven `cc-rs` build
-/// scripts ("invalid linker name in argument '-fuse-ld=lld'"). The
-/// fast mode must now silently fall back to the platform default
-/// linker on every Apple target, regardless of the host that ran the
-/// resolver — so this test covers the bug whether it executes on
-/// Linux, macOS, or Windows.
-#[test]
-fn fast_on_apple_uses_a_macho_capable_linker() {
-    for triple in [MAC_X64, MAC_ARM] {
-        let i = resolve_for_target_with_probe(LinkerChoice::Fast, triple, &always_false).unwrap();
-        assert_apple_fast_linker(&i, triple);
-        // Also exercise the mold-present branch — mold is irrelevant
-        // on Apple targets and must not change the outcome.
-        let i = resolve_for_target_with_probe(LinkerChoice::Fast, triple, &always_true).unwrap();
-        assert_apple_fast_linker(&i, triple);
+fn fast_resolves_to_reld_on_every_target() {
+    // `fast` is reld now: the same per-platform injection as `Reld` — clang
+    // `--ld-path=reld` on Linux (native ELF backend, driver injects CRT), and
+    // direct `reld` elsewhere (lld-link/ld64.lld bridge handles CRT itself).
+    for triple in [LINUX, LINUX_MUSL] {
+        let i = resolve_for_target(LinkerChoice::Fast, triple).unwrap();
+        assert_eq!(i.linker.as_deref(), Some("clang"), "{triple}");
+        assert_eq!(
+            i.rustflags.as_deref(),
+            Some("-C link-arg=--ld-path=reld"),
+            "{triple}"
+        );
     }
-}
-
-#[test]
-fn fast_on_windows_msvc_uses_rust_lld_directly() {
-    let i = resolve_for_target_with_probe(LinkerChoice::Fast, WIN_MSVC, &always_false).unwrap();
-    assert_eq!(i.linker.as_deref(), Some("rust-lld"));
-    assert!(i.rustflags.is_none());
-}
-
-#[test]
-fn fast_on_windows_gnu_keeps_the_managed_gcc_linker() {
-    let i = resolve_for_target_with_probe(LinkerChoice::Fast, WIN_GNU, &always_false).unwrap();
-    assert_eq!(i, LinkerInjection::default());
+    for triple in [MAC_X64, MAC_ARM, WIN_MSVC, WIN_GNU] {
+        let i = resolve_for_target(LinkerChoice::Fast, triple).unwrap();
+        assert_eq!(i.linker.as_deref(), Some("reld"), "{triple}");
+        assert!(i.rustflags.is_none(), "{triple}");
+    }
 }
 
 // soldr#1992 / soldr#1999 rule 1. When the standard-linker retry also
@@ -321,6 +285,15 @@ fn the_joined_spelling_is_also_removed() {
     let args = argv(&["rustc", "--crate-type=proc-macro", "-Clinker=rust-lld"]);
     let out = strip_fast_linker_for_proc_macro(&args, MSVC);
     assert!(!out.iter().any(|a| a.contains("rust-lld")), "{out:?}");
+}
+
+#[test]
+fn proc_macro_on_msvc_loses_the_injected_reld() {
+    // `fast` now injects reld (which bridges to lld-link on MSVC), so it must
+    // be stripped for proc-macro dylibs exactly like rust-lld.
+    let args = argv(&["rustc", "--crate-type", "proc-macro", "-C", "linker=reld"]);
+    let out = strip_fast_linker_for_proc_macro(&args, MSVC);
+    assert!(!out.iter().any(|a| a == "linker=reld"), "{out:?}");
 }
 
 // Ordinary crates keep the fast linker -- that is the whole point of the

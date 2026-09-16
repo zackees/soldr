@@ -43,7 +43,7 @@ fn log_has_any_cargo_target_env(log: &str) -> bool {
 }
 
 #[test]
-fn cargo_front_door_default_linker_does_not_inject_target_env() {
+fn cargo_front_door_default_linker_injects_reld() {
     let cache_root = unique_temp_dir("cargo-default-linker");
     let home_root = cache_root.join("home");
     let log_path = cache_root.join("tool.log");
@@ -76,10 +76,28 @@ fn cargo_front_door_default_linker_does_not_inject_target_env() {
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
-    assert!(
-        !log_has_any_cargo_target_env(&log),
-        "default linker should not inject any CARGO_TARGET_* env: {log}"
-    );
+    // reld is the default linker: with no explicit choice the front door must
+    // inject it (clang `--ld-path=reld` on Linux, direct `reld` elsewhere).
+    let linker = extract_linker_env_value(&log).unwrap_or_else(|| {
+        panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
+    });
+    if soldr_platform::host::facts::os() == soldr_platform::host::facts::HostOs::Linux {
+        assert_eq!(
+            linker, "clang",
+            "linux default should drive reld via clang: {log}"
+        );
+        let rustflags = extract_rustflags_env_value(&log)
+            .unwrap_or_else(|| panic!("expected CARGO_TARGET_<triple>_RUSTFLAGS: {log}"));
+        assert!(
+            rustflags.contains("--ld-path=reld"),
+            "linux default rustflags should carry --ld-path=reld: {rustflags}"
+        );
+    } else {
+        assert_eq!(
+            linker, "reld",
+            "non-linux default should inject reld directly: {log}"
+        );
+    }
 }
 
 #[test]
@@ -203,20 +221,14 @@ fn cargo_front_door_mold_on_non_linux_returns_clear_error() {
     );
 }
 
-/// `SOLDR_LINKER=fast` resolution on non-Linux hosts:
-///
-/// - Windows MSVC injects `rust-lld` directly.
-/// - macOS injects nothing (issue #509: Apple clang rejects
-///   `-fuse-ld=lld`, so `fast` silently falls back to the platform
-///   default linker).
-///
-/// The Linux variant of this matrix is exercised by the unit tests in
-/// `crates/soldr-cli/src/linker.rs` (the `mold_present` probe is split
-/// out for testability there). Gating to non-Linux here keeps the
-/// integration test from depending on whether mold happens to be on
-/// `PATH` on the CI runner.
+/// `SOLDR_LINKER=fast` resolves to reld. On non-Linux hosts the front door
+/// injects `CARGO_TARGET_<TRIPLE>_LINKER=reld` directly (reld bridges to
+/// lld-link on Windows and ld64.lld on macOS). The Linux `clang --ld-path=reld`
+/// driver detail is covered by the unit tests in
+/// `crates/soldr-cli/src/linker.rs`; this integration test runs on the native
+/// host only.
 #[test]
-fn cargo_front_door_fast_picks_rust_lld_when_mold_absent() {
+fn cargo_front_door_fast_picks_reld() {
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Linux
@@ -253,26 +265,11 @@ fn cargo_front_door_fast_picks_rust_lld_when_mold_absent() {
     );
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
 
-    if matches!(
-        soldr_platform::host::facts::os(),
-        soldr_platform::host::facts::HostOs::Windows
-    ) {
-        let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
-            panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
-        });
-        assert_eq!(
-            linker_value, "rust-lld",
-            "windows-msvc fast should inject rust-lld directly: {log}"
-        );
-    } else if matches!(
-        soldr_platform::host::facts::os(),
-        soldr_platform::host::facts::HostOs::MacOs
-    ) {
-        // Issue #509: `SOLDR_LINKER=fast` must be a no-op on macOS so
-        // Apple-clang-driven build scripts keep working.
-        assert!(
-            !log_has_any_cargo_target_env(&log),
-            "macOS fast should not inject any CARGO_TARGET_* env (issue #509): {log}"
-        );
-    }
+    let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
+        panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
+    });
+    assert_eq!(
+        linker_value, "reld",
+        "fast should inject reld directly on non-Linux hosts: {log}"
+    );
 }

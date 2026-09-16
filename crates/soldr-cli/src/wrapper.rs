@@ -284,11 +284,12 @@ pub(crate) fn run_rustc_wrapper(
         std::borrow::Cow::Borrowed(raw_args)
     };
     let compile_args = normalize_nested_workspace_wrapper_args(&effective_args, tool_stem);
-    // soldr#1992: `SOLDR_LINKER=fast` injects rust-lld through
-    // `CARGO_TARGET_<TRIPLE>_LINKER`, which cargo applies to every crate --
-    // including proc-macros, which build as DLLs and reliably fail that link
-    // on MSVC with a bare `exit code: 1`. Cargo decides who receives the flag,
-    // so this is the first point that sees a per-crate argv and can decline it.
+    // soldr#1992: `SOLDR_LINKER=fast` (reld) and `rust-lld` inject a linker
+    // through `CARGO_TARGET_<TRIPLE>_LINKER`, which cargo applies to every
+    // crate -- including proc-macros, which build as DLLs and reliably fail
+    // that link on MSVC with a bare `exit code: 1`. Cargo decides who receives
+    // the flag, so this is the first point that sees a per-crate argv and can
+    // decline it.
     let compile_args = crate::linker::strip_fast_linker_for_proc_macro(
         &compile_args,
         crate::pyo3_detect::host_triple(),
