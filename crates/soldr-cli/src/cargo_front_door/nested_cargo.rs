@@ -157,6 +157,62 @@ fn has_distinct_target_dir(args: &[String]) -> bool {
         .any(|arg| arg == "--target-dir" || arg.starts_with("--target-dir="))
 }
 
+/// A hazardous nested-Cargo descendant, carrying enough context to emit a
+/// bounded diagnostic and drive teardown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HazardousDescendant {
+    /// The executable as observed (`…/cargo` or `…/cargo.exe`).
+    pub(crate) exe: String,
+    /// The build-like verb that triggered the classification.
+    pub(crate) verb: String,
+    /// A bounded, best-effort command-line head for the diagnostic. Never the
+    /// full argv — diagnostics must not echo an unbounded command line.
+    pub(crate) head: String,
+}
+
+/// The byte cap on [`HazardousDescendant::head`].
+const HEAD_LIMIT: usize = 200;
+
+/// Classify an observed descendant argument vector.
+///
+/// `argv` is exactly what `running_process::observer::read_process_argv`
+/// returns: `argv[0]` is the executable and the remainder are the arguments,
+/// with boundaries preserved. This is the lossless bridge between the
+/// observation seam and [`classify_cargo_descendant`]; a command-line *string*
+/// cannot preserve every argument boundary on every host, so it is deliberately
+/// not used here.
+///
+/// Returns `Some` only for a hazardous nested Cargo build (a build-like verb
+/// with no provably distinct `--target-dir`).
+pub(crate) fn classify_descendant(argv: &[std::ffi::OsString]) -> Option<HazardousDescendant> {
+    let exe = argv.first()?.to_string_lossy().into_owned();
+    let args: Vec<String> = argv
+        .iter()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    if classify_cargo_descendant(&exe, &args) != CargoDescendant::Hazardous {
+        return None;
+    }
+    let verb = find_verb(&args).unwrap_or_default();
+    Some(HazardousDescendant {
+        exe,
+        verb,
+        head: bounded_head(&args),
+    })
+}
+
+/// A bounded, best-effort command-line head for the diagnostic.
+fn bounded_head(args: &[String]) -> String {
+    let joined = args.join(" ");
+    if joined.len() <= HEAD_LIMIT {
+        return joined;
+    }
+    let mut head: String = joined.chars().take(HEAD_LIMIT).collect();
+    head.push('…');
+    head
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +311,46 @@ mod tests {
         assert_eq!(
             classify_cargo_descendant("cargo", &argv(&["build", "--target-dir=/tmp/other"])),
             CargoDescendant::DistinctTargetDir
+        );
+    }
+
+    fn os_argv(parts: &[&str]) -> Vec<std::ffi::OsString> {
+        parts.iter().map(std::ffi::OsString::from).collect()
+    }
+
+    #[test]
+    fn classify_descendant_flags_a_hazardous_nested_cargo() {
+        let got = classify_descendant(&os_argv(&["/toolchain/bin/cargo", "test", "--workspace"]))
+            .expect("hazardous cargo test");
+        assert_eq!(got.verb, "test");
+        assert_eq!(got.head, "test --workspace");
+    }
+
+    #[test]
+    fn classify_descendant_ignores_non_hazardous_argv() {
+        // Non-cargo executable.
+        assert!(classify_descendant(&os_argv(&["rustc", "foo.rs"])).is_none());
+        // Cargo, but a non-locking verb.
+        assert!(classify_descendant(&os_argv(&["cargo", "metadata", "--no-deps"])).is_none());
+        // Cargo build with a distinct target dir.
+        assert!(
+            classify_descendant(&os_argv(&["cargo", "build", "--target-dir", "/tmp/x"])).is_none()
+        );
+        // Empty argv (no executable).
+        assert!(classify_descendant(&[]).is_none());
+    }
+
+    #[test]
+    fn the_diagnostic_head_is_bounded() {
+        let long = format!("build {}", "x".repeat(1000));
+        let args = vec![long.clone()];
+        let head = bounded_head(&args);
+        assert!(head.chars().count() <= HEAD_LIMIT + 1, "{head}");
+        assert!(head.ends_with('…'));
+        // A short head is passed through unchanged.
+        assert_eq!(
+            bounded_head(&argv(&["build", "--release"])),
+            "build --release"
         );
     }
 }
