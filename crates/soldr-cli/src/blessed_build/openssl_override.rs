@@ -47,9 +47,15 @@ const CALLER_OWNED_SUFFIXES: [&str; 4] = [
     "OPENSSL_NO_VENDOR",
 ];
 
-pub(super) async fn inject(paths: &SoldrPaths, target_triple: &str, prep: &mut BlessedPrep) {
+pub(super) async fn inject(
+    paths: &SoldrPaths,
+    target_triple: &str,
+    prep: &mut BlessedPrep,
+    feature_args: &[String],
+) {
     let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let provider = links_provider::resolve(&workspace_root, OPENSSL_LINKS, target_triple);
+    let provider =
+        links_provider::resolve(&workspace_root, OPENSSL_LINKS, target_triple, feature_args);
     inject_for_provider(paths, target_triple, &provider, prep).await;
 }
 
@@ -394,7 +400,7 @@ mod tests {
         let prep = {
             let _opt_out = EnvVarGuard::remove(super::super::USE_LEGACY_VENDORED_SYS_ENV_VAR);
             runtime
-                .block_on(super::super::prepare(&paths, triple))
+                .block_on(super::super::prepare(&paths, triple, &[]))
                 .expect("prepare")
         };
         let value = |key: &str| {
@@ -424,7 +430,7 @@ mod tests {
         let opted_out = {
             let _opt_out = EnvVarGuard::set(super::super::USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
             runtime
-                .block_on(super::super::prepare(&paths, triple))
+                .block_on(super::super::prepare(&paths, triple, &[]))
                 .expect("prepare")
         };
         assert!(

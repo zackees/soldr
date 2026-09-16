@@ -313,7 +313,7 @@ async fn append_subcommand_transitive_bin_dirs(
         }
     }
     if let Some(triple) = nextest_archive_blessed_target(args) {
-        let prep = crate::blessed_build::prepare(paths, triple).await?;
+        let prep = crate::blessed_build::prepare(paths, triple, &[]).await?;
         if triple.ends_with("-pc-windows-msvc") && prep.xwin_cache_dir.is_none() {
             return Err(SoldrError::Other(format!(
                 "cargo nextest archive for {triple} requires the managed xwin-cache; \

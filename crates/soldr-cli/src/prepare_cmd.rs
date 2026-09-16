@@ -109,7 +109,7 @@ pub async fn run(
         TargetOs::Windows => match attrs.abi {
             Some(TargetAbi::Msvc) => {
                 eprintln!("soldr prepare: dispatch=blessed-msvc");
-                let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
+                let prep = crate::target_lifecycle::prepare_target(&paths, &target, &[]).await?;
                 if let Some((_, cache_dir)) = prep
                     .env
                     .iter()
@@ -121,7 +121,7 @@ pub async fn run(
             }
             Some(TargetAbi::Gnu) => {
                 eprintln!("soldr prepare: dispatch=mingw-w64-gcc+syslibs");
-                let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
+                let prep = crate::target_lifecycle::prepare_target(&paths, &target, &[]).await?;
                 if let Some((_, root)) =
                     prep.env.iter().find(|(key, _)| key == "MINGW_W64_GCC_ROOT")
                 {
@@ -139,7 +139,7 @@ pub async fn run(
             // and fall back to the host Linux linker. Export exactly
             // the environment used by the blessed build path.
             eprintln!("soldr prepare: dispatch=blessed-darwin");
-            let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
+            let prep = crate::target_lifecycle::prepare_target(&paths, &target, &[]).await?;
             if let Some(sdk) = prep.sdkroot.as_ref() {
                 eprintln!("soldr prepare: Apple SDK at {}", sdk.display());
                 println!("SDKROOT={}", sdk.display());
@@ -148,7 +148,7 @@ pub async fn run(
         }
         TargetOs::Linux => {
             eprintln!("soldr prepare: dispatch=blessed-linux");
-            let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
+            let prep = crate::target_lifecycle::prepare_target(&paths, &target, &[]).await?;
             apply_blessed_prep_env(github_env_path, &prep, &attrs.triple)?;
         }
     }

@@ -103,7 +103,11 @@ impl BlessedPrep {
 ///
 /// Caller is responsible for applying `prep.env` and prepending
 /// `prep.shim_path_dir` to `PATH` on the child cargo invocation.
-pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedPrep, SoldrError> {
+pub async fn prepare(
+    paths: &SoldrPaths,
+    target_triple: &str,
+    feature_args: &[String],
+) -> Result<BlessedPrep, SoldrError> {
     // soldr#1543 test seam — see TEST_PREP_DELAY_ENV_VAR.
     if let Some(delay_ms) = std::env::var(TEST_PREP_DELAY_ENV_VAR)
         .ok()
@@ -361,7 +365,7 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
     // unsupported triple, network failure), log + fall through — the
     // crate's vendored compile path still works.
     if !legacy_vendored_sys_opt_out() {
-        inject_sys_library_overrides(paths, target_triple, &mut prep).await;
+        inject_sys_library_overrides(paths, target_triple, &mut prep, feature_args).await;
     }
 
     // ----------------------- managed cmake + ninja ---------------------------
@@ -752,6 +756,7 @@ pub(crate) async fn inject_sys_library_overrides(
     paths: &SoldrPaths,
     target_triple: &str,
     prep: &mut BlessedPrep,
+    feature_args: &[String],
 ) {
     // All syslib env vars below are **target-scoped** via the
     // `PKG_CONFIG_PATH_<triple>` naming convention pkg-config-rs
@@ -790,7 +795,7 @@ pub(crate) async fn inject_sys_library_overrides(
     // libmimalloc-sys → Cargo build-script override (not pkg-config;
     // it has no target-scoped env hook). Gated on who actually
     // provides `links = "mimalloc"` — see the module docs.
-    mimalloc_override::inject(paths, target_triple, prep).await;
+    mimalloc_override::inject(paths, target_triple, prep, feature_args).await;
 
     // libz-ng-sys → PKG_CONFIG_PATH_<triple>
     match crate::fetch::zlib_ng_sysroot::ensure_zlib_ng_sysroot(paths, target_triple).await {
@@ -799,7 +804,7 @@ pub(crate) async fn inject_sys_library_overrides(
     }
 
     // lzma-sys → PKG_CONFIG_PATH_<triple>
-    lzma_override::inject(paths, target_triple, prep).await;
+    lzma_override::inject(paths, target_triple, prep, feature_args).await;
 
     // bzip2-sys → PKG_CONFIG_PATH_<triple>
     match crate::fetch::bzip2_sysroot::ensure_bzip2_sysroot(paths, target_triple).await {
@@ -810,7 +815,7 @@ pub(crate) async fn inject_sys_library_overrides(
     // openssl-sys → target-scoped `<T>_OPENSSL_{DIR,NO_VENDOR,STATIC}`
     // (+ PKG_CONFIG_PATH_<triple> off MSVC). Gated on `openssl-sys`
     // providing `links = "openssl"`; see the module docs (soldr#3246).
-    openssl_override::inject(paths, target_triple, prep).await;
+    openssl_override::inject(paths, target_triple, prep, feature_args).await;
 }
 
 /// Prepend `<sysroot>/lib/pkgconfig` to the **target-scoped**

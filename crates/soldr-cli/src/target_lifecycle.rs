@@ -94,6 +94,7 @@ pub(crate) fn provision_target_toolchain(target: &str) -> Result<(), SoldrError>
 pub(crate) async fn prepare_target(
     paths: &SoldrPaths,
     target: &str,
+    feature_args: &[String],
 ) -> Result<BlessedPrep, SoldrError> {
     // soldr#2139: `x86_64-unknown-linux-gnu.2.17` is a soldr-level spelling.
     // rustc, rustup and the catalogue sysroot tables know only the base triple,
@@ -114,7 +115,7 @@ pub(crate) async fn prepare_target(
     let attrs = classify_target(base)?;
     let host = crate::pyo3_detect::host_triple();
     provision_target_toolchain(target)?;
-    let mut prep = crate::blessed_build::prepare(paths, base).await?;
+    let mut prep = crate::blessed_build::prepare(paths, base, feature_args).await?;
 
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux
         && attrs.os == TargetOs::Windows
@@ -495,6 +496,7 @@ pub(crate) fn prep_route(target: &str) -> PrepRoute {
 pub(crate) async fn prepare_for_invocation(
     paths: &SoldrPaths,
     target: &str,
+    feature_args: &[String],
 ) -> Result<BlessedPrep, SoldrError> {
     // soldr#2139: `soldr build` reaches here having only run
     // `normalize_target_aliases_in_args`, which leaves an unrecognised target
@@ -507,8 +509,8 @@ pub(crate) async fn prepare_for_invocation(
         .map_err(|error| SoldrError::Other(error.to_string()))?;
     match prep_route(target) {
         // Pass the target through unsplit: `prepare_target` owns the floor.
-        PrepRoute::Lifecycle => prepare_target(paths, target).await,
-        PrepRoute::Passthrough => crate::blessed_build::prepare(paths, target).await,
+        PrepRoute::Lifecycle => prepare_target(paths, target, feature_args).await,
+        PrepRoute::Passthrough => crate::blessed_build::prepare(paths, target, feature_args).await,
     }
 }
 
@@ -526,12 +528,41 @@ pub(crate) async fn prepare_cargo_invocation(
         return Ok(args);
     }
     let paths = SoldrPaths::new()?;
-    let prep = prepare_target(&paths, &target).await?;
+    let feature_args = cargo_feature_flags(&args);
+    let prep = prepare_target(&paths, &target, &feature_args).await?;
     apply_to_process(&prep);
     Ok(crate::cli_dispatch::insert_cargo_config_args(
         args,
         &prep.cargo_args,
     ))
+}
+
+/// The `--features` / `--all-features` / `--no-default-features` flags (and
+/// the `--features` value) the caller passed, so the links probe can resolve
+/// the same graph the build will actually compile (soldr#3270).
+pub(crate) fn cargo_feature_flags(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            break;
+        }
+        match arg.as_str() {
+            "--all-features" | "--no-default-features" => out.push(arg.clone()),
+            "--features" => {
+                out.push(arg.clone());
+                if let Some(value) = iter.next() {
+                    out.push(value.clone());
+                }
+            }
+            _ => {
+                if let Some(value) = arg.strip_prefix("--features=") {
+                    out.push(format!("--features={value}"));
+                }
+            }
+        }
+    }
+    out
 }
 
 fn cargo_operation_requires_prep(args: &[String]) -> bool {

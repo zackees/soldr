@@ -512,3 +512,48 @@ fn the_existing_cross_guard_seam_still_forces_the_catalogue_path() {
         GnuBundleDecision::Reject(_)
     ));
 }
+
+#[test]
+fn cargo_feature_flags_extracts_only_feature_selection() {
+    use crate::target_lifecycle::cargo_feature_flags;
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    assert_eq!(
+        cargo_feature_flags(&argv(&["build", "--all-features"])),
+        ["--all-features"]
+    );
+    assert_eq!(
+        cargo_feature_flags(&argv(&[
+            "build",
+            "--no-default-features",
+            "--features",
+            "a,b"
+        ])),
+        ["--no-default-features", "--features", "a,b"]
+    );
+    assert_eq!(
+        cargo_feature_flags(&argv(&[
+            "build",
+            "--features=a,b",
+            "--target",
+            "x86_64-pc-windows-msvc"
+        ])),
+        ["--features=a,b"]
+    );
+    // Package/workspace selection and unrelated flags are NOT forwarded.
+    assert!(cargo_feature_flags(&argv(&[
+        "build",
+        "--release",
+        "--workspace",
+        "--target",
+        "x"
+    ]))
+    .is_empty());
+    // A `--` separator ends the scan.
+    assert_eq!(
+        cargo_feature_flags(&argv(&["build", "--", "--all-features"])),
+        Vec::<String>::new()
+    );
+}

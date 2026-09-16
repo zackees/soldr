@@ -6,7 +6,12 @@ use crate::core::SoldrPaths;
 /// The crate the managed liblzma bundle was cut to match.
 const LZMA_SYS_CRATE: &str = "lzma-sys";
 
-pub(super) async fn inject(paths: &SoldrPaths, target_triple: &str, prep: &mut BlessedPrep) {
+pub(super) async fn inject(
+    paths: &SoldrPaths,
+    target_triple: &str,
+    prep: &mut BlessedPrep,
+    feature_args: &[String],
+) {
     match crate::fetch::lzma_sysroot::ensure_lzma_sysroot(paths, target_triple).await {
         Ok(sysroot) => {
             super::prepend_pkg_config_path_for_target(prep, target_triple, &sysroot);
@@ -24,6 +29,7 @@ pub(super) async fn inject(paths: &SoldrPaths, target_triple: &str, prep: &mut B
                     &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
                     "lzma",
                     target_triple,
+                    feature_args,
                 )
                 .is(LZMA_SYS_CRATE)
             {

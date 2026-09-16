@@ -61,7 +61,7 @@ fn native_windows_msvc_gets_no_xwin_prep() {
     };
     let result = tokio::runtime::Runtime::new()
         .unwrap()
-        .block_on(prepare(&paths, target));
+        .block_on(prepare(&paths, target, &[]));
 
     match prev_sys {
         Some(v) => std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, v),
@@ -94,9 +94,11 @@ fn linux_targets_get_no_xwin_or_sdk_prep() {
     std::env::set_var(USE_SYSTEM_CMAKE_ENV_VAR, "1");
     let tmp = tempfile::tempdir().expect("tmpdir");
     let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-    let result = tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(prepare(&paths, "x86_64-unknown-linux-musl"));
+    let result = tokio::runtime::Runtime::new().unwrap().block_on(prepare(
+        &paths,
+        "x86_64-unknown-linux-musl",
+        &[],
+    ));
     std::env::remove_var(USE_LEGACY_VENDORED_SYS_ENV_VAR);
     std::env::remove_var(USE_SYSTEM_CMAKE_ENV_VAR);
     let prep = result.expect("linux musl target should not error");
@@ -226,9 +228,11 @@ fn windows_gnu_requires_supported_mingw_host() {
 
     let tmp = tempfile::tempdir().expect("tmpdir");
     let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-    let result = tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(prepare(&paths, "x86_64-pc-windows-gnu"));
+    let result = tokio::runtime::Runtime::new().unwrap().block_on(prepare(
+        &paths,
+        "x86_64-pc-windows-gnu",
+        &[],
+    ));
 
     match prev_sys {
         Some(v) => std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, v),
