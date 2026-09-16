@@ -42,8 +42,33 @@ fn log_has_any_cargo_target_env(log: &str) -> bool {
         .any(|line| line.starts_with("cargo_target_env "))
 }
 
+/// soldr#3262: reld is the default (and `fast`) linker. Assert it is injected
+/// the way `resolve_for_target` prescribes for the host: through clang
+/// `--ld-path=reld` on Linux (so the driver injects CRT), direct on
+/// Windows/macOS (reld bridges to lld-link/ld64.lld).
+fn assert_reld_injected(log: &str) {
+    let linker = extract_linker_env_value(log).unwrap_or_else(|| {
+        panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
+    });
+    let rustflags = extract_rustflags_env_value(log);
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Linux
+    ) {
+        assert_eq!(linker, "clang", "linux reld drives through clang: {log}");
+        assert_eq!(
+            rustflags.as_deref(),
+            Some("-C link-arg=--ld-path=reld"),
+            "linux reld adds --ld-path=reld: {log}"
+        );
+    } else {
+        assert_eq!(linker, "reld", "reld injected directly: {log}");
+        assert!(rustflags.is_none(), "direct reld needs no rustflags: {log}");
+    }
+}
+
 #[test]
-fn cargo_front_door_default_linker_does_not_inject_target_env() {
+fn cargo_front_door_default_injects_reld() {
     let cache_root = unique_temp_dir("cargo-default-linker");
     let home_root = cache_root.join("home");
     let log_path = cache_root.join("tool.log");
@@ -76,10 +101,7 @@ fn cargo_front_door_default_linker_does_not_inject_target_env() {
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
-    assert!(
-        !log_has_any_cargo_target_env(&log),
-        "default linker should not inject any CARGO_TARGET_* env: {log}"
-    );
+    assert_reld_injected(&log);
 }
 
 #[test]
@@ -203,26 +225,12 @@ fn cargo_front_door_mold_on_non_linux_returns_clear_error() {
     );
 }
 
-/// `SOLDR_LINKER=fast` resolution on non-Linux hosts:
-///
-/// - Windows MSVC injects `rust-lld` directly.
-/// - macOS injects nothing (issue #509: Apple clang rejects
-///   `-fuse-ld=lld`, so `fast` silently falls back to the platform
-///   default linker).
-///
-/// The Linux variant of this matrix is exercised by the unit tests in
-/// `crates/soldr-cli/src/linker.rs` (the `mold_present` probe is split
-/// out for testability there). Gating to non-Linux here keeps the
-/// integration test from depending on whether mold happens to be on
-/// `PATH` on the CI runner.
+/// `SOLDR_LINKER=fast` resolves to reld everywhere (soldr#3262): clang
+/// `--ld-path=reld` on Linux, direct `reld` on Windows/macOS. Same as the
+/// default, so this asserts the explicit `fast` spelling reaches the same
+/// injection.
 #[test]
-fn cargo_front_door_fast_picks_rust_lld_when_mold_absent() {
-    if matches!(
-        soldr_platform::host::facts::os(),
-        soldr_platform::host::facts::HostOs::Linux
-    ) {
-        return;
-    }
+fn cargo_front_door_fast_uses_reld() {
     let cache_root = unique_temp_dir("cargo-fast-linker");
     let home_root = cache_root.join("home");
     let log_path = cache_root.join("tool.log");
@@ -252,27 +260,5 @@ fn cargo_front_door_fast_picks_rust_lld_when_mold_absent() {
         String::from_utf8_lossy(&output.stderr)
     );
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
-
-    if matches!(
-        soldr_platform::host::facts::os(),
-        soldr_platform::host::facts::HostOs::Windows
-    ) {
-        let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
-            panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
-        });
-        assert_eq!(
-            linker_value, "rust-lld",
-            "windows-msvc fast should inject rust-lld directly: {log}"
-        );
-    } else if matches!(
-        soldr_platform::host::facts::os(),
-        soldr_platform::host::facts::HostOs::MacOs
-    ) {
-        // Issue #509: `SOLDR_LINKER=fast` must be a no-op on macOS so
-        // Apple-clang-driven build scripts keep working.
-        assert!(
-            !log_has_any_cargo_target_env(&log),
-            "macOS fast should not inject any CARGO_TARGET_* env (issue #509): {log}"
-        );
-    }
+    assert_reld_injected(&log);
 }
