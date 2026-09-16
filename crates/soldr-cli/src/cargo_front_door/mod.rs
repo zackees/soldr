@@ -50,6 +50,7 @@ mod inputs;
 mod job_budget;
 mod line_endings;
 mod log_summary;
+mod nested_cargo;
 pub(crate) mod no_cache_detach;
 mod orphan_rmeta;
 mod profile_debug;
