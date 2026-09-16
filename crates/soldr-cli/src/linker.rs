@@ -211,15 +211,13 @@ pub fn resolve_for_target(
     resolve_for_target_with_reld_path(choice, target, &default_reld_ld_path)
 }
 
-/// Resolve the absolute path to the `reld` binary for clang's `--ld-path`.
-/// `--ld-path` requires a path — a bare name is rejected as an "invalid linker
-/// name" (the same `-fuse-ld` name validation) — so look `reld` up on `PATH`
-/// and inject the resolved path. Fall back to the bare name when `reld` is
-/// absent; the link then fails with a clang error rather than mislinking.
-fn default_reld_ld_path() -> String {
-    crate::msvc_host::which_on_path("reld")
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "reld".to_string())
+/// Resolve the absolute path to the `reld` binary for clang's `--ld-path`, or
+/// `None` when `reld` is not on `PATH`. `--ld-path` requires a path — a bare
+/// name is rejected as an "invalid linker name" (the same `-fuse-ld` name
+/// validation) — so when `reld` is absent the default falls back to the
+/// platform linker instead of injecting a name clang will reject.
+fn default_reld_ld_path() -> Option<String> {
+    crate::msvc_host::which_on_path("reld").map(|path| path.to_string_lossy().into_owned())
 }
 
 /// Same as `resolve_for_target` but with the reld `--ld-path` resolution
@@ -228,7 +226,7 @@ fn default_reld_ld_path() -> String {
 pub fn resolve_for_target_with_reld_path(
     choice: LinkerChoice,
     target: &str,
-    reld_ld_path: &dyn Fn() -> String,
+    reld_ld_path: &dyn Fn() -> Option<String>,
 ) -> Result<LinkerInjection, SoldrError> {
     let kind = target_kind(target);
     match choice {
@@ -259,8 +257,13 @@ pub fn resolve_for_target_with_reld_path(
             // Windows/macOS reld bridges to lld-link/ld64.lld, which handle the
             // CRT themselves, so the direct `reld` injection is fine there.
             // `Fast` and `Reld` are the same linker now that reld is the fast
-            // choice.
-            TargetKind::Linux => Ok(LinkerInjection::clang_with_ld_path(&reld_ld_path())),
+            // choice. When `reld` is not installed (no path on `PATH`), fall
+            // back to the platform linker rather than injecting a name clang
+            // will reject.
+            TargetKind::Linux => match reld_ld_path() {
+                Some(path) => Ok(LinkerInjection::clang_with_ld_path(&path)),
+                None => Ok(LinkerInjection::none()),
+            },
             _ => Ok(LinkerInjection::reld()),
         },
     }

@@ -24,8 +24,12 @@ fn assert_apple_fast_linker(injection: &LinkerInjection, triple: &str) {
     }
 }
 
-fn reld_path() -> String {
-    "/usr/bin/reld".to_string()
+fn reld_path() -> Option<String> {
+    Some("/usr/bin/reld".to_string())
+}
+
+fn no_reld_path() -> Option<String> {
+    None
 }
 
 #[test]
@@ -214,6 +218,17 @@ fn fast_resolves_to_reld_on_every_target() {
         let i = resolve_for_target_with_reld_path(LinkerChoice::Fast, triple, &reld_path).unwrap();
         assert_eq!(i.linker.as_deref(), Some("reld"), "{triple}");
         assert!(i.rustflags.is_none(), "{triple}");
+    }
+}
+
+#[test]
+fn fast_on_linux_falls_back_to_platform_linker_when_reld_absent() {
+    // `reld` isn't installed everywhere yet; when it's not on PATH the default
+    // must degrade to the platform linker rather than injecting a bare
+    // `--ld-path=reld` that clang rejects.
+    for choice in [LinkerChoice::Fast, LinkerChoice::Reld] {
+        let i = resolve_for_target_with_reld_path(choice, LINUX, &no_reld_path).unwrap();
+        assert_eq!(i, LinkerInjection::none(), "{choice:?}");
     }
 }
 
