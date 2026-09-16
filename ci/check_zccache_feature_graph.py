@@ -23,12 +23,15 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# soldr#2899's resolved answer. `soldr-cli` needs `formatter` for the
-# `soldr rustfmt` format cache; nothing else needs any zccache feature.
+# soldr#2899's resolved answer, extended by soldr#3053. `soldr-cli` needs
+# `formatter` for the `soldr rustfmt` format cache, and both `soldr-cli` and
+# `soldr-daemon` need `mimalloc-allocator` so the `#[global_allocator]` and the
+# RSS-ceiling watchdog read the allocator through zccache's re-exported
+# `mimalloc_pprof`. `soldr-cache` needs none.
 MANIFEST_FEATURES = {
     "crates/soldr-cache/Cargo.toml": [],
-    "crates/soldr-daemon/Cargo.toml": [],
-    "crates/soldr-cli/Cargo.toml": ["formatter"],
+    "crates/soldr-daemon/Cargo.toml": ["mimalloc-allocator"],
+    "crates/soldr-cli/Cargo.toml": ["formatter", "mimalloc-allocator"],
 }
 
 # `cli` expands to all of these; each is independently a way back in.

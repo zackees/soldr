@@ -30,10 +30,15 @@ def test_repository_manifests_match_the_settled_feature_set(guard) -> None:
     assert guard._check_manifest_features() == []
 
 
-def test_soldr_cli_is_the_only_crate_requesting_a_feature(guard) -> None:
-    assert guard.MANIFEST_FEATURES["crates/soldr-cli/Cargo.toml"] == ["formatter"]
+def test_manifest_feature_set_is_exactly_as_settled(guard) -> None:
+    # soldr#3053: soldr-cli requests `formatter` + `mimalloc-allocator`,
+    # soldr-daemon requests `mimalloc-allocator`, soldr-cache requests none.
+    assert guard.MANIFEST_FEATURES["crates/soldr-cli/Cargo.toml"] == [
+        "formatter",
+        "mimalloc-allocator",
+    ]
     assert guard.MANIFEST_FEATURES["crates/soldr-cache/Cargo.toml"] == []
-    assert guard.MANIFEST_FEATURES["crates/soldr-daemon/Cargo.toml"] == []
+    assert guard.MANIFEST_FEATURES["crates/soldr-daemon/Cargo.toml"] == ["mimalloc-allocator"]
 
 
 def test_cli_and_its_expansion_are_all_forbidden(guard) -> None:
