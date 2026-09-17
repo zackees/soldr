@@ -4,11 +4,24 @@
 //! `validate_dylint_path_binary` against shims that reproduce MSVC
 //! `link.exe`'s response shape.
 //!
-//! Unix-only (declared `#[cfg(all(test, unix))]` in `mod.rs`): the fixtures
-//! are `#!/bin/sh` scripts. The behaviour under test is platform-independent
-//! — it is decided entirely by exit status plus captured output.
+//! The fixtures are `#!/bin/sh` scripts, so each test returns early on a
+//! Windows host. That gate is a **runtime** host check, not `#[cfg(unix)]`:
+//! host `cfg` outside `soldr-platform` is denied by the #2493 boundary
+//! (`dylints/ban_platform_cfg_outside_boundary` and
+//! `.github/scripts/platform_cfg_boundary_ratchet.py`), and this module
+//! previously carried `#[cfg(all(test, unix))]` in `mod.rs` — see soldr#3284.
+//!
+//! The behaviour under test is platform-independent: it is decided entirely by
+//! exit status plus captured output, and the predicate itself
+//! (`dylint_link_help_output_is_valid`) is unit-tested host-agnostically in
+//! `soldr-fetch`.
 
 use super::*;
+
+/// Whether this host can run the `#!/bin/sh` fixtures below.
+fn shell_fixtures_supported() -> bool {
+    crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows
+}
 
 /// Write an executable `#!/bin/sh` shim that emits `payload` on stdout and
 /// exits 1, mirroring how a real `dylint-link` surfaces its linker's reply.
@@ -30,6 +43,9 @@ Copyright (C) Microsoft Corporation.  All rights reserved.\n\n\
 
 #[test]
 fn dylint_link_exiting_one_with_the_msvc_banner_is_accepted() {
+    if !shell_fixtures_supported() {
+        return;
+    }
     // The exact false negative from soldr#3274: a healthy managed
     // dylint-link forwards `/?` to link.exe, which prints its banner and
     // usage and exits non-zero. Rejecting that made `soldr cargo dylint`
@@ -43,6 +59,9 @@ fn dylint_link_exiting_one_with_the_msvc_banner_is_accepted() {
 
 #[test]
 fn dylint_link_exiting_one_without_a_banner_is_still_rejected() {
+    if !shell_fixtures_supported() {
+        return;
+    }
     // The #2432 binary-or-exit-1 invariant: a genuinely unusable pair still
     // fails with the actionable diagnostic.
     let dir = tempfile::tempdir().unwrap();
@@ -65,6 +84,9 @@ fn dylint_link_exiting_one_without_a_banner_is_still_rejected() {
 
 #[test]
 fn the_msvc_banner_allowance_does_not_leak_to_cargo_dylint() {
+    if !shell_fixtures_supported() {
+        return;
+    }
     // `cargo-dylint` is an ordinary CLI; it must still be judged by a clean
     // `--version` / `--help` exit, so banner-shaped output buys it nothing.
     let dir = tempfile::tempdir().unwrap();
@@ -78,6 +100,9 @@ fn the_msvc_banner_allowance_does_not_leak_to_cargo_dylint() {
 
 #[test]
 fn a_healthy_unix_style_dylint_link_still_passes_on_version() {
+    if !shell_fixtures_supported() {
+        return;
+    }
     // Unix linkers answer `--version` cleanly; that fast path must survive.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dylint-link");
