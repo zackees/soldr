@@ -638,11 +638,12 @@ async fn fetch_repo_binary_once(
     })
 }
 
-/// soldr#936: smoke-test a freshly-extracted binary by invoking it
-/// with `--version` (with a short timeout). On failure, evict the
-/// extracted file so the next fetch attempt does a clean re-download
-/// rather than reading the corrupt artifact from cache.
-fn smoke_rustup_toolchain(cache_name: &str, target: &TargetTriple) -> Option<String> {
+/// The `RUSTUP_TOOLCHAIN` identity a validation probe of `cache_name` must
+/// run under, if any.
+///
+/// Public so the cargo front door's PATH-pair validator uses this exact
+/// identity instead of re-spelling the literal (soldr#3274).
+pub fn smoke_rustup_toolchain(cache_name: &str, target: &TargetTriple) -> Option<String> {
     // `dylint-link` is a transparent linker wrapper. It requires this
     // variable before it will forward even `--version` / `--help` to the
     // underlying linker. The smoke probe does not compile anything, so a
@@ -666,6 +667,11 @@ fn smoke_command(
 }
 
 /// Validate an installed tool binary and evict it when it cannot execute.
+///
+/// soldr#936: probe a freshly-extracted binary with `--version` (falling back
+/// to [`smoke_help_argument`]). On failure the extracted file is deleted so the
+/// next fetch attempt does a clean re-download rather than reading the corrupt
+/// artifact back out of the cache.
 ///
 /// Most callers use this immediately after extraction. It is public within
 /// the unpublished workspace so higher-level selectors can also revalidate
@@ -699,17 +705,7 @@ pub fn smoke_test_or_evict(
             // Some tools (e.g. unusual subcommand stubs) don't support
             // --version cleanly. Fall through to --help as the
             // second-chance probe before evicting.
-            let help_argument = if cache_name == "dylint-link" {
-                // dylint-link forwards arguments to the platform linker.
-                // MSVC link.exe spells help `/?` and deliberately exits 1100
-                // after printing its banner and usage, so success there is
-                // determined from that recognizable output rather than the
-                // process status alone. Unix linkers normally pass the
-                // --version probe above and never take this branch.
-                "/?"
-            } else {
-                "--help"
-            };
+            let help_argument = smoke_help_argument(cache_name);
             let help_ok = smoke_command(binary_path, cache_name, target, help_argument)
                 .output()
                 .map(|help| {
@@ -748,7 +744,34 @@ pub fn smoke_test_or_evict(
     }
 }
 
-fn dylint_link_help_output_is_valid(
+/// The second-chance help probe argument for `cache_name`.
+///
+/// `dylint-link` forwards arguments to the platform linker. MSVC `link.exe`
+/// spells help `/?` and deliberately exits 1100 after printing its banner and
+/// usage, so success there is determined from that recognizable output rather
+/// than the process status alone (see [`dylint_link_help_output_is_valid`]).
+/// Unix linkers normally pass the `--version` probe and never reach this
+/// argument.
+///
+/// Public so the cargo front door's PATH-pair validator selects the same
+/// argument this smoke test does — soldr#3274 was caused by a second
+/// validator picking `--help`, which a correct `dylint-link` cannot pass.
+pub fn smoke_help_argument(cache_name: &str) -> &'static str {
+    if cache_name == "dylint-link" {
+        "/?"
+    } else {
+        "--help"
+    }
+}
+
+/// Whether a `dylint-link` help probe's result is the healthy MSVC response.
+///
+/// `dylint-link` forwards to `link.exe`, which prints its banner plus
+/// `usage: LINK` and exits non-zero for `/?`, so a *correct* binary cannot
+/// exit 0 here. Public because the cargo front door's PATH-pair validator
+/// must use this one predicate rather than a generic `--version`/`--help`
+/// success check (soldr#3274); a duplicated rule is exactly what regressed.
+pub fn dylint_link_help_output_is_valid(
     status_code: Option<i32>,
     stdout: &[u8],
     stderr: &[u8],

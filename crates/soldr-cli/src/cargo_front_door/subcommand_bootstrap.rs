@@ -306,6 +306,9 @@ fn validate_dylint_path_binary(
     version: &str,
 ) -> Result<(), SoldrError> {
     let host = crate::core::TargetTriple::host()?;
+    if component == "dylint-link" {
+        return validate_dylint_link_path_binary(binary, version, &host);
+    }
     let mut failures = Vec::new();
     for argument in ["--version", "--help"] {
         let mut command = std::process::Command::new(binary);
@@ -313,9 +316,6 @@ fn validate_dylint_path_binary(
             .arg(argument)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        if component == "dylint-link" {
-            command.env("RUSTUP_TOOLCHAIN", format!("nightly-{}", host.triple()));
-        }
         suppress_windows_console_window(&mut command);
         // soldr#3098: spawns share, staged writes exclude.
         let spawned = {
@@ -353,6 +353,89 @@ fn validate_dylint_path_binary(
             failures.join("; ")
         )),
     ))
+}
+
+/// Validate a PATH-supplied `dylint-link` (soldr#3274).
+///
+/// `dylint-link` is a transparent linker wrapper: it forwards its arguments to
+/// the platform linker, so generic `--version` / `--help` probes are rejected
+/// by a *correct* binary (MSVC `link.exe` exits non-zero and prints its banner
+/// plus `usage: LINK`). #2468 named this defect; the managed smoke test in
+/// `soldr-fetch` already handles it, and this validator now uses that one
+/// predicate instead of a second, weaker rule. The output must be captured for
+/// the banner to be readable at all — the previous implementation piped both
+/// streams to `Stdio::null()`, so it could not have passed under any status.
+///
+/// The #2432 binary-or-exit-1 invariant is preserved: a pair that neither
+/// exits 0 nor produces the MSVC banner + usage still fails with the
+/// actionable `dylint_unavailable_error` diagnostic.
+fn validate_dylint_link_path_binary(
+    binary: &Path,
+    version: &str,
+    host: &crate::core::TargetTriple,
+) -> Result<(), SoldrError> {
+    let mut failures = Vec::new();
+    for argument in ["--version", crate::fetch::smoke_help_argument("dylint-link")] {
+        let mut command = std::process::Command::new(binary);
+        command.arg(argument);
+        if let Some(toolchain) = crate::fetch::smoke_rustup_toolchain("dylint-link", host) {
+            // Identical to the string this branch set inline before
+            // soldr#3274 (`nightly-<host triple>`), now sourced from the one
+            // function that defines it.
+            command.env("RUSTUP_TOOLCHAIN", toolchain);
+        }
+        suppress_windows_console_window(&mut command);
+        // Bounded, output-capturing probe. `command_output_with_timeout_duration`
+        // is soldr's sanctioned wall-clock containment for small host probes:
+        // it pipes and drains both streams on reader threads (no pipe-buffer
+        // deadlock) and kills + reaps the child at the deadline.
+        match crate::core::command_output_with_timeout_duration(
+            &mut command,
+            &format!("dylint-link {argument}"),
+            Duration::from_secs(2),
+        ) {
+            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output)
+                if crate::fetch::dylint_link_help_output_is_valid(
+                    output.status.code(),
+                    &output.stdout,
+                    &output.stderr,
+                ) =>
+            {
+                return Ok(());
+            }
+            Ok(output) => failures.push(format!(
+                "{argument} exited with {} without a linker banner (output: {})",
+                output.status,
+                dylint_link_probe_excerpt(&output.stdout, &output.stderr)
+            )),
+            Err(error) => failures.push(format!("{argument} probe failed: {error}")),
+        }
+    }
+    Err(dylint_unavailable_error(
+        "dylint-link",
+        version,
+        &SoldrError::Other(format!(
+            "PATH binary at {} failed bounded validation: {}",
+            binary.display(),
+            failures.join("; ")
+        )),
+    ))
+}
+
+/// A short, single-line excerpt of a probe's output for the diagnostic. The
+/// full MSVC banner is multi-line and the message must stay actionable.
+fn dylint_link_probe_excerpt(stdout: &[u8], stderr: &[u8]) -> String {
+    let combined = format!(
+        "{} {}",
+        String::from_utf8_lossy(stdout).trim(),
+        String::from_utf8_lossy(stderr).trim()
+    );
+    let flattened = combined.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flattened.is_empty() {
+        return "<no output>".to_string();
+    }
+    flattened.chars().take(200).collect()
 }
 
 // Pick the cargo-dylint binary to use given the outcome of the managed
