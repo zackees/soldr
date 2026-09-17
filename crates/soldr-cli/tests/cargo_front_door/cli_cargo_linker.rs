@@ -42,28 +42,17 @@ fn log_has_any_cargo_target_env(log: &str) -> bool {
         .any(|line| line.starts_with("cargo_target_env "))
 }
 
-/// Install a fake `reld` that exits 0 on `--version`, so the `Fast`/default
-/// probe sees it as available. Returns the directory to prepend to PATH.
+/// Install a fake `reld` on a PATH directory, so the `Fast`/default probe
+/// sees it as available. Returns the directory to prepend to PATH.
+///
+/// The probe looks for `reld` + the platform executable suffix (`reld.exe` on
+/// Windows — the name rustc can spawn), so the fake must use that exact name;
+/// the `.cmd` from `fake_script_path` is deliberately invisible to it. The
+/// fake cargo never links, so the file is never executed.
 fn install_fake_reld() -> PathBuf {
     let dir = unique_temp_dir("fake-reld");
-    if matches!(
-        soldr_platform::host::facts::os(),
-        soldr_platform::host::facts::HostOs::Windows
-    ) {
-        // The probe spawns `Command::new("reld")`, which on Windows resolves
-        // only `reld.exe` from PATH — a `reld.cmd` script is invisible to it
-        // (and to rustc spawning the linker). Stand in a real executable:
-        // the soldr binary under a name multicall does not claim, so
-        // `reld.exe --version` is plain `soldr --version` and exits 0.
-        let reld = dir.join("reld.exe");
-        let soldr = soldr_bin();
-        if fs::hard_link(&soldr, &reld).is_err() {
-            fs::copy(&soldr, &reld).expect("failed to install fake reld.exe");
-        }
-    } else {
-        let reld = fake_script_path(&dir, "reld");
-        write_fake_script(&reld, "#!/bin/sh\nexit 0\n");
-    }
+    let reld = dir.join(format!("reld{}", std::env::consts::EXE_SUFFIX));
+    write_fake_script(&reld, "#!/bin/sh\nexit 0\n");
     dir
 }
 
