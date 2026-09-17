@@ -52,6 +52,15 @@
 //!   friends in `server_runtime.rs`) would run more code, allocate more, and
 //!   delay the exit the ceiling exists to force. [`die_on_breach`] calls
 //!   `std::process::exit` directly, bypassing `ShutdownSignal` entirely.
+//! - **The dump names the compiles it was killed for, not just the process
+//!   it killed.** Alongside the `/proc/self/*` copies (this process only),
+//!   the dump also writes `cgroup.json`: the cgroup-wide memory counters
+//!   *and* the identities of the compiles that were in flight at breach time
+//!   (soldr#3053). The second half exists because cgroup OOM counters alone
+//!   are not sufficient evidence -- CLAUDE.md's "Diagnosing before capping"
+//!   records that the kills which motivated `SOLDR_HEAVY_TEST_LINKS` did not
+//!   increment those counters at all. A reader needs the unit that caused
+//!   the growth, and cgroup numbers alone cannot name it.
 //! - **The sampled profiler is opt-in at runtime, gated on the same env
 //!   var.** `zccache::mimalloc_pprof::prof::dump_file` only produces a useful heap
 //!   profile if `prof::start` was called first. Starting it unconditionally
@@ -97,7 +106,7 @@ pub const RSS_CEILING_ENV_VAR: &str = "SOLDR_DAEMON_RSS_CEILING_BYTES";
 pub const RSS_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
 const SCHEMA_VERSION: u32 = 1;
-const BREACH_SCHEMA_VERSION: u32 = 1;
+const BREACH_SCHEMA_VERSION: u32 = 2;
 
 /// Which long-lived soldr process is reporting a sample or a breach. Carried
 /// end to end — through the status file, the breach dump, and the legible
@@ -261,6 +270,18 @@ pub struct BreachSummary {
     /// `/proc/self/smaps_rollup`, copied verbatim. Same platform caveat as
     /// `proc_status_path`.
     pub proc_smaps_rollup_path: Option<PathBuf>,
+    /// `Some` iff `cgroup.json` was written: the host/cgroup memory boundary
+    /// containing this process at breach time, plus the compiles that were in
+    /// flight. Separate from the `/proc/self/*` copies because those describe
+    /// only this process -- CLAUDE.md's "Diagnosing before capping" is explicit
+    /// that cgroup OOM counters alone are not sufficient evidence, so the dump
+    /// carries the per-unit picture beside the cgroup-wide one (soldr#3053).
+    /// `#[serde(default)]` so a `summary.json` written by a pre-soldr#3053
+    /// (schema_version 1) daemon still deserializes for a reader on a newer
+    /// build -- `crates/soldr-cli/tests/daemon/daemon_rss_ceiling.rs`'s
+    /// `newest_breach_summary` reads whatever dump it finds on disk.
+    #[serde(default)]
+    pub cgroup_path: Option<PathBuf>,
 }
 
 /// Directory a breach dump for `pid` at `created_at_ms` is written to.
@@ -277,10 +298,11 @@ fn breach_dir(paths: &SoldrPaths, created_at_ms: i64, pid: u32) -> PathBuf {
 
 /// Write every breach artifact required by soldr#3057: the pprof-compatible
 /// sampled heap profile, mimalloc's exact counters, the platform memory
-/// snapshot, and a JSON summary tying them together. Best-effort per
-/// artifact -- a failure on one (e.g. the sampled profiler was never
-/// started) does not prevent the others from being written, because a
-/// partial dump is still far more legible than none.
+/// snapshot, `cgroup.json` (the cgroup-wide memory boundary plus the
+/// compiles in flight, soldr#3053), and a JSON summary tying them together.
+/// Best-effort per artifact -- a failure on one (e.g. the sampled profiler
+/// was never started) does not prevent the others from being written,
+/// because a partial dump is still far more legible than none.
 pub fn write_breach_dump(
     paths: &SoldrPaths,
     role: ProcessRole,
@@ -313,6 +335,14 @@ pub fn write_breach_dump(
         &dir.join("proc-self-smaps_rollup.txt"),
     );
 
+    let cgroup_dest = dir.join("cgroup.json");
+    let cgroup_path = std::fs::write(
+        &cgroup_dest,
+        serde_json::to_vec_pretty(&cgroup_and_inflight_json()).unwrap_or_default(),
+    )
+    .ok()
+    .map(|_| cgroup_dest);
+
     let summary = BreachSummary {
         schema_version: BREACH_SCHEMA_VERSION,
         pid,
@@ -327,6 +357,7 @@ pub fn write_breach_dump(
         mimalloc_stats_path,
         proc_status_path,
         proc_smaps_rollup_path,
+        cgroup_path,
     };
     let summary_json = serde_json::to_vec_pretty(&summary).map_err(std::io::Error::other)?;
     std::fs::write(dir.join("summary.json"), summary_json)?;
@@ -365,6 +396,44 @@ fn exact_counters_json() -> serde_json::Value {
     })
 }
 
+/// The host/cgroup memory boundary containing this process, plus the compiles
+/// that were executing when the ceiling was breached.
+///
+/// Mapped field by field with `serde_json::json!` for the same reason
+/// [`exact_counters_json`] is: `HostResourceSnapshot` derives neither
+/// `Serialize` nor `Deserialize` (see
+/// `crates/soldr-platform/src/platform/host/resources.rs`), and giving it
+/// those derives would put a serde contract on a type five other call sites
+/// share. Every cgroup field is `Option`, and an unreadable value serializes
+/// as `null` -- never as `0`, because that type's own contract is that
+/// unreadable and zero must never be conflated.
+///
+/// The in-flight list is the half that makes the cgroup half actionable:
+/// CLAUDE.md's "Diagnosing before capping" records that the kills which
+/// motivated `SOLDR_HEAVY_TEST_LINKS` did not increment the cgroup OOM
+/// counters at all, so a dump carrying only cgroup-wide numbers cannot say
+/// which unit was responsible. On the broker (`ProcessRole::Broker`) the
+/// list is always empty -- the broker runs no compiles -- and `role` in
+/// `summary.json` is what distinguishes that from "the daemon was idle".
+fn cgroup_and_inflight_json() -> serde_json::Value {
+    let snapshot = crate::platform::host::resources::HostResourceSnapshot::capture();
+    serde_json::json!({
+        "cgroup_current_bytes": snapshot.cgroup_current_bytes,
+        "cgroup_peak_bytes": snapshot.cgroup_peak_bytes,
+        "cgroup_limit_bytes": snapshot.cgroup_limit_bytes,
+        "cgroup_limit_unbounded": snapshot.cgroup_limit_unbounded,
+        "cgroup_swap_current_bytes": snapshot.cgroup_swap_current_bytes,
+        "cgroup_swap_limit_bytes": snapshot.cgroup_swap_limit_bytes,
+        "cgroup_swap_limit_unbounded": snapshot.cgroup_swap_limit_unbounded,
+        "cgroup_oom_kills": snapshot.cgroup_oom_kills,
+        "cgroup_pids_current": snapshot.cgroup_pids_current,
+        "cgroup_pids_limit": snapshot.cgroup_pids_limit,
+        "cgroup_pids_limit_unbounded": snapshot.cgroup_pids_limit_unbounded,
+        "system_available_bytes": snapshot.system_available_bytes,
+        "in_flight_compiles": crate::daemon::inflight_compiles::snapshot(),
+    })
+}
+
 /// Copy one `/proc/self/*` file into the dump directory verbatim. `None` on
 /// any failure (missing file, no `/proc`, permission) -- never fatal to the
 /// rest of the dump. Effectively Linux-only: macOS and Windows have no
@@ -393,7 +462,7 @@ pub fn legible_breach_message(summary: &BreachSummary) -> String {
         "soldr {role} (pid {pid}) breached its {ceiling_mib:.1} MiB RSS ceiling \
          ({env_var}): observed peak {peak_mib:.1} MiB (last sample {last_mib:.1} MiB). \
          Memory dump written to {dump_dir} (heap.pprof, mimalloc-stats.json, \
-         proc-self-status.txt, summary.json).",
+         cgroup.json, proc-self-status.txt, summary.json).",
         role = summary.role,
         pid = summary.pid,
         ceiling_mib = summary.ceiling_bytes as f64 / (1024.0 * 1024.0),
@@ -707,6 +776,11 @@ mod tests {
         )
         .expect("write_breach_dump must succeed under a writable tempdir");
 
+        assert_eq!(
+            BREACH_SCHEMA_VERSION, 2,
+            "soldr#3053 bumped the breach schema to add cgroup.json"
+        );
+        assert_eq!(summary.schema_version, BREACH_SCHEMA_VERSION);
         assert_eq!(summary.pid, pid);
         assert_eq!(summary.role, ProcessRole::Daemon);
         assert!(summary
@@ -746,6 +820,97 @@ mod tests {
         } else {
             assert!(summary.proc_smaps_rollup_path.is_none());
         }
+
+        let cgroup_path = summary
+            .cgroup_path
+            .clone()
+            .expect("cgroup.json must be written");
+        assert_eq!(cgroup_path, summary.dump_dir.join("cgroup.json"));
+        assert!(cgroup_path.is_file());
+
+        let cgroup_body = std::fs::read_to_string(&cgroup_path).expect("read cgroup.json");
+        let cgroup_json: serde_json::Value =
+            serde_json::from_str(&cgroup_body).expect("cgroup.json must be valid JSON");
+        for key in [
+            "cgroup_current_bytes",
+            "cgroup_peak_bytes",
+            "cgroup_limit_bytes",
+            "cgroup_limit_unbounded",
+            "cgroup_swap_current_bytes",
+            "cgroup_swap_limit_bytes",
+            "cgroup_swap_limit_unbounded",
+            "cgroup_oom_kills",
+            "cgroup_pids_current",
+            "cgroup_pids_limit",
+            "cgroup_pids_limit_unbounded",
+            "system_available_bytes",
+        ] {
+            assert!(
+                cgroup_json.get(key).is_some(),
+                "cgroup.json must carry {key} even if its value is null on a host with \
+                 no cgroup v2: {cgroup_json}"
+            );
+        }
+        assert!(
+            cgroup_json["in_flight_compiles"].is_array(),
+            "cgroup.json must carry an in_flight_compiles array: {cgroup_json}"
+        );
+    }
+
+    /// The registry backing `in_flight_compiles` is process-global and this
+    /// binary's tests run in parallel threads under nextest, so this test
+    /// asserts only presence/absence of ITS OWN unique `unit_key` -- never
+    /// the array's length, and never that it is empty -- to avoid racing
+    /// against other tests that register their own in-flight compiles at the
+    /// same time.
+    #[test]
+    fn breach_dump_names_the_compiles_that_were_in_flight() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(dir.path().to_path_buf());
+        let pid = std::process::id();
+
+        let _guard = crate::daemon::inflight_compiles::register(
+            Some("rss-ceiling-fixture/deadbeef".to_string()),
+            Some("rss_ceiling_fixture".to_string()),
+        );
+
+        let summary = write_breach_dump(&paths, ProcessRole::Daemon, pid, 1, 2, 3)
+            .expect("write_breach_dump must succeed under a writable tempdir");
+        let cgroup_body =
+            std::fs::read_to_string(summary.cgroup_path.expect("cgroup.json must be written"))
+                .expect("read cgroup.json");
+        let cgroup_json: serde_json::Value =
+            serde_json::from_str(&cgroup_body).expect("cgroup.json must be valid JSON");
+        let in_flight = cgroup_json["in_flight_compiles"]
+            .as_array()
+            .expect("in_flight_compiles must be an array");
+        assert!(
+            in_flight
+                .iter()
+                .any(|entry| entry["unit_key"] == "rss-ceiling-fixture/deadbeef"
+                    && entry["crate_name"] == "rss_ceiling_fixture"
+                    && entry["elapsed_ms"].is_number()),
+            "in_flight_compiles must name this test's registered compile: {in_flight:?}"
+        );
+
+        drop(_guard);
+
+        let summary2 = write_breach_dump(&paths, ProcessRole::Daemon, pid, 1, 2, 3)
+            .expect("write_breach_dump must succeed under a writable tempdir");
+        let cgroup_body2 =
+            std::fs::read_to_string(summary2.cgroup_path.expect("cgroup.json must be written"))
+                .expect("read cgroup.json");
+        let cgroup_json2: serde_json::Value =
+            serde_json::from_str(&cgroup_body2).expect("cgroup.json must be valid JSON");
+        let in_flight2 = cgroup_json2["in_flight_compiles"]
+            .as_array()
+            .expect("in_flight_compiles must be an array");
+        assert!(
+            !in_flight2
+                .iter()
+                .any(|entry| entry["unit_key"] == "rss-ceiling-fixture/deadbeef"),
+            "the dropped guard's compile must no longer be in flight: {in_flight2:?}"
+        );
     }
 
     #[test]
@@ -768,6 +933,7 @@ mod tests {
             ),
             proc_status_path: None,
             proc_smaps_rollup_path: None,
+            cgroup_path: None,
         };
         let message = legible_breach_message(&summary);
         assert!(message.contains("broker"), "{message}");

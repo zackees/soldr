@@ -380,6 +380,16 @@ impl SoldrZccacheService {
             env: req.env,
             stdin: req.stdin,
         };
+        // soldr#3053: name what was in flight when the RSS-ceiling watchdog
+        // dumps. CLAUDE.md's "Diagnosing before capping" is explicit that
+        // cgroup OOM counters alone are not sufficient evidence, so the dump
+        // needs the per-process picture beside them -- and the only place
+        // that knows a compile is running is the scope that awaits it. The
+        // guard deregisters on drop, including on the `?` error path below.
+        let _inflight = crate::daemon::inflight_compiles::register(
+            crate::memory_estimate::unit_key(&req.args),
+            crate::amalgamation::rust_crate_name(&req.args).map(str::to_string),
+        );
         // Keep zccache's compile state behind one heap indirection. Its
         // streaming implementation nests a large compile pipeline future;
         // carrying that state inline makes this adapter's callers inherit the
