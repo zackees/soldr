@@ -661,6 +661,8 @@ mod dylint_driver_tests;
 #[cfg(all(test, unix))]
 mod dylint_link_validation_tests;
 #[cfg(test)]
+mod linker_project_config_tests;
+#[cfg(test)]
 mod scrub_pool_tests;
 #[cfg(test)]
 mod tests;

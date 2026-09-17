@@ -315,16 +315,26 @@ pub fn apply_pep517_override(
     };
     let explicit_env = std::env::var_os(crate::LINKER_ENV_VAR);
     let explicit_config = config.linker.as_deref();
-    let project_target_linker_configured = project_target_config_value(target, "linker").is_some()
-        || project_target_config_value(target, "rustflags").is_some();
-    let automatic_fast = explicit_env.is_none()
-        && explicit_config.is_none()
+    let project_target_linker_configured = project_declares_target_linker(target);
+    let no_explicit_request = explicit_env.is_none() && explicit_config.is_none();
+    let automatic_fast = no_explicit_request
         && !project_target_linker_configured
         && std::env::var(PEP517_LINKER_POLICY_ENV)
             .ok()
             .is_some_and(|value| value.trim().eq_ignore_ascii_case("auto"));
     let choice = if automatic_fast {
         LinkerChoice::Fast
+    } else if no_explicit_request && project_target_linker_configured {
+        // soldr#3277: the project declared its own linker/rustflags for this
+        // target and nobody asked soldr for a specific one. Falling through to
+        // `from_env_and_config(None, None)` would hand back `Fast` — the reld
+        // default of soldr#3262 — and re-inject the very thing the
+        // `project_target_linker_configured` guard above exists to suppress,
+        // because a `CARGO_TARGET_<TRIPLE>_*` env var outranks the config file
+        // in Cargo. `Default` injects nothing, which is what docs/API.md
+        // promises ("Target-specific linker or rustflags settings from ...
+        // project `.cargo/config.toml` retain precedence").
+        LinkerChoice::Default
     } else {
         from_env_and_config(explicit_env.as_deref(), explicit_config)?
     };
@@ -373,7 +383,12 @@ pub fn apply_pep517_override(
     })
 }
 
-fn effective_command_env_is_non_empty(command: &Command, key: &str) -> bool {
+/// Return whether a non-empty value will reach the cargo child. Values set
+/// directly on `command` take precedence over the parent's environment,
+/// including an explicit removal. This helper keeps linker injection from
+/// clobbering a target-specific cross toolchain with SOLDR_LINKER's host
+/// default.
+pub(crate) fn effective_command_env_is_non_empty(command: &Command, key: &str) -> bool {
     if let Some(value) = command
         .get_envs()
         .find(|(candidate, _)| *candidate == OsStr::new(key))
@@ -402,9 +417,20 @@ fn project_root(start: &Path) -> PathBuf {
     start.to_path_buf()
 }
 
-fn project_target_config_value(target: &str, key: &str) -> Option<String> {
+/// Read `[target.<triple>] <key>` from the project's `.cargo/config.toml`
+/// (or legacy `.cargo/config`), resolving the project root from the current
+/// working directory.
+///
+/// Only exact-triple sections are recognised: cfg-spec sections such as
+/// `[target.'cfg(all())']` (used by this repo's `dylints/*` crates) are
+/// deliberately NOT detected and are out of scope for soldr#3277.
+pub(crate) fn project_target_config_value(target: &str, key: &str) -> Option<String> {
     let current = std::env::current_dir().ok()?;
     let root = project_root(&current);
+    target_config_value_in_root(&root, target, key)
+}
+
+fn target_config_value_in_root(root: &Path, target: &str, key: &str) -> Option<String> {
     for relative in [".cargo/config.toml", ".cargo/config"] {
         let path = root.join(relative);
         let Ok(contents) = std::fs::read_to_string(path) else {
@@ -433,6 +459,20 @@ fn project_target_config_value(target: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Whether the project's own `.cargo/config.toml` declares a linker or
+/// rustflags for `target`.
+///
+/// soldr#3277: Cargo gives the `CARGO_TARGET_<TRIPLE>_LINKER` / `_RUSTFLAGS`
+/// env vars precedence over the config file, so injecting soldr's *automatic*
+/// linker choice here would silently replace a linker the project declared
+/// for itself. An explicit `SOLDR_LINKER=` / `config.toml linker =` request is
+/// a user decision and still applies. Both the PEP 517 path and the
+/// `soldr cargo` front door must ask this one predicate.
+pub(crate) fn project_declares_target_linker(target: &str) -> bool {
+    project_target_config_value(target, "linker").is_some()
+        || project_target_config_value(target, "rustflags").is_some()
 }
 
 fn pep517_fallback_key(target: &str, injection: &LinkerInjection) -> Option<String> {
