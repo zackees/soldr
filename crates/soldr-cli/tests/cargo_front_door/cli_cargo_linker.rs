@@ -42,19 +42,17 @@ fn log_has_any_cargo_target_env(log: &str) -> bool {
         .any(|line| line.starts_with("cargo_target_env "))
 }
 
-/// Install a fake `reld` that exits 0 on `--version`, so the `Fast`/default
-/// probe sees it as available. Returns the directory to prepend to PATH.
+/// Install a fake `reld` on a PATH directory, so the `Fast`/default probe
+/// sees it as available. Returns the directory to prepend to PATH.
+///
+/// The probe looks for `reld` + the platform executable suffix (`reld.exe` on
+/// Windows — the name rustc can spawn), so the fake must use that exact name;
+/// the `.cmd` from `fake_script_path` is deliberately invisible to it. The
+/// fake cargo never links, so the file is never executed.
 fn install_fake_reld() -> PathBuf {
     let dir = unique_temp_dir("fake-reld");
-    let reld = fake_script_path(&dir, "reld");
-    if matches!(
-        soldr_platform::host::facts::os(),
-        soldr_platform::host::facts::HostOs::Windows
-    ) {
-        write_fake_script(&reld, "@echo off\nexit /b 0\n");
-    } else {
-        write_fake_script(&reld, "#!/bin/sh\nexit 0\n");
-    }
+    let reld = dir.join(format!("reld{}", std::env::consts::EXE_SUFFIX));
+    write_fake_script(&reld, "#!/bin/sh\nexit 0\n");
     dir
 }
 
@@ -337,6 +335,8 @@ fn cargo_front_door_fast_uses_reld() {
         &home_root,
     );
     let mut command = isolated_soldr_command();
+    // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
+    command.current_dir(&cache_root);
     prepend_to_path(&mut command, &reld_dir);
     daemon.configure_client(&mut command);
     let output = command

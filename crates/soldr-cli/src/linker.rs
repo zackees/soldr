@@ -771,18 +771,21 @@ fn looks_like_linker_failure_text(text: &str) -> bool {
         && failure_signal.iter().any(|needle| text.contains(needle))
 }
 
-/// Whether the `reld` linker is available on `PATH` (probed by running
-/// `reld --version`). `Fast`/the default linker falls back to rust-lld (or the
-/// platform default) when reld is not installed, since reld is not yet bundled
-/// or universally shipped (soldr#3262).
+/// Whether the `reld` linker is available on `PATH`. `Fast`/the default linker
+/// falls back to rust-lld (or the platform default) when reld is not installed,
+/// since reld is not yet bundled or universally shipped (soldr#3262).
+///
+/// A file lookup rather than spawning `reld --version`: this runs on every
+/// `soldr cargo` invocation, so it must not cost a process spawn. It looks for
+/// `reld` plus the platform executable suffix only — never PATHEXT — because
+/// rustc spawns the linker the same way (`reld.exe` on Windows); a `reld.cmd`
+/// it could not run must not count as present.
 fn reld_on_path() -> bool {
-    let mut command = std::process::Command::new("reld");
-    command.arg("--version");
-    suppress_windows_console_window(&mut command);
-    match command.output() {
-        Ok(out) => out.status.success(),
-        Err(_) => false,
-    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let name = format!("reld{}", std::env::consts::EXE_SUFFIX);
+    std::env::split_paths(&path).any(|dir| !dir.as_os_str().is_empty() && dir.join(&name).is_file())
 }
 
 /// Convert a target triple to the uppercase underscore form Cargo uses

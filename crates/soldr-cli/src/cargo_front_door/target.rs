@@ -121,7 +121,17 @@ pub(super) fn apply_linker_override(
         return Ok(());
     }
 
-    let target = resolve_active_target_triple(args, explicit_target)?;
+    // `Fast` is the automatic/default linker (soldr#3262): it is a best-effort
+    // convenience, not a hard requirement. If the host triple cannot be
+    // detected (e.g. a repo-local fake rustc without rustup, or a non-build
+    // command like `cargo --version`), skip injection rather than failing the
+    // whole cargo invocation. An explicit `reld`/`mold`/`rust-lld` request
+    // still surfaces the detection error.
+    let target = match resolve_active_target_triple(args, explicit_target) {
+        Ok(target) => target,
+        Err(_) if matches!(choice, linker::LinkerChoice::Fast) => return Ok(()),
+        Err(error) => return Err(error),
+    };
     let injection = linker::resolve_for_target(choice, &target)?;
     let prefix = linker::cargo_target_env_prefix(&target);
     let linker_key = format!("CARGO_TARGET_{prefix}_LINKER");
