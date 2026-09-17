@@ -46,13 +46,22 @@ fn log_has_any_cargo_target_env(log: &str) -> bool {
 /// probe sees it as available. Returns the directory to prepend to PATH.
 fn install_fake_reld() -> PathBuf {
     let dir = unique_temp_dir("fake-reld");
-    let reld = fake_script_path(&dir, "reld");
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
     ) {
-        write_fake_script(&reld, "@echo off\nexit /b 0\n");
+        // The probe spawns `Command::new("reld")`, which on Windows resolves
+        // only `reld.exe` from PATH — a `reld.cmd` script is invisible to it
+        // (and to rustc spawning the linker). Stand in a real executable:
+        // the soldr binary under a name multicall does not claim, so
+        // `reld.exe --version` is plain `soldr --version` and exits 0.
+        let reld = dir.join("reld.exe");
+        let soldr = soldr_bin();
+        if fs::hard_link(&soldr, &reld).is_err() {
+            fs::copy(&soldr, &reld).expect("failed to install fake reld.exe");
+        }
     } else {
+        let reld = fake_script_path(&dir, "reld");
         write_fake_script(&reld, "#!/bin/sh\nexit 0\n");
     }
     dir
@@ -337,6 +346,8 @@ fn cargo_front_door_fast_uses_reld() {
         &home_root,
     );
     let mut command = isolated_soldr_command();
+    // soldr#3203: run outside this crate, whose workspace target is the suite's own `target/`.
+    command.current_dir(&cache_root);
     prepend_to_path(&mut command, &reld_dir);
     daemon.configure_client(&mut command);
     let output = command
