@@ -366,3 +366,13 @@ fn dylint_link_accepts_msvc_help_exit() {
         b""
     ));
 }
+
+#[test]
+fn smoke_help_argument_is_msvc_help_only_for_dylint_link() {
+    // soldr#3274: the cargo front door's PATH validator must pick the same
+    // argument this smoke test does. `--help` is forwarded to link.exe and
+    // rejected by a healthy dylint-link.
+    assert_eq!(smoke_help_argument("dylint-link"), "/?");
+    assert_eq!(smoke_help_argument("cargo-dylint"), "--help");
+    assert_eq!(smoke_help_argument("cargo-nextest"), "--help");
+}
