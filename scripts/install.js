@@ -139,6 +139,49 @@ function platformTarget(platform = process.platform, arch = process.arch, libc =
   return target;
 }
 
+// The ORDERED list of release artifacts this host may install (soldr#1060).
+//
+// The RFC's policy is "failure -> try the corresponding sibling build", and
+// the honest generalization is "retry the OTHER libc", not "always retry gnu":
+// `detectLibc` already prefers gnu when the host's glibc is at or above
+// MIN_GLIBC_FOR_GNU, so on those hosts the fallback is musl and on every other
+// Linux host it is gnu. Both directions are real: a gnu-preferring host whose
+// -gnu artifact is missing from a release still has a musl artifact that runs
+// there, and a musl-preferring host whose musl artifact 404s can still try gnu.
+//
+// Non-Linux platforms are single-candidate: there is no sibling libc to fall
+// back to, and silently installing a different macOS/Windows triple would be
+// wrong rather than merely slower.
+function platformCandidates(platform = process.platform, arch = process.arch, libc = detectLibc(platform)) {
+  // Resolve the preferred artifact through `platformTarget` rather than
+  // rebuilding the key rule here. Two copies of "which artifact does this host
+  // want?" are free to disagree silently: a hand-rolled `libc === "gnu" ? ... :
+  // "musl"` would quietly answer musl for an unrecognised libc string that
+  // `platformTarget` treats as a hard error, so the two entry points would
+  // return different things for the same input. One implementation, one answer
+  // -- including the unsupported-platform throw.
+  const primary = platformTarget(platform, arch, libc);
+  if (platform !== "linux") {
+    return [primary];
+  }
+  // Read the preferred libc back off the RESOLVED triple instead of off the
+  // `libc` argument: platformTarget has already applied its own
+  // `libc || "musl"` default, and re-deriving it is exactly where a second
+  // copy would drift from the first.
+  const sibling = primary.triple.endsWith("-gnu") ? "musl" : "gnu";
+  const candidates = [primary];
+  try {
+    const fallback = platformTarget(platform, arch, sibling);
+    if (fallback.triple !== primary.triple) {
+      candidates.push(fallback);
+    }
+  } catch (err) {
+    // A future arch published for only one libc (the RFC's deferred armv7 is
+    // musl-only) has no sibling. One candidate is correct there, not an error.
+  }
+  return candidates;
+}
+
 function releaseBaseUrl(version) {
   const override = process.env.SOLDR_NPM_RELEASE_BASE_URL;
   if (override) {
@@ -277,16 +320,17 @@ function findExtractedBinary(root, binaryName) {
   return null;
 }
 
-async function install() {
-  if (process.env.SOLDR_NPM_SKIP_DOWNLOAD) {
-    console.log("soldr: skipping native binary download because SOLDR_NPM_SKIP_DOWNLOAD is set");
-    return;
-  }
-
-  const version = PACKAGE_JSON.version;
-  const target = platformTarget();
+// Download, verify, and install one candidate target's release archive into
+// bin/native/. Extracted from install() (soldr#1060) so a retry loop can call
+// it once per candidate.
+//
+// A failed candidate must not leave bin/native/ half-populated for the next
+// one, so every source path is resolved and validated first: manifest
+// location + parse + validateReleaseManifest, then every findExtractedBinary
+// lookup for BUNDLED_BINARIES and soldrDebugInfoEntries. Only once every
+// source is known-present does bin/native/ get cleared and repopulated.
+async function installRelease(target, version, baseUrl) {
   const filename = `soldr-v${version}-${target.triple}.${ARCHIVE_EXT}`;
-  const baseUrl = releaseBaseUrl(version);
   const archiveUrl = `${baseUrl}/${filename}`;
   const checksumUrl = `${baseUrl}/soldr-v${version}-SHA256SUMS.txt`;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "soldr-npm-"));
@@ -307,14 +351,12 @@ async function install() {
     extractArchive(archivePath, extractDir);
 
     const nativeDir = path.join(PACKAGE_ROOT, "bin", "native");
-    fs.rmSync(nativeDir, { recursive: true, force: true });
-    fs.mkdirSync(nativeDir, { recursive: true });
 
-    // Copy every bundled binary so soldr has its daemon and can find
-    // crgx via SOLDR_CRGX_LOCAL_DIR and cargo-chef via
-    // SOLDR_CARGO_CHEF_LOCAL_DIR.
-    // `bin/soldr.js` wires these env vars before exec. The archive
-    // layout is flat: all bundled binaries live at the archive root.
+    // Resolve every source before touching bin/native/. `bin/soldr.js`
+    // wires SOLDR_CRGX_LOCAL_DIR / SOLDR_CARGO_CHEF_LOCAL_DIR to this dir,
+    // so soldr has its daemon and can find crgx / cargo-chef once this
+    // completes. The archive layout is flat: all bundled binaries live at
+    // the archive root.
     const binaryExt = target.binary.endsWith(".exe") ? ".exe" : "";
     const manifestSrc = findExtractedBinary(extractDir, zccacheContract.MANIFEST_NAME);
     if (!manifestSrc) {
@@ -332,30 +374,41 @@ async function install() {
         return filePath;
       },
     });
+
+    const copyPlan = [];
     for (const baseName of BUNDLED_BINARIES) {
       const fileName = `${baseName}${binaryExt}`;
       const src = findExtractedBinary(extractDir, fileName);
       if (!src) {
         throw new Error(`release archive ${filename} did not contain ${fileName}`);
       }
-      const dst = path.join(nativeDir, fileName);
-      fs.copyFileSync(src, dst);
-      if (process.platform !== "win32") {
-        fs.chmodSync(dst, 0o755);
-      }
+      copyPlan.push({ src, dst: path.join(nativeDir, fileName), executable: true });
     }
     for (const entry of zccacheContract.soldrDebugInfoEntries(manifest)) {
       const src = findExtractedBinary(extractDir, entry.name);
       if (!src) {
         throw new Error(`release archive ${filename} did not contain ${entry.name}`);
       }
-      fs.copyFileSync(src, path.join(nativeDir, entry.name));
+      copyPlan.push({ src, dst: path.join(nativeDir, entry.name), executable: false });
     }
-
     // Drop manifest.json alongside the binaries so downstream tooling
     // (and humans reading `bin/native/`) can introspect provenance —
     // soldr / zccache versions, target triples, build commit, sha256s.
-    fs.copyFileSync(manifestSrc, path.join(nativeDir, zccacheContract.MANIFEST_NAME));
+    copyPlan.push({
+      src: manifestSrc,
+      dst: path.join(nativeDir, zccacheContract.MANIFEST_NAME),
+      executable: false,
+    });
+
+    // Every source is known-present now — safe to clear and repopulate.
+    fs.rmSync(nativeDir, { recursive: true, force: true });
+    fs.mkdirSync(nativeDir, { recursive: true });
+    for (const { src, dst, executable } of copyPlan) {
+      fs.copyFileSync(src, dst);
+      if (executable && process.platform !== "win32") {
+        fs.chmodSync(dst, 0o755);
+      }
+    }
 
     console.log(
       `soldr: installed ${target.triple} (soldr + daemon + crgx + cargo-chef) into ${nativeDir}`,
@@ -363,6 +416,59 @@ async function install() {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+// Walk `candidates` in order, returning the first that installs. `attempt` is
+// injected (rather than inlined into install()) so the fallthrough policy can
+// be tested without a network: an untestable retry loop is how "we have a
+// fallback" becomes true in the comments and false in the code.
+async function installFirstWorkingCandidate(candidates, attempt, log = console) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    // A zero-length list would fall straight through the loop to a rejection
+    // whose detail string is empty -- "could not install ()" tells nobody
+    // anything. platformCandidates never produces one (it throws instead), so
+    // reaching here means the caller built the list some other way.
+    throw new Error("no soldr release candidates to install (empty candidate list)");
+  }
+  const failures = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    const target = candidates[index];
+    try {
+      await attempt(target);
+      if (index > 0) {
+        log.warn(
+          `soldr: installed the sibling libc build ${target.triple} instead of the ` +
+            `preferred ${failures[0].target.triple} (${failures.length} candidate(s) failed first)`,
+        );
+      }
+      return target;
+    } catch (error) {
+      failures.push({ target, error });
+      const next = candidates[index + 1];
+      if (next) {
+        log.warn(
+          `soldr: ${target.triple} failed (${error.message}); falling back to the sibling libc build ${next.triple}`,
+        );
+      }
+    }
+  }
+  const detail = failures
+    .map(({ target, error }) => `${target.triple}: ${error.message}`)
+    .join("; ");
+  throw new Error(`no soldr release artifact could be installed (${detail})`);
+}
+
+async function install() {
+  if (process.env.SOLDR_NPM_SKIP_DOWNLOAD) {
+    console.log("soldr: skipping native binary download because SOLDR_NPM_SKIP_DOWNLOAD is set");
+    return;
+  }
+  const version = PACKAGE_JSON.version;
+  const baseUrl = releaseBaseUrl(version);
+  const candidates = platformCandidates();
+  await installFirstWorkingCandidate(candidates, (target) =>
+    installRelease(target, version, baseUrl),
+  );
 }
 
 if (require.main === module) {
@@ -382,5 +488,7 @@ module.exports = {
   verifyArchiveChecksum,
   detectLibc,
   platformTarget,
+  platformCandidates,
+  installFirstWorkingCandidate,
   releaseBaseUrl,
 };

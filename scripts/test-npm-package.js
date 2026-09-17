@@ -112,6 +112,91 @@ assert.strictEqual(install.platformTarget("win32", "x64").triple, "x86_64-pc-win
 assert.strictEqual(install.platformTarget("win32", "arm64").triple, "aarch64-pc-windows-msvc");
 assert.throws(() => install.platformTarget("freebsd", "x64"), /unsupported platform/);
 
+// platformCandidates orders the download attempts for a host. Linux gets a
+// preferred triple plus a sibling-libc fallback so a wrong libc guess (or a
+// missing release asset) can be retried without a second npm install; every
+// other platform has no sibling to fall back to.
+const triples = (list) => list.map((t) => t.triple);
+
+// a. A glibc new enough for the shipped artifact prefers gnu, with musl as
+//    the fallback if the gnu asset turns out to be missing or broken.
+assert.deepStrictEqual(triples(install.platformCandidates("linux", "x64", "gnu")), [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+]);
+assert.deepStrictEqual(triples(install.platformCandidates("linux", "arm64", "gnu")), [
+  "aarch64-unknown-linux-gnu",
+  "aarch64-unknown-linux-musl",
+]);
+
+// b. An old/unknown glibc, or a musl system, prefers musl -- gnu would not
+//    even run -- but still lists gnu second in case musl's own asset is the
+//    one that is missing.
+assert.deepStrictEqual(triples(install.platformCandidates("linux", "x64", "musl")), [
+  "x86_64-unknown-linux-musl",
+  "x86_64-unknown-linux-gnu",
+]);
+assert.deepStrictEqual(triples(install.platformCandidates("linux", "arm64", "musl")), [
+  "aarch64-unknown-linux-musl",
+  "aarch64-unknown-linux-gnu",
+]);
+
+// c. `libc === null` (both detectLibc probes unavailable) must behave like
+//    musl, matching detectLibc's own unknown case (line 105-108) rather than
+//    contradicting it -- picking gnu here would be the opposite of the
+//    "unknown host, run anywhere" reasoning detectLibc already applies.
+assert.deepStrictEqual(triples(install.platformCandidates("linux", "x64", null)), [
+  "x86_64-unknown-linux-musl",
+  "x86_64-unknown-linux-gnu",
+]);
+
+// d. Non-Linux platforms have exactly one candidate: there is no sibling
+//    libc, and "falling back" to a different macOS/Windows triple would
+//    install a binary that cannot run on the host at all.
+assert.deepStrictEqual(triples(install.platformCandidates("darwin", "arm64")), [
+  "aarch64-apple-darwin",
+]);
+assert.strictEqual(install.platformCandidates("darwin", "x64").length, 1);
+assert.strictEqual(install.platformCandidates("win32", "x64").length, 1);
+assert.strictEqual(install.platformCandidates("win32", "arm64").length, 1);
+
+// e. An arch/platform we do not ship at all is still a hard error, not an
+//    empty candidate list a caller could silently iterate zero times over.
+assert.throws(() => install.platformCandidates("freebsd", "x64"), /unsupported platform/);
+assert.throws(() => install.platformCandidates("linux", "riscv64", "gnu"), /unsupported platform/);
+
+// e2. platformCandidates must resolve its preferred artifact THROUGH
+//     platformTarget rather than rebuilding the key rule, so the two can
+//     never answer differently for the same input. An unrecognised libc
+//     string is where a second hand-rolled `libc === "gnu" ? ... : "musl"`
+//     copy would silently answer musl while platformTarget throws.
+assert.throws(() => install.platformTarget("linux", "x64", "uclibc"), /unsupported platform/);
+assert.throws(() => install.platformCandidates("linux", "x64", "uclibc"), /unsupported platform/);
+
+// f. Structural invariants for every Linux candidate list: the two
+//    candidates are distinct, the first one is unchanged from what
+//    `platformTarget` already picks for the same args (this feature must
+//    not change the shipped preference), and every candidate is a real
+//    entry from TARGETS rather than a hand-built object that happens to
+//    look right.
+for (const [arch, libc] of [
+  ["x64", "gnu"],
+  ["x64", "musl"],
+  ["x64", null],
+  ["arm64", "gnu"],
+  ["arm64", "musl"],
+]) {
+  const candidates = install.platformCandidates("linux", arch, libc);
+  assert.notStrictEqual(candidates[0].triple, candidates[1].triple);
+  assert.deepStrictEqual(candidates[0], install.platformTarget("linux", arch, libc));
+  for (const candidate of candidates) {
+    assert.ok(
+      Object.values(install.TARGETS).includes(candidate),
+      `platformCandidates("linux", "${arch}", ${libc}) returned an object not in TARGETS`,
+    );
+  }
+}
+
 // detectLibc must return null on non-Linux platforms so the platform key
 // stays `<platform>-<arch>` rather than `<platform>-<arch>-gnu`.
 assert.strictEqual(install.detectLibc("darwin"), null);
@@ -453,4 +538,175 @@ for (const required of [
   );
 }
 
-console.log("npm package and PyPI version checks passed");
+// installFirstWorkingCandidate's retry policy: it must try candidates in
+// order, stay quiet on the common case, and when it does fall back, the log
+// has to say which artifact failed, why, and which one was installed
+// instead -- otherwise a user staring at a successful install with the
+// "wrong" binary has no way to find out why.
+async function checkCandidateFallback() {
+  const gnu = { triple: "x86_64-unknown-linux-gnu", binary: "soldr" };
+  const musl = { triple: "x86_64-unknown-linux-musl", binary: "soldr" };
+  const collector = () => {
+    const lines = [];
+    return { lines, warn: (line) => lines.push(line) };
+  };
+
+  // 1. First candidate succeeds -> it is returned, attempt ran exactly once,
+  //    and nothing is logged. A normal install must stay quiet; logging a
+  //    "warning" on the success path would train users to ignore warnings.
+  {
+    const log = collector();
+    const attempts = [];
+    const result = await install.installFirstWorkingCandidate(
+      [gnu, musl],
+      async (target) => {
+        attempts.push(target.triple);
+        return target;
+      },
+      log,
+    );
+    assert.deepStrictEqual(result, gnu);
+    assert.deepStrictEqual(attempts, [gnu.triple]);
+    assert.deepStrictEqual(log.lines, []);
+  }
+
+  // 2. First candidate fails, sibling succeeds -> resolves with the sibling,
+  //    attempts happened in order (gnu before musl -- it must not try the
+  //    sibling first), and the log names both the failed triple and its
+  //    reason, plus a line reporting the sibling that was actually
+  //    installed. This is the RFC's whole point: the log must say what
+  //    happened and why.
+  {
+    const log = collector();
+    const attempts = [];
+    const result = await install.installFirstWorkingCandidate(
+      [gnu, musl],
+      async (target) => {
+        attempts.push(target.triple);
+        if (target.triple === gnu.triple) {
+          throw new Error("HTTP 404");
+        }
+        return target;
+      },
+      log,
+    );
+    assert.deepStrictEqual(result, musl);
+    assert.deepStrictEqual(attempts, [gnu.triple, musl.triple]);
+    assert.ok(
+      log.lines.some((l) => l.includes("x86_64-unknown-linux-gnu") && l.includes("HTTP 404")),
+      "fallthrough must log the failed triple and the reason",
+    );
+    // Must be a line that says something was INSTALLED, naming both what was
+    // installed and what was preferred. Matching the musl triple alone is not
+    // enough: the fallthrough warning already names it, so that weaker check
+    // would still pass if the success line were deleted entirely.
+    assert.ok(
+      log.lines.some(
+        (l) =>
+          l.includes("installed") &&
+          l.includes("x86_64-unknown-linux-musl") &&
+          l.includes("x86_64-unknown-linux-gnu"),
+      ),
+      `a non-first success must log what was installed and what was preferred: ${log.lines.join(" | ")}`,
+    );
+  }
+
+  // 3. Both candidates fail -> the promise rejects, and the rejection names
+  //    every triple and every reason. A fallback that swallows the original
+  //    error on the way to the final rejection makes the failure
+  //    unreportable -- exactly the failure mode this feature exists to fix.
+  {
+    const log = collector();
+    const promise = install.installFirstWorkingCandidate(
+      [gnu, musl],
+      async (target) => {
+        if (target.triple === gnu.triple) {
+          throw new Error("HTTP 404");
+        }
+        throw new Error("checksum mismatch");
+      },
+      log,
+    );
+    await assert.rejects(promise, /no soldr release artifact could be installed/);
+    await assert.rejects(
+      promise,
+      (err) =>
+        err.message.includes("x86_64-unknown-linux-gnu") &&
+        err.message.includes("x86_64-unknown-linux-musl") &&
+        err.message.includes("HTTP 404") &&
+        err.message.includes("checksum mismatch"),
+    );
+    // Exactly one log line: the gnu -> musl fallthrough. Nothing may claim an
+    // install happened when every candidate failed.
+    assert.strictEqual(log.lines.length, 1, `unexpected log lines: ${log.lines.join(" | ")}`);
+    assert.ok(
+      !log.lines.some((l) => l.includes("installed")),
+      "an all-candidates-failed run must not log that anything was installed",
+    );
+  }
+
+  // 4. Single-candidate (the non-Linux shape) failure -> rejects, attempted
+  //    exactly once, and nothing is logged. There is no sibling to fall back
+  //    to, so nothing may claim a fallback happened.
+  {
+    const log = collector();
+    const attempts = [];
+    const promise = install.installFirstWorkingCandidate(
+      [{ triple: "aarch64-apple-darwin", binary: "soldr" }],
+      async (target) => {
+        attempts.push(target.triple);
+        throw new Error("HTTP 404");
+      },
+      log,
+    );
+    await assert.rejects(promise, /no soldr release artifact could be installed/);
+    assert.strictEqual(attempts.length, 1);
+    assert.deepStrictEqual(log.lines, []);
+  }
+
+  // 4b. An empty candidate list is rejected with a message that says so,
+  //     rather than falling through the loop to "could not be installed ()"
+  //     with an empty reason list. platformCandidates throws instead of
+  //     returning one, so this only fires for a hand-built list.
+  {
+    const log = collector();
+    let attempted = false;
+    await assert.rejects(
+      install.installFirstWorkingCandidate([], async () => {
+        attempted = true;
+      }, log),
+      /empty candidate list/,
+    );
+    assert.strictEqual(attempted, false);
+    assert.deepStrictEqual(log.lines, []);
+  }
+
+  // 5. Real-shape wiring: platformCandidates feeding straight into
+  //    installFirstWorkingCandidate resolves with the sibling when the
+  //    preferred triple fails, proving the ordering helper and the retry
+  //    loop compose the way install() actually uses them.
+  {
+    const log = collector();
+    const candidates = install.platformCandidates("linux", "x64", "musl");
+    const result = await install.installFirstWorkingCandidate(
+      candidates,
+      async (target) => {
+        if (target.triple === "x86_64-unknown-linux-musl") {
+          throw new Error("HTTP 404");
+        }
+        return target;
+      },
+      log,
+    );
+    assert.strictEqual(result.triple, "x86_64-unknown-linux-gnu");
+  }
+}
+
+checkCandidateFallback()
+  .then(() => {
+    console.log("npm package and PyPI version checks passed");
+  })
+  .catch((error) => {
+    console.error(error && error.stack ? error.stack : error);
+    process.exit(1);
+  });
