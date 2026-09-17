@@ -658,7 +658,7 @@ mod backtrace_policy_tests;
 mod cargo_abort_log_tests;
 #[cfg(test)]
 mod dylint_driver_tests;
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod dylint_link_validation_tests;
 #[cfg(test)]
 mod linker_project_config_tests;
