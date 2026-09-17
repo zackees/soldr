@@ -288,6 +288,74 @@ assert.strictEqual(
   null,
 );
 
+// g. Candidate ordering driven end to end from the HOST's glibc rather than
+//    from a literal libc string. The RFC states its cases as "new glibc" /
+//    "old glibc", and `libc` is only detectLibc's answer to that question --
+//    asserting the order for the string "gnu" proves the ordering helper
+//    works, not that a new-glibc host reaches it. Composing the two is what
+//    covers the path install() actually walks.
+{
+  // One step below the shipped floor, derived rather than hardcoded. A
+  // literal "2.36" here would stop testing the too-old branch the day
+  // MIN_GLIBC_FOR_GNU drops to 2.17 -- it would silently become a
+  // new-ENOUGH version and this case would assert the opposite of its name.
+  const floorParts = install.MIN_GLIBC_FOR_GNU.split(".").map((p) => parseInt(p, 10) || 0);
+  floorParts[floorParts.length - 1] -= 1;
+  const TOO_OLD = floorParts.join(".");
+  assert.strictEqual(
+    install.compareVersions(TOO_OLD, install.MIN_GLIBC_FOR_GNU),
+    -1,
+    `derived too-old glibc ${TOO_OLD} must sort below ${install.MIN_GLIBC_FOR_GNU}`,
+  );
+
+  const GLIBC_LIB = ["ld-linux-x86-64.so.2", "libc.so.6"];
+  const candidatesForHost = (probes) =>
+    triples(install.platformCandidates("linux", "x64", install.detectLibc("linux", probes)));
+
+  // New-enough glibc -> gnu first, musl second as the sibling fallback.
+  assert.deepStrictEqual(
+    candidatesForHost({
+      readHeader: () => ({ glibcVersionRuntime: NEW_ENOUGH }),
+      listLib: () => GLIBC_LIB,
+    }),
+    ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"],
+  );
+  // Too-old glibc (the Debian 12 case that motivated soldr#1060) -> musl
+  // first, because gnu would not even load, but gnu is still listed second
+  // so a missing/broken musl asset is recoverable without a second install.
+  assert.deepStrictEqual(
+    candidatesForHost({
+      readHeader: () => ({ glibcVersionRuntime: TOO_OLD }),
+      listLib: () => GLIBC_LIB,
+    }),
+    ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"],
+  );
+  // A musl SYSTEM reaches the same order through the /lib probe.
+  assert.deepStrictEqual(
+    candidatesForHost({ readHeader: () => ({}), listLib: () => ["ld-musl-x86_64.so.1"] }),
+    ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"],
+  );
+  // Both probes dead -> still musl-first, never an empty or single list that
+  // would quietly drop the fallback on exactly the hosts that need it most.
+  assert.deepStrictEqual(
+    candidatesForHost({ readHeader: throwingProbe, listLib: throwingProbe }),
+    ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"],
+  );
+}
+
+// h. The zero-argument shape install() itself calls: on this host the first
+//    candidate must still be exactly what platformTarget picks today. The
+//    retry may add a fallback; it may not change which artifact is preferred.
+{
+  const hostCandidates = install.platformCandidates();
+  assert.deepStrictEqual(hostCandidates[0], install.platformTarget());
+  assert.strictEqual(
+    hostCandidates.length,
+    process.platform === "linux" ? 2 : 1,
+    `platformCandidates() length on ${process.platform}: ${triples(hostCandidates).join(", ")}`,
+  );
+}
+
 // MIN_GLIBC_FOR_GNU must track the ceiling release-auto.yml enforces on the
 // gnu BINARIES. If the release build is fixed to link a 2.17 baseline and that
 // ceiling drops, the installer must follow it down -- otherwise every glibc
