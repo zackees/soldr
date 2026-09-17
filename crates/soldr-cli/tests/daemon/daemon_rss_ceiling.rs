@@ -1083,6 +1083,60 @@ fn daemon_dies_and_dumps_memory_when_the_ceiling_is_breached() {
         summary.mimalloc_stats_path.is_file(),
         "exact mimalloc counters must be on disk: {summary:?}"
     );
+
+    // soldr#3053: cgroup OOM counters alone are not sufficient evidence
+    // (CLAUDE.md, "Diagnosing before capping"), so a breach dump must carry
+    // the per-process picture beside them -- the cgroup-wide numbers AND the
+    // compiles that were in flight. Asserted here, on a REAL daemon breach,
+    // because the unit test in `rss_ceiling.rs` can only prove the writer
+    // works; this proves the artifact survives the actual
+    // `std::process::exit(1)` path a breaching daemon takes.
+    let cgroup_path = summary
+        .cgroup_path
+        .clone()
+        .unwrap_or_else(|| panic!("summary.json must name cgroup.json: {summary:?}"));
+    assert_eq!(
+        cgroup_path,
+        summary.dump_dir.join("cgroup.json"),
+        "cgroup.json must live inside the dump directory: {summary:?}"
+    );
+    assert!(
+        cgroup_path.is_file(),
+        "cgroup.json must exist on disk: {summary:?}"
+    );
+    let cgroup_body = fs::read_to_string(&cgroup_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", cgroup_path.display()));
+    let cgroup: serde_json::Value = serde_json::from_str(&cgroup_body)
+        .unwrap_or_else(|error| panic!("cgroup.json must be valid JSON ({error}): {cgroup_body}"));
+    // Presence, not value: every cgroup field is `Option` and serializes as
+    // `null` on a host with no readable cgroup v2 controller, which is a
+    // legitimate reading and must not be conflated with zero.
+    for key in [
+        "cgroup_current_bytes",
+        "cgroup_peak_bytes",
+        "cgroup_limit_bytes",
+        "cgroup_oom_kills",
+        "cgroup_pids_current",
+        "system_available_bytes",
+    ] {
+        assert!(
+            cgroup.get(key).is_some(),
+            "cgroup.json must carry {key}: {cgroup_body}"
+        );
+    }
+    assert!(
+        cgroup
+            .get("in_flight_compiles")
+            .and_then(serde_json::Value::as_array)
+            .is_some(),
+        "cgroup.json must carry the in-flight compile list (possibly empty -- the breach \
+         may land between compiles): {cgroup_body}"
+    );
+    assert!(
+        summary.schema_version >= 2,
+        "the breach schema must be bumped for the cgroup.json artifact: {summary:?}"
+    );
+
     assert!(message.contains(&summary.role.to_string()));
     assert!(message.contains(&summary.pid.to_string()));
     assert!(message.contains(rss_ceiling::RSS_CEILING_ENV_VAR));

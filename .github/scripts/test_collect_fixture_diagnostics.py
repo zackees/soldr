@@ -29,6 +29,17 @@ class CollectFixtureDiagnosticsTests(unittest.TestCase):
             / "summary.json",
             '{"role":"daemon"}',
         )
+        # soldr#3053: the cgroup boundary + in-flight compile list written
+        # beside summary.json must be uploaded too -- it is the half of the
+        # dump that names WHICH units the daemon was holding.
+        write(
+            cache
+            / "cache"
+            / "soldr-daemon"
+            / "memory-breach-1700000000000-42"
+            / "cgroup.json",
+            '{"cgroup_current_bytes":1,"in_flight_compiles":[]}',
+        )
         write(cache / "daemon-spawn.log", "spawn failed\n")
         # Noise that must never be uploaded: a compiler cache object and a
         # binary heap profile living in the same roots.
@@ -68,6 +79,8 @@ class CollectFixtureDiagnosticsTests(unittest.TestCase):
                 [
                     "soldr-rss-breach-cache-b-1700000000000/cache/soldr-daemon/"
                     "lifecycle.jsonl",
+                    "soldr-rss-breach-cache-b-1700000000000/cache/soldr-daemon/"
+                    "memory-breach-1700000000000-42/cgroup.json",
                     "soldr-rss-breach-cache-b-1700000000000/cache/soldr-daemon/"
                     "memory-breach-1700000000000-42/summary.json",
                     "soldr-rss-breach-cache-b-1700000000000/cache/soldr-daemon/"

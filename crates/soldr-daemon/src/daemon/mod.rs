@@ -20,12 +20,6 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod backend_handle_adoption;
-/// soldr#3038 / soldr#3057 — optional `SOLDR_DAEMON_RSS_CEILING_BYTES`
-/// watchdog: samples this process's own resident set on a short interval
-/// (plus mimalloc's exact allocator counters), and on breach writes a
-/// memory dump (sampled heap profile, exact counters, `/proc` snapshot)
-/// then exits immediately -- fail-fast, not "record and keep running". Also
-/// used by `soldr-cli`'s `broker_server.rs` to watch the broker's own RSS.
 pub mod bringup;
 /// soldr#2224 — the three IPC handlers that touch `state.sqlite3`, split
 /// out of the oversized `server.rs`.
@@ -57,11 +51,21 @@ pub mod disconnect;
 pub mod event_batcher;
 pub mod history_gc;
 pub mod image_hash;
+/// soldr#3053 — process-global list of compiles currently executing inside
+/// the embedded zccache service, so `rss_ceiling`'s breach dump can name
+/// the units the daemon was holding and not just how much it held.
+pub(crate) mod inflight_compiles;
 pub mod ipc;
 pub mod ipc_peer;
 pub mod lifecycle;
 pub mod maintenance;
 pub mod protocol;
+/// soldr#3038 / soldr#3057 — optional `SOLDR_DAEMON_RSS_CEILING_BYTES`
+/// watchdog: samples this process's own resident set on a short interval
+/// (plus mimalloc's exact allocator counters), and on breach writes a
+/// memory dump (sampled heap profile, exact counters, `/proc` snapshot)
+/// then exits immediately -- fail-fast, not "record and keep running". Also
+/// used by `soldr-cli`'s `broker_server.rs` to watch the broker's own RSS.
 pub mod rss_ceiling;
 /// soldr#3210: runtime threads must outlive the compilers they spawn.
 pub(crate) mod runtime_threads;

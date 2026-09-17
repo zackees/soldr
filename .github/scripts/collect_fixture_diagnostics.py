@@ -75,6 +75,12 @@ COLLECTED_NAMES = frozenset(
         "summary.json",
         "mimalloc-stats.json",
         "proc-self-status.txt",
+        # soldr#3053 — the cgroup-wide counters plus the compiles that were
+        # in flight at breach time. Collected because the per-process
+        # `proc-self-status.txt` cannot say which unit caused the growth, and
+        # CLAUDE.md's "Diagnosing before capping" is explicit that cgroup OOM
+        # counters alone are not sufficient evidence either.
+        "cgroup.json",
         # Embedded zccache session logs.
         "last-session.log",
         "last-session.jsonl",
