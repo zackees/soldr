@@ -22,6 +22,13 @@ fn extract_rustflags_env_value(log: &str) -> Option<String> {
 }
 
 fn extract_cargo_target_env_value(log: &str, suffix: &str) -> Option<String> {
+    extract_cargo_target_env_entry(log, suffix).map(|(_, value)| value)
+}
+
+/// Same search as `extract_cargo_target_env_value`, but also returns the full
+/// `CARGO_TARGET_<...>_<suffix>` env var name so a caller can recover which
+/// triple soldr resolved.
+fn extract_cargo_target_env_entry(log: &str, suffix: &str) -> Option<(String, String)> {
     for line in log.lines() {
         let Some(rest) = line.strip_prefix("cargo_target_env ") else {
             continue;
@@ -31,7 +38,7 @@ fn extract_cargo_target_env_value(log: &str, suffix: &str) -> Option<String> {
         };
         let (name, value) = (&rest[..eq_idx], &rest[eq_idx + 1..]);
         if name.starts_with("CARGO_TARGET_") && name.ends_with(&format!("_{suffix}")) {
-            return Some(value.trim().to_string());
+            return Some((name.to_string(), value.trim().to_string()));
         }
     }
     None
@@ -358,4 +365,134 @@ fn cargo_front_door_fast_uses_reld() {
     );
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
     assert_reld_injected(&log);
+}
+
+/// soldr#3277: a project's own `[target.<triple>] linker` in
+/// `.cargo/config.toml` is the user's decision, not soldr's to override with
+/// its own reld/rust-lld default. An explicit `SOLDR_LINKER` request is still
+/// honored — that is also a user decision, just a more direct one.
+#[test]
+fn cargo_front_door_respects_project_target_linker_config() {
+    let cache_root = unique_temp_dir("cargo-project-target-linker");
+    let home_root = cache_root.join("home");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
+    let reld_dir = install_fake_reld();
+    let daemon = common::isolated_daemon::IsolatedDaemon::spawn(
+        &common::soldr_daemon_bin(),
+        &cache_root,
+        &home_root,
+    );
+
+    // Deliberately no Cargo.toml here: `linker.rs::project_root` walks
+    // ancestors looking for one and falls back to the start directory when
+    // none is found, and `unique_temp_dir` lives under `std::env::temp_dir()`
+    // (outside any crate's workspace), so this fixture directory is itself
+    // the project root that `project_target_config_value` will read from.
+    let project = cache_root.join("project");
+    fs::create_dir_all(project.join(".cargo")).expect("create project/.cargo");
+
+    let run = |linker_env: Option<&str>| -> String {
+        let _ = fs::remove_file(&log_path);
+        let mut command = isolated_soldr_command();
+        command.current_dir(&project);
+        prepend_to_path(&mut command, &reld_dir);
+        daemon.configure_client(&mut command);
+        command
+            .args(["cargo", "build"])
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env("SOLDR_TEST_CARGO_BIN", &cargo)
+            .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+            .env_remove("SOLDR_TARGET_CACHE_MODE")
+            .env_remove("SOLDR_BUILD_CACHE_MODE");
+        if let Some(value) = linker_env {
+            command.env("SOLDR_LINKER", value);
+        } else {
+            command.env_remove("SOLDR_LINKER");
+        }
+        let output = command
+            .output()
+            .expect("failed to run soldr cargo build for project-target-linker fixture");
+        assert!(
+            output.status.success(),
+            "project-target-linker front door failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::read_to_string(&log_path).expect("failed to read fake tool log")
+    };
+
+    // PHASE 1 (control): no `.cargo/config.toml` yet, SOLDR_LINKER unset —
+    // soldr injects its own default linker. This is what makes phase 2
+    // meaningful on every host: without it, an absence of injection there
+    // could just mean the default never injects anything on this platform.
+    let control = run(None);
+    let (env_name, _) = extract_cargo_target_env_entry(&control, "LINKER").unwrap_or_else(|| {
+        panic!(
+            "expected the control run (no project config) to inject a \
+             CARGO_TARGET_<triple>_LINKER: {control}"
+        )
+    });
+
+    // Resolve the active triple from the injected env var name rather than
+    // re-detecting it in the test process — the test process and the soldr
+    // child can resolve rustc/host differently.
+    let prefix = env_name
+        .strip_prefix("CARGO_TARGET_")
+        .and_then(|rest| rest.strip_suffix("_LINKER"))
+        .unwrap_or_else(|| panic!("unexpected CARGO_TARGET_*_LINKER env name shape: {env_name}"));
+    let triple = ["x86_64", "aarch64"]
+        .into_iter()
+        .flat_map(|arch| {
+            [
+                "-pc-windows-msvc",
+                "-pc-windows-gnu",
+                "-unknown-linux-gnu",
+                "-unknown-linux-musl",
+                "-apple-darwin",
+            ]
+            .into_iter()
+            .map(move |suffix| format!("{arch}{suffix}"))
+        })
+        .find(|candidate| soldr_cli::linker::cargo_target_env_prefix(candidate) == prefix)
+        .unwrap_or_else(|| {
+            panic!("no known triple matches observed CARGO_TARGET_ prefix {prefix}: {control}")
+        });
+
+    // PHASE 2 (the fix): the project now declares its own linker for the
+    // active triple. soldr must leave it alone — no CARGO_TARGET_* injection
+    // at all.
+    let config_path = project.join(".cargo").join("config.toml");
+    fs::write(
+        &config_path,
+        format!("[target.{triple}]\nlinker = \"cc\"\n"),
+    )
+    .expect("write project .cargo/config.toml");
+    let with_project_config = run(None);
+    // Assert on the two env vars this fix owns rather than on
+    // `log_has_any_cargo_target_env`: the fake cargo logs *every* env var
+    // starting with `CARGO_TARGET_`, and `CARGO_TARGET_DIR` is a legitimate
+    // ambient value (`ci/perf_local.py` exports `CARGO_TARGET_DIR=/target`
+    // into the Docker dev loop, and `isolated_soldr_command` only scrubs
+    // route-selecting vars). A blanket check would fail there for a reason
+    // that has nothing to do with soldr#3277.
+    for suffix in ["LINKER", "RUSTFLAGS"] {
+        assert!(
+            extract_cargo_target_env_entry(&with_project_config, suffix).is_none(),
+            "soldr#3277: soldr must not override a project's declared \
+             [target.{triple}] linker from .cargo/config.toml, but it injected a \
+             CARGO_TARGET_<triple>_{suffix}: {with_project_config}"
+        );
+    }
+
+    // PHASE 3 (precedence): an explicit SOLDR_LINKER request is a user
+    // decision too, and still wins even with the project config present.
+    // reld injects on every platform when a fake `reld` is on PATH, unlike
+    // rust-lld, which is a no-op on macOS (issue #509) — so reld is the
+    // unambiguous choice to prove precedence on every host.
+    let with_explicit_request = run(Some("reld"));
+    assert!(
+        extract_linker_env_value(&with_explicit_request).is_some(),
+        "explicit SOLDR_LINKER=reld should still inject despite project config: {with_explicit_request}"
+    );
 }

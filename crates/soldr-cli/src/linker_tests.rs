@@ -450,3 +450,99 @@ fn extract_ld_path_reads_the_linker_name() {
     assert_eq!(extract_ld_path("-C link-arg=-fuse-ld=lld"), None);
     assert_eq!(extract_ld_path("--ld-path="), None);
 }
+
+// soldr#3277: a project's own `.cargo/config.toml` `[target.<triple>]` linker
+// settings must be readable so soldr can decline to override them.
+
+#[test]
+fn project_target_linker_is_read_from_cargo_config() {
+    let root = tempfile::tempdir().expect("temporary project root");
+    std::fs::create_dir_all(root.path().join(".cargo")).expect("create .cargo dir");
+    std::fs::write(
+        root.path().join(".cargo/config.toml"),
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"cc\"\n",
+    )
+    .expect("write .cargo/config.toml");
+    assert_eq!(
+        target_config_value_in_root(root.path(), LINUX, "linker"),
+        Some("cc".to_string())
+    );
+}
+
+#[test]
+fn project_target_rustflags_array_is_joined() {
+    let root = tempfile::tempdir().expect("temporary project root");
+    std::fs::create_dir_all(root.path().join(".cargo")).expect("create .cargo dir");
+    std::fs::write(
+        root.path().join(".cargo/config.toml"),
+        "[target.x86_64-unknown-linux-gnu]\nrustflags = [\"-C\", \"link-arg=-fuse-ld=lld\"]\n",
+    )
+    .expect("write .cargo/config.toml");
+    assert_eq!(
+        target_config_value_in_root(root.path(), LINUX, "rustflags"),
+        Some("-C link-arg=-fuse-ld=lld".to_string())
+    );
+}
+
+#[test]
+fn project_target_config_ignores_other_triples() {
+    let root = tempfile::tempdir().expect("temporary project root");
+    std::fs::create_dir_all(root.path().join(".cargo")).expect("create .cargo dir");
+    std::fs::write(
+        root.path().join(".cargo/config.toml"),
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"cc\"\n",
+    )
+    .expect("write .cargo/config.toml");
+    assert!(target_config_value_in_root(root.path(), WIN_MSVC, "linker").is_none());
+}
+
+#[test]
+fn project_target_config_ignores_empty_values() {
+    let root = tempfile::tempdir().expect("temporary project root");
+    std::fs::create_dir_all(root.path().join(".cargo")).expect("create .cargo dir");
+    std::fs::write(
+        root.path().join(".cargo/config.toml"),
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"   \"\n",
+    )
+    .expect("write .cargo/config.toml");
+    assert!(target_config_value_in_root(root.path(), LINUX, "linker").is_none());
+}
+
+#[test]
+fn project_target_config_missing_file_is_none() {
+    let root = tempfile::tempdir().expect("temporary project root");
+    assert!(target_config_value_in_root(root.path(), LINUX, "linker").is_none());
+    assert!(target_config_value_in_root(root.path(), LINUX, "rustflags").is_none());
+}
+
+#[test]
+fn project_target_config_dot_cargo_config_without_extension_is_read() {
+    let root = tempfile::tempdir().expect("temporary project root");
+    std::fs::create_dir_all(root.path().join(".cargo")).expect("create .cargo dir");
+    std::fs::write(
+        root.path().join(".cargo/config"),
+        "[target.aarch64-apple-darwin]\nlinker = \"cc\"\n",
+    )
+    .expect("write legacy .cargo/config");
+    assert_eq!(
+        target_config_value_in_root(root.path(), MAC_ARM, "linker"),
+        Some("cc".to_string())
+    );
+}
+
+#[test]
+fn project_target_config_does_not_match_cfg_sections() {
+    // Known soldr#3277 limitation: cfg-spec target sections (e.g.
+    // `[target.'cfg(all())']`) are not detected by
+    // `target_config_value_in_root`, which only matches an exact triple key.
+    // This repo's `dylints/*` manifests rely on `SOLDR_LINKER=default` to
+    // opt out of injection rather than a cfg-spec `[target]` section.
+    let root = tempfile::tempdir().expect("temporary project root");
+    std::fs::create_dir_all(root.path().join(".cargo")).expect("create .cargo dir");
+    std::fs::write(
+        root.path().join(".cargo/config.toml"),
+        "[target.'cfg(all())']\nrustflags = [\"-C\", \"linker=dylint-link\"]\n",
+    )
+    .expect("write .cargo/config.toml");
+    assert!(target_config_value_in_root(root.path(), LINUX, "rustflags").is_none());
+}

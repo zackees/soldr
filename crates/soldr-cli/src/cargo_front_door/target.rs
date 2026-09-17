@@ -110,10 +110,9 @@ pub(super) fn apply_linker_override(
     let config = paths
         .load_config()
         .map_err(|error| SoldrError::Other(error.to_string()))?;
-    let choice = linker::from_env_and_config(
-        std::env::var_os(LINKER_ENV_VAR).as_deref(),
-        config.linker.as_deref(),
-    )?;
+    let linker_env = std::env::var_os(LINKER_ENV_VAR);
+    let choice = linker::from_env_and_config(linker_env.as_deref(), config.linker.as_deref())?;
+    let automatic = linker_env.is_none() && config.linker.is_none();
     if matches!(choice, linker::LinkerChoice::Default) {
         // Fast-path: skip target detection entirely when there is nothing
         // to inject. Keeps `soldr cargo` no-ops on platforms where target
@@ -132,6 +131,18 @@ pub(super) fn apply_linker_override(
         Err(_) if matches!(choice, linker::LinkerChoice::Fast) => return Ok(()),
         Err(error) => return Err(error),
     };
+
+    // soldr#3277: Cargo gives CARGO_TARGET_<TRIPLE>_LINKER/_RUSTFLAGS env vars
+    // precedence over `.cargo/config.toml`, so injecting the *automatic*
+    // default here would silently replace a linker the project declared for
+    // this target. `apply_pep517_override` guards the same thing; both call
+    // sites now share one predicate instead of growing a third copy. An
+    // explicit SOLDR_LINKER / config.toml `linker =` is a user decision and
+    // still wins.
+    if automatic && linker::project_declares_target_linker(&target) {
+        return Ok(());
+    }
+
     let injection = linker::resolve_for_target(choice, &target)?;
     let prefix = linker::cargo_target_env_prefix(&target);
     let linker_key = format!("CARGO_TARGET_{prefix}_LINKER");
@@ -142,32 +153,16 @@ pub(super) fn apply_linker_override(
     // SOLDR_LINKER=fast is inherited from setup-soldr. Do not replace an
     // explicit target toolchain with the host clang/LLD fallback.
     if let Some(linker_path) = injection.linker {
-        if !effective_command_env_is_non_empty(command, &linker_key) {
+        if !linker::effective_command_env_is_non_empty(command, &linker_key) {
             command.env(&linker_key, linker_path);
         }
     }
     if let Some(rustflags) = injection.rustflags {
-        if !effective_command_env_is_non_empty(command, &rustflags_key) {
+        if !linker::effective_command_env_is_non_empty(command, &rustflags_key) {
             command.env(&rustflags_key, rustflags);
         }
     }
     Ok(())
-}
-
-/// Return whether a non-empty value will reach the cargo child. Values set
-/// directly on `command` take precedence over the parent's environment,
-/// including an explicit removal. This helper keeps linker injection from
-/// clobbering a target-specific cross toolchain with SOLDR_LINKER's host
-/// default.
-fn effective_command_env_is_non_empty(command: &std::process::Command, key: &str) -> bool {
-    if let Some(value) = command
-        .get_envs()
-        .find(|(candidate, _)| *candidate == std::ffi::OsStr::new(key))
-        .map(|(_, value)| value)
-    {
-        return value.is_some_and(|value| !value.is_empty());
-    }
-    std::env::var_os(key).is_some_and(|value| !value.is_empty())
 }
 
 fn resolve_active_target_triple(
