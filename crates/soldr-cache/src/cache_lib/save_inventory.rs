@@ -116,10 +116,14 @@ fn walk_workspace_files(workspace: &Path, threads: Option<usize>) -> Result<Vec<
         let is_file = file_type.is_file();
         // #1548: symlinked SOURCE files are surfaced via their target
         // content when — and only when — the link target lexically stays
-        // inside the workspace and resolves to a regular file. Downstream
-        // (hash + mtime snapshot at save, replay at load) uses
-        // link-following `fs::metadata` / `hash_file`, so the entry
-        // naturally carries the target's content hash and mtime.
+        // inside the workspace and resolves to a regular file. The save-side
+        // hash + mtime snapshot uses link-following `fs::metadata` /
+        // `hash_file`, so the entry carries the target's content hash and
+        // mtime. At load, replay delegates to zccache's `mtime_replay`
+        // (soldr#3289), which reports the link itself as `Missing` and never
+        // stamps through it; the in-workspace target has its own manifest
+        // entry and is replayed via that entry, which is what Cargo sees
+        // when it stats through the link.
         // Absolute, escaping, broken, and non-UTF-8 targets stay
         // conservatively OMITTED (the pre-#1548 behavior for all
         // symlinks): a missing manifest entry can only mean "no mtime

@@ -429,7 +429,11 @@ fn path_to_string(path: &Path) -> String {
 /// Lexically remove a `\\?\` prefix from a drive-letter path. Returns the
 /// input unchanged when the prefix is absent or the remainder is not a
 /// `<letter>:` path (notably the `UNC\` form).
-fn strip_verbatim_prefix(raw: &str) -> &str {
+///
+/// `pub(crate)`: also used by `cache_lib::save`'s mtime-replay path
+/// (soldr#3289) to normalize a workspace root before it is joined
+/// against manifest-relative POSIX paths.
+pub(crate) fn strip_verbatim_prefix(raw: &str) -> &str {
     let Some(rest) = raw.strip_prefix(r"\\?\") else {
         return raw;
     };

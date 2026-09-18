@@ -154,7 +154,7 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
     // Holds the mtime-replay job once we've parsed the manifest and
     // dispatched the work onto rayon. We poll on it after the tar
     // stream is fully drained.
-    let mut replay_handle: Option<std::sync::mpsc::Receiver<Vec<MtimeOutcome>>> = None;
+    let mut replay_handle: Option<std::sync::mpsc::Receiver<Vec<ReplayOutcome>>> = None;
 
     // #575 parallel extraction infrastructure. Spun up lazily on the first
     // cache entry so mtimes_only loads pay zero overhead.
@@ -202,10 +202,10 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
             // their I/O doesn't fight.
             if let Some(ws) = opts.workspace {
                 let manifest_for_replay = manifest.clone();
-                let ws_owned = ws.to_path_buf();
+                let ws_owned = replay_workspace_root(ws);
                 let (tx, rx) = std::sync::mpsc::channel();
                 pool.spawn(move || {
-                    let outcomes: Vec<MtimeOutcome> = manifest_for_replay
+                    let outcomes: Vec<ReplayOutcome> = manifest_for_replay
                         .files
                         .par_iter()
                         .map(|e| replay_one(&ws_owned, e))
@@ -380,23 +380,16 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
         })?;
         for o in outcomes {
             match o {
-                MtimeOutcome::Applied => report.mtimes_applied += 1,
-                MtimeOutcome::Missing => report.mtimes_skipped_missing += 1,
-                MtimeOutcome::SizeMismatch => report.mtimes_skipped_size_mismatch += 1,
-                MtimeOutcome::Modified => report.mtimes_skipped_modified += 1,
+                ReplayOutcome::Applied => report.mtimes_applied += 1,
+                ReplayOutcome::Missing => report.mtimes_skipped_missing += 1,
+                ReplayOutcome::SizeMismatch => report.mtimes_skipped_size_mismatch += 1,
+                ReplayOutcome::Modified => report.mtimes_skipped_modified += 1,
             }
         }
     }
 
     report.elapsed_ms = start.elapsed().as_millis() as u64;
     Ok(report)
-}
-
-enum MtimeOutcome {
-    Applied,
-    Missing,
-    SizeMismatch,
-    Modified,
 }
 
 // ---------------------------------------------------------------------------
