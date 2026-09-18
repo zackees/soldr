@@ -25,7 +25,6 @@
 
 use std::path::Path;
 
-#[cfg(test)]
 use crate::core::SoldrError;
 use crate::core::SoldrPaths;
 use crate::daemon::client::DaemonCompileLimit;
@@ -154,25 +153,31 @@ fn persist_start_fallback(
     );
 }
 
-/// Turn a state-DB open failure into a message that says what to do.
+/// Turn a state-DB (or embedded-zccache) failure into a message that says
+/// what to do, prefixed with `context` (e.g. "open build history",
+/// "embedded zccache checkpoint unavailable") so the same helper serves
+/// every call site's own wording for what failed.
 ///
 /// `database is locked` is SQLite's busy-timeout wording, and on its own it
 /// reads like corruption — soldr#2223 was filed on exactly that impression
-/// (against the redb-era equivalent). It is not corruption: it means another
-/// soldr process held the write lock for longer than this one's busy budget.
-/// Name that.
-#[cfg(test)]
-pub(super) fn contention_aware_error(error: impl std::fmt::Display) -> SoldrError {
+/// (against the redb-era equivalent). soldr#3288 corrected two things this
+/// note used to get wrong: the contention is usually **intra-process** (two
+/// connections inside `soldr-daemon`, not a second soldr process), and in
+/// the `SQLITE_BUSY_SNAPSHOT` case *nothing waited* — a WAL read-then-write
+/// upgrade can fail instantly, before `busy_timeout` ever applies. Name
+/// both, and do not claim only a history row was skipped: this helper now
+/// also covers the zccache-checkpoint call site, where that would be false.
+pub(super) fn contention_aware_error(context: &str, error: impl std::fmt::Display) -> SoldrError {
     let text = error.to_string();
     if !text.contains("database is locked") && !text.contains("database table is locked") {
-        return SoldrError::Other(format!("open build history: {text}"));
+        return SoldrError::Other(format!("{context}: {text}"));
     }
     SoldrError::Other(format!(
-        "open build history: {text}\n\
-         soldr note: this is write contention on ~/.soldr/state.sqlite3, not a corrupt database — \
-         another soldr process (a concurrent build, or the daemon's maintenance sweep) held the \
-         write lock longer than this build was willing to wait. The build itself is unaffected; \
-         only this session's history row was skipped."
+        "{context}: {text}\n\
+         soldr note: this is write contention on the soldr state store (state.sqlite3), not a \
+         corrupt database. The colliding writer is usually another connection inside the soldr \
+         daemon, and occasionally a concurrent soldr process. It can fail instantly rather than \
+         after a timeout (a WAL snapshot conflict, not a slow lock holder). It is safe to retry."
     ))
 }
 
@@ -192,7 +197,8 @@ pub(super) fn persist_start_fallback_inner(
     started_at_ms: i64,
 ) -> Result<(), SoldrError> {
     let db_path = crate::cache_lib::data_db_path(paths);
-    let db = crate::daemon::db::open_handle(&db_path).map_err(contention_aware_error)?;
+    let db = crate::daemon::db::open_handle(&db_path)
+        .map_err(|e| contention_aware_error("open build history", e))?;
     if crate::daemon::db::get_build_in(&db, session_id)
         .map_err(|e| SoldrError::Other(format!("read build history: {e}")))?
         .is_none()
@@ -266,7 +272,8 @@ pub(super) fn persist_build_session_end_fallback_inner(
     ended_at_ms: i64,
 ) -> Result<(), SoldrError> {
     let db_path = crate::cache_lib::data_db_path(paths);
-    let db = crate::daemon::db::open_handle(&db_path).map_err(contention_aware_error)?;
+    let db = crate::daemon::db::open_handle(&db_path)
+        .map_err(|e| contention_aware_error("open build history", e))?;
     let mut record = crate::daemon::db::get_build_in(&db, session_id)
         .map_err(|e| SoldrError::Other(format!("read build history: {e}")))?
         .unwrap_or_else(|| {
@@ -343,13 +350,39 @@ mod tests {
     // that impression. Contention must say so.
     #[test]
     fn contention_errors_explain_themselves() {
-        let text = contention_aware_error("sqlite error: database is locked (code 5)").to_string();
+        let text = contention_aware_error(
+            "open build history",
+            "sqlite error: database is locked (code 5)",
+        )
+        .to_string();
+        assert!(text.starts_with("open build history:"), "{text}");
         assert!(text.contains("not a corrupt database"), "{text}");
         assert!(text.contains("write contention"), "{text}");
+        // soldr#3288 correction: the colliding writer is usually inside the
+        // same process, and a snapshot conflict fails instantly — the old
+        // wording claimed a cross-process wait that never happened here.
+        assert!(text.contains("instantly"), "{text}");
+        assert!(
+            !text.contains("longer than this build was willing to wait"),
+            "{text}"
+        );
 
         // An unrelated failure must not be dressed up as contention.
-        let other = contention_aware_error("permission denied").to_string();
+        let other = contention_aware_error("open build history", "permission denied").to_string();
         assert!(!other.contains("not a corrupt database"), "{other}");
+        assert!(other.starts_with("open build history:"), "{other}");
+
+        // Every context uses this helper's own text; it must not be
+        // hardcoded to the build-history caller.
+        let zccache_text = contention_aware_error(
+            "embedded zccache checkpoint unavailable",
+            "database is locked",
+        )
+        .to_string();
+        assert!(
+            zccache_text.starts_with("embedded zccache checkpoint unavailable:"),
+            "{zccache_text}"
+        );
     }
 
     #[test]

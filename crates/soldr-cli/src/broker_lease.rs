@@ -4,7 +4,7 @@
 //! operation opens and closes its own SQLite connection, which guarantees a
 //! broker child cannot inherit a database handle across `spawn()`.
 
-use rusqlite::{params, Connection, ErrorCode, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -116,7 +116,10 @@ impl BrokerLease {
                     });
                 }
                 Ok(None) => return Err(BrokerLeaseError::Fenced),
-                Err(source) if sqlite_is_busy(&source) && Instant::now() < deadline => {
+                Err(source)
+                    if crate::cache_lib::state_store::is_busy(&source)
+                        && Instant::now() < deadline =>
+                {
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     if !remaining.is_zero() {
                         last_known_holder = read_holder_summary_with_timeout(
@@ -130,7 +133,7 @@ impl BrokerLease {
                         std::thread::sleep(full_jitter().min(remaining));
                     }
                 }
-                Err(source) if sqlite_is_busy(&source) => {
+                Err(source) if crate::cache_lib::state_store::is_busy(&source) => {
                     return Err(BrokerLeaseError::Busy {
                         path: path.to_path_buf(),
                         waited: busy_ceiling,
@@ -343,14 +346,6 @@ fn open_database_with_timeout(path: &Path, busy_timeout: Duration) -> rusqlite::
         )
         .optional()?;
     Ok(connection)
-}
-
-fn sqlite_is_busy(error: &rusqlite::Error) -> bool {
-    matches!(
-        error,
-        rusqlite::Error::SqliteFailure(code, _)
-            if matches!(code.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
-    )
 }
 
 fn read_holder_summary(path: &Path) -> Option<String> {

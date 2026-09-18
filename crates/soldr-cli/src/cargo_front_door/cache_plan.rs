@@ -200,9 +200,16 @@ impl CargoCachePlan {
                 // already-unavailable state.
                 Err(crate::daemon::client::ClientError::NotRunning) => {}
                 Err(err) => {
-                    return Err(SoldrError::Other(format!(
-                        "embedded zccache checkpoint unavailable: {err:?}"
-                    )));
+                    // soldr#3288/#3290: the daemon's `FlushCaches` handler no
+                    // longer fails on its event-batcher half (that is logged
+                    // and retried on the next flush), so an error here is the
+                    // zccache checkpoint itself. If it is still contention-
+                    // shaped, say so — "database is locked" alone reads as
+                    // corruption — rather than printing a bare `{err:?}`.
+                    return Err(super::build_session::contention_aware_error(
+                        "embedded zccache checkpoint unavailable",
+                        format!("{err:?}"),
+                    ));
                 }
             }
         }

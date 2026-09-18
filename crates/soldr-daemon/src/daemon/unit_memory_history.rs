@@ -287,10 +287,23 @@ async fn write_batch(db_path: PathBuf, batch: Vec<(String, u64, u64, i64)>) -> R
     tokio::task::spawn_blocking(move || {
         let db = crate::cache_lib::state_store::open_state_db(&db_path)
             .map_err(|error| error.to_string())?;
+        // soldr#3288/#3290: this used to be up to MAX_BATCH_ROWS (256)
+        // separate autocommit writes, each one a commit that could
+        // invalidate another connection's WAL snapshot mid-read — the
+        // likely antagonist behind #3288's `event_batcher` failure, since
+        // this fires on every compile response with several concurrent
+        // compile streams feeding it. One transaction means one commit for
+        // the whole batch, and it also fixes a latent partial-write: a
+        // `record_in` error used to return early with earlier rows in the
+        // batch already committed.
+        let describe =
+            |error: rusqlite::Error| crate::cache_lib::state_store::describe_sqlite_error(&error);
+        let tx = db.unchecked_transaction().map_err(describe)?;
         for (unit_key, peak, tree_peak, now_ms) in batch {
-            record_in(&db, &unit_key, peak, tree_peak, now_ms)
+            record_in(&tx, &unit_key, peak, tree_peak, now_ms)
                 .map_err(|error| error.to_string())?;
         }
+        tx.commit().map_err(describe)?;
         Ok(())
     })
     .await

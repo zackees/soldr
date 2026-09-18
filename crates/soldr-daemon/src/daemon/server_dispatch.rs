@@ -267,12 +267,29 @@ where
             // flush` call this before archiving — otherwise the state
             // is memory-only until a graceful daemon exit and archives
             // taken from a live daemon restore with zero rustc hits.
-            let response = match state.event_batcher.flush().await {
-                Err(err) => Response::Error(format!("event persistence flush failed: {err}")),
-                Ok(()) => match state.compile_service.flush().await {
-                    Ok(report) => Response::CacheFlushed(report),
-                    Err(err) => Response::Error(format!("embedded zccache flush failed: {err}")),
-                },
+            // soldr#3288/#3290: an event-batcher flush failure used to
+            // short-circuit here with `Response::Error` and skip the
+            // zccache checkpoint below entirely — so a momentary
+            // contention blip on a *diagnostics* table (`daemon_events`)
+            // could fail a build whose cargo run had already finished
+            // successfully. Event rows are reconstructible bookkeeping,
+            // not the thing this request exists to persist, and
+            // `flush_batch` already retains them on failure so the next
+            // flush retries the same rows (`event_batcher.rs`). The
+            // identical flush reached via `BuildSessionEnd`
+            // (`cargo_front_door/run.rs`) is already explicitly
+            // best-effort and never fails the build over this; this path
+            // now matches that severity. The response is determined only
+            // by whether the zccache checkpoint itself succeeded.
+            if let Err(err) = state.event_batcher.flush().await {
+                tracing::warn!(
+                    "event persistence flush failed (non-fatal; rows retained for the next \
+                     flush): {err}"
+                );
+            }
+            let response = match state.compile_service.flush().await {
+                Ok(report) => Response::CacheFlushed(report),
+                Err(err) => Response::Error(format!("embedded zccache flush failed: {err}")),
             };
             let _ = write_frame_async(&mut stream, &response).await;
         }
