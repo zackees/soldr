@@ -200,35 +200,102 @@ fn defender_exclusion_guard_for(cache_dir: &Path) -> DefenderExclusionGuard {
     }
 }
 
-fn replay_one(workspace: &Path, entry: &SourceFile) -> MtimeOutcome {
-    let abs = workspace.join(entry.path.replace('/', std::path::MAIN_SEPARATOR_STR));
-    let meta = match std::fs::metadata(&abs) {
-        Ok(m) => m,
-        Err(_) => return MtimeOutcome::Missing,
+// soldr#3289 (zccache#1595): the per-file SOURCE mtime replay decision
+// (size check, content hash, set-times) is no longer reimplemented here.
+// It delegates to `zccache::fingerprint::mtime_replay::replay_one`, which
+// is re-exported unconditionally by the amalgamated `zccache` crate (no
+// zccache feature required — see the Cargo.toml comment at the
+// `zccache` dependency). Preserved safety properties, carried over from
+// the deleted soldr implementation:
+//
+// * size is checked BEFORE hashing, so a resized file is never re-hashed;
+// * a hash mismatch, an unsafe/unsafe-shaped path, a missing/non-regular
+//   file, or a failed `set_file_times` all leave the file's CURRENT
+//   (fresh) mtime untouched — never `Applied` — biasing every failure
+//   mode toward an extra rebuild rather than a wrong one;
+// * atime is stamped to the same value as mtime, matching the deleted
+//   `replay_one`'s behavior;
+// * a source path that is a symlink (or escapes the workspace) is
+//   reported `Missing` and never stamped through, which is strictly more
+//   conservative than the deleted implementation. #1548 in-workspace
+//   symlinked sources still get the right effective mtime because their
+//   target is a regular file with its own manifest entry.
+//
+// Archive/manifest format is unchanged: soldr's protobuf `SourceFile`
+// (ms mtime, raw 32-byte blake3) is adapted to zccache's `MtimeEntry`
+// (ns mtime, lowercase hex blake3) at this boundary, so every existing
+// `.tar.zst` in users' caches still hydrates. zccache's `replay_one` is
+// always called fully qualified so it cannot collide with soldr's own
+// `replay_one` adapter below.
+
+/// Adapt a soldr [`SourceFile`] manifest entry into the [`MtimeEntry`]
+/// shape zccache's `replay_one` expects.
+///
+/// `mtime_ns` reproduces the deleted `ms_to_systime` clamp: a negative
+/// `mtime_ms` (never produced by `mtime_ms()` at save time, but not
+/// ruled out by the wire format) maps to `0` (the Unix epoch); an
+/// absurdly large value saturates instead of overflowing.
+///
+/// `blake3` converts the stored 32 raw bytes to zccache's lowercase-hex
+/// form via `ContentHash::to_hex()`. A malformed/short stored hash (never
+/// produced by `save`, but not trusted here) becomes `""`, which can
+/// never match a real hex digest — `replay_one`'s normal decision order
+/// then yields `Missing` / `SizeMismatch` / `Modified` depending on what
+/// else differs, but NEVER `Applied`: errors bias toward leaving the
+/// fresh (post-checkout) mtime in place, exactly like every other
+/// failure mode.
+fn source_file_to_mtime_entry(entry: &SourceFile) -> MtimeEntry {
+    let mtime_ns = if entry.mtime_ms < 0 {
+        0
+    } else {
+        entry.mtime_ms.saturating_mul(1_000_000)
     };
-    if !meta.is_file() {
-        return MtimeOutcome::Missing;
+    let blake3 = <[u8; 32]>::try_from(entry.blake3.as_slice())
+        .map(|bytes| zccache::hash::ContentHash::from_bytes(bytes).to_hex())
+        .unwrap_or_default();
+    MtimeEntry {
+        path: entry.path.clone(),
+        size: entry.size,
+        mtime_ns,
+        blake3,
     }
-    if meta.len() != entry.size {
-        return MtimeOutcome::SizeMismatch;
-    }
-    // Content check: only re-hash when size matches (we already
-    // rejected the obvious "file got bigger / shorter" case).
-    let hash = match hash_file(&abs) {
-        Ok(h) => h,
-        Err(_) => return MtimeOutcome::Modified,
+}
+
+/// Delegates the per-file SOURCE mtime replay decision to
+/// `zccache::fingerprint::mtime_replay::replay_one` (soldr#3289,
+/// zccache#1595). See [`source_file_to_mtime_entry`] for the adapter and
+/// the module-level comment above for the preserved safety properties.
+fn replay_one(workspace: &Path, entry: &SourceFile) -> ReplayOutcome {
+    let mtime_entry = source_file_to_mtime_entry(entry);
+    zccache::fingerprint::mtime_replay::replay_one(workspace, &mtime_entry)
+}
+
+/// Normalize `workspace` before it is joined against manifest entries'
+/// POSIX-relative paths by `replay_one`.
+///
+/// The deleted soldr implementation converted each entry's `/` to
+/// `std::path::MAIN_SEPARATOR` itself before joining; `zccache`'s
+/// `replay_one` instead joins the POSIX string as-is
+/// (`workspace.join(&entry.path)`), which Win32 resolves correctly for
+/// an ordinary `C:\...` root (its path parser treats `/` and `\`
+/// interchangeably) but NOT under a `\\?\` verbatim root, where `/` is
+/// taken as a literal filename character instead of a separator. Since
+/// `std::fs::canonicalize` — used upstream when a workspace path is
+/// resolved — can hand back a verbatim path on Windows, the verbatim
+/// drive prefix is stripped once per load here so POSIX-relative
+/// manifest paths keep resolving on restore. A verbatim UNC root
+/// (`\\?\UNC\server\share`) is rewritten to its plain `\\server\share`
+/// form for the same reason. Pure string manipulation: no
+/// `#[cfg(windows)]`, matching the `ban_platform_cfg_outside_boundary`
+/// dylint (#2493).
+fn replay_workspace_root(workspace: &Path) -> PathBuf {
+    let Some(raw) = workspace.to_str() else {
+        return workspace.to_path_buf();
     };
-    if hash.as_slice() != entry.blake3.as_slice() {
-        return MtimeOutcome::Modified;
+    if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{unc}"));
     }
-    let mtime = ms_to_systime(entry.mtime_ms);
-    let atime = mtime;
-    let t_mtime = filetime::FileTime::from_system_time(mtime);
-    let t_atime = filetime::FileTime::from_system_time(atime);
-    if filetime::set_file_times(&abs, t_atime, t_mtime).is_err() {
-        return MtimeOutcome::Modified;
-    }
-    MtimeOutcome::Applied
+    PathBuf::from(crate::cache_lib::target_registry::strip_verbatim_prefix(raw))
 }
 
 fn apply_cache_tombstones(cache_dir: &Path, manifest: &Manifest) -> Result<()> {

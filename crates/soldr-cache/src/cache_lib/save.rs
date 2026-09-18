@@ -46,6 +46,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
 use thiserror::Error;
+// soldr#3289: source-mtime replay delegates to zccache's content-verified
+// per-file replay. Only the types are imported; zccache's `replay_one` fn is
+// always called fully qualified so it cannot collide with soldr's adapter.
+use zccache::fingerprint::mtime_replay::{MtimeEntry, ReplayOutcome};
 
 pub mod proto {
     //! Hand-written prost types corresponding to `manifest.proto` in this
@@ -272,14 +276,6 @@ fn mtime_ns(meta: &std::fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
-fn ms_to_systime(ms: i64) -> SystemTime {
-    if ms < 0 {
-        UNIX_EPOCH
-    } else {
-        UNIX_EPOCH + Duration::from_millis(ms as u64)
-    }
-}
-
 fn ns_to_systime(ns: i64) -> SystemTime {
     if ns < 0 {
         UNIX_EPOCH
@@ -299,3 +295,6 @@ mod tests;
 #[cfg(test)]
 #[path = "load_extract_tests.rs"]
 mod load_extract_tests;
+#[cfg(test)]
+#[path = "load_replay_tests.rs"]
+mod load_replay_tests;
