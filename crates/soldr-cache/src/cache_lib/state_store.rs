@@ -21,6 +21,37 @@
 //! needs a write transaction to guarantee a table exists (the soldr#2224
 //! concern the old module handled with per-module `read_table` dances).
 //!
+//! ## Every transaction on this store is `BEGIN IMMEDIATE` (soldr#3288/#3290)
+//!
+//! WAL mode permits exactly one writer at a time. rusqlite's default
+//! `unchecked_transaction()` opens with `BEGIN DEFERRED`, which takes no
+//! lock at all: a transaction that first reads (pinning a WAL snapshot)
+//! and later writes has to *upgrade* mid-transaction, and that upgrade can
+//! fail with `SQLITE_BUSY_SNAPSHOT` (extended code 517) the instant another
+//! connection commits in between. Critically, SQLite does **not** invoke
+//! the busy handler for that upgrade — `busy_timeout` is bypassed entirely,
+//! not exceeded — so the failure is immediate no matter how generous the
+//! timeout is, and rusqlite renders it as the same "database is locked"
+//! text as a real timeout. That is soldr#3288: an intra-process race
+//! between two connections in `soldr-daemon`, not a slow lock holder.
+//!
+//! [`open_with`] fixes this centrally by calling
+//! `set_transaction_behavior(TransactionBehavior::Immediate)` on every
+//! connection this module opens. `Connection::unchecked_transaction`
+//! reads that setting, so every existing (and future) `unchecked_transaction()`
+//! call against a handle from this store takes the write lock at `BEGIN`,
+//! where `busy_timeout` *does* apply — turning an unavoidable instant
+//! failure into a bounded wait. `StateDbHandle` only implements `Deref`
+//! (no `DerefMut`), so a caller cannot reach back into the `Connection` and
+//! flip the behavior back to deferred.
+//!
+//! Trade-off, stated plainly: writers that used to interleave (a deferred
+//! reader-then-writer could run alongside another writer right up to the
+//! upgrade) now serialize from `BEGIN`. That is acceptable here because
+//! every transaction on this store is short and holds no I/O, network
+//! call, or subprocess — see `write_batch` in `event_batcher.rs` and
+//! `unit_memory_history.rs` for the two representative shapes.
+//!
 //! ## Legacy `state.redb`
 //!
 //! A sibling `state.redb` written by pre-SQLite soldr is deleted on first
@@ -29,7 +60,7 @@
 //! cook artifacts are unaffected and re-index on the next `soldr cook`),
 //! matching the precedent of the #580/#603 row-format migrations.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use std::ops::Deref;
 use std::path::Path;
 use std::time::Duration;
@@ -72,7 +103,50 @@ impl Deref for StateDbHandle {
 }
 
 fn sqlite_io(error: rusqlite::Error) -> std::io::Error {
-    std::io::Error::other(format!("sqlite: {error}"))
+    std::io::Error::other(format!("sqlite: {}", describe_sqlite_error(&error)))
+}
+
+/// True for the two `rusqlite::Error` shapes SQLite uses for write
+/// contention: busy — which covers both a timed-out wait (extended code 5)
+/// and the instant WAL snapshot conflict (517) that never waits at all —
+/// and locked (a same-connection conflict, e.g. a table locked by an open
+/// statement).
+///
+/// The single busy-detection implementation for this codebase (soldr#3290):
+/// `crates/soldr-cli/src/broker_lease.rs` used to carry its own private
+/// copy against a different database (`lease.sqlite3`) — a soldr#2741-shaped
+/// divergence where two call sites answer "is this contention?" and could
+/// silently disagree. Callers needing the retry behavior that copy also had
+/// build it on top of this predicate rather than re-matching error codes.
+pub fn is_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(code, _)
+            if matches!(
+                code.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            )
+    )
+}
+
+/// `error.to_string()` plus, for a `SqliteFailure`, the numeric SQLite
+/// extended code and its name when recognized (soldr#3288's missing
+/// diagnostic: `517` (`SQLITE_BUSY_SNAPSHOT`, an instant, unwaitable
+/// upgrade conflict) reads identically to `5` (plain `SQLITE_BUSY`, a
+/// genuine timed-out wait) unless the extended code is logged).
+pub fn describe_sqlite_error(error: &rusqlite::Error) -> String {
+    let text = error.to_string();
+    let rusqlite::Error::SqliteFailure(code, _) = error else {
+        return text;
+    };
+    let name = match code.extended_code {
+        517 => " SQLITE_BUSY_SNAPSHOT",
+        261 => " SQLITE_BUSY_RECOVERY",
+        773 => " SQLITE_BUSY_TIMEOUT",
+        5 => " SQLITE_BUSY",
+        _ => "",
+    };
+    format!("{text} (sqlite extended code {}{name})", code.extended_code)
 }
 
 /// Open the shared state store with the correctness-critical busy budget.
@@ -92,7 +166,8 @@ pub fn open_state_db_best_effort(path: &Path) -> std::io::Result<StateDbHandle> 
 /// In-memory store with the full schema — for tests and callers that want
 /// registry semantics without touching disk.
 pub fn open_state_db_in_memory() -> std::io::Result<StateDbHandle> {
-    let conn = Connection::open_in_memory().map_err(sqlite_io)?;
+    let mut conn = Connection::open_in_memory().map_err(sqlite_io)?;
+    conn.set_transaction_behavior(TransactionBehavior::Immediate);
     ensure_schema(&conn).map_err(sqlite_io)?;
     Ok(StateDbHandle { conn })
 }
@@ -102,7 +177,12 @@ fn open_with(path: &Path, busy: Duration) -> std::io::Result<StateDbHandle> {
         std::fs::create_dir_all(parent)?;
     }
     remove_legacy_redb_sibling(path);
-    let conn = Connection::open(path).map_err(sqlite_io)?;
+    let mut conn = Connection::open(path).map_err(sqlite_io)?;
+    // BEGIN IMMEDIATE for every transaction on this handle — see the
+    // module docs above (soldr#3288/#3290). This is the one place that
+    // matters: `StateDbHandle` has no `DerefMut`, so nothing downstream
+    // can flip it back to the default deferred behavior.
+    conn.set_transaction_behavior(TransactionBehavior::Immediate);
     conn.busy_timeout(busy).map_err(sqlite_io)?;
     // WAL is what buys reader/writer concurrency; NORMAL synchronous is
     // the documented safe pairing with WAL (fsync on checkpoint, not on
@@ -248,5 +328,140 @@ mod tests {
             !legacy.exists(),
             "legacy redb store must be deleted on first sqlite open"
         );
+    }
+
+    #[test]
+    fn is_busy_matches_database_busy_and_locked_only() {
+        let busy = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::DatabaseBusy,
+                extended_code: 517,
+            },
+            None,
+        );
+        let locked = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::DatabaseLocked,
+                extended_code: 6,
+            },
+            None,
+        );
+        let other = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::PermissionDenied,
+                extended_code: 3,
+            },
+            None,
+        );
+        assert!(is_busy(&busy));
+        assert!(is_busy(&locked));
+        assert!(!is_busy(&other));
+        assert!(!is_busy(&rusqlite::Error::QueryReturnedNoRows));
+    }
+
+    #[test]
+    fn describe_sqlite_error_names_busy_snapshot() {
+        // soldr#3288: 517 (SQLITE_BUSY | 2<<8) is the instant, unwaitable
+        // WAL-upgrade conflict; discarding it made this take a source
+        // dive instead of a two-minute log read.
+        let error = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::DatabaseBusy,
+                extended_code: 517,
+            },
+            None,
+        );
+        let text = describe_sqlite_error(&error);
+        assert!(text.contains("517"), "{text}");
+        assert!(text.contains("SQLITE_BUSY_SNAPSHOT"), "{text}");
+
+        // Plain SQLITE_BUSY (5) must not be misnamed as the snapshot variant.
+        let plain_busy = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::DatabaseBusy,
+                extended_code: 5,
+            },
+            None,
+        );
+        let plain_text = describe_sqlite_error(&plain_busy);
+        assert!(plain_text.contains("SQLITE_BUSY"), "{plain_text}");
+        assert!(!plain_text.contains("SQLITE_BUSY_SNAPSHOT"), "{plain_text}");
+    }
+
+    /// RED -> GREEN for soldr#3288/#3290: deterministically reproduces the
+    /// WAL-upgrade conflict rather than relying on volume or timing races.
+    ///
+    /// `a` opens a transaction and reads (the shape every real read-then-write
+    /// site on this store has). While `a`'s transaction is still open, `b`
+    /// tries an autocommit write on a second handle to the same file.
+    ///
+    /// * Under the old `BEGIN DEFERRED` default, `a`'s `BEGIN` takes no
+    ///   lock, so `b`'s write proceeds and commits immediately — the
+    ///   `recv_timeout` below returns `Ok` right away, and `a`'s later
+    ///   write, which has to upgrade a now-stale read snapshot, fails with
+    ///   `SQLITE_BUSY_SNAPSHOT` (rendered by rusqlite as "database is
+    ///   locked", indistinguishable from a real timeout).
+    /// * Under `BEGIN IMMEDIATE` (this module's fix), `a`'s `BEGIN` takes
+    ///   the write lock up front, so `b`'s write blocks behind it —
+    ///   `recv_timeout` below times out — and `a`'s write and commit
+    ///   succeed without contention. `b` then unblocks and succeeds too,
+    ///   comfortably inside its own 5 s busy timeout.
+    #[test]
+    fn immediate_transaction_avoids_snapshot_busy_on_upgrade() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("state.sqlite3");
+
+        let a = open_state_db(&db_path).expect("open a");
+        let b = open_state_db(&db_path).expect("open b");
+
+        let tx = a.unchecked_transaction().expect("begin a's transaction");
+        let _seen: i64 = tx
+            .query_row("SELECT COUNT(*) FROM daemon_meta", [], |row| row.get(0))
+            .expect("a's read, pinning a snapshot under the deferred-era shape");
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer_b = std::thread::spawn(move || {
+            b.execute(
+                "INSERT INTO daemon_meta(key, value) VALUES(?1, ?2)",
+                rusqlite::params!["from-b", 2_i64],
+            )
+            .expect("b's autocommit write must eventually succeed");
+            let _ = done_tx.send(());
+        });
+
+        // Give `b` ample time to commit if it can. Under BEGIN DEFERRED it can
+        // (a holds no lock), so this returns early; under BEGIN IMMEDIATE b
+        // is blocked behind a's write lock and this times out.
+        let b_finished_early = done_rx.recv_timeout(Duration::from_millis(400)).is_ok();
+
+        // Attempt a's write *before* asserting on `b`, so that a regression
+        // fails with the real production symptom — the exact error soldr#3288
+        // hit in CI, extended code included — rather than a proxy assertion.
+        if let Err(error) = tx.execute(
+            "INSERT INTO daemon_meta(key, value) VALUES(?1, ?2)",
+            rusqlite::params!["from-a", 1_i64],
+        ) {
+            panic!(
+                "a's read-then-write upgrade failed: {} — this is soldr#3288's \
+                 `database is locked` (b committed while a's transaction was open, \
+                 the BEGIN DEFERRED shape)",
+                describe_sqlite_error(&error)
+            );
+        }
+        tx.commit().expect("a commits");
+        assert!(
+            !b_finished_early,
+            "b's write must block behind a's still-open transaction under BEGIN IMMEDIATE"
+        );
+
+        writer_b.join().expect("b's thread must not panic");
+
+        let count: i64 = a
+            .query_row("SELECT COUNT(*) FROM daemon_meta", [], |row| row.get(0))
+            .expect("count rows");
+        assert_eq!(count, 2, "both a's and b's rows must be present");
     }
 }

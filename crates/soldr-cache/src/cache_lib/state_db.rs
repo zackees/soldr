@@ -26,7 +26,10 @@ const CARGO_DEBUG_WARNING_LAST_CLEANUP_KEY: &str = "cargo_debug_default_warning_
 
 #[derive(Debug, Error)]
 pub enum StateDbError {
-    #[error("sqlite error: {0}")]
+    /// Rendered with the SQLite extended code (soldr#3290), so a
+    /// `database is locked` says whether it was an instant WAL snapshot
+    /// conflict (517) or a genuine timed-out wait (5).
+    #[error("sqlite error: {}", crate::cache_lib::state_store::describe_sqlite_error(.0))]
     Sqlite(#[from] rusqlite::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

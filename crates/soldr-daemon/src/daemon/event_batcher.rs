@@ -425,7 +425,15 @@ async fn flush_batch(
 pub(crate) fn write_batch(db_path: &Path, buf: &[Event]) -> std::io::Result<()> {
     use rusqlite::{params, OptionalExtension};
 
-    let sql_io = |e: rusqlite::Error| std::io::Error::other(format!("sqlite: {e}"));
+    // soldr#3290: carry the SQLite extended code, so a `database is locked`
+    // here says whether it was an instant snapshot conflict (517) or a
+    // genuine timed-out wait (5). soldr#3288 could not tell them apart.
+    let sql_io = |e: rusqlite::Error| {
+        std::io::Error::other(format!(
+            "sqlite: {}",
+            crate::cache_lib::state_store::describe_sqlite_error(&e)
+        ))
+    };
     let handle = open_state_db(db_path)?;
     let tx = handle.unchecked_transaction().map_err(sql_io)?;
     // Allocate `count` consecutive IDs in one daemon_meta write.
