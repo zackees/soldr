@@ -26,7 +26,7 @@ apk add --no-cache gcc musl-dev
 mkdir -p /tmp/alpine-soldr-host/src
 cd /tmp/alpine-soldr-host
 printf '%s\n' '[package]' 'name = "alpine-soldr-host"' 'version = "0.1.0"' 'edition = "2021"' > Cargo.toml
-printf '%s\n' '[toolchain]' 'channel = "1.95.0"' > rust-toolchain.toml
+printf '%s\n' '[toolchain]' 'channel = "1.98.1"' > rust-toolchain.toml
 printf '%s\n' 'fn main() { println!("alpine musl host"); }' > src/main.rs
 soldr toolchain ensure --json
 soldr cargo build --target x86_64-unknown-linux-musl

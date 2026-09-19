@@ -266,7 +266,7 @@ jobs:
           #
           # That is how three darwin tests came to strip with `stable`'s
           # `rust-objcopy`, whose `@rpath/libLLVM.dylib` is absent on the
-          # image, while this job had installed and verified 1.95.0.
+          # image, while this job had installed and verified 1.98.1.
           # `probe_direct_toolchain_binary` bails out when RUSTUP_TOOLCHAIN is
           # set, so exporting it routes every child through rustup on the
           # channel this job actually provisioned.

@@ -35,7 +35,7 @@
 # its CI checkout path, so soldr rejects it as non-relocatable and builds
 # cargo-dylint from source. Trixie keeps the runner compatible with both
 # that upstream probe and the resulting host-local binary.
-FROM rust:1.95.0-trixie
+FROM rust:1.98.1-trixie
 
 # Keep the local Python half on the same pinned uv used by the native-wheel
 # Docker harness. It lives in the image rather than the persistent venv.
@@ -74,8 +74,8 @@ RUN { dbus-uuidgen 2>/dev/null \
     && grep -qE '^[0-9a-f]{32}$' /etc/machine-id
 
 # soldr's `cargo test` jobs check the system rustc version; pin it here
-# to match `rust-toolchain.toml` (Rust 1.95.0).
-RUN rustup default 1.95.0 \
+# to match `rust-toolchain.toml` (Rust 1.98.1).
+RUN rustup default 1.98.1 \
     && rustup component add rustfmt clippy
 
 # Bootstrap current source with a known, previously published Soldr. Keep

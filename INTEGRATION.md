@@ -174,7 +174,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.95.0
         with:
-          toolchain: 1.95.0
+          toolchain: 1.98.1
 
       - name: Install latest soldr release
         shell: bash
@@ -218,7 +218,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.95.0
         with:
-          toolchain: 1.95.0
+          toolchain: 1.98.1
 
       - name: Build soldr from source
         working-directory: soldr

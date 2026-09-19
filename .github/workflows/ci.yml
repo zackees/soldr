@@ -103,7 +103,7 @@ jobs:
       # the cross/release lanes first. Restore-from-git workaround that
       # paired with the old cook flow is no longer needed because the
       # manifest is never overwritten.
-      # soldr#1340 — pre-cache the 1.95.0 toolchain in ~/.rustup so
+      # soldr#1340 — pre-cache the 1.98.1 toolchain in ~/.rustup so
       # setup-soldr uses it (Setup soldr build cache drops from ~22 s
       # to ~2 s). Same pattern as #1341/#1342/#1343. Shared cache key
       # across all soldr workflows.
@@ -500,8 +500,8 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install rustup 1.95.0
-        run: rustup toolchain install 1.95.0 --profile minimal --no-self-update
+      - name: Install rustup 1.98.1
+        run: rustup toolchain install 1.98.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
         uses: zackees/setup-soldr@d6a0844c40b94f62cf104377b4cc90403c96f6ce
@@ -511,7 +511,7 @@ jobs:
           # build, so the next build recompiles the world. See
           # tests/test_setup_soldr_version_pins.py.
           version: 0.9.16
-          toolchain: 1.95.0
+          toolchain: 1.98.1
           # soldr#2451: `cache: false` does not gate setup-soldr's soldr-mini /
           # solo-toolchain / build-cache layers, so these lanes still restored a
           # cached soldr 0.8.29 + buildcache-v2. This repo IS soldr — no self-
@@ -672,16 +672,16 @@ jobs:
           submodules: recursive
           ref: ${{ github.sha }}
 
-      - name: Cache rustup 1.95.0 in ~/.rustup
+      - name: Cache rustup 1.98.1 in ~/.rustup
         id: rustup_cache
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: ~/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu
-          key: rustup-1.95.0-linux-x64-v1
+          path: ~/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu
+          key: rustup-1.98.1-linux-x64-v1
 
-      - name: Install rustup 1.95.0 to ~/.rustup (if not cached)
+      - name: Install rustup 1.98.1 to ~/.rustup (if not cached)
         if: steps.rustup_cache.outputs.cache-hit != 'true'
-        run: rustup toolchain install 1.95.0 --profile minimal --no-self-update
+        run: rustup toolchain install 1.98.1 --profile minimal --no-self-update
 
       - name: Restore cached bootstrap soldr binary
         id: bootstrap_cache
@@ -1077,11 +1077,11 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install rustup 1.95.0
-        run: rustup toolchain install 1.95.0 --profile minimal --no-self-update
+      - name: Install rustup 1.98.1
+        run: rustup toolchain install 1.98.1 --profile minimal --no-self-update
 
       - name: Add ${{ matrix.target }} rust target
-        run: rustup target add ${{ matrix.target }} --toolchain 1.95.0
+        run: rustup target add ${{ matrix.target }} --toolchain 1.98.1
 
       # Reuse the shared bootstrap binary rather than compiling a fourth copy
       # of soldr; this lane is about what `soldr wheel` does, not about

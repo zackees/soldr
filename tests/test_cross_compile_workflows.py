@@ -587,9 +587,9 @@ def test_host_validation_opportunistically_reuses_exact_sha_bootstrap() -> None:
     assert "if: inputs.source_driver_artifact_name != ''" in host_template
 
     assert "bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ github.sha }}" in producer
-    assert "key: rustup-1.95.0-linux-x64-v1" in producer
-    assert "rustup toolchain install 1.95.0 --profile minimal" in producer
-    assert "toolchain: 1.95.0" in host_template
+    assert "key: rustup-1.98.1-linux-x64-v1" in producer
+    assert "rustup toolchain install 1.98.1 --profile minimal" in producer
+    assert "toolchain: 1.98.1" in host_template
     assert "cargo build --profile dev --package soldr-cli" in producer
     assert "soldr cargo build --profile dev -p soldr-cli" in host_build
     assert "target/x86_64-unknown-linux-gnu/debug/soldr" in producer

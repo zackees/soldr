@@ -112,7 +112,7 @@ def test_source_build_environment_removes_cross_target_state() -> None:
     assert env == {
         "KEEP": "yes",
         "CARGO_BUILD_JOBS": "2",
-        "RUSTUP_TOOLCHAIN": "1.95.0",
+        "RUSTUP_TOOLCHAIN": "1.98.1",
         "SOLDR_JOBS": "2",
     }
 

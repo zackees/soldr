@@ -63,7 +63,7 @@ jobs:
       - name: Install Rust toolchain + cross target
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: 1.95.0
+          toolchain: 1.98.1
           targets: x86_64-pc-windows-gnu
 
       # soldr#2763: uv must exist before the first step that uses it. This lane
@@ -80,7 +80,7 @@ jobs:
         uses: zackees/setup-soldr@d6a0844c40b94f62cf104377b4cc90403c96f6ce
         with:
           version: 0.9.16
-          toolchain: 1.95.0
+          toolchain: 1.98.1
           cache: false
 
       # soldr#2822 — `dtolnay/rust-toolchain` adds the cross target to the
@@ -88,7 +88,7 @@ jobs:
       # managed one:
       #
       #   Runner rustup home /home/runner/.rustup is missing requested
-      #   components for 1.95.0: rustfmt, clippy; using managed RUSTUP_HOME
+      #   components for 1.98.1: rustfmt, clippy; using managed RUSTUP_HOME
       #
       # so the target is installed in one home and looked for in another. The
       # lane passed only when the managed home happened to already carry

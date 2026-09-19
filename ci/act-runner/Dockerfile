@@ -1,7 +1,7 @@
 # Local-only act runner image. `catthehacker/ubuntu:act-24.04` is a minimal
 # stand-in for GitHub's ubuntu-24.04 runner and omits the preinstalled Rust
 # toolchain that image ships, so `_build-and-test.yml`'s
-# "Install rustup 1.95.0" step dies with `rustup: command not found`.
+# "Install rustup 1.98.1" step dies with `rustup: command not found`.
 # Adding rustup here reproduces the runner's starting state without
 # changing the workflow.
 FROM catthehacker/ubuntu:act-24.04

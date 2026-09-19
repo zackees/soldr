@@ -48,7 +48,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = REPO_ROOT / "dist" / "win-wheel"
 IMAGE = "soldr-win-wheel"
 TARGET = "x86_64-pc-windows-msvc"
-RUST_TOOLCHAIN = "1.95.0"
+RUST_TOOLCHAIN = "1.98.1"
 
 # The soldr that DRIVES the build, pinned deliberately. 0.9.1 carries the
 # `soldr maturin` blessed-target wiring (MATURIN_USE_XWIN policy + prepared

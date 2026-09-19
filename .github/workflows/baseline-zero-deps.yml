@@ -60,7 +60,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: 1.95.0
+          toolchain: 1.98.1
           targets: x86_64-unknown-linux-gnu
 
       - name: Restore cargo + target caches
@@ -130,7 +130,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: 1.95.0
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
 
       # soldr#1235 — cache ~/.cargo/{registry,git} + target/ so the
@@ -383,7 +383,7 @@ jobs:
                 > Cargo.toml
               printf "%s\n" \
                 "[toolchain]" \
-                "channel = \"1.95.0\"" \
+                "channel = \"1.98.1\"" \
                 > rust-toolchain.toml
               printf "%s\n" "fn main() { println!(\"hi\"); }" > src/main.rs
               soldr cargo check --target ${{ matrix.native_target }}
@@ -435,7 +435,7 @@ jobs:
                 > Cargo.toml
               printf "%s\n" \
                 "[toolchain]" \
-                "channel = \"1.95.0\"" \
+                "channel = \"1.98.1\"" \
                 > rust-toolchain.toml
               printf "%s\n" "fn main() { println!(\"hi\"); }" > src/main.rs
               soldr prepare --target aarch64-apple-darwin
@@ -484,7 +484,7 @@ jobs:
                 > Cargo.toml
               printf "%s\n" \
                 "[toolchain]" \
-                "channel = \"1.95.0\"" \
+                "channel = \"1.98.1\"" \
                 > rust-toolchain.toml
               printf "%s\n" "fn main() { println!(\"hi\"); }" > src/main.rs
               soldr prepare --target x86_64-pc-windows-msvc

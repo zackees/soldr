@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 from typing import TextIO
 
-DEFAULT_RUST_TOOLCHAIN = "1.95.0"
+DEFAULT_RUST_TOOLCHAIN = "1.98.1"
 OUTER_SOLDR_ENV = (
     "RUSTC_WRAPPER",
     "RUSTC_WORKSPACE_WRAPPER",
