@@ -157,6 +157,190 @@ fn extract_dependency_version(line: &str) -> Option<String> {
     Some(stripped[..end].to_string())
 }
 
+/// A single `[[package]]` block from `Cargo.lock`.
+struct LockPackage {
+    name: String,
+    version: String,
+    /// Raw `dependencies = [...]` entries: either a bare crate name (only
+    /// one version of it is locked) or `"<name> <version>"` when Cargo
+    /// needed to disambiguate.
+    dependencies: Vec<String>,
+}
+
+/// Hand-parse every `[[package]]` block in `Cargo.lock`. Same rationale as
+/// the other parsers in this file: the lockfile shape is stable, no need
+/// for a TOML crate dependency here.
+fn parse_cargo_lock(lock: &str) -> Vec<LockPackage> {
+    let mut packages = Vec::new();
+    let mut name: Option<String> = None;
+    let mut version: Option<String> = None;
+    let mut dependencies: Vec<String> = Vec::new();
+    let mut in_deps = false;
+
+    let flush = |name: &mut Option<String>,
+                 version: &mut Option<String>,
+                 dependencies: &mut Vec<String>,
+                 packages: &mut Vec<LockPackage>| {
+        if let (Some(n), Some(v)) = (name.take(), version.take()) {
+            packages.push(LockPackage {
+                name: n,
+                version: v,
+                dependencies: std::mem::take(dependencies),
+            });
+        }
+        dependencies.clear();
+    };
+
+    for raw in lock.lines() {
+        let line = raw.trim();
+        if line == "[[package]]" {
+            flush(&mut name, &mut version, &mut dependencies, &mut packages);
+            in_deps = false;
+            continue;
+        }
+        if in_deps {
+            if line == "]" {
+                in_deps = false;
+                continue;
+            }
+            if let Some(stripped) = line.strip_prefix('"') {
+                if let Some(end) = stripped.find('"') {
+                    dependencies.push(stripped[..end].to_string());
+                }
+            }
+            continue;
+        }
+        if line == "dependencies = [" {
+            in_deps = true;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("name") {
+            let rest = rest.trim_start_matches([' ', '=']).trim();
+            if let Some(stripped) = rest.strip_prefix('"') {
+                if let Some(end) = stripped.find('"') {
+                    name = Some(stripped[..end].to_string());
+                }
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("version") {
+            let rest = rest.trim_start_matches([' ', '=']).trim();
+            if let Some(stripped) = rest.strip_prefix('"') {
+                if let Some(end) = stripped.find('"') {
+                    version = Some(stripped[..end].to_string());
+                }
+            }
+        }
+    }
+    flush(&mut name, &mut version, &mut dependencies, &mut packages);
+    packages
+}
+
+/// A `Cargo.lock` `dependencies = [...]` entry is either a bare crate name
+/// (exactly one version of it is locked, so the caller's own single locked
+/// version applies) or `"<name> <version>"` (Cargo had to disambiguate).
+/// Returns the dependency's resolved version given the single locked
+/// version of that crate, if there is exactly one.
+fn resolved_dependency_version<'a>(entry: &'a str, sole_locked_version: &'a str) -> &'a str {
+    match entry.split_once(' ') {
+        Some((_, version)) => version,
+        None => sole_locked_version,
+    }
+}
+
+/// soldr#3297: soldr and the locked `zccache` must resolve one shared
+/// `kernal-api` version, and soldr's `running-process` pin must equal the
+/// version that `kernal-api` itself requires. Today `zccache` does not yet
+/// depend on `kernal-api` (Step 2 of soldr#3297 moves it there), so check
+/// (iii) below passes vacuously until that lands.
+#[test]
+fn kernal_api_version_matches_across_the_fleet() {
+    let root = repo_root();
+    let lock = fs::read_to_string(root.join("Cargo.lock")).expect("read Cargo.lock");
+    let packages = parse_cargo_lock(&lock);
+
+    // (i) exactly one kernal-api version is locked.
+    let kernal_versions: Vec<&str> = packages
+        .iter()
+        .filter(|p| p.name == "kernal-api")
+        .map(|p| p.version.as_str())
+        .collect();
+    assert_eq!(
+        kernal_versions.len(),
+        1,
+        "soldr#3297: Cargo.lock must resolve exactly one kernal-api version; found {kernal_versions:?}. \
+         Two kernal-api versions in one graph defeats the point of the shared systems facade."
+    );
+    let locked_kernal = kernal_versions[0];
+
+    // (ii) soldr's manifest pin equals the locked version.
+    let manifest = root.join("crates/soldr-platform/Cargo.toml");
+    let line = dependency_line(&manifest, "dependencies", "kernal-api")
+        .expect("crates/soldr-platform/Cargo.toml must depend on kernal-api");
+    let manifest_kernal = extract_dependency_version(&line).expect(
+        "crates/soldr-platform/Cargo.toml's kernal-api dependency must pin an exact version",
+    );
+    let expected_manifest_kernal = format!("={locked_kernal}");
+    assert_eq!(
+        manifest_kernal, expected_manifest_kernal,
+        "soldr#3297: crates/soldr-platform/Cargo.toml pins kernal-api {manifest_kernal} but \
+         Cargo.lock resolved kernal-api {locked_kernal}. Update the manifest pin to \
+         \"{expected_manifest_kernal}\" (or refresh Cargo.lock) so both agree."
+    );
+
+    // (iii) if the locked zccache depends on kernal-api, it is the same
+    // single version. Vacuously true while zccache has no kernal-api edge.
+    if let Some(zccache) = packages.iter().find(|p| p.name == "zccache") {
+        if let Some(dep_entry) = zccache
+            .dependencies
+            .iter()
+            .find(|d| d.split(' ').next() == Some("kernal-api"))
+        {
+            let zccache_kernal = resolved_dependency_version(dep_entry, locked_kernal);
+            assert_eq!(
+                zccache_kernal, locked_kernal,
+                "soldr#3297: the locked zccache package depends on kernal-api {zccache_kernal} but \
+                 soldr pins kernal-api {locked_kernal} in crates/soldr-platform/Cargo.toml. Move \
+                 soldr's kernal-api pin to {zccache_kernal} (soldr#3297 Step 2 — the zccache bump)."
+            );
+        }
+    }
+
+    // (iv) exactly one running-process version is locked, and it equals
+    // the version kernal-api itself requires.
+    let running_process_versions: Vec<&str> = packages
+        .iter()
+        .filter(|p| p.name == "running-process")
+        .map(|p| p.version.as_str())
+        .collect();
+    assert_eq!(
+        running_process_versions.len(),
+        1,
+        "soldr#3297: Cargo.lock must resolve exactly one running-process version; found \
+         {running_process_versions:?}."
+    );
+    let locked_running_process = running_process_versions[0];
+
+    let kernal_package = packages
+        .iter()
+        .find(|p| p.name == "kernal-api" && p.version == locked_kernal)
+        .expect("the locked kernal-api package block must exist in Cargo.lock");
+    let kernal_running_process_entry = kernal_package
+        .dependencies
+        .iter()
+        .find(|d| d.split(' ').next() == Some("running-process"))
+        .expect("kernal-api's Cargo.lock entry must depend on running-process");
+    let kernal_running_process =
+        resolved_dependency_version(kernal_running_process_entry, locked_running_process);
+    assert_eq!(
+        kernal_running_process, locked_running_process,
+        "soldr#3297: kernal-api {locked_kernal} depends on running-process {kernal_running_process} \
+         but Cargo.lock resolved running-process {locked_running_process} for soldr. Align soldr's \
+         running-process pin (crates/soldr-cli, crates/soldr-daemon, crates/soldr-platform \
+         Cargo.toml) to \"={kernal_running_process}\"."
+    );
+}
+
 #[test]
 fn cargo_toml_cargo_lock_and_package_json_share_one_version() {
     let root = repo_root();
@@ -200,12 +384,17 @@ fn externalized_dependencies_are_exact_and_consistent() {
         ),
         (
             "running-process",
-            "4.10.9",
+            "4.10.14",
             &[
                 "crates/soldr-cli/Cargo.toml",
                 "crates/soldr-daemon/Cargo.toml",
                 "crates/soldr-platform/Cargo.toml",
             ][..],
+        ),
+        (
+            "kernal-api",
+            "0.1.17",
+            &["crates/soldr-platform/Cargo.toml"][..],
         ),
     ] {
         let locked = format!("name = \"{dependency}\"\nversion = \"{version}\"");
