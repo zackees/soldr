@@ -12,6 +12,9 @@ publish = false
 # Dependency-leaf crate (issue #2493): soldr-platform must NOT depend on
 # soldr-core, soldr-fetch, soldr-cache, soldr-daemon, soldr-cli, or zccache.
 # Only external libraries needed for host primitives may appear here.
+# `kernal-api` is allowed here despite the leaf rule: it is the shared
+# systems-facade crate soldr and zccache are both consolidating onto
+# (soldr#3297), not an internal soldr crate.
 # `running-process` is the external process-creation boundary, consumed as an
 # exact crates.io pin. soldr#2837 retired the vendored `_vender/` submodule and
 # the workspace [patch] tables that used to redirect it.
@@ -19,7 +22,13 @@ publish = false
 [dependencies]
 blake3 = "1"
 interprocess = { version = "2", features = ["tokio"] }
-running-process = { version = "=4.10.9", default-features = false, features = ["client"] }
+# Exact pin: kernal-api is pre-1.0, so per its COMPATIBILITY.md every
+# consumer must resolve the same release. This must equal the kernal-api
+# version the locked `zccache` package depends on (soldr#3297); the guard
+# `kernal_api_version_matches_across_the_fleet` in
+# crates/soldr-cli/tests/guards/version_lockstep.rs enforces that.
+kernal-api = { version = "=0.1.17", default-features = false, features = ["fs"] }
+running-process = { version = "=4.10.14", default-features = false, features = ["client"] }
 fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
