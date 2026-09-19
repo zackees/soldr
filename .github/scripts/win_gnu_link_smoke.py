@@ -39,7 +39,7 @@ import sys
 import tempfile
 
 TARGET = "x86_64-pc-windows-gnu"
-TOOLCHAIN = "1.95.0"
+TOOLCHAIN = "1.98.1"
 IMAGE_FILE_MACHINE_AMD64 = 0x8664
 
 

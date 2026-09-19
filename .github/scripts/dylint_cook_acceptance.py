@@ -31,7 +31,7 @@ DIAGNOSTICS=/tmp/dylint-cook/diagnostics
 mkdir -p "$WORK" "$DIAGNOSTICS"
 cp -a "$REPO/ci/fixtures/dylint-cache/." "$WORK/"
 cd "$WORK"
-"$SOLDR" "car""go" +1.95.0 generate-lockfile
+"$SOLDR" "car""go" +1.98.1 generate-lockfile
 
 descendants() {
   local parent="$1" child

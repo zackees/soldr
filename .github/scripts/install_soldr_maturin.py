@@ -14,7 +14,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_PATH = REPO_ROOT / "contracts" / "zccache-runtime.v1.json"
-SOLDR_TOOLCHAIN = "1.95.0"
+SOLDR_TOOLCHAIN = "1.98.1"
 SOLDR_TOOLCHAIN_SHIMS = Path("target/soldr-maturin-ci-shims")
 
 

@@ -51,7 +51,7 @@ def test_source_build_environment_uses_real_rustc_and_soldr_cargo() -> None:
         ),
         "CARGO": str(resolved_cargo),
         "RUSTC": str(resolved_rustc),
-        "RUSTUP_TOOLCHAIN": "1.95.0",
+        "RUSTUP_TOOLCHAIN": "1.98.1",
     }
 
 

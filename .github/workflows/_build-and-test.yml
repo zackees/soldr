@@ -118,7 +118,7 @@ jobs:
         run: bash .github/scripts/setup_ci_swap.sh
 
       # soldr#1178 — dropped the dtolnay/rust-toolchain step: setup-soldr
-      # below installs the same 1.95.0 toolchain, so running dtolnay
+      # below installs the same 1.98.1 toolchain, so running dtolnay
       # first duplicated ~8 s of install work per CI run. The host target
       # (x86_64-unknown-linux-gnu) is rustup's default so no explicit
       # `rustup target add` is required. Components are installed further
@@ -134,21 +134,21 @@ jobs:
       # The older soldr#1248 wording here claimed cook restore was being
       # "reintroduced in the cross/release lanes first"; that has pointed the
       # wrong way since soldr#2867.
-      # soldr#1340 — pre-cache the 1.95.0 toolchain in ~/.rustup so
+      # soldr#1340 — pre-cache the 1.98.1 toolchain in ~/.rustup so
       # setup-soldr finds it via its "Runner rustup home already
       # contains toolchain X" check and skips its own 9 s rustup
       # install. On cache miss (first run at a new key) the install
       # step runs locally and populates ~/.rustup for the save.
-      - name: Cache rustup 1.95.0 in ~/.rustup
+      - name: Cache rustup 1.98.1 in ~/.rustup
         id: rustup_cache
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: ~/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu
-          key: rustup-1.95.0-linux-x64-v1
+          path: ~/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu
+          key: rustup-1.98.1-linux-x64-v1
 
-      - name: Install rustup 1.95.0 to ~/.rustup (if not cached)
+      - name: Install rustup 1.98.1 to ~/.rustup (if not cached)
         if: steps.rustup_cache.outputs.cache-hit != 'true'
-        run: rustup toolchain install 1.95.0 --profile minimal --no-self-update
+        run: rustup toolchain install 1.98.1 --profile minimal --no-self-update
 
       # soldr#2349: resolve the Dylint nightly + cargo-dylint version once, from
       # the same authority soldr's own resolver uses, so the cache key below,
@@ -183,7 +183,7 @@ jobs:
         uses: zackees/setup-soldr@d6a0844c40b94f62cf104377b4cc90403c96f6ce
         with:
           version: 0.9.16
-          toolchain: 1.95.0
+          toolchain: 1.98.1
           # Provision the ci-test Dylint foundation once, separately from
           # the stable source-driver target tree used by the prescribed DAG.
           ci-tests: true
@@ -453,7 +453,7 @@ jobs:
             stable-cook-v2-${{ inputs.target }}-
 
       # soldr#3024: the unconditional cross-bootstrap job already builds this
-      # exact workflow SHA with the pinned 1.95.0 toolchain, dev profile, and
+      # exact workflow SHA with the pinned 1.98.1 toolchain, dev profile, and
       # default soldr-cli features. Reuse its run-scoped driver when the producer has
       # already finished. There is deliberately no `needs:` edge: a cold or
       # failed producer must not lengthen native validation, and both download
@@ -766,7 +766,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/report_dylint_tree_size.py \
-            --cache-hit "rustup 1.95.0=${{ steps.rustup_cache.outputs.cache-hit }}" \
+            --cache-hit "rustup 1.98.1=${{ steps.rustup_cache.outputs.cache-hit }}" \
             --cache-hit "dylint libraries+target trees=${{ steps.dylint_trees.outputs.cache-hit }}" \
             --cache-hit "dylint driver+prepared marker=${{ steps.dylint_driver_cache.outputs.cache-hit }}" \
             --library-stage-skip-marker "target/dylint/libraries/${{ steps.dylint_identity.outputs.channel }}-x86_64-unknown-linux-gnu/.soldr-dylint-library-marker-v1.json" \
