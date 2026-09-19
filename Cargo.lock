@@ -707,15 +707,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
-name = "fdeflate"
-version = "0.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
-dependencies = [
- "simd-adler32",
-]
-
-[[package]]
 name = "filetime"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -864,16 +855,6 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
-]
-
-[[package]]
-name = "gethostname"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8"
-dependencies = [
- "rustix",
- "windows-link",
 ]
 
 [[package]]
@@ -1767,19 +1748,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
-name = "png"
-version = "0.17.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82151a2fc869e011c153adc57cf2789ccb8d9906ce52c0b39a6b5697749d7526"
-dependencies = [
- "bitflags 1.3.2",
- "crc32fast",
- "fdeflate",
- "flate2",
- "miniz_oxide",
-]
-
-[[package]]
 name = "potential_utf"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2276,9 +2244,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.10.9"
+version = "4.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd80808893f5ee0f7bc7a67e80dab33639baf8490ff2bc951523bce39a9b5d42"
+checksum = "02f0ff903e7b61396a074648fc6301668492de90aea4b5d09cc914eee9389e9b"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2307,29 +2275,27 @@ dependencies = [
 
 [[package]]
 name = "running-process-platform-internal"
-version = "4.10.9"
+version = "4.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5db7e27774c0464625c303241bee03cfa7456d871357d4f178849eff206a9346"
+checksum = "c6e5db04a966dfead09ff660b704c2461a05e8477249b8f10532b41a22219348"
 dependencies = [
  "blake3",
  "dirs",
  "interprocess",
  "libc",
- "png",
  "sysinfo",
  "thiserror",
  "tokio",
  "widestring",
  "winapi",
  "windows-sys 0.61.2",
- "x11rb",
 ]
 
 [[package]]
 name = "running-process-protocol"
-version = "4.10.9"
+version = "4.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23da64d74781eb1b1060ba32df09279ca0facb6cd766f983efd1127495174e40"
+checksum = "c32daa00db0c79106d3181f1e306efe92a59bd1b0429440bdc5e6debf3cc4345"
 dependencies = [
  "prost",
  "prost-build",
@@ -3688,23 +3654,6 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
-
-[[package]]
-name = "x11rb"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9993aa5be5a26815fe2c3eacfc1fde061fc1a1f094bf1ad2a18bf9c495dd7414"
-dependencies = [
- "gethostname",
- "rustix",
- "x11rb-protocol",
-]
-
-[[package]]
-name = "x11rb-protocol"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 
 [[package]]
 name = "xattr"
