@@ -380,11 +380,15 @@ comparison. That is too fragile a mechanism for finding this class.
 
 ## Toolchain
 
-- Rust 1.98.1 (rust-toolchain.toml), edition 2021, MSRV 1.98.1
+- Rust 1.98.1 (rust-toolchain.toml), edition 2021, MSRV 1.98.0
   (`[workspace.package].rust-version`). The MSRV and the pinned toolchain are
-  the same version — soldr does not support building on an older compiler, so
-  "will this still build on the MSRV?" is never a reason to avoid a newer std
-  API. Guarded by `crates/soldr-cli/tests/guards/msrv_doc_matches_manifest.rs`.
+  the same minor version — soldr does not support building on an older
+  compiler, so "will this still build on the MSRV?" is never a reason to avoid
+  a newer std API. Guarded by
+  `crates/soldr-cli/tests/guards/msrv_doc_matches_manifest.rs`. The MSRV
+  stays at the `.0` patch on purpose: `soldr ci-test` compiles the workspace
+  under the Dylint nightly, which reports `1.98.0-nightly`, and Cargo refuses
+  that compiler for a `rust-version` of `1.98.1`.
 - Python >=3.10 (for PyPI distribution via Maturin)
 - uv for Python dependency management
 - Workspace dependencies shared in root `Cargo.toml`
