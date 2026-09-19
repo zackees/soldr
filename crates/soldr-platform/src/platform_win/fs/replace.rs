@@ -1,32 +1,10 @@
-//! Windows atomic replacement and open-file retirement.
+//! Windows open-file retirement.
+//!
+//! Atomic replacement now comes from `kernal_api::platform::fs::replacement`
+//! (soldr#3297); see `crates/soldr-platform/src/platform/fs/replace.rs`.
 
 use std::fs::File;
 use std::io;
-use std::path::Path;
-
-/// Atomically replace `target` with `source` (`MoveFileExW` with
-/// replace-existing + write-through — `fs::rename` alone cannot replace
-/// an existing file on Windows).
-pub fn atomic_replace(source: &Path, target: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    if unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            target.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
 
 /// Upgrade an already-open file handle for retirement: open it with
 /// delete access and share-delete so the image can be removed while the
