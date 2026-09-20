@@ -380,15 +380,22 @@ comparison. That is too fragile a mechanism for finding this class.
 
 ## Toolchain
 
-- Rust 1.98.1 (rust-toolchain.toml), edition 2021, MSRV 1.98.0
+- Rust 1.98.1 (rust-toolchain.toml), edition 2021, MSRV 1.98
   (`[workspace.package].rust-version`). The MSRV and the pinned toolchain are
-  the same minor version — soldr does not support building on an older
+  the same compiler train — soldr does not support building on an older
   compiler, so "will this still build on the MSRV?" is never a reason to avoid
   a newer std API. Guarded by
-  `crates/soldr-cli/tests/guards/msrv_doc_matches_manifest.rs`. The MSRV
-  stays at the `.0` patch on purpose: `soldr ci-test` compiles the workspace
-  under the Dylint nightly, which reports `1.98.0-nightly`, and Cargo refuses
-  that compiler for a `rust-version` of `1.98.1`.
+  `crates/soldr-cli/tests/guards/msrv_doc_matches_manifest.rs`.
+- **The MSRV names a train, never a patch release** (soldr#3305). `soldr
+  ci-test` compiles this workspace with *two* compilers: the stable pin, and
+  the dated nightly that `dylints/*/rust-toolchain.toml` declare. A dated
+  nightly reports the `.0` release of its train (`nightly-2026-05-28` is
+  `1.98.0-nightly`), so `rust-version = "1.98.1"` makes Cargo refuse to build
+  under it — `error: rustc 1.98.0-nightly is not supported`. Two components
+  (`"1.98"`) mean `>=1.98.0`, which both compilers satisfy. Nothing local
+  catches a patch-level MSRV: the nightly's rustc version is recorded nowhere
+  in-tree, and `cargo build`, clippy and the whole test suite all run under the
+  stable pin, so it fails only in the Linux `ci-test` lane.
 - Python >=3.10 (for PyPI distribution via Maturin)
 - uv for Python dependency management
 - Workspace dependencies shared in root `Cargo.toml`
