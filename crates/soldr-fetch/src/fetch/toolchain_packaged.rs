@@ -17,8 +17,18 @@ pub(super) fn asset_name(cache_name: &str, version: &str, target: &TargetTriple)
     // the toolchain catalogues the forge-built blobs under the fork/package
     // identity `soldr-maturin` (soldr#2573), so the prefix is mapped rather
     // than assumed.
+    //
+    // `cargo-chef` and `crgx` join the same path from soldr-toolchain#181:
+    // both are built by the forge-rust producer inside manylinux2014 with the
+    // glibc floor measured by `readelf -V`, so the catalogued bundle honours
+    // the 2.17 archive floor while upstream's own Linux binaries are 2.39.
+    // `cargo-nextest` is deliberately absent: its republished bundle carries a
+    // `-rust1.98.1` build label, and a consumer pin must not encode the
+    // producer's compiler. It joins at the next nextest version bump, where an
+    // unlabelled filename can be published without colliding with an existing
+    // `(filename, sha256)` pin (soldr#3303).
     let asset_prefix = match cache_name {
-        "cargo-dylint" | "dylint-link" | "dylint-driver" => cache_name,
+        "cargo-dylint" | "dylint-link" | "dylint-driver" | "cargo-chef" | "crgx" => cache_name,
         "maturin" => "soldr-maturin",
         _ => return None,
     };
@@ -248,6 +258,37 @@ fn dated_nightly_prefix(channel: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// soldr#3303: the toolchain publishes forge-built `cargo-chef` and
+    /// `crgx` bundles under exactly these names, and soldr reached them only
+    /// once `asset_name` stopped returning `None` for them. The names are
+    /// asserted verbatim because the catalogue row is identified by exact
+    /// filename plus its SHA-256 pin — a rename on either side is a miss that
+    /// silently falls back to upstream's glibc-2.39 binaries.
+    #[test]
+    fn forge_built_cook_tools_resolve_by_exact_published_filename() {
+        let target = TargetTriple::from_triple("x86_64-unknown-linux-gnu").unwrap();
+
+        assert_eq!(
+            asset_name("cargo-chef", "v0.1.73", &target).as_deref(),
+            Some("cargo-chef-0.1.73-x86_64-unknown-linux-gnu.tar.gz")
+        );
+        assert_eq!(
+            asset_name("crgx", "0.1.0", &target).as_deref(),
+            Some("crgx-0.1.0-x86_64-unknown-linux-gnu.tar.gz")
+        );
+    }
+
+    /// cargo-nextest stays off this path on purpose: soldr-toolchain#182
+    /// republished it as `cargo-nextest-0.9.140-rust1.98.1-<triple>.tar.gz`,
+    /// and `asset_name` must not learn that build label — it would encode the
+    /// producer's compiler version into a consumer-side pin.
+    #[test]
+    fn nextest_is_not_resolved_by_a_build_labelled_filename() {
+        let target = TargetTriple::from_triple("x86_64-unknown-linux-gnu").unwrap();
+
+        assert_eq!(asset_name("cargo-nextest", "0.9.140", &target), None);
+    }
 
     /// soldr#2634 finding 4: the Unix `dylint-driver` slot must be the
     /// loader-env wrapper with the real catalogued binary beside it, so
