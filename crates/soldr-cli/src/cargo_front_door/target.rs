@@ -148,6 +148,7 @@ pub(super) async fn apply_linker_override(
         let reld = crate::fetch::ensure_reld(paths).await?;
         linker::inject_resolved_reld(&mut injection, &reld)?;
     }
+    linker::materialize_linker_driver_shim(paths, &target, &mut injection)?;
     let prefix = linker::cargo_target_env_prefix(&target);
     let linker_key = format!("CARGO_TARGET_{prefix}_LINKER");
     let rustflags_key = format!("CARGO_TARGET_{prefix}_RUSTFLAGS");
