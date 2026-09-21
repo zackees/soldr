@@ -360,7 +360,13 @@ if [ -d "$lib" ]; then
     DYLD_FALLBACK_LIBRARY_PATH="$lib${{DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}}"
     export DYLD_FALLBACK_LIBRARY_PATH
   else
-    LD_LIBRARY_PATH="$lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"
+    # Nix keeps runtime closure libraries (such as libz) in a separate
+    # variable; retain it after rustc's libs, ahead of the caller's entries.
+    if [ -n "${{NIX_LD_LIBRARY_PATH:-}}" ]; then
+      LD_LIBRARY_PATH="$lib:$NIX_LD_LIBRARY_PATH${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"
+    else
+      LD_LIBRARY_PATH="$lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"
+    fi
     export LD_LIBRARY_PATH
   fi
 fi
