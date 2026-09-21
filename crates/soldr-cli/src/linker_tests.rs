@@ -211,6 +211,70 @@ fn fast_on_linux_without_reld_falls_back_to_lld() {
 }
 
 #[test]
+fn linux_driver_shim_preserves_build_rustflags_and_is_content_addressed() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+    let mut injection = LinkerInjection::clang_with_ld_path("/managed/reld with space");
+
+    materialize_linker_driver_shim(&paths, LINUX, &mut injection).unwrap();
+
+    assert!(injection.rustflags.is_none());
+    let path = PathBuf::from(injection.linker.as_deref().unwrap());
+    assert!(path.starts_with(paths.bin.join("linker-shims").join("v1")));
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(body.contains("--ld-path=/managed/reld with space"));
+
+    let first_path = path;
+    let mut different = LinkerInjection::clang_with_fuse("lld");
+    materialize_linker_driver_shim(&paths, LINUX, &mut different).unwrap();
+    assert_ne!(PathBuf::from(different.linker.unwrap()), first_path);
+    assert!(different.rustflags.is_none());
+}
+
+#[test]
+fn linker_driver_shim_forwards_the_driver_argument_and_linker_argv() {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let fake_bin = temp.path().join("fake bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    let log = temp.path().join("clang-argv.txt");
+    let clang = fake_bin.join("clang");
+    std::fs::write(
+        &clang,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SOLDR_TEST_CLANG_LOG\"\n",
+    )
+    .unwrap();
+    crate::platform::fs::permissions::make_executable(&clang).unwrap();
+
+    let paths = SoldrPaths::with_root(temp.path().join("soldr root"));
+    let mut injection = LinkerInjection::clang_with_ld_path("/managed/reld with space");
+    materialize_linker_driver_shim(&paths, LINUX, &mut injection).unwrap();
+    let status = Command::new(injection.linker.unwrap())
+        .args(["first object.o", "-o", "output file"])
+        .env("PATH", &fake_bin)
+        .env("SOLDR_TEST_CLANG_LOG", &log)
+        .status()
+        .unwrap();
+
+    assert!(status.success());
+    assert_eq!(
+        std::fs::read_to_string(log).unwrap(),
+        "--ld-path=/managed/reld with space\nfirst object.o\n-o\noutput file\n"
+    );
+}
+
+#[test]
+fn windows_linker_driver_shim_quotes_spaces_and_cmd_metacharacters() {
+    let body = render_windows_linker_driver_shim("--ld-path=C:\\A B\\100% & tools\\reld.exe");
+    assert_eq!(
+        body,
+        "@echo off\r\nclang \"--ld-path=C:\\A B\\100%% & tools\\reld.exe\" %*\r\n"
+    );
+}
+
+#[test]
 fn fast_on_apple_uses_reld() {
     for triple in [MAC_X64, MAC_ARM] {
         let i = resolve_for_target_with_probe(LinkerChoice::Fast, triple, &|| true).unwrap();
