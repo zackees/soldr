@@ -885,7 +885,8 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                         &mut command,
                         &maturin_target,
                         &paths,
-                    )?;
+                    )
+                    .await?;
                     if state.cached_fallback {
                         eprintln!(
                             "soldr warning: fast linker `{}` was unavailable on the previous PEP 517 build; using the working standard linker",

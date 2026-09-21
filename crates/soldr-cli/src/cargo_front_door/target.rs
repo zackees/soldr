@@ -101,7 +101,7 @@ fn known_cargo_build_target_inner(
 /// 2. a `CARGO_BUILD_TARGET` already in the parent env,
 /// 3. an `--target` flag inside `args`,
 /// 4. the auto-detected host triple from `TargetTriple::detect()`.
-pub(super) fn apply_linker_override(
+pub(super) async fn apply_linker_override(
     command: &mut std::process::Command,
     args: &[String],
     explicit_target: Option<&str>,
@@ -143,7 +143,11 @@ pub(super) fn apply_linker_override(
         return Ok(());
     }
 
-    let injection = linker::resolve_for_target(choice, &target)?;
+    let mut injection = linker::resolve_for_target(choice, &target)?;
+    if matches!(choice, linker::LinkerChoice::Reld) {
+        let reld = crate::fetch::ensure_reld(paths).await?;
+        linker::inject_resolved_reld(&mut injection, &reld)?;
+    }
     let prefix = linker::cargo_target_env_prefix(&target);
     let linker_key = format!("CARGO_TARGET_{prefix}_LINKER");
     let rustflags_key = format!("CARGO_TARGET_{prefix}_RUSTFLAGS");
@@ -163,6 +167,19 @@ pub(super) fn apply_linker_override(
         }
     }
     Ok(())
+}
+
+/// Synchronous bridge for unit tests that only inspect the command environment.
+#[cfg(test)]
+pub(super) fn apply_linker_override_blocking(
+    command: &mut std::process::Command,
+    args: &[String],
+    explicit_target: Option<&str>,
+    paths: &SoldrPaths,
+) -> Result<(), SoldrError> {
+    tokio::runtime::Runtime::new()
+        .map_err(|error| SoldrError::Other(error.to_string()))?
+        .block_on(apply_linker_override(command, args, explicit_target, paths))
 }
 
 fn resolve_active_target_triple(
@@ -185,6 +202,7 @@ mod tests {
         known_cargo_build_target_inner as known_target,
         should_inject_windows_target_inner as inject,
     };
+    use crate::linker::{inject_resolved_reld, LinkerInjection};
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
@@ -228,5 +246,31 @@ mod tests {
             ),
             Some("x86_64-pc-windows-msvc".to_string()),
         );
+    }
+
+    #[test]
+    fn resolved_reld_replaces_bare_linux_ld_path() {
+        let mut injection = LinkerInjection {
+            linker: Some("clang".to_string()),
+            rustflags: Some("-C link-arg=--ld-path=reld".to_string()),
+        };
+        inject_resolved_reld(&mut injection, std::path::Path::new("/managed/reld"))
+            .expect("replace reld");
+        assert_eq!(injection.linker.as_deref(), Some("clang"));
+        assert_eq!(
+            injection.rustflags.as_deref(),
+            Some("-C link-arg=--ld-path=/managed/reld")
+        );
+    }
+
+    #[test]
+    fn resolved_reld_replaces_direct_linker_path() {
+        let mut injection = LinkerInjection {
+            linker: Some("reld".to_string()),
+            rustflags: None,
+        };
+        inject_resolved_reld(&mut injection, std::path::Path::new("C:/managed/reld.exe"))
+            .expect("replace reld");
+        assert_eq!(injection.linker.as_deref(), Some("C:/managed/reld.exe"));
     }
 }

@@ -421,7 +421,7 @@ pub(crate) async fn run_cargo_front_door(
     }
     let native_cache_target = known_cargo_target.filter(|target| target.ends_with("-apple-darwin"));
 
-    target::apply_linker_override(&mut command, args, explicit_target.as_deref(), &paths)?;
+    target::apply_linker_override(&mut command, args, explicit_target.as_deref(), &paths).await?;
 
     // L3 (soldr#980): await the background zccache prefetch we kicked
     // off near the top of this function. Up until this point the cargo

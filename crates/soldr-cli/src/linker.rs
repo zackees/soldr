@@ -106,6 +106,38 @@ impl Pep517LinkerState {
     }
 }
 
+/// Replace the bare `reld` token in an explicit linker injection with a
+/// verified absolute executable path resolved before Cargo starts.
+pub fn inject_resolved_reld(
+    injection: &mut LinkerInjection,
+    reld: &Path,
+) -> Result<(), SoldrError> {
+    let reld = reld.to_str().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "managed reld path is not valid UTF-8: {}",
+            reld.display()
+        ))
+    })?;
+    let mut replaced = false;
+    if injection.linker.as_deref() == Some("reld") {
+        injection.linker = Some(reld.to_string());
+        replaced = true;
+    }
+    if let Some(flags) = injection.rustflags.as_mut() {
+        if flags.contains("--ld-path=reld") {
+            *flags = flags.replacen("--ld-path=reld", &format!("--ld-path={reld}"), 1);
+            replaced = true;
+        }
+    }
+    if replaced {
+        Ok(())
+    } else {
+        Err(SoldrError::Other(
+            "explicit reld linker selection produced no reld injection".to_string(),
+        ))
+    }
+}
+
 impl LinkerInjection {
     fn none() -> Self {
         Self::default()
@@ -301,7 +333,7 @@ pub fn resolve_for_target_with_probe(
 /// Apply the automatic fast-linker policy used by the PEP backend. Direct
 /// `soldr cargo` remains governed by `SOLDR_LINKER` / config.toml; the Python
 /// backend opts into this policy with `SOLDR_PEP517_LINKER=auto`.
-pub fn apply_pep517_override(
+pub async fn apply_pep517_override(
     command: &mut Command,
     target: &str,
     paths: &SoldrPaths,
@@ -338,7 +370,11 @@ pub fn apply_pep517_override(
     } else {
         from_env_and_config(explicit_env.as_deref(), explicit_config)?
     };
-    let injection = resolve_for_target(choice, target)?;
+    let mut injection = resolve_for_target(choice, target)?;
+    if matches!(choice, LinkerChoice::Reld) {
+        let reld = crate::fetch::ensure_reld(paths).await?;
+        inject_resolved_reld(&mut injection, &reld)?;
+    }
     let prefix = cargo_target_env_prefix(target);
     let linker_key = format!("CARGO_TARGET_{prefix}_LINKER");
     let rustflags_key = format!("CARGO_TARGET_{prefix}_RUSTFLAGS");
