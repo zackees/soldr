@@ -1,10 +1,8 @@
 # Enforces the repository's GitHub Actions-cache budget (soldr#3047 Phase B).
 #
-# A dedicated workflow rather than a step in ci.yml: a `schedule:` trigger
-# added to ci.yml would run its full 21-job sweep every day just to total up
-# cache bytes, and this job needs `actions: read` (to call `gh cache list` /
-# the cache-usage API) -- a grant ci.yml's top-level `permissions: contents:
-# read` does not carry.
+# Its scheduled/main/manual operational sweep remains separate so a schedule
+# does not launch canonical CI's full validation graph. The PR check itself is
+# a job in ci.yml, where it receives job-scoped `actions: read`.
 #
 # See ci/cache-ownership.json's `budget` object for the family allocations
 # this gate enforces, and .github/scripts/check_cache_budget.py for the gate
@@ -13,7 +11,6 @@
 name: Cache Budget
 
 on:
-  pull_request:
   push:
     branches:
       - main

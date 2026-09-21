@@ -8,12 +8,8 @@ channel, honored only when the diff is otherwise unclassifiable as safe.
 Pushes, empty diffs, and any unclassified path fail safe by running
 everything.
 
-The docs-only rule exists so documentation changes never pay for the test
-flow: ``ci.yml``'s ``paths-ignore`` already keeps markdown-only PRs from
-triggering the workflow on ``opened``/``synchronize``/``reopen``, and this
-classification extends the same filter to the runs that still happen --
-notably ``labeled``/``unlabeled`` re-runs, where trigger-level path
-filters cannot be trusted.
+The docs-only rule complements canonical CI's cheap docs path: its protected
+``Lint`` context still reports, while the compiler/platform fan-out stays off.
 
 Emits two outputs from one classification (soldr#3018):
 
@@ -78,12 +74,10 @@ def decide_windows_e2e(
         return Decision(True, "empty diff cannot be classified safely")
 
     # A documentation/metadata-only PR skips the platform fan-out without
-    # needing the fast-build label. ci.yml's own `paths-ignore` already
-    # keeps markdown-only PRs from triggering the workflow at all; this
-    # rule gives the *same* filter to the runs that still happen --
-    # notably `labeled`/`unlabeled` re-runs, where trigger-level path
-    # filters are unreliable. The label remains the request channel for
-    # everything else.
+    # needing the fast-build label. Canonical CI's path-selection job also
+    # skips its host build for this case; this second guard preserves that
+    # result if the policy is reused independently. The label remains the
+    # request channel for everything else.
     sensitive = [path for path in changed_paths if not is_low_risk_path(path)]
     if not sensitive:
         return Decision(False, "documentation/metadata-only change skips platform E2E")
