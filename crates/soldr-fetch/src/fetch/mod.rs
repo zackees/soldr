@@ -90,6 +90,7 @@ pub mod mingw_w64_gcc;
 /// that decides host-vs-download.
 pub mod msvc_toolset;
 pub mod musl_linux_toolchain;
+pub mod reld;
 pub mod sqlite_sysroot;
 /// soldr#1064 Phase B — shared download + extract for the six
 /// *-sys C library catalogue bundles. The per-lib modules each
@@ -123,6 +124,7 @@ pub use manifest_v6::{
     embedded_manifest, embedded_manifest_bytes, is_stable_version_tag, ManifestV6, V6Asset, V6Hit,
     V6Leaf,
 };
+pub use reld::{ensure_reld, MANAGED_RELD_VERSION, RELD_BIN_ENV_VAR};
 pub use zig::{ensure_zig, MANAGED_ZIG_VERSION};
 
 use crate::core::{SoldrError, SoldrPaths, TargetTriple};
