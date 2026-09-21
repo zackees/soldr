@@ -478,6 +478,35 @@ pub fn read_broker_route_claim(paths: &SoldrPaths) -> io::Result<Option<DaemonPr
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
+/// Read only the PID and executable path from a route claim for ownership
+/// diagnostics and stale-daemon displacement.
+///
+/// This deliberately does not authenticate the claim: callers must separately
+/// verify the PID's live executable before acting on it. It exists so a daemon
+/// written by a release with an obsolete identity algorithm still identifies a
+/// root-lock holder instead of appearing to be no claim at all. Authentication
+/// and broker re-adoption must continue through [`read_broker_route_claim`].
+pub(crate) fn read_broker_route_claim_owner_identity(
+    paths: &SoldrPaths,
+) -> io::Result<Option<(u32, PathBuf)>> {
+    use prost::Message as _;
+
+    let bytes = match std::fs::read(broker_route_claim_path(paths)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let claim = running_process::broker::protocol::DaemonProcess::decode(bytes.as_slice())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if claim.pid == 0 || claim.exe_path.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "daemon route claim has no usable owner identity",
+        ));
+    }
+    Ok(Some((claim.pid, PathBuf::from(claim.exe_path))))
+}
+
 pub fn prune_broker_route_claim(paths: &SoldrPaths) {
     let _ = std::fs::remove_file(broker_route_claim_path(paths));
 }
@@ -707,6 +736,31 @@ mod tests {
         assert_eq!(legacy.exe_path, daemon.exe_path.to_string_lossy());
         assert_eq!(legacy.exe_sha256, daemon.legacy_exe_sha256);
         assert_eq!(legacy.exe_sha256.len(), 32);
+    }
+
+    #[test]
+    fn legacy_hash_algorithm_claim_still_identifies_its_owner() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let daemon = current_daemon_process(&paths, Some(30)).expect("daemon identity");
+        let mut legacy_claim = daemon.to_proto();
+        legacy_claim.exe_hash_algorithm.clear();
+        let mut encoded = Vec::new();
+        legacy_claim
+            .encode(&mut encoded)
+            .expect("encode legacy claim");
+        std::fs::create_dir_all(soldr_daemon_dir(&paths)).expect("daemon dir");
+        std::fs::write(broker_route_claim_path(&paths), encoded).expect("write legacy claim");
+
+        assert!(
+            read_broker_route_claim(&paths).is_err(),
+            "an obsolete hash algorithm must not authenticate a route"
+        );
+        assert_eq!(
+            read_broker_route_claim_owner_identity(&paths).expect("read owner"),
+            Some((daemon.pid, daemon.exe_path)),
+            "ownership recovery still needs to identify a live older daemon"
+        );
     }
 
     #[test]
