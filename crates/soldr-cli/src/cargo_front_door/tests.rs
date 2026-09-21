@@ -1678,13 +1678,15 @@ fn explicit_cross_linker_and_rustflags_override_soldr_fast() {
         let mut command = std::process::Command::new("cargo");
         command.env(linker_key, "/tmp/zigbuild-shims/target-linker");
         command.env(rustflags_key, "-C link-self-contained=no");
-        target::apply_linker_override(
-            &mut command,
-            &argvec(&format!("build --target {target}")),
-            None,
-            &paths,
-        )
-        .unwrap();
+        tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(target::apply_linker_override(
+                &mut command,
+                &argvec(&format!("build --target {target}")),
+                None,
+                &paths,
+            ))
+            .unwrap();
 
         assert_eq!(
             command_env_override(&command, linker_key),
@@ -1715,13 +1717,15 @@ fn command_target_linker_overrides_parent_environment() {
         "/tmp/command-linker",
     );
 
-    target::apply_linker_override(
-        &mut command,
-        &argvec("build --target aarch64-unknown-linux-gnu"),
-        None,
-        &paths,
-    )
-    .unwrap();
+    tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(target::apply_linker_override(
+            &mut command,
+            &argvec("build --target aarch64-unknown-linux-gnu"),
+            None,
+            &paths,
+        ))
+        .unwrap();
 
     assert_eq!(
         command_env_override(&command, "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"),

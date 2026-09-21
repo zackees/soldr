@@ -101,7 +101,7 @@ fn known_cargo_build_target_inner(
 /// 2. a `CARGO_BUILD_TARGET` already in the parent env,
 /// 3. an `--target` flag inside `args`,
 /// 4. the auto-detected host triple from `TargetTriple::detect()`.
-pub(super) fn apply_linker_override(
+pub(super) async fn apply_linker_override(
     command: &mut std::process::Command,
     args: &[String],
     explicit_target: Option<&str>,
@@ -143,7 +143,11 @@ pub(super) fn apply_linker_override(
         return Ok(());
     }
 
-    let injection = linker::resolve_for_target(choice, &target)?;
+    let mut injection = linker::resolve_for_target(choice, &target)?;
+    if matches!(choice, linker::LinkerChoice::Reld) {
+        let reld = crate::fetch::ensure_reld(paths).await?;
+        inject_resolved_reld(&mut injection, &reld)?;
+    }
     let prefix = linker::cargo_target_env_prefix(&target);
     let linker_key = format!("CARGO_TARGET_{prefix}_LINKER");
     let rustflags_key = format!("CARGO_TARGET_{prefix}_RUSTFLAGS");
@@ -165,6 +169,38 @@ pub(super) fn apply_linker_override(
     Ok(())
 }
 
+/// Replace the bare `reld` token in an explicit linker injection with the
+/// verified host executable resolved before Cargo starts.
+fn inject_resolved_reld(
+    injection: &mut linker::LinkerInjection,
+    reld: &std::path::Path,
+) -> Result<(), SoldrError> {
+    let reld = reld.to_str().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "managed reld path is not valid UTF-8: {}",
+            reld.display()
+        ))
+    })?;
+    let mut replaced = false;
+    if injection.linker.as_deref() == Some("reld") {
+        injection.linker = Some(reld.to_string());
+        replaced = true;
+    }
+    if let Some(flags) = injection.rustflags.as_mut() {
+        if flags.contains("--ld-path=reld") {
+            *flags = flags.replacen("--ld-path=reld", &format!("--ld-path={reld}"), 1);
+            replaced = true;
+        }
+    }
+    if replaced {
+        Ok(())
+    } else {
+        Err(SoldrError::Other(
+            "explicit reld linker selection produced no reld injection".to_string(),
+        ))
+    }
+}
+
 fn resolve_active_target_triple(
     args: &[String],
     explicit_target: Option<&str>,
@@ -182,9 +218,10 @@ fn resolve_active_target_triple(
 #[cfg(test)]
 mod tests {
     use super::{
-        known_cargo_build_target_inner as known_target,
+        inject_resolved_reld, known_cargo_build_target_inner as known_target,
         should_inject_windows_target_inner as inject,
     };
+    use crate::linker::LinkerInjection;
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
@@ -228,5 +265,31 @@ mod tests {
             ),
             Some("x86_64-pc-windows-msvc".to_string()),
         );
+    }
+
+    #[test]
+    fn resolved_reld_replaces_bare_linux_ld_path() {
+        let mut injection = LinkerInjection {
+            linker: Some("clang".to_string()),
+            rustflags: Some("-C link-arg=--ld-path=reld".to_string()),
+        };
+        inject_resolved_reld(&mut injection, std::path::Path::new("/managed/reld"))
+            .expect("replace reld");
+        assert_eq!(injection.linker.as_deref(), Some("clang"));
+        assert_eq!(
+            injection.rustflags.as_deref(),
+            Some("-C link-arg=--ld-path=/managed/reld")
+        );
+    }
+
+    #[test]
+    fn resolved_reld_replaces_direct_linker_path() {
+        let mut injection = LinkerInjection {
+            linker: Some("reld".to_string()),
+            rustflags: None,
+        };
+        inject_resolved_reld(&mut injection, std::path::Path::new("C:/managed/reld.exe"))
+            .expect("replace reld");
+        assert_eq!(injection.linker.as_deref(), Some("C:/managed/reld.exe"));
     }
 }

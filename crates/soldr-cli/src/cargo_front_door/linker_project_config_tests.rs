@@ -48,13 +48,15 @@ fn apply_from_project_with_config(body: &str) -> std::process::Command {
 
     let mut command = std::process::Command::new("cargo");
     let _cwd = crate::CwdGuard::enter(&project);
-    target::apply_linker_override(
-        &mut command,
-        &argvec(&format!("build --target {TARGET}")),
-        None,
-        &paths,
-    )
-    .expect("apply_linker_override");
+    tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(target::apply_linker_override(
+            &mut command,
+            &argvec(&format!("build --target {TARGET}")),
+            None,
+            &paths,
+        ))
+        .expect("apply_linker_override");
     command
 }
 
