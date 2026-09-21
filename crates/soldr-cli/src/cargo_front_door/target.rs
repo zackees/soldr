@@ -146,7 +146,7 @@ pub(super) async fn apply_linker_override(
     let mut injection = linker::resolve_for_target(choice, &target)?;
     if matches!(choice, linker::LinkerChoice::Reld) {
         let reld = crate::fetch::ensure_reld(paths).await?;
-        inject_resolved_reld(&mut injection, &reld)?;
+        linker::inject_resolved_reld(&mut injection, &reld)?;
     }
     let prefix = linker::cargo_target_env_prefix(&target);
     let linker_key = format!("CARGO_TARGET_{prefix}_LINKER");
@@ -169,38 +169,6 @@ pub(super) async fn apply_linker_override(
     Ok(())
 }
 
-/// Replace the bare `reld` token in an explicit linker injection with the
-/// verified host executable resolved before Cargo starts.
-fn inject_resolved_reld(
-    injection: &mut linker::LinkerInjection,
-    reld: &std::path::Path,
-) -> Result<(), SoldrError> {
-    let reld = reld.to_str().ok_or_else(|| {
-        SoldrError::Other(format!(
-            "managed reld path is not valid UTF-8: {}",
-            reld.display()
-        ))
-    })?;
-    let mut replaced = false;
-    if injection.linker.as_deref() == Some("reld") {
-        injection.linker = Some(reld.to_string());
-        replaced = true;
-    }
-    if let Some(flags) = injection.rustflags.as_mut() {
-        if flags.contains("--ld-path=reld") {
-            *flags = flags.replacen("--ld-path=reld", &format!("--ld-path={reld}"), 1);
-            replaced = true;
-        }
-    }
-    if replaced {
-        Ok(())
-    } else {
-        Err(SoldrError::Other(
-            "explicit reld linker selection produced no reld injection".to_string(),
-        ))
-    }
-}
-
 fn resolve_active_target_triple(
     args: &[String],
     explicit_target: Option<&str>,
@@ -218,10 +186,10 @@ fn resolve_active_target_triple(
 #[cfg(test)]
 mod tests {
     use super::{
-        inject_resolved_reld, known_cargo_build_target_inner as known_target,
+        known_cargo_build_target_inner as known_target,
         should_inject_windows_target_inner as inject,
     };
-    use crate::linker::LinkerInjection;
+    use crate::linker::{inject_resolved_reld, LinkerInjection};
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
