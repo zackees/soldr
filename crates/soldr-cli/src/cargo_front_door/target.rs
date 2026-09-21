@@ -169,6 +169,19 @@ pub(super) async fn apply_linker_override(
     Ok(())
 }
 
+/// Synchronous bridge for unit tests that only inspect the command environment.
+#[cfg(test)]
+pub(super) fn apply_linker_override_blocking(
+    command: &mut std::process::Command,
+    args: &[String],
+    explicit_target: Option<&str>,
+    paths: &SoldrPaths,
+) -> Result<(), SoldrError> {
+    tokio::runtime::Runtime::new()
+        .map_err(|error| SoldrError::Other(error.to_string()))?
+        .block_on(apply_linker_override(command, args, explicit_target, paths))
+}
+
 fn resolve_active_target_triple(
     args: &[String],
     explicit_target: Option<&str>,
