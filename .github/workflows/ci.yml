@@ -255,6 +255,11 @@ jobs:
           # are worse than none -- they rot silently while implying coverage.
           uv run --no-project --python 3.13 --with pytest --with pyyaml python -m pytest tests/ .github/scripts/ -q
 
+      # soldr#3284: Dylint remains authoritative but expensive; this cheap
+      # source-level tripwire must run even when the ci-test lane is skipped.
+      - name: Enforce platform cfg boundary
+        run: uv run --no-project --python 3.13 python .github/scripts/platform_cfg_boundary_ratchet.py
+
       # Rust compiler validation is centralized in the native host lane.
       # Its single `soldr ci-test` invocation (soldr#2868) leaves this job
       # responsible for non-Rust policy, Python, and JavaScript checks.

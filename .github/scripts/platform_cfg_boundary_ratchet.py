@@ -11,20 +11,11 @@ direct reference to `platform_imp` / `platform_win` / `platform_linux` /
 from __future__ import annotations
 
 import re
+from functools import cache
 from pathlib import Path
 
-PLATFORM_SELECTORS = (
-    "windows",
-    "unix",
-    "target_os",
-    "target_family",
-    "target_arch",
-    "target_abi",
-    "target_env",
-    "target_vendor",
-    "target_endian",
-    "target_pointer_width",
-)
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DYLINT_SOURCE = REPO_ROOT / "dylints" / "ban_platform_cfg_outside_boundary" / "src" / "lib.rs"
 CFG_STARTS = ("#[cfg(", "#[cfg_attr(", "#![cfg(", "#![cfg_attr(", "cfg!(")
 CONCRETE_TREES = ("platform_imp", "platform_win", "platform_linux", "platform_macos")
 NATIVE_MARKERS = (
@@ -47,6 +38,23 @@ BOUNDARY_PREFIXES = (
 )
 SELECTION_SITE = "crates/soldr-platform/src/lib.rs"
 SOURCE_ROOT = Path("crates")
+
+
+@cache
+def platform_selectors() -> tuple[str, ...]:
+    """Read the Dylint's authoritative host-platform selector list."""
+    source = DYLINT_SOURCE.read_text(encoding="utf-8")
+    match = re.search(
+        r"const SELECTORS: \[&str; \d+\] = \[(?P<body>.*?)\];",
+        source,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        raise RuntimeError(f"cannot find SELECTORS in {DYLINT_SOURCE}")
+    selectors = tuple(re.findall(r'"([^"]+)"', match.group("body")))
+    if not selectors:
+        raise RuntimeError(f"SELECTORS in {DYLINT_SOURCE} is empty")
+    return selectors
 
 
 def mask_comments_and_strings(source: str) -> str:
@@ -140,7 +148,7 @@ def platform_cfg_invocations(masked_source: str) -> list[str]:
             if clause is None:
                 cursor = offset + len(start)
                 continue
-            if any(selector in clause for selector in PLATFORM_SELECTORS):
+            if any(selector in clause for selector in platform_selectors()):
                 invocations.append(clause.removeprefix("#["))
             cursor = offset + len(clause)
     return invocations

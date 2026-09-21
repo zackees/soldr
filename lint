@@ -3,6 +3,9 @@ set -e
 
 ./install
 
+echo Checking platform cfg boundary
+uv run --no-sync python .github/scripts/platform_cfg_boundary_ratchet.py
+
 echo Running ruff src
 uv run --no-sync ruff check --fix src
 echo Running ruff tests
