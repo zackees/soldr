@@ -275,28 +275,35 @@ fn apply_driver_runtime_environment_impl(
     match crate::platform::host::facts::os() {
         crate::platform::host::facts::HostOs::Windows => {
             let (bin_dir, _) = dylint_toolchain_dirs(plan)?;
-            prepend_command_path(command, "PATH", &bin_dir)
+            prepend_command_paths(command, "PATH", &[bin_dir])
         }
         crate::platform::host::facts::HostOs::Linux => {
             let (_, toolchain_root) = dylint_toolchain_dirs(plan)?;
-            prepend_command_path(command, "LD_LIBRARY_PATH", &toolchain_root.join("lib"))?;
+            let mut library_dirs = vec![toolchain_root.join("lib")];
+            if let Some(nix_library_path) = std::env::var_os("NIX_LD_LIBRARY_PATH") {
+                library_dirs.extend(
+                    std::env::split_paths(&nix_library_path)
+                        .filter(|path| !path.as_os_str().is_empty()),
+                );
+            }
+            prepend_command_paths(command, "LD_LIBRARY_PATH", &library_dirs)?;
             Ok(())
         }
         crate::platform::host::facts::HostOs::MacOs => {
             let (_, toolchain_root) = dylint_toolchain_dirs(plan)?;
-            prepend_command_path(command, "DYLD_LIBRARY_PATH", &toolchain_root.join("lib"))?;
+            prepend_command_paths(command, "DYLD_LIBRARY_PATH", &[toolchain_root.join("lib")])?;
             Ok(())
         }
     }
 }
 
-fn prepend_command_path(
+fn prepend_command_paths(
     command: &mut std::process::Command,
     key: &str,
-    directory: &Path,
+    directories: &[PathBuf],
 ) -> Result<(), SoldrError> {
     let existing = std::env::var_os(key);
-    let paths = std::iter::once(directory.to_path_buf()).chain(
+    let paths = directories.iter().cloned().chain(
         existing
             .as_deref()
             .map(std::env::split_paths)
