@@ -513,6 +513,54 @@ fn the_existing_cross_guard_seam_still_forces_the_catalogue_path() {
     ));
 }
 
+// ── soldr#3296: musl bundle host shape ───────────────────────────────────
+
+#[test]
+fn an_x86_64_host_can_use_the_catalogue_musl_bundle() {
+    assert_eq!(
+        decide_musl_bundle(
+            HostOs::Linux,
+            HostArch::X86_64,
+            X64,
+            "aarch64-unknown-linux-musl",
+            false,
+        ),
+        MuslBundleDecision::UseCatalogue
+    );
+}
+
+#[test]
+fn an_arm64_host_refuses_the_x86_64_hosted_musl_bundle_before_download() {
+    let decision = decide_musl_bundle(
+        HostOs::Linux,
+        HostArch::Aarch64,
+        ARM64,
+        "aarch64-unknown-linux-musl",
+        false,
+    );
+    let MuslBundleDecision::Reject(message) = decision else {
+        panic!("expected a rejection, got {decision:?}");
+    };
+    assert!(message.contains("soldr#3296"), "{message}");
+    assert!(message.contains(ARM64), "{message}");
+    assert!(message.contains("aarch64-unknown-linux-musl"), "{message}");
+    assert!(message.contains("Exec format error"), "{message}");
+}
+
+#[test]
+fn the_existing_cross_guard_seam_can_exercise_the_musl_fixture_path() {
+    assert_eq!(
+        decide_musl_bundle(
+            HostOs::MacOs,
+            HostArch::Aarch64,
+            "aarch64-apple-darwin",
+            "x86_64-unknown-linux-musl",
+            true,
+        ),
+        MuslBundleDecision::UseCatalogue
+    );
+}
+
 #[test]
 fn cargo_feature_flags_extracts_only_feature_selection() {
     use crate::target_lifecycle::cargo_feature_flags;

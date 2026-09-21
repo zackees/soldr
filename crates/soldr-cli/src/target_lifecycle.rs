@@ -12,6 +12,9 @@ use crate::blessed_build::BlessedPrep;
 use crate::core::{SoldrError, SoldrPaths};
 use crate::prepare_cmd::{classify_target, TargetAbi, TargetOs};
 
+mod musl_bundle;
+use musl_bundle::{decide_musl_bundle, MuslBundleDecision};
+
 pub(crate) const TARGET_PLAN_SCHEMA_VERSION: u64 = 1;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -177,6 +180,24 @@ pub(crate) async fn prepare_target(
     } else {
         false
     };
+    let target_wants_catalogue_musl =
+        attrs.os == TargetOs::Linux && attrs.abi == Some(TargetAbi::Musl);
+    let musl_uses_catalogue_toolchain = if target_wants_catalogue_musl {
+        match decide_musl_bundle(
+            crate::platform::host::facts::os(),
+            crate::platform::host::facts::arch(),
+            host,
+            target,
+            host_cross_guard_disabled,
+        ) {
+            MuslBundleDecision::UseCatalogue => true,
+            MuslBundleDecision::Reject(message) => {
+                return Err(SoldrError::UnsupportedPlatform(message))
+            }
+        }
+    } else {
+        false
+    };
     if gnu_uses_catalogue_toolchain {
         // Env keys come from the base triple: a dot is not legal in an
         // environment variable name, so `CC_x86_64_unknown_linux_gnu.2.17`
@@ -216,7 +237,7 @@ pub(crate) async fn prepare_target(
         ));
         prep.env.extend(env);
         add_link_self_contained_flag(&mut prep, base, &upper);
-    } else if attrs.os == TargetOs::Linux && attrs.abi == Some(TargetAbi::Musl) {
+    } else if musl_uses_catalogue_toolchain {
         let suffix = base.replace('-', "_");
         let upper = suffix.to_ascii_uppercase();
         let bundle = crate::fetch::musl_linux_toolchain::MuslLinuxToolchainTarget::for_triple(base)
