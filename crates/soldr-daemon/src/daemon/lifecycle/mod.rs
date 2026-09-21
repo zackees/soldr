@@ -177,11 +177,14 @@ pub fn describe_root_ownership_conflict(paths: &SoldrPaths) -> String {
 
 /// Read `(pid, exe_path)` from the route claim. This does not verify liveness;
 /// [`is_live`] performs the exact process and endpoint probe.
+///
+/// The identity-only reader retains enough information to identify a live
+/// daemon from an older route-claim format. It must never authenticate a broker
+/// route; every caller here verifies the live executable before using the PID.
 pub fn read_route_claim_identity(paths: &SoldrPaths) -> Option<(u32, PathBuf)> {
-    crate::daemon::backend_handle_adoption::read_broker_route_claim(paths)
+    crate::daemon::backend_handle_adoption::read_broker_route_claim_owner_identity(paths)
         .ok()
         .flatten()
-        .map(|claim| (claim.pid, claim.exe_path))
 }
 
 /// Read the daemon identity recorded by a release predating route claims.
