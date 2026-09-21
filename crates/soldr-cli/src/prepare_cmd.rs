@@ -89,6 +89,9 @@ pub async fn run(
     let attrs = classify_target(&target)?;
 
     eprintln!("soldr prepare: target={target}");
+    if let Some(reld) = ensure_selected_reld(&paths).await? {
+        eprintln!("soldr prepare: reld at {}", reld.display());
+    }
 
     // Restore failures are non-fatal; normal preparation fills any gaps.
     // Always report which cached pieces survived.
@@ -163,6 +166,23 @@ pub async fn run(
 
     eprintln!("soldr prepare: done");
     Ok(())
+}
+
+/// Fetch a pinned `reld` when the caller explicitly selected it through the
+/// same environment or soldr config inputs the cargo front door accepts.
+async fn ensure_selected_reld(paths: &SoldrPaths) -> Result<Option<PathBuf>, SoldrError> {
+    let config = paths
+        .load_config()
+        .map_err(|error| SoldrError::Other(error.to_string()))?;
+    let choice = crate::linker::from_env_and_config(
+        std::env::var_os(crate::LINKER_ENV_VAR).as_deref(),
+        config.linker.as_deref(),
+    )?;
+    if matches!(choice, crate::linker::LinkerChoice::Reld) {
+        crate::fetch::ensure_reld(paths).await.map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 /// One row in the per-target post-restore validation report.
