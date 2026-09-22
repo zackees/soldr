@@ -75,6 +75,7 @@ use crate::daemon::protocol::{
 #[derive(Clone)]
 pub struct SoldrZccacheService {
     inner: Arc<ZccacheService>,
+    shutdown_gate: CompileShutdownGate,
     compile_admission: Arc<crate::resident_compile_admission::ResidentCompileAdmission>,
     identity: HostIdentity,
     cache_root: PathBuf,
@@ -84,6 +85,38 @@ pub struct SoldrZccacheService {
     /// soldr#3152 step 4: each unit's last measured peak memory. Admission
     /// holds a clone for its shadow lookup; `compile` records into this one.
     unit_history: crate::daemon::unit_memory_history::UnitMemoryHistory,
+}
+
+/// Fair barrier between compile publication and embedded-service shutdown.
+///
+/// zccache publishes a successful miss synchronously before `compile()`
+/// returns. Holding the read side for the entire call therefore makes the
+/// write side a precise drain: shutdown cannot set zccache's shutdown flag
+/// until every compile that was already admitted has finished publishing.
+#[derive(Clone)]
+struct CompileShutdownGate {
+    accepting: Arc<tokio::sync::RwLock<bool>>,
+}
+
+impl CompileShutdownGate {
+    async fn enter(&self) -> Option<tokio::sync::OwnedRwLockReadGuard<bool>> {
+        let guard = Arc::clone(&self.accepting).read_owned().await;
+        (*guard).then_some(guard)
+    }
+
+    async fn close_and_drain(&self) -> tokio::sync::OwnedRwLockWriteGuard<bool> {
+        let mut guard = Arc::clone(&self.accepting).write_owned().await;
+        *guard = false;
+        guard
+    }
+}
+
+impl Default for CompileShutdownGate {
+    fn default() -> Self {
+        Self {
+            accepting: Arc::new(tokio::sync::RwLock::new(true)),
+        }
+    }
 }
 
 /// Where [`SoldrZccacheService::start`] spent its time, in milliseconds.
@@ -281,6 +314,7 @@ impl SoldrZccacheService {
         let zccache_start_ms = zccache_started.elapsed().as_millis() as u64;
         Ok(Self {
             inner: Arc::new(svc),
+            shutdown_gate: CompileShutdownGate::default(),
             compile_admission,
             identity,
             cache_root,
@@ -359,6 +393,14 @@ impl SoldrZccacheService {
         &self,
         req: CompileRequest,
     ) -> Result<CompileResponseBody, EmbeddedServiceError> {
+        // soldr#2706: keep this lease through zccache's synchronous staged
+        // publication. Shutdown takes the fair write side before it closes
+        // zccache to publishers, so a successful cold miss cannot be served
+        // during shutdown and then silently discarded.
+        let _shutdown_lease =
+            self.shutdown_gate.enter().await.ok_or_else(|| {
+                EmbeddedServiceError::Compile("service is shutting down".to_string())
+            })?;
         let ci_test_report = crate::ci_test_report::prepare(&req);
         let (compiler, rustc_args) = split_compiler_and_args(&req.args)?;
         let cwd: NormalizedPath = std::path::PathBuf::from(req.cwd).into();
@@ -531,6 +573,17 @@ impl SoldrZccacheService {
     /// Graceful shutdown — called from the daemon's normal exit path
     /// after the accept loop has been aborted.
     pub async fn shutdown(self, mode: ShutdownMode) -> Result<(), EmbeddedServiceError> {
+        // Stop new compiles and wait for every already-admitted compile to
+        // finish its synchronous publication before zccache observes
+        // shutdown. Keep the writer for the whole shutdown so no late caller
+        // can enter the closed service.
+        let _shutdown_guard = match mode {
+            ShutdownMode::Graceful => Some(self.shutdown_gate.close_and_drain().await),
+            // Force shutdown deliberately delegates cancellation of in-flight
+            // work to zccache. Waiting for read leases here would turn Force
+            // into Graceful and violate the upstream mode contract.
+            ShutdownMode::Force => None,
+        };
         // `ZccacheService` is intentionally Clone: each clone shares the
         // shutdown flag and daemon state. Consume a clone of the service value
         // here instead of trying to unwrap soldr's Arc. Signal-handler and
@@ -648,6 +701,36 @@ mod disk_limit_tests {
         assert!(disk_cache_limits_from_values(Some("1"), Some("5")).is_err());
         assert!(disk_cache_limits_from_values(Some("0"), None).is_err());
         assert!(disk_cache_limits_from_values(None, Some("101")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod compile_shutdown_gate_tests {
+    use super::CompileShutdownGate;
+    use std::future::{poll_fn, Future};
+    use std::task::Poll;
+
+    #[tokio::test]
+    async fn shutdown_waits_for_compile_publication_and_closes_admission() {
+        let gate = CompileShutdownGate::default();
+        let compile_lease = gate.enter().await.expect("compile admitted");
+        let shutdown = gate.close_and_drain();
+        tokio::pin!(shutdown);
+        poll_fn(|cx| {
+            assert!(
+                shutdown.as_mut().poll(cx).is_pending(),
+                "shutdown must wait while an admitted compile can still publish"
+            );
+            Poll::Ready(())
+        })
+        .await;
+        drop(compile_lease);
+        let shutdown_guard = shutdown.await;
+        drop(shutdown_guard);
+        assert!(
+            gate.enter().await.is_none(),
+            "compile admission must stay closed after shutdown starts"
+        );
     }
 }
 
