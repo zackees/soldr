@@ -70,6 +70,10 @@ use crate::daemon::protocol::{
     StagedProfileInfo,
 };
 
+#[path = "zccache_shutdown_gate.rs"]
+mod shutdown_gate;
+use shutdown_gate::CompileShutdownGate;
+
 /// Soldr-side handle around a started [`ZccacheService`]. Cheap to
 /// clone (the inner handle is `Arc`-shared).
 #[derive(Clone)]
@@ -85,38 +89,6 @@ pub struct SoldrZccacheService {
     /// soldr#3152 step 4: each unit's last measured peak memory. Admission
     /// holds a clone for its shadow lookup; `compile` records into this one.
     unit_history: crate::daemon::unit_memory_history::UnitMemoryHistory,
-}
-
-/// Fair barrier between compile publication and embedded-service shutdown.
-///
-/// zccache publishes a successful miss synchronously before `compile()`
-/// returns. Holding the read side for the entire call therefore makes the
-/// write side a precise drain: shutdown cannot set zccache's shutdown flag
-/// until every compile that was already admitted has finished publishing.
-#[derive(Clone)]
-struct CompileShutdownGate {
-    accepting: Arc<tokio::sync::RwLock<bool>>,
-}
-
-impl CompileShutdownGate {
-    async fn enter(&self) -> Option<tokio::sync::OwnedRwLockReadGuard<bool>> {
-        let guard = Arc::clone(&self.accepting).read_owned().await;
-        (*guard).then_some(guard)
-    }
-
-    async fn close_and_drain(&self) -> tokio::sync::OwnedRwLockWriteGuard<bool> {
-        let mut guard = Arc::clone(&self.accepting).write_owned().await;
-        *guard = false;
-        guard
-    }
-}
-
-impl Default for CompileShutdownGate {
-    fn default() -> Self {
-        Self {
-            accepting: Arc::new(tokio::sync::RwLock::new(true)),
-        }
-    }
 }
 
 /// Where [`SoldrZccacheService::start`] spent its time, in milliseconds.
@@ -701,36 +673,6 @@ mod disk_limit_tests {
         assert!(disk_cache_limits_from_values(Some("1"), Some("5")).is_err());
         assert!(disk_cache_limits_from_values(Some("0"), None).is_err());
         assert!(disk_cache_limits_from_values(None, Some("101")).is_err());
-    }
-}
-
-#[cfg(test)]
-mod compile_shutdown_gate_tests {
-    use super::CompileShutdownGate;
-    use std::future::{poll_fn, Future};
-    use std::task::Poll;
-
-    #[tokio::test]
-    async fn shutdown_waits_for_compile_publication_and_closes_admission() {
-        let gate = CompileShutdownGate::default();
-        let compile_lease = gate.enter().await.expect("compile admitted");
-        let shutdown = gate.close_and_drain();
-        tokio::pin!(shutdown);
-        poll_fn(|cx| {
-            assert!(
-                shutdown.as_mut().poll(cx).is_pending(),
-                "shutdown must wait while an admitted compile can still publish"
-            );
-            Poll::Ready(())
-        })
-        .await;
-        drop(compile_lease);
-        let shutdown_guard = shutdown.await;
-        drop(shutdown_guard);
-        assert!(
-            gate.enter().await.is_none(),
-            "compile admission must stay closed after shutdown starts"
-        );
     }
 }
 
