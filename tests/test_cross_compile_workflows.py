@@ -176,9 +176,8 @@ def test_linux_x64_musl_replay_is_sharded_and_consumes_its_archive() -> None:
     assert _job_input(run, "runs_on") == "ubuntu-24.04"
     partitions = json.loads(_job_input(run, "replay_partitions").strip("'"))
     assert partitions == [
-        {"label": "1-of-3", "value": "hash:1/3", "run_followup": False},
-        {"label": "2-of-3", "value": "hash:2/3", "run_followup": False},
-        {"label": "3-of-3", "value": "hash:3/3", "run_followup": False},
+        {"label": f"{index}-of-6", "value": f"hash:{index}/6", "run_followup": False}
+        for index in range(1, 7)
     ]
 
 
