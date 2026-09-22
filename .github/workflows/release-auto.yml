@@ -694,20 +694,19 @@ jobs:
           name: pypi-soldr-x86_64-apple-darwin
           path: dist
 
-      # Linux-side only: wheel METADATA version, archive extraction, required
-      # members, and the Mach-O magic-byte check. Also stages the archive
-      # binaries into share/, writes the bash-3.2 script the Recovery guest
-      # below fetches and runs, and (via --github-output) hands that script
-      # straight to this step's own `script` output -- no separate heredoc
-      # step needed (soldr#3076; keeps release-auto.yml's inline `run:`
-      # footprint under tests/test_release_yaml_ratchet.py's ceiling).
+      # Linux-side: wheel METADATA version, archive extraction, required
+      # members, Mach-O header validation, and SHA-256 verification of a
+      # pinned portable CPython. The exact uploaded wheel, runtime, and
+      # archive binaries are staged into share/. The Recovery guest installs
+      # and imports that wheel before checking its CLI surfaces, so the wheel
+      # is executed rather than merely inspected as a ZIP (soldr#3071).
       - name: Architecture-check archive/wheel and build the Recovery guest script
         id: guest_script
         shell: bash
         run: |
           set -euo pipefail
           uv run --no-project --python 3.13 ci/smoke_release_artifacts.py \
-            --target x86_64-apple-darwin --expected-version '${{ needs.prepare.outputs.version }}' \
+            --target x86_64-apple-darwin --expected-version '${{ needs.prepare.outputs.version }}' --require-wheel-import \
             --emit-guest-script "$RUNNER_TEMP/recovery-run.sh" \
             --share-dir share \
             --github-output "$GITHUB_OUTPUT"

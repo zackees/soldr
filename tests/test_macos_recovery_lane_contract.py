@@ -13,6 +13,7 @@ soldr#3076 replaces that whole plan with zackees/docker-mac-x64, which needs
 neither.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -173,6 +174,24 @@ def test_release_workflow_has_the_macos_x64_replay_jobs() -> None:
     assert re.search(r"(?m)^  e2e_macos_x64_replay:\s*$", release) is not None
     assert "uses: ./.github/workflows/_ci-cross-build-linux.yml" in release
     assert "target_execution: x86_64-recovery" in release
+
+
+def test_release_macos_x64_smoke_executes_the_shipped_wheel() -> None:
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    smoke = release.split("\n  smoke_macos_x64:\n", 1)[1].split(
+        "\n  smoke_windows:\n", 1
+    )[0]
+    assert "pypi-soldr-x86_64-apple-darwin" in smoke
+    assert "--require-wheel-import" in smoke
+    assert "zackees/docker-mac-x64@" in smoke
+    contract = json.loads((REPO_ROOT / "ci" / "canonical-targets.json").read_text())
+    x64 = next(
+        row for row in contract["targets"] if row["triple"] == "x86_64-apple-darwin"
+    )
+    assert x64["release"]["artifact_provenance"]["execution"]["wheel"] == {
+        "status": "required-before-publication",
+        "gate_job": "smoke_macos_x64",
+    }
 
 
 def _publish_job() -> str:

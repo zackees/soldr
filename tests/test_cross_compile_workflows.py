@@ -633,11 +633,10 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     block = _job_block(ci, "pep517-daemon-smoke", "e2e-linux-x64")
 
-    # soldr#3076: no macos-* runner exists anywhere, so there is no macOS
-    # PEP 517 smoke leg at all -- the Recovery guest that replaced the
-    # dockur/macos plan (soldr#3071) has no Python/maturin (the replay job in
-    # macos-recovery-replay.yml sets run_pep517_smoke: false explicitly,
-    # soldr#3116). windows-x64 keeps its dedicated smoke leg here, unchanged.
+    # No macos-* runner exists anywhere, so this dedicated matrix keeps only
+    # Windows. The shipped macOS x64 wheel is installed and imported with a
+    # pinned portable CPython inside the Recovery release guest; the heavier
+    # downstream build-backend replay remains separate from this matrix.
     assert '"name":"macos-arm64"' not in block
     assert '"name":"windows-x64"' in block
     assert "github.event.pull_request.labels" in block
@@ -662,6 +661,9 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
             "if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup "
             "&& inputs.target_execution != 'x86_64-recovery' }}" in step
         )
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    macos_release_smoke = _job_block(release, "smoke_macos_x64", "smoke_windows")
+    assert "--require-wheel-import" in macos_release_smoke
     # The smoke must run after (and never gate) the archive replay.
     assert target_run.index(
         "      - name: Run owned pre-built native tests\n"
