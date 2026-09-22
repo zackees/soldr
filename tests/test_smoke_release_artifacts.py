@@ -176,6 +176,9 @@ def test_download_verified_rejects_wrong_portable_python_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class _Response:
+        def __init__(self) -> None:
+            self.done = False
+
         def __enter__(self):
             return self
 
@@ -183,7 +186,7 @@ def test_download_verified_rejects_wrong_portable_python_digest(
             return None
 
         def read(self, _size: int) -> bytes:
-            if getattr(self, "done", False):
+            if self.done:
                 return b""
             self.done = True
             return b"wrong bytes"
