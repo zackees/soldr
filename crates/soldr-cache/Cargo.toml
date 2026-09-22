@@ -30,7 +30,7 @@ tracing = { workspace = true }
 # soldr#3289: source-mtime replay delegates to `zccache::fingerprint::mtime_replay`,
 # which the amalgamated crate re-exports unconditionally, so still no zccache
 # feature is enabled.
-zccache = { version = "=1.14.8", default-features = false }
+zccache = { version = "=1.14.9", default-features = false }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }

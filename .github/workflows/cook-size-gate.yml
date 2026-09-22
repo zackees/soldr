@@ -130,7 +130,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: zackees/zccache
-          ref: "1.14.8"
+          ref: "1.14.9"
           path: zccache-fixture
 
       - name: Install uv
