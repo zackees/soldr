@@ -311,24 +311,21 @@ version to bump alongside it (soldr#1368).
 
 ## CI enforcement
 
-Three lightweight CI checks gate the vendor's discipline:
+The zccache vendor ended with soldr#2837: `_vender/zccache`, its
+`.vendor-state` metadata, and the path-dep are gone, replaced by an
+exact crates.io pin. The three vendor-state checks that used to gate
+every PR here (metadata existence, `deadline` in the future,
+`[[deltas]]` `upstream_pr` within 7 days) could no longer fire once
+the vendor ended — they passed vacuously on every run — so the checks
+and their `vendor-state` workflow were deleted in soldr#3324 rather
+than left green forever.
 
-1. **`_vender/zccache/.vendor-state` exists when `Cargo.toml` says
-   `zccache = { path = "_vender/..." }`** — catches the "forgot the
-   metadata" mistake.
-
-2. **`deadline` is in the future** — a CI step that parses the TOML
-   and fails the build if `deadline < now()`. The vendor is meant
-   to end; CI helps enforce it.
-
-3. **Every `[[deltas]]` entry older than 7 days has a non-null
-   `upstream_pr`** — a CI step that walks the deltas and fails if
-   any soldr-side change hasn't been turned into an upstream PR
-   within a week.
-
-A reference implementation lives in
-`.github/scripts/verify_vendor_state.py` and runs on every PR
-that touches `_vender/`.
+What enforces the boundary now is
+`tests/test_externalized_dependency_sources.py` (soldr#2838): the
+`zccache` and `running-process` families must stay registry-sourced —
+no `path =` dep, no `[patch.crates-io]` redirect, no gitlink — and CI
+fails if any of them returns to the graph. The `_vender/` cap-std
+family is unaffected and remains ordinary vendored source.
 
 ## What this strategy is NOT
 

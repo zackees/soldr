@@ -15,9 +15,9 @@ across checkouts as an external dependency artifact.
 None of that was guarded. A `path = ` dep, a `[patch]` redirect, or a
 resubmitted gitlink would put the 19 packages back, and the only symptom would
 be a build that got slower -- which no test fails on, and which reads as
-ordinary CI noise. `verify_vendor_state.py` does not cover it either: it
-enforces vendoring *discipline* when vendoring is active, and is dormant while
-it is not.
+ordinary CI noise. (The old `verify_vendor_state.py` gate did not cover it
+either -- it only enforced discipline while vendoring was active, so it was
+inert after soldr#2837 and was deleted as such in soldr#3324.)
 
 The checks are deliberately specific to these two dependency families.
 `[patch.crates-io]` is still legitimately used for `notify` and
