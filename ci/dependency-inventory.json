@@ -111,6 +111,7 @@
       "blake3",
       "fs2",
       "interprocess",
+      "kernal-api",
       "libc",
       "running-process",
       "serde",

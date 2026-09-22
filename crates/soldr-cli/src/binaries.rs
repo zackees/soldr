@@ -578,6 +578,16 @@ fn apply_managed_toolchain_library_path_if_available(
         .map(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
         .unwrap_or_else(|| std::env::var_os(loader_library_path));
     let mut entries = vec![library_dir];
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux {
+        if let Some(nix_library_path) =
+            std::env::var_os("NIX_LD_LIBRARY_PATH").filter(|value| !value.is_empty())
+        {
+            entries.extend(
+                std::env::split_paths(&nix_library_path)
+                    .filter(|path| !path.as_os_str().is_empty()),
+            );
+        }
+    }
     if let Some(existing) = existing {
         entries.extend(std::env::split_paths(&existing));
     }

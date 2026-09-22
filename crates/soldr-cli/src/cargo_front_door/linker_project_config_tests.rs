@@ -33,6 +33,22 @@ fn argvec(s: &str) -> Vec<String> {
     s.split_whitespace().map(String::from).collect()
 }
 
+fn assert_generated_linux_linker(command: &std::process::Command, context: &str) {
+    let linker = command_env_override(command, LINKER_KEY)
+        .and_then(|value| value)
+        .expect("Linux linker injection");
+    assert!(
+        linker.to_string_lossy().contains("linker-shims"),
+        "{context}: expected generated linker shim, got {}",
+        linker.to_string_lossy(),
+    );
+    assert_eq!(
+        command_env_override(command, RUSTFLAGS_KEY),
+        None,
+        "{context}: linker selection must preserve project rustflags",
+    );
+}
+
 /// Build a project root whose `.cargo/config.toml` declares `[target.TARGET]`
 /// with `body`, then run `apply_linker_override` from inside it.
 ///
@@ -48,13 +64,15 @@ fn apply_from_project_with_config(body: &str) -> std::process::Command {
 
     let mut command = std::process::Command::new("cargo");
     let _cwd = crate::CwdGuard::enter(&project);
-    target::apply_linker_override(
-        &mut command,
-        &argvec(&format!("build --target {TARGET}")),
-        None,
-        &paths,
-    )
-    .expect("apply_linker_override");
+    tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(target::apply_linker_override(
+            &mut command,
+            &argvec(&format!("build --target {TARGET}")),
+            None,
+            &paths,
+        ))
+        .expect("apply_linker_override");
     command
 }
 
@@ -116,10 +134,8 @@ fn automatic_linker_still_injects_for_an_unrelated_target_section() {
     let command =
         apply_from_project_with_config("[target.x86_64-pc-windows-msvc]\nlinker = \"cc\"\n");
 
-    // Linux targets always resolve the default through clang, reld or not.
-    assert_eq!(
-        command_env_override(&command, LINKER_KEY),
-        Some(Some(OsString::from("clang"))),
+    assert_generated_linux_linker(
+        &command,
         "a config section for another triple must not suppress the default",
     );
 }
@@ -137,9 +153,8 @@ fn explicit_linker_request_still_overrides_project_target_config() {
 
     let command = apply_from_project_with_config(&format!("[target.{TARGET}]\nlinker = \"cc\"\n"));
 
-    assert_eq!(
-        command_env_override(&command, LINKER_KEY),
-        Some(Some(OsString::from("clang"))),
+    assert_generated_linux_linker(
+        &command,
         "an explicit SOLDR_LINKER request outranks the project's config",
     );
 }

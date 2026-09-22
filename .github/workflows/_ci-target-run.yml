@@ -266,7 +266,7 @@ jobs:
           #
           # That is how three darwin tests came to strip with `stable`'s
           # `rust-objcopy`, whose `@rpath/libLLVM.dylib` is absent on the
-          # image, while this job had installed and verified 1.95.0.
+          # image, while this job had installed and verified 1.98.1.
           # `probe_direct_toolchain_binary` bails out when RUSTUP_TOOLCHAIN is
           # set, so exporting it routes every child through rustup on the
           # channel this job actually provisioned.
@@ -647,6 +647,8 @@ jobs:
           python ci/macos_recovery_run.py emit-guest-script \
             --output "$RUNNER_TEMP/recovery-run.sh" \
             --github-output "$GITHUB_OUTPUT"
+          python ci/macos_recovery_run.py describe-executor \
+            --output "$RUNNER_TEMP/recovery-executor-contract.json"
 
       # ram/boot-timeout/run-timeout/no-progress-timeout raised from the
       # action's smoke-only defaults: this guest now formats+mounts a work
@@ -688,6 +690,7 @@ jobs:
           path: |
             ${{ steps.macos.outputs.workdir }}/collected/
             ${{ steps.macos.outputs.workdir }}/results/
+            ${{ runner.temp }}/recovery-executor-contract.json
           if-no-files-found: warn
           retention-days: 7
 

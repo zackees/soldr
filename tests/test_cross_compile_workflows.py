@@ -163,6 +163,24 @@ def test_windows_target_runner_pairs_share_their_producer_artifacts() -> None:
         assert _job_input(run, "runs_on") == runner
 
 
+def test_linux_x64_musl_replay_is_sharded_and_consumes_its_archive() -> None:
+    """soldr#3316: the restored runtime proof must stay non-vacuous and bounded."""
+
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    build = _job_block(ci, "e2e-linux-x64-musl-build", "e2e-linux-x64-musl")
+    run = _job_block(ci, "e2e-linux-x64-musl", "e2e-linux-arm64-musl-build")
+
+    assert _job_input(build, "artifact_name") == "soldr-ci-e2e-linux-x64-musl"
+    assert _job_input(run, "artifact_name") == "soldr-ci-e2e-linux-x64-musl"
+    assert _job_input(run, "target") == "x86_64-unknown-linux-musl"
+    assert _job_input(run, "runs_on") == "ubuntu-24.04"
+    partitions = json.loads(_job_input(run, "replay_partitions").strip("'"))
+    assert partitions == [
+        {"label": f"{index}-of-6", "value": f"hash:{index}/6", "run_followup": False}
+        for index in range(1, 7)
+    ]
+
+
 def test_windows_gnu_target_run_is_bounded_and_disk_safe() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
@@ -522,13 +540,7 @@ def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
 
     lane_names = [
         ("e2e-linux-arm64-build", "e2e-linux-arm64"),
-        # x86_64-musl has no paired target-run (soldr#1978 item 3). Delimit
-        # with None rather than the *next lane's* header: every Linux cross
-        # lane carries identical `needs:` / `bootstrap_artifact_name:` lines,
-        # so a job inserted between the two would be swallowed into this
-        # block and satisfy the assertions below exactly when this lane lost
-        # them. None yields the same slice without that coupling.
-        ("e2e-linux-x64-musl-build", None),
+        ("e2e-linux-x64-musl-build", "e2e-linux-x64-musl"),
         ("e2e-linux-arm64-musl-build", "e2e-linux-arm64-musl"),
     ]
     for job, next_job in lane_names:
@@ -587,9 +599,9 @@ def test_host_validation_opportunistically_reuses_exact_sha_bootstrap() -> None:
     assert "if: inputs.source_driver_artifact_name != ''" in host_template
 
     assert "bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ github.sha }}" in producer
-    assert "key: rustup-1.95.0-linux-x64-v1" in producer
-    assert "rustup toolchain install 1.95.0 --profile minimal" in producer
-    assert "toolchain: 1.95.0" in host_template
+    assert "key: rustup-1.98.1-linux-x64-v1" in producer
+    assert "rustup toolchain install 1.98.1 --profile minimal" in producer
+    assert "toolchain: 1.98.1" in host_template
     assert "cargo build --profile dev --package soldr-cli" in producer
     assert "soldr cargo build --profile dev -p soldr-cli" in host_build
     assert "target/x86_64-unknown-linux-gnu/debug/soldr" in producer
@@ -621,11 +633,10 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     block = _job_block(ci, "pep517-daemon-smoke", "e2e-linux-x64")
 
-    # soldr#3076: no macos-* runner exists anywhere, so there is no macOS
-    # PEP 517 smoke leg at all -- the Recovery guest that replaced the
-    # dockur/macos plan (soldr#3071) has no Python/maturin (the replay job in
-    # macos-recovery-replay.yml sets run_pep517_smoke: false explicitly,
-    # soldr#3116). windows-x64 keeps its dedicated smoke leg here, unchanged.
+    # No macos-* runner exists anywhere, so this dedicated matrix keeps only
+    # Windows. The shipped macOS x64 wheel is installed and imported with a
+    # pinned portable CPython inside the Recovery release guest; the heavier
+    # downstream build-backend replay remains separate from this matrix.
     assert '"name":"macos-arm64"' not in block
     assert '"name":"windows-x64"' in block
     assert "github.event.pull_request.labels" in block
@@ -650,6 +661,9 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
             "if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup "
             "&& inputs.target_execution != 'x86_64-recovery' }}" in step
         )
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    macos_release_smoke = _job_block(release, "smoke_macos_x64", "smoke_windows")
+    assert "--require-wheel-import" in macos_release_smoke
     # The smoke must run after (and never gate) the archive replay.
     assert target_run.index(
         "      - name: Run owned pre-built native tests\n"

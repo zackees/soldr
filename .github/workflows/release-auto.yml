@@ -167,7 +167,7 @@ jobs:
         with:
           enable: true
           version: 0.9.16
-          toolchain: 1.95.0
+          toolchain: 1.98.1
           cross-targets: ${{ matrix.setup_target }}
           linker: platform-default
           cache: false
@@ -694,20 +694,19 @@ jobs:
           name: pypi-soldr-x86_64-apple-darwin
           path: dist
 
-      # Linux-side only: wheel METADATA version, archive extraction, required
-      # members, and the Mach-O magic-byte check. Also stages the archive
-      # binaries into share/, writes the bash-3.2 script the Recovery guest
-      # below fetches and runs, and (via --github-output) hands that script
-      # straight to this step's own `script` output -- no separate heredoc
-      # step needed (soldr#3076; keeps release-auto.yml's inline `run:`
-      # footprint under tests/test_release_yaml_ratchet.py's ceiling).
+      # Linux-side: wheel METADATA version, archive extraction, required
+      # members, Mach-O header validation, and SHA-256 verification of a
+      # pinned portable CPython. The exact uploaded wheel, runtime, and
+      # archive binaries are staged into share/. The Recovery guest installs
+      # and imports that wheel before checking its CLI surfaces, so the wheel
+      # is executed rather than merely inspected as a ZIP (soldr#3071).
       - name: Architecture-check archive/wheel and build the Recovery guest script
         id: guest_script
         shell: bash
         run: |
           set -euo pipefail
           uv run --no-project --python 3.13 ci/smoke_release_artifacts.py \
-            --target x86_64-apple-darwin --expected-version '${{ needs.prepare.outputs.version }}' \
+            --target x86_64-apple-darwin --expected-version '${{ needs.prepare.outputs.version }}' --require-wheel-import \
             --emit-guest-script "$RUNNER_TEMP/recovery-run.sh" \
             --share-dir share \
             --github-output "$GITHUB_OUTPUT"
@@ -832,6 +831,33 @@ jobs:
       extended_replay: false
       run_pep517_smoke: false
 
+  # soldr#3071: the repository has no registered Apple Silicon runner.
+  # Fail before publication while the release-included ARM64 archive and
+  # wheel have no real target execution. The eventual executor removes this
+  # block by restoring ci.run_job in the canonical target contract.
+  release_execution_contract:
+    name: Require execution for release-blocking targets
+    needs: prepare
+    if: >-
+      always() && (
+        needs.prepare.outputs.should_publish_github_release == 'true' ||
+        needs.prepare.outputs.should_publish_pypi == 'true' ||
+        needs.prepare.outputs.should_publish_npm == 'true' ||
+        (github.event_name == 'workflow_dispatch' && inputs.npm_release_ref != '')
+      )
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+      - name: Setup uv for pinned release scripts
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
+      - name: Verify canonical release execution contract
+        run: uv run --no-project --python 3.13 .github/scripts/release_completeness.py --verify-execution-contract
+
   publish:
     name: Attest and publish release assets
     needs:
@@ -839,6 +865,7 @@ jobs:
       - build
       - smoke_macos_x64
       - smoke_windows
+      - release_execution_contract
     # soldr#3088: `e2e_macos_x64_replay` is deliberately NOT a dependency.
     # 9a7ea958 added it as a publish gate; it has never once been green.
     # v0.9.12 died on it twice (runs 33820395040 and 33824207338) and both
@@ -866,7 +893,7 @@ jobs:
     # gating publish on it only converts harness bugs into unpublishable
     # releases. The job still runs on every release and stays visible;
     # soldr#3088 tracks restoring it to the `if:` below.
-    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success' && needs.smoke_windows.result == 'success'
+    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success' && needs.smoke_windows.result == 'success' && needs.release_execution_contract.result == 'success'
     runs-on: ubuntu-24.04
     # Artifact download + attestation; observed max 0.6 min.
     timeout-minutes: 30
@@ -1012,9 +1039,10 @@ jobs:
       - prepare
       - build
       - verify_github_release
+      - release_execution_contract
     # Explicit recovery can add missing PyPI files when an earlier partial
     # publish made the corresponding GitHub Release immutable.
-    if: always() && needs.prepare.outputs.should_publish_pypi == 'true' && (needs.verify_github_release.result == 'success' || (needs.prepare.outputs.github_release_immutable == 'true' && github.event_name == 'workflow_dispatch' && inputs.force_pypi_publish))
+    if: always() && needs.release_execution_contract.result == 'success' && needs.prepare.outputs.should_publish_pypi == 'true' && (needs.verify_github_release.result == 'success' || (needs.prepare.outputs.github_release_immutable == 'true' && github.event_name == 'workflow_dispatch' && inputs.force_pypi_publish))
     runs-on: ubuntu-24.04
     # Wheel download + twine upload; observed max 1.9 min.
     timeout-minutes: 30
@@ -1102,7 +1130,8 @@ jobs:
       - build
       - verify_github_release
       - publish-pypi
-    if: always() && ((github.event_name == 'workflow_dispatch' && inputs.npm_release_ref != '') || (needs.prepare.outputs.should_publish_npm == 'true' && needs.verify_github_release.result == 'success' && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped')))
+      - release_execution_contract
+    if: always() && needs.release_execution_contract.result == 'success' && ((github.event_name == 'workflow_dispatch' && inputs.npm_release_ref != '') || (needs.prepare.outputs.should_publish_npm == 'true' && needs.verify_github_release.result == 'success' && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped')))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release

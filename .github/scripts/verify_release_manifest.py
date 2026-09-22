@@ -56,6 +56,12 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ENV_LEAK_RE = re.compile(r"(?:^|\s)[A-Z][A-Z0-9_]{2,}=")
 
 REQUIRED_TOOLS = ("soldr", "crgx", "cargo_chef")
+BUILD_STATUSES = {"native-built", "cross-built"}
+EXECUTION_STATUSES = {
+    "executed-in-build-job",
+    "required-before-publication",
+    "not-executed",
+}
 
 
 def find_string_fields(value, path: str = "") -> "list[tuple[str, str]]":
@@ -165,6 +171,27 @@ def structure_problems(manifest: dict) -> "list[str]":
         version = entry.get("version")
         if not isinstance(version, str) or not version.strip():
             problems.append(f"{tool}.version is missing or empty")
+    if manifest.get("schema_version", 0) >= 4:
+        provenance = manifest.get("artifact_provenance")
+        if not isinstance(provenance, dict):
+            problems.append("artifact_provenance is missing or not an object")
+            return problems
+        build = provenance.get("build")
+        build_status = build.get("status") if isinstance(build, dict) else None
+        if build_status not in BUILD_STATUSES:
+            problems.append(
+                "artifact_provenance.build.status must be one of "
+                f"{sorted(BUILD_STATUSES)}, got {build_status!r}"
+            )
+        execution = provenance.get("execution")
+        for artifact in ("archive", "wheel"):
+            record = execution.get(artifact) if isinstance(execution, dict) else None
+            status = record.get("status") if isinstance(record, dict) else None
+            if status not in EXECUTION_STATUSES:
+                problems.append(
+                    f"artifact_provenance.execution.{artifact}.status must be one of "
+                    f"{sorted(EXECUTION_STATUSES)}, got {status!r}"
+                )
     return problems
 
 

@@ -187,6 +187,25 @@ class TargetRunSummaryTests(unittest.TestCase):
                     "aarch64-unknown-linux-gnu", test_list, junit
                 )
 
+    def test_zero_discovered_tests_is_rejected_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_temp:
+            test_list = Path(raw_temp) / "list.json"
+            self.write_list(test_list, discovered=0, ignored=0)
+            with self.assertRaisesRegex(ValueError, "selected zero tests"):
+                target_run_summary.build_summary("x86_64-unknown-linux-musl", test_list)
+
+    def test_zero_executed_tests_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_temp:
+            temp = Path(raw_temp)
+            test_list = temp / "list.json"
+            junit = temp / "junit.xml"
+            self.write_list(test_list, discovered=1, ignored=0)
+            junit.write_text('<testsuite tests="0" />', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "executed zero tests"):
+                target_run_summary.build_summary(
+                    "x86_64-unknown-linux-musl", test_list, junit
+                )
+
     def test_early_stop_with_failures_is_not_a_coverage_hole(self) -> None:
         """soldr#2724: `--max-fail 3:immediate` leaves tests unexecuted.
 

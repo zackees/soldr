@@ -352,7 +352,115 @@ fn loader_wrapper_script_execs_the_real_binary_for_the_named_channel() {
     let script = local_driver_loader_wrapper_script("nightly-2026-05-28-x86_64-unknown-linux-gnu");
     assert!(script.starts_with("#!/bin/sh"));
     assert!(script.contains("nightly-2026-05-28-x86_64-unknown-linux-gnu/lib"));
+    assert!(script.contains("[ -n \"${NIX_LD_LIBRARY_PATH:-}\" ]"));
+    assert!(script.contains("$lib:$NIX_LD_LIBRARY_PATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"));
     assert!(script.contains("exec \"$dir/dylint-driver-real\" \"$@\""));
+}
+
+fn command_paths(command: &std::process::Command, key: &str) -> Vec<PathBuf> {
+    let value = command
+        .get_envs()
+        .find(|(configured_key, _)| *configured_key == std::ffi::OsStr::new(key))
+        .and_then(|(_, value)| value.map(std::ffi::OsString::from))
+        .expect("driver runtime environment must configure the loader path");
+    std::env::split_paths(&value).collect()
+}
+
+fn fake_rustc_for_driver_runtime(temp: &tempfile::TempDir) -> PathBuf {
+    let rustc = temp.path().join("toolchain").join("bin").join("rustc");
+    std::fs::create_dir_all(rustc.parent().expect("rustc has a parent")).unwrap();
+    std::fs::write(&rustc, b"").unwrap();
+    rustc
+}
+
+#[test]
+fn linux_driver_runtime_path_puts_toolchain_then_nix_then_inherited_loader_paths() {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let plan = sample_plan();
+    let rustc = fake_rustc_for_driver_runtime(&temp);
+    let _rustc = crate::EnvVarGuard::set(crate::TEST_RUSTC_BIN_ENV_VAR, &rustc);
+    let nix_paths = vec![temp.path().join("nix-a"), temp.path().join("nix-b")];
+    let inherited_paths = vec![temp.path().join("loader-a"), temp.path().join("loader-b")];
+    let nix_value = std::env::join_paths(&nix_paths).expect("valid Nix loader path");
+    let inherited_value =
+        std::env::join_paths(&inherited_paths).expect("valid inherited loader path");
+    let _nix = crate::EnvVarGuard::set("NIX_LD_LIBRARY_PATH", &nix_value);
+    let _inherited = crate::EnvVarGuard::set("LD_LIBRARY_PATH", &inherited_value);
+    let mut command = std::process::Command::new("dylint-driver");
+
+    apply_driver_runtime_environment(&mut command, &plan).expect("configure driver environment");
+
+    assert_eq!(
+        command_paths(&command, "LD_LIBRARY_PATH"),
+        [
+            vec![temp.path().join("toolchain").join("lib")],
+            nix_paths,
+            inherited_paths
+        ]
+        .concat()
+    );
+}
+
+#[test]
+fn linux_driver_runtime_path_ignores_an_empty_nix_loader_path() {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let plan = sample_plan();
+    let rustc = fake_rustc_for_driver_runtime(&temp);
+    let _rustc = crate::EnvVarGuard::set(crate::TEST_RUSTC_BIN_ENV_VAR, &rustc);
+    let inherited_paths = vec![temp.path().join("loader-a"), temp.path().join("loader-b")];
+    let inherited_value =
+        std::env::join_paths(&inherited_paths).expect("valid inherited loader path");
+    let _nix = crate::EnvVarGuard::set("NIX_LD_LIBRARY_PATH", "");
+    let _inherited = crate::EnvVarGuard::set("LD_LIBRARY_PATH", &inherited_value);
+    let mut command = std::process::Command::new("dylint-driver");
+
+    apply_driver_runtime_environment(&mut command, &plan).expect("configure driver environment");
+
+    assert_eq!(
+        command_paths(&command, "LD_LIBRARY_PATH"),
+        [
+            vec![temp.path().join("toolchain").join("lib")],
+            inherited_paths
+        ]
+        .concat()
+    );
+}
+
+#[test]
+fn linux_driver_runtime_path_ignores_an_unset_nix_loader_path() {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let plan = sample_plan();
+    let rustc = fake_rustc_for_driver_runtime(&temp);
+    let _rustc = crate::EnvVarGuard::set(crate::TEST_RUSTC_BIN_ENV_VAR, &rustc);
+    let inherited_paths = vec![temp.path().join("loader-a"), temp.path().join("loader-b")];
+    let inherited_value =
+        std::env::join_paths(&inherited_paths).expect("valid inherited loader path");
+    let _nix = crate::EnvVarGuard::remove("NIX_LD_LIBRARY_PATH");
+    let _inherited = crate::EnvVarGuard::set("LD_LIBRARY_PATH", &inherited_value);
+    let mut command = std::process::Command::new("dylint-driver");
+
+    apply_driver_runtime_environment(&mut command, &plan).expect("configure driver environment");
+
+    assert_eq!(
+        command_paths(&command, "LD_LIBRARY_PATH"),
+        [
+            vec![temp.path().join("toolchain").join("lib")],
+            inherited_paths
+        ]
+        .concat()
+    );
 }
 
 // ---------------------------------------------------------------------

@@ -519,6 +519,9 @@ fn managed_toolchain_keeps_its_library_path_and_the_callers_entries() {
     if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
         return;
     }
+    let _lock = TEST_PROCESS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
     let toolchain = crate::fetch::managed_rustup_home(&paths)
@@ -530,7 +533,12 @@ fn managed_toolchain_keeps_its_library_path_and_the_callers_entries() {
     std::fs::create_dir_all(&library_dir).expect("lib dir");
     std::fs::write(&binary, b"").expect("binary");
 
+    let nix_library_dir = temp.path().join("nix-libs");
     let caller_library_dir = temp.path().join("caller-libs");
+    let _nix_library_path = EnvVarGuard::set(
+        "NIX_LD_LIBRARY_PATH",
+        std::env::join_paths([nix_library_dir.as_path()]).expect("path"),
+    );
     let mut command = std::process::Command::new("cargo");
     command.env(
         "LD_LIBRARY_PATH",
@@ -545,7 +553,47 @@ fn managed_toolchain_keeps_its_library_path_and_the_callers_entries() {
         .expect("managed command loader path");
     assert_eq!(
         std::env::split_paths(loader_path).collect::<Vec<_>>(),
+        vec![
+            library_dir.clone(),
+            nix_library_dir,
+            caller_library_dir.clone()
+        ],
+    );
+
+    std::env::set_var("NIX_LD_LIBRARY_PATH", "");
+    let mut command = std::process::Command::new("cargo");
+    command.env(
+        "LD_LIBRARY_PATH",
+        std::env::join_paths([caller_library_dir.as_path()]).expect("path"),
+    );
+    apply_managed_toolchain_library_path_if_available(&mut command, &binary, &paths);
+    let loader_path = command
+        .get_envs()
+        .find_map(|(key, value)| (key == "LD_LIBRARY_PATH").then_some(value))
+        .flatten()
+        .expect("managed command loader path");
+    assert_eq!(
+        std::env::split_paths(loader_path).collect::<Vec<_>>(),
+        vec![library_dir.clone(), caller_library_dir.clone()],
+        "an empty NIX_LD_LIBRARY_PATH must not add an empty loader-path entry",
+    );
+
+    std::env::remove_var("NIX_LD_LIBRARY_PATH");
+    let mut command = std::process::Command::new("cargo");
+    command.env(
+        "LD_LIBRARY_PATH",
+        std::env::join_paths([caller_library_dir.as_path()]).expect("path"),
+    );
+    apply_managed_toolchain_library_path_if_available(&mut command, &binary, &paths);
+    let loader_path = command
+        .get_envs()
+        .find_map(|(key, value)| (key == "LD_LIBRARY_PATH").then_some(value))
+        .flatten()
+        .expect("managed command loader path");
+    assert_eq!(
+        std::env::split_paths(loader_path).collect::<Vec<_>>(),
         vec![library_dir, caller_library_dir],
+        "an absent NIX_LD_LIBRARY_PATH must not add an empty loader-path entry",
     );
 }
 

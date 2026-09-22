@@ -57,3 +57,35 @@ def test_only_the_cache_disabled_cook_keeps_a_compile_cap() -> None:
     assert cook_env["ZCCACHE_DISABLE"] == "1"
     assert cook_env["CARGO_BUILD_JOBS"] == "1"
     assert cook_env["SOLDR_JOBS"] == "1"
+
+
+def test_fixture_is_pinned_to_the_embedded_zccache_version() -> None:
+    """The cook fixture must be an immutable ref, and the one soldr embeds.
+
+    soldr#3301: the fixture was checked out at `ref: main`, so an unrelated
+    zccache merge (03d6ebb, which deleted `vendor/`) turned the gate red on
+    every open PR, and the size thresholds were being asserted against a tree
+    that changed under them. Tying the ref to `Cargo.lock` means a zccache
+    dependency bump is what moves the fixture, deliberately and reviewably.
+    """
+    import re
+    import tomllib
+
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    fixture_step = workflow[workflow.index("Checkout zccache fixture") :]
+    ref = re.search(r'^\s+ref: "?([^"\n]+)"?', fixture_step, re.MULTILINE)
+    assert ref, "cook fixture checkout declares no ref"
+    pinned = ref.group(1).strip()
+    assert pinned not in {
+        "main",
+        "master",
+        "HEAD",
+    }, f"cook fixture must not track a moving branch, got {pinned!r}"
+
+    lock = tomllib.loads((REPO_ROOT / "Cargo.lock").read_text(encoding="utf-8"))
+    embedded = [p["version"] for p in lock["package"] if p["name"] == "zccache"]
+    assert embedded, "Cargo.lock has no zccache package"
+    assert pinned == embedded[0], (
+        f"cook fixture is pinned to zccache {pinned}, but Cargo.lock embeds "
+        f"{embedded[0]}; bump the fixture ref with the dependency"
+    )

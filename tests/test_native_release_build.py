@@ -48,7 +48,7 @@ def test_cargo_command_routes_through_pinned_soldr_rustup() -> None:
         str(driver),
         "rustup",
         "run",
-        "1.95.0",
+        "1.98.1",
         "cargo",
         "build",
         "--release",
@@ -106,7 +106,7 @@ def test_wheel_environment_points_maturin_at_soldr_cargo_bridge() -> None:
     assert env == {
         "KEEP": "yes",
         "SOLDR_RELEASE_DRIVER": str(driver),
-        "SOLDR_RELEASE_TOOLCHAIN": "1.95.0",
+        "SOLDR_RELEASE_TOOLCHAIN": "1.98.1",
         "CARGO": str(cargo_bridge),
     }
 
@@ -124,7 +124,7 @@ def test_wheel_environment_preserves_concurrency_limits() -> None:
 def test_host_tool_environment_strips_musl_cross_state() -> None:
     driver = Path("release-tools") / "soldr"
     cargo_bridge = Path("release-tools") / "cargo-via-soldr"
-    rustc = Path("toolchains") / "1.95.0" / "bin" / "rustc"
+    rustc = Path("toolchains") / "1.98.1" / "bin" / "rustc"
     env = MODULE.host_tool_environment(
         {
             "KEEP": "yes",
@@ -143,10 +143,10 @@ def test_host_tool_environment_strips_musl_cross_state() -> None:
         "KEEP": "yes",
         "PATH": f"{resolved_rustc.parent}{MODULE.os.pathsep}caller-bin",
         "SOLDR_RELEASE_DRIVER": str(driver),
-        "SOLDR_RELEASE_TOOLCHAIN": "1.95.0",
+        "SOLDR_RELEASE_TOOLCHAIN": "1.98.1",
         "CARGO": str(cargo_bridge),
         "RUSTC": str(resolved_rustc),
-        "RUSTUP_TOOLCHAIN": "1.95.0",
+        "RUSTUP_TOOLCHAIN": "1.98.1",
         "CARGO_BUILD_JOBS": "2",
         "SOLDR_JOBS": "2",
     }
@@ -157,7 +157,7 @@ def test_host_tool_environment_preserves_stricter_concurrency_limits() -> None:
         {"CARGO_BUILD_JOBS": "1", "SOLDR_JOBS": "1"},
         driver=Path("release-tools") / "soldr",
         cargo_bridge=Path("release-tools") / "cargo-via-soldr",
-        rustc=Path("toolchains") / "1.95.0" / "bin" / "rustc",
+        rustc=Path("toolchains") / "1.98.1" / "bin" / "rustc",
     )
     assert env["CARGO_BUILD_JOBS"] == "1"
     assert env["SOLDR_JOBS"] == "1"

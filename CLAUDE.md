@@ -98,7 +98,7 @@ Two categories, surfaced as first-class subcommands or via the generic fetch pat
   - Manifest example:
     ```toml
     [toolchain]
-    channel = "1.95.0"
+    channel = "1.98.1"
 
     [soldr.plugins]
     cargo-nextest = "0.9"
@@ -151,7 +151,7 @@ Anything not registered falls through the generic External subcommand, which res
   compatibility names and do not replace the embedded service on the normal
   path. To deliberately test an external compiler wrapper, set
   `SOLDR_RUSTC_WRAPPER=/path/to/zccache` (or another wrapper) explicitly.
-- **The Dylint nightly is declared by the lint libraries, never derived** (soldr#2945): every `dylints/*/rust-toolchain.toml` names the channel, they must all agree, and that channel is the only one for which a `dylint-driver` is published. Do not infer it from the project's stable pin — lint libraries link `rustc-dev` and track the compiler API, so the right nightly is routinely several minor versions ahead of stable (today: stable `1.95.0`, lints `nightly-2026-05-28`). soldr used to derive it from stable and then demand a driver for the derived value, which made `soldr dylint` fail on **every** host while CI stayed green — because CI runs `soldr ci-test`, which read the manifests, and nothing in CI ran `soldr dylint`. **A green CI lane only proves the verb CI runs.** When a tool has more than one entry point, check that they resolve their inputs through one implementation, or expect them to drift.
+- **The Dylint nightly is declared by the lint libraries, never derived** (soldr#2945): every `dylints/*/rust-toolchain.toml` names the channel, they must all agree, and that channel is the only one for which a `dylint-driver` is published. Do not infer it from the project's stable pin — lint libraries link `rustc-dev` and track the compiler API, so the right nightly is routinely several minor versions ahead of stable (today: stable `1.98.1`, lints `nightly-2026-05-28`). soldr used to derive it from stable and then demand a driver for the derived value, which made `soldr dylint` fail on **every** host while CI stayed green — because CI runs `soldr ci-test`, which read the manifests, and nothing in CI ran `soldr dylint`. **A green CI lane only proves the verb CI runs.** When a tool has more than one entry point, check that they resolve their inputs through one implementation, or expect them to drift.
 - **One canonical toolchain-home pair per execution, chosen by where the binary lives** (soldr#1799/#1768): soldr keeps private managed `RUSTUP_HOME`/`CARGO_HOME` for dylint's nightly, and they are applied **only** when the resolved binary physically lives inside those managed homes (`binaries::apply_resolved_toolchain_homes`). A host-resolved `cargo`/`rustc`/`rustfmt`/`clippy` always executes under the caller's own homes — never by ambient env leakage. This matters because the failure is silent: flipping homes between runs changes which rustc is used, which invalidates cargo's fingerprints and zccache's keys, so a warm build recompiles the world and is merely 10-50x slower, indefinitely. Every build log records `home_origin` (`caller` | `managed` | `repo-local`) beside the resolved `binary`, and `.github/scripts/check_toolchain_homes.py` fails CI when a row claims `managed` for a binary outside a managed root.
 - **All Rust toolchain commands go through soldr**: `cargo`, `rustup`, `rustc`, `rustfmt`, `clippy-driver`, `cargo-clippy`, `cargo-fmt`, `rustdoc`, `rust-gdb`, `rust-lldb`, and `rust-analyzer` must be invoked as `soldr <tool> ...` (or `uv run soldr <tool> ...`). This includes invocations with leading env-var assignments — `RUSTUP_TOOLCHAIN=... cargo build` is the same policy violation as `cargo build`. clud enforces this in agent shell tools (see Dogfooding below — the in-repo hook is no longer the enforcement point); the helper script `bench/build_local_zccache.sh` and any documented workflow must follow the same rule. Env-vars prefixed before `soldr` are fine — the policy is about routing the tool, not forbidding env overrides.
 
@@ -380,11 +380,22 @@ comparison. That is too fragile a mechanism for finding this class.
 
 ## Toolchain
 
-- Rust 1.95.0 (rust-toolchain.toml), edition 2021, MSRV 1.95.0
+- Rust 1.98.1 (rust-toolchain.toml), edition 2021, MSRV 1.98
   (`[workspace.package].rust-version`). The MSRV and the pinned toolchain are
-  the same version — soldr does not support building on an older compiler, so
-  "will this still build on the MSRV?" is never a reason to avoid a newer std
-  API. Guarded by `crates/soldr-cli/tests/guards/msrv_doc_matches_manifest.rs`.
+  the same compiler train — soldr does not support building on an older
+  compiler, so "will this still build on the MSRV?" is never a reason to avoid
+  a newer std API. Guarded by
+  `crates/soldr-cli/tests/guards/msrv_doc_matches_manifest.rs`.
+- **The MSRV names a train, never a patch release** (soldr#3305). `soldr
+  ci-test` compiles this workspace with *two* compilers: the stable pin, and
+  the dated nightly that `dylints/*/rust-toolchain.toml` declare. A dated
+  nightly reports the `.0` release of its train (`nightly-2026-05-28` is
+  `1.98.0-nightly`), so `rust-version = "1.98.1"` makes Cargo refuse to build
+  under it — `error: rustc 1.98.0-nightly is not supported`. Two components
+  (`"1.98"`) mean `>=1.98.0`, which both compilers satisfy. Nothing local
+  catches a patch-level MSRV: the nightly's rustc version is recorded nowhere
+  in-tree, and `cargo build`, clippy and the whole test suite all run under the
+  stable pin, so it fails only in the Linux `ci-test` lane.
 - Python >=3.10 (for PyPI distribution via Maturin)
 - uv for Python dependency management
 - Workspace dependencies shared in root `Cargo.toml`
@@ -447,6 +458,7 @@ zccache asset dependency.
 
 - **Complex CI logic inline in workflow YAML is BANNED. If the logic can be moved to a `ci/*.py` (or `.github/scripts/*.py`) file, it must be.** GitHub Actions YAML is notoriously hard to test — the only way to exercise an inline `run:` block is to push a branch and watch a runner — while a Python file is unit-testable under `tests/`, smoke-runnable from a developer's shell, and reviewable as code. Workflow YAML stays orchestration-only: matrix definitions, `needs:` edges, env plumbing, artifact upload/download, and one-line invocations like `python3 ci/<name>.py ...` or `python3 .github/scripts/<name>.py ...`. Prefer `ci/*.py` for logic that is also useful outside Actions (local dev loops, e.g. `ci/perf_local.py`) and `.github/scripts/*.py` for workflow-only helpers; prefer extending an existing script over adding a new one, and never grow an inline bash/python block instead.
 - The historical motivation: `cross-compile-all-targets.yml` used to inline curl + jq chains for every release-asset lookup, which (a) couples the workflow tightly to GitHub Actions' shell wrapper, (b) is hard to unit-test, (c) duplicates parsing logic between lanes, and (d) makes the YAML unreadable. Extracted examples: `build_manifest.py`, `tool_query.py`, `print_build_banner.sh`, `ts_step.py`, `run_with_ts.sh`. The scripts have docstrings and take CLI args, so debugging doesn't require pushing a branch. Existing workflows still carrying large inline blocks (e.g. `release-auto.yml`) are grandfathered but must shrink, not grow: any change touching an inline block should extract it rather than extend it.
+- **Skipping CI never skips cheap validation.** An integrator may omit expensive `ci-test`, target-run, or performance lanes, but must still run `./lint` and the Lint workflow's static tripwires (including `.github/scripts/platform_cfg_boundary_ratchet.py`).
 
 ## Per-file line ceiling (soldr#1966)
 

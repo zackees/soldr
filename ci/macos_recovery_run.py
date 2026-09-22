@@ -47,6 +47,7 @@ tarballs need to be plain, uncompressed `.tar` for bsdtar to extract.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -108,6 +109,117 @@ REPLAY_SHARE_FILES = (
 # ballooning the diagnostics artifact (the collected directory is uploaded
 # whole; the extracted nextest archive itself is never copied there).
 NEXTEST_LOG_TAIL_BYTES = 2_000_000
+
+
+def executor_contract() -> dict[str, object]:
+    """Return the versioned handoff from soldr#3084 to soldr#3294 Phase 2.
+
+    This is deliberately executable rather than prose-only.  The current
+    workflow records it beside every Recovery diagnostic bundle, while the
+    eventual ``soldr ci-test --target`` executor can consume the same boundary
+    without rediscovering the archive, staging, capability, and result rules.
+
+    ``default_enabled`` remains false until the reliability issues named here
+    are resolved.  This contract does not claim Phase 2 is complete.
+    """
+    return {
+        "schema_version": 1,
+        "superseded_issue": "soldr#3084",
+        "owner_issue": "soldr#3294",
+        "target": "x86_64-apple-darwin",
+        "backend": "macos-recovery",
+        "readiness": {
+            "default_enabled": False,
+            "blocked_by": ["soldr#3088", "soldr#3136"],
+            "unavailable_action": "fail-closed-with-no-run-guidance",
+        },
+        "nextest": {
+            # cargo-nextest is a Cargo subcommand shim; omitting the second
+            # `nextest` silently routes `run` to Cargo instead.
+            "argv_prefix": ["cargo-nextest", "nextest"],
+            "archive": "tests.tar.zst",
+            "inventory_arguments": [
+                "--archive-file=$WORK/tests.tar.zst",
+                "--extract-to=$WORK/extract",
+                "--workspace-remap=$WORK/workspace",
+                "--profile=target-run",
+                "--message-format=json-pretty",
+            ],
+            "reuse_arguments": {
+                "preferred": [
+                    "--binaries-metadata=$REUSE_BIN_META",
+                    "--cargo-metadata=$REUSE_CARGO_META",
+                    "--target-dir-remap=$WORK/extract/target",
+                ],
+                "fallback": [
+                    "--archive-file=$WORK/tests.tar.zst",
+                    "--extract-to=$WORK/extract",
+                    "--extract-overwrite",
+                ],
+            },
+            "selection_filter": {
+                "source_file": "$WORK/filter.txt",
+                "expression_variable": "$FILTER",
+                "argument": "-E",
+            },
+            "selected_list_arguments": [
+                "$REUSE_ARGS",
+                "--workspace-remap=$WORK/workspace",
+                "--profile=target-run",
+                "--partition=hash:1/1",
+                "-E=$FILTER",
+                "--message-format=json-pretty",
+            ],
+            "run_arguments": [
+                "$REUSE_ARGS",
+                "--workspace-remap=$WORK/workspace",
+                "--profile=target-run",
+                "--partition=hash:1/1",
+                "-E=$FILTER",
+                "--no-fail-fast",
+            ],
+            "zero_tests_is_failure": True,
+        },
+        "required_guest_env": {
+            "HOME": "$WORK/home",
+            "TMPDIR": "$WORK/tmp",
+            "SOLDR_BIN": "/tmp/soldr",
+            "SOLDR_INTERNAL_DAEMON_EXE": "$WORK/soldr-daemon",
+            "NEXTEST_BIN": "$WORK/cargo-nextest",
+            "SOLDR_TEST_FIXTURES_DIR": "$WORK/fixtures",
+            "SOLDR_TEST_WORKSPACE_ROOT": "$WORK/workspace",
+            "SOLDR_USE_SYSTEM_CMAKE": "1",
+            "SOLDR_TARGET_WARN_FREE_GB": "1",
+            "SOLDR_TARGET_BLOCK_FREE_GB": "1",
+            "RUSTUP_TOOLCHAIN": "channel-from-toolchain-ensure",
+            "PATH": "$WORK/shims:$PATH",
+        },
+        "required_share_files": list(REPLAY_SHARE_FILES),
+        "capabilities": {
+            "shell": "bash-3.2-posix-sh",
+            "execution_model": "one-script-per-boot-no-command-exec",
+            "python3": False,
+            "git": False,
+            "dyld_shared_cache": False,
+            "system_c_compiler": False,
+            "xcrun": False,
+            "sdk": False,
+            "preinstalled_rust_toolchain": False,
+            "toolchain_provisioning": "soldr-managed-during-guest-script",
+            "isolated_toolchain_homes": False,
+            "tmp_storage": "ramdisk-bounded-by-guest-memory",
+            "scratch_storage": "formatted-qcow2-with-tmp-fallback",
+            "workspace_source_staged": True,
+            "fixtures_staged": True,
+        },
+        "result_gate": {
+            "guest_exit_code_must_be_zero": True,
+            "all_checks_must_pass": list(CHECKS),
+            "requires_inventory": True,
+            "requires_junit": True,
+            "diagnostics_are_always_collected": True,
+        },
+    }
 
 
 def build_guest_script() -> str:
@@ -926,6 +1038,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
+    describe = subparsers.add_parser(
+        "describe-executor",
+        help="write the versioned macOS Recovery executor contract",
+    )
+    describe.add_argument("--output", required=True, type=Path)
+
     emit = subparsers.add_parser(
         "emit-guest-script", help="write the guest script that runs the replay"
     )
@@ -963,6 +1081,15 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--github-summary", type=Path, default=None)
 
     args = parser.parse_args(argv)
+
+    if args.subcommand == "describe-executor":
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(executor_contract(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(f"wrote Recovery executor contract to {args.output}")
+        return 0
 
     if args.subcommand == "emit-guest-script":
         script_text = build_guest_script()

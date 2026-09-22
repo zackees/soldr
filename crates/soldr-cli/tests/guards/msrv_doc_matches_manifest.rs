@@ -75,6 +75,41 @@ fn claude_md_msrv_matches_the_workspace_manifest() {
     }
 }
 
+/// soldr#3305: the MSRV names a compiler *train*, never a patch release.
+///
+/// `soldr ci-test` compiles this workspace with two compilers: the stable pin
+/// from `rust-toolchain.toml`, and the dated nightly that `dylints/*` declare.
+/// That nightly reports a `.0` release of its train (`nightly-2026-05-28` is
+/// `1.98.0-nightly`), so a patch-level `rust-version` of `1.98.1` makes Cargo
+/// refuse to build anything under it:
+///
+/// ```text
+/// error: rustc 1.98.0-nightly is not supported by the following packages:
+/// ```
+///
+/// Cargo reads a two-component `rust-version` as `>=1.98.0`, which both
+/// compilers satisfy. The coupling is otherwise invisible — the nightly's
+/// rustc version appears nowhere in this repo, and every local check runs
+/// under the stable pin, so a patch-level MSRV passes `cargo build`, clippy
+/// and the whole test suite and fails only in the Linux `ci-test` lane.
+#[test]
+fn msrv_names_a_compiler_train_not_a_patch_release() {
+    let root = common::workspace_root();
+    let manifest =
+        std::fs::read_to_string(root.join("Cargo.toml")).expect("read workspace Cargo.toml");
+
+    let declared = manifest_rust_version(&manifest);
+
+    assert_eq!(
+        declared.split('.').count(),
+        2,
+        "[workspace.package].rust-version is {declared}; declare the train \
+         (e.g. \"1.98\") instead. A patch-level MSRV excludes the Dylint \
+         nightly, which reports the .0 release of its train, and nothing \
+         outside the Linux ci-test lane catches it (soldr#3305).",
+    );
+}
+
 #[test]
 fn the_msrv_parsers_read_what_they_claim_to() {
     // A guard whose parsers silently find nothing would pass forever. Pin

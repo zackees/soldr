@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 
 use crate::core::{SoldrError, SoldrPaths};
+use crate::platform::host::facts::{HostArch, HostOs};
 
 pub const MUSL_LINUX_TOOLCHAIN_VERSION: &str = "gcc-11.2.1-musl-20211123-1";
 const MUSL_LINUX_TOOLCHAIN: &str = "musl-linux-toolchain";
@@ -39,6 +40,41 @@ impl MuslLinuxToolchainTarget {
             Self::X86_64 => "x86_64-linux-musl",
             Self::Aarch64 => "aarch64-linux-musl",
         }
+    }
+}
+
+/// The host triple every catalogue musl/Linux bundle is built to **run** on.
+///
+/// The asset slug names its target shape, not the architecture of the machine
+/// that can execute its compiler. In particular, `linux-arm64-musl` is an
+/// x86_64-hosted cross compiler that emits ARM64, not an ARM64-native compiler.
+pub const MUSL_LINUX_TOOLCHAIN_HOST_TRIPLE: &str = "x86_64-unknown-linux-gnu";
+
+/// Whether this host can execute the catalogue musl compiler binaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BundleHostFitness {
+    Runnable,
+    WrongArch,
+    WrongOs,
+}
+
+impl BundleHostFitness {
+    pub const fn is_runnable(self) -> bool {
+        matches!(self, Self::Runnable)
+    }
+}
+
+/// Can this host execute a catalogue musl/Linux toolchain?
+///
+/// Kept pure because native ARM64 Linux is the host shape this guard must
+/// protect, but it is not the one that normally runs the unit tests.
+pub fn bundle_host_fitness(os: HostOs, arch: HostArch) -> BundleHostFitness {
+    if os != HostOs::Linux {
+        return BundleHostFitness::WrongOs;
+    }
+    match arch {
+        HostArch::X86_64 => BundleHostFitness::Runnable,
+        _ => BundleHostFitness::WrongArch,
     }
 }
 

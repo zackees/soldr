@@ -88,7 +88,7 @@ jobs:
           # build, so the next build recompiles the world. See
           # tests/test_setup_soldr_version_pins.py.
           version: 0.9.16
-          toolchain: 1.95.0
+          toolchain: 1.98.1
           # soldr#2451: `cache: false` alone does NOT gate setup-soldr's
           # soldr-mini / build-cache / target-cache reuse layers, and this
           # lane runs the checkout-built soldr — every layer must be off so
@@ -117,11 +117,20 @@ jobs:
         working-directory: soldr
         run: soldr cargo build -p soldr-cli --profile ci-release
 
+      # Pinned to the exact zccache crate version soldr embeds, never `main`
+      # (soldr#3301). Two reasons. A moving fixture makes the size thresholds
+      # below meaningless: they were measured against one tree and are asserted
+      # against whatever zccache happened to merge that morning. And it breaks
+      # the gate for every open PR without any of them changing — zccache
+      # 03d6ebb removed `vendor/`, and the gate went red on PRs that had passed
+      # it hours earlier. `tests/test_cook_size_gate_workflow.py` keeps this ref
+      # equal to the `zccache` version in Cargo.lock, so bumping the dependency
+      # is what moves the fixture.
       - name: Checkout zccache fixture
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: zackees/zccache
-          ref: main
+          ref: "1.14.0"
           path: zccache-fixture
 
       - name: Install uv

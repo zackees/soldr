@@ -67,7 +67,7 @@ def test_prepared_toolchain_and_source_binary_precede_telemetry() -> None:
     telemetry = workflow.index("- name: Run fixed cold Cargo orchestration matrix")
     assert python < prepare < source < cleanup < retire < telemetry
     assert 'python-version: "3.13"' in workflow
-    assert "toolchain: 1.95.0" in workflow
+    assert "toolchain: 1.98.1" in workflow
     assert "soldr cargo build -p soldr-cli --bin soldr" in workflow
     assert (
         "zackees/setup-soldr/cleanup@d6a0844c40b94f62cf104377b4cc90403c96f6ce"

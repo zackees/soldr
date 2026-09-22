@@ -84,11 +84,13 @@ fn assert_reld_injected(log: &str) {
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Linux
     ) {
-        assert_eq!(linker, "clang", "linux reld drives through clang: {log}");
-        assert_eq!(
-            rustflags.as_deref(),
-            Some("-C link-arg=--ld-path=reld"),
-            "linux reld adds --ld-path=reld: {log}"
+        assert!(
+            linker.contains("linker-shims"),
+            "linux reld uses a generated clang driver shim: {log}"
+        );
+        assert!(
+            rustflags.is_none(),
+            "linux linker selection must not replace [build] rustflags: {log}"
         );
     } else {
         assert_eq!(linker, "reld", "reld injected directly: {log}");
@@ -179,11 +181,13 @@ fn cargo_front_door_default_falls_back_to_rust_lld_without_reld() {
         let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
             panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
         });
-        assert_eq!(linker_value, "clang", "linux fallback drives clang: {log}");
-        assert_eq!(
-            extract_rustflags_env_value(&log).as_deref(),
-            Some("-C link-arg=-fuse-ld=lld"),
-            "linux fallback injects -fuse-ld=lld: {log}"
+        assert!(
+            linker_value.contains("linker-shims"),
+            "linux fallback uses a generated clang driver shim: {log}"
+        );
+        assert!(
+            extract_rustflags_env_value(&log).is_none(),
+            "linux fallback must preserve [build] rustflags: {log}"
         );
     } else if matches!(
         soldr_platform::host::facts::os(),
@@ -270,14 +274,13 @@ fn cargo_front_door_rust_lld_injects_target_linker_env() {
             panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
         });
         let rustflags_value = extract_rustflags_env_value(&log);
-        assert_eq!(
-            linker_value, "clang",
-            "non-windows non-macos rust-lld should drive linking through clang: {log}"
+        assert!(
+            linker_value.contains("linker-shims"),
+            "non-windows non-macos rust-lld should use a clang driver shim: {log}"
         );
-        assert_eq!(
-            rustflags_value.as_deref(),
-            Some("-C link-arg=-fuse-ld=lld"),
-            "non-windows non-macos rust-lld should add -fuse-ld=lld rustflag: {log}"
+        assert!(
+            rustflags_value.is_none(),
+            "non-windows non-macos rust-lld must preserve [build] rustflags: {log}"
         );
     }
 }

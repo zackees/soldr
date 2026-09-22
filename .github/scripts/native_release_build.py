@@ -23,7 +23,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-TOOLCHAIN = "1.95.0"
+TOOLCHAIN = "1.98.1"
 ARM64_MUSL = "aarch64-unknown-linux-musl"
 MUSL_TARGETS = ("x86_64-unknown-linux-musl", ARM64_MUSL)
 CONTRACT_PATH = (

@@ -39,7 +39,7 @@ MATURIN_CONTRACT = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))["maturi
 SOLDR_MATURIN_PACKAGE = str(MATURIN_CONTRACT["pypi_package"])
 SOLDR_MATURIN_VERSION = str(MATURIN_CONTRACT["managed_version"])
 SOLDR_MATURIN_REQUIREMENT = f"{SOLDR_MATURIN_PACKAGE}=={SOLDR_MATURIN_VERSION}"
-SOLDR_TOOLCHAIN = "1.95.0"
+SOLDR_TOOLCHAIN = "1.98.1"
 SOLDR_MATURIN_VENV = Path("target/soldr-maturin-release-env")
 SOLDR_TOOLCHAIN_SHIMS = Path("target/soldr-maturin-release-shims")
 

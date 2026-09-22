@@ -76,9 +76,12 @@ Apple SDK path. Publication is gated on a `smoke_macos_x64` job (running on an
 [zackees/docker-mac-x64](https://github.com/zackees/docker-mac-x64) macOS
 Recovery guest -- soldr#3076, no GitHub Actions job runs on a native macOS
 runner) that verifies the archive is Mach-O x86_64 and executes the archive's
-binaries (`soldr`, `soldr-daemon`, `crgx`, `cargo-chef`) inside the guest. The
-wheel is never executed anywhere -- Recovery has no Python -- so it keeps a
-Linux-side METADATA-version check instead.
+binaries (`soldr`, `soldr-daemon`, `crgx`, `cargo-chef`) inside the guest.
+Recovery has no built-in Python, so the gate stages a version- and
+SHA-256-pinned portable x86_64 CPython alongside the exact uploaded wheel. The
+guest installs the wheel without an index, imports `soldr._native`, and checks
+both `soldr --version` and `soldr version --json`; the Linux-side METADATA read
+remains a preliminary version check, not execution evidence.
 
 `e2e_macos_x64_build` / `e2e_macos_x64_replay` (soldr#3078) also run at
 release time: they cross-build `x86_64-apple-darwin` at the release commit

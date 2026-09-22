@@ -70,11 +70,16 @@ use crate::daemon::protocol::{
     StagedProfileInfo,
 };
 
+#[path = "zccache_shutdown_gate.rs"]
+mod shutdown_gate;
+use shutdown_gate::CompileShutdownGate;
+
 /// Soldr-side handle around a started [`ZccacheService`]. Cheap to
 /// clone (the inner handle is `Arc`-shared).
 #[derive(Clone)]
 pub struct SoldrZccacheService {
     inner: Arc<ZccacheService>,
+    shutdown_gate: CompileShutdownGate,
     compile_admission: Arc<crate::resident_compile_admission::ResidentCompileAdmission>,
     identity: HostIdentity,
     cache_root: PathBuf,
@@ -281,6 +286,7 @@ impl SoldrZccacheService {
         let zccache_start_ms = zccache_started.elapsed().as_millis() as u64;
         Ok(Self {
             inner: Arc::new(svc),
+            shutdown_gate: CompileShutdownGate::default(),
             compile_admission,
             identity,
             cache_root,
@@ -359,6 +365,14 @@ impl SoldrZccacheService {
         &self,
         req: CompileRequest,
     ) -> Result<CompileResponseBody, EmbeddedServiceError> {
+        // soldr#2706: keep this lease through zccache's synchronous staged
+        // publication. Shutdown takes the fair write side before it closes
+        // zccache to publishers, so a successful cold miss cannot be served
+        // during shutdown and then silently discarded.
+        let _shutdown_lease =
+            self.shutdown_gate.enter().await.ok_or_else(|| {
+                EmbeddedServiceError::Compile("service is shutting down".to_string())
+            })?;
         let ci_test_report = crate::ci_test_report::prepare(&req);
         let (compiler, rustc_args) = split_compiler_and_args(&req.args)?;
         let cwd: NormalizedPath = std::path::PathBuf::from(req.cwd).into();
@@ -531,6 +545,17 @@ impl SoldrZccacheService {
     /// Graceful shutdown — called from the daemon's normal exit path
     /// after the accept loop has been aborted.
     pub async fn shutdown(self, mode: ShutdownMode) -> Result<(), EmbeddedServiceError> {
+        // Stop new compiles and wait for every already-admitted compile to
+        // finish its synchronous publication before zccache observes
+        // shutdown. Keep the writer for the whole shutdown so no late caller
+        // can enter the closed service.
+        let _shutdown_guard = match mode {
+            ShutdownMode::Graceful => Some(self.shutdown_gate.close_and_drain().await),
+            // Force shutdown deliberately delegates cancellation of in-flight
+            // work to zccache. Waiting for read leases here would turn Force
+            // into Graceful and violate the upstream mode contract.
+            ShutdownMode::Force => None,
+        };
         // `ZccacheService` is intentionally Clone: each clone shares the
         // shutdown flag and daemon state. Consume a clone of the service value
         // here instead of trying to unwrap soldr's Arc. Signal-handler and
