@@ -647,6 +647,8 @@ jobs:
           python ci/macos_recovery_run.py emit-guest-script \
             --output "$RUNNER_TEMP/recovery-run.sh" \
             --github-output "$GITHUB_OUTPUT"
+          python ci/macos_recovery_run.py describe-executor \
+            --output "$RUNNER_TEMP/recovery-executor-contract.json"
 
       # ram/boot-timeout/run-timeout/no-progress-timeout raised from the
       # action's smoke-only defaults: this guest now formats+mounts a work
@@ -688,6 +690,7 @@ jobs:
           path: |
             ${{ steps.macos.outputs.workdir }}/collected/
             ${{ steps.macos.outputs.workdir }}/results/
+            ${{ runner.temp }}/recovery-executor-contract.json
           if-no-files-found: warn
           retention-days: 7
 
