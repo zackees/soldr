@@ -43,6 +43,11 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /uvx /usr/local/bin/
 
 # Build tools needed by the soldr-cli workspace and the integration
 # tests (linker, pkg-config, git for origin-URL probes in PRs 2/3).
+# clang and lld are required because soldr's blessed default
+# LinkerChoice::Fast, absent `reld` on PATH, resolves to a driver shim
+# that execs clang (`exec clang -fuse-ld=lld "$@"`) (soldr#2930); the
+# sibling harness images (ci/docker-darwin-cross,
+# ci/docker-aarch64-windows-msvc-cross) already install this pair.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        build-essential \
@@ -59,6 +64,8 @@ RUN apt-get update \
        python3 \
        python3-venv \
        zstd \
+       clang \
+       lld \
     && rm -rf /var/lib/apt/lists/*
 
 # soldr#2424 P1: bake a stable machine identity. Minimal container images
@@ -85,7 +92,7 @@ RUN rustup default 1.98.1 \
 # provide that protection itself. It must also carry the PDEATHSIG fix
 # (soldr#3211), which landed after 0.9.15, so a cold bootstrap compile cannot
 # be SIGTERMed mid-run (soldr#2930).
-ARG SOLDR_BOOTSTRAP_VERSION=0.9.19
+ARG SOLDR_BOOTSTRAP_VERSION=0.9.21
 RUN python3 -m venv /opt/soldr-bootstrap \
     && /opt/soldr-bootstrap/bin/pip install --disable-pip-version-check \
        "soldr==${SOLDR_BOOTSTRAP_VERSION}" \

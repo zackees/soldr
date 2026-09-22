@@ -46,7 +46,7 @@ def test_docker_image_bootstraps_with_amalgamation_safe_published_soldr() -> Non
     assert version == (
         0,
         9,
-        19,
+        21,
     ), "keep the bootstrap on the repository's current published release"
     assert '"soldr==${SOLDR_BOOTSTRAP_VERSION}"' in dockerfile
     assert "/opt/soldr-bootstrap/bin/soldr --version" in dockerfile
@@ -57,6 +57,21 @@ def test_docker_image_bootstraps_with_amalgamation_safe_published_soldr() -> Non
         "The persistent bootstrap cache/runtime root must be scoped by the explicit "
         "published bootstrap version, so a retained older daemon cannot service it."
     )
+
+    # soldr#2930: the blessed default LinkerChoice::Fast on Linux without
+    # `reld` on PATH resolves to a driver shim that execs clang
+    # (`exec clang -fuse-ld=lld "$@"`), so the apt layer must install both
+    # clang and lld or every link in the image fails with `clang: not found`.
+    apt_install = re.search(
+        r"apt-get install -y --no-install-recommends(.*?)&& rm -rf",
+        dockerfile,
+        re.S,
+    )
+    assert apt_install, "expected an apt-get install block in the Dockerfile"
+    packages = set(apt_install.group(1).split())
+    assert "clang" in packages, "clang is required by the Fast linker shim (#2930)"
+    assert "lld" in packages, "lld is required by the Fast linker shim (#2930)"
+
     for profile in (
         "DEV",
         "TEST",
