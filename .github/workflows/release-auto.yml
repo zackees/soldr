@@ -852,8 +852,12 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.commit_sha }}
+      - name: Setup uv for pinned release scripts
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
       - name: Verify canonical release execution contract
-        run: python3 .github/scripts/release_completeness.py --verify-execution-contract
+        run: uv run --no-project --python 3.13 .github/scripts/release_completeness.py --verify-execution-contract
 
   publish:
     name: Attest and publish release assets
