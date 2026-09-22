@@ -206,6 +206,27 @@ def test_a_clean_manifest_has_no_structure_problems(mod):
     assert mod.structure_problems(_manifest()) == []
 
 
+def test_schema_v4_requires_truthful_execution_provenance(mod):
+    manifest = _manifest()
+    manifest["schema_version"] = 4
+    problems = mod.structure_problems(manifest)
+    assert any("artifact_provenance" in problem for problem in problems)
+
+
+def test_schema_v4_rejects_unknown_execution_status(mod):
+    manifest = _manifest()
+    manifest["schema_version"] = 4
+    manifest["artifact_provenance"] = {
+        "build": {"status": "cross-built", "runner": "ubuntu-24.04"},
+        "execution": {
+            "archive": {"status": "probably-ran"},
+            "wheel": {"status": "not-executed", "issue": 3071},
+        },
+    }
+    problems = mod.structure_problems(manifest)
+    assert any("probably-ran" in problem for problem in problems)
+
+
 # --- end to end -----------------------------------------------------------
 
 

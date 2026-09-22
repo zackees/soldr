@@ -74,7 +74,11 @@ cmd = "cd /repo && uv run --no-project --with pytest pytest -q tests/test_releas
 
 [task.macos-arm64-release-contract-lint]
 stack = "cook"
-cmd = "cd /repo && uv run --no-project --with 'ruff==0.12.12' ruff check .github/scripts/release_completeness.py tests/test_release_execution_contract.py"
+cmd = "cd /repo && uv run --no-project --with 'ruff==0.12.12' ruff check .github/scripts/release_completeness.py .github/scripts/release_manifest.py .github/scripts/verify_release_manifest.py tests/test_release_execution_contract.py && uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0' --with 'pyyaml>=6,<7' python -m pylint --rcfile=tests/.pylintrc tests && uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0' --with 'pyyaml>=6,<7' python -m pylint .github/scripts/release_completeness.py .github/scripts/release_manifest.py .github/scripts/verify_release_manifest.py && uv run --no-project --with 'mypy>=1.18,<2' --with 'pytest>=8.0' --with types-PyYAML python -m mypy .github/scripts/release_completeness.py .github/scripts/release_manifest.py .github/scripts/verify_release_manifest.py tests/test_release_execution_contract.py tests/test_release_manifest.py"
+
+[task.macos-arm64-release-provenance]
+stack = "cook"
+cmd = "cd /repo && uv run --no-project --with pytest pytest -q tests/test_release_manifest.py .github/scripts/test_verify_release_manifest.py tests/test_release_execution_contract.py tests/test_zccache_runtime_contract.py"
 
 [task.ci-test-report-unit]
 stack = "cook"
