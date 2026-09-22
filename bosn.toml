@@ -64,6 +64,10 @@ cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-daemon ci_test_report && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli ci_test::execute::tests::report_summary_groups_repeated_normalized_identities"
 
+[task.publication-shutdown-regression]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-daemon shutdown_waits_for_compile_publication_and_closes_admission"
+
 [task.ci-test-proof]
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target CARGO_BUILD_JOBS=1 SOLDR_JOBS=1 /opt/soldr-bootstrap/bin/soldr cargo build -p soldr-cli --bin soldr && CARGO_TARGET_DIR=/target CARGO_BUILD_JOBS=1 SOLDR_JOBS=1 /target/debug/soldr ci-test"
