@@ -824,17 +824,10 @@ jobs:
       require_wasm32_wasip1_threads_materialization: true
 
   # ---------- Linux x64 (musl) ----------
-  # soldr#1978 item 3. This lane had a paired `target-run` on `ubuntu-24.04`
-  # -- the same image the cross-build runs on. The build/run split exists to
-  # move execution onto a runner that is *native to the target*, so for a
-  # host-identical target it bought a second runner allocation plus a full
-  # nextest-archive round-trip through the artifact store for zero new host
-  # coverage: a statically linked musl binary replayed on the image it was
-  # built on exercises nothing the native `build-linux-x64` suite does not.
-  #
-  # No paired `target-run`, for the same reason `e2e-linux-x64-gnu-build`
-  # above has none. Both aarch64 splits below keep theirs -- those are
-  # genuinely cross-arch (`ubuntu-24.04` -> `ubuntu-24.04-arm`).
+  # soldr#3316: release inclusion requires runtime evidence for the target,
+  # even when the statically linked artifact can execute on the same runner
+  # image that cross-built it. The native glibc suite cannot prove that the
+  # musl archive selects and executes a non-empty target-specific partition.
   e2e-linux-x64-musl-build:
     name: cross-build x86_64-unknown-linux-musl (linux host)
     needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
@@ -845,10 +838,23 @@ jobs:
       artifact_name: soldr-ci-e2e-linux-x64-musl
       source_ref: ${{ github.sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
-      # Nothing downloads this artifact now that the replay is gone; the
-      # archive is still built (test code must still compile for musl), it
-      # just no longer round-trips through the artifact store unread.
-      upload_test_archive: false
+
+  e2e-linux-x64-musl:
+    name: target-run x86_64-unknown-linux-musl
+    needs: [e2e-linux-x64-musl-build, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
+    uses: ./.github/workflows/_ci-target-run.yml
+    with:
+      runs_on: ubuntu-24.04
+      target: x86_64-unknown-linux-musl
+      artifact_name: soldr-ci-e2e-linux-x64-musl
+      # The restored full owned set contains several serial runtime/cold-build
+      # groups. One worker timed out several tests, and three workers still
+      # left a cold linker fixture at its 120 s deadline. Six fresh workers
+      # retain complete coverage without globally capping compilation or
+      # weakening those deadlines (soldr#3316).
+      replay_partitions: '[{"label":"1-of-6","value":"hash:1/6","run_followup":false},{"label":"2-of-6","value":"hash:2/6","run_followup":false},{"label":"3-of-6","value":"hash:3/6","run_followup":false},{"label":"4-of-6","value":"hash:4/6","run_followup":false},{"label":"5-of-6","value":"hash:5/6","run_followup":false},{"label":"6-of-6","value":"hash:6/6","run_followup":false}]'
+      require_wasm32_wasip1_threads_materialization: true
 
   # ---------- Linux ARM64 (musl) ----------
   e2e-linux-arm64-musl-build:
@@ -912,7 +918,7 @@ jobs:
   # the owner mandate above rules out a native macos-* runner. Re-enabling
   # execution is tracked by soldr#3071 (see the compatibility_decisions entry
   # in ci/canonical-targets.json). Only the build lane remains, and — like
-  # x86_64-unknown-linux-musl — it has no paired target-run.
+  # x86_64-apple-darwin in this workflow — it has no paired target-run.
   e2e-macos-arm64-build:
     name: cross-build aarch64-apple-darwin (linux host)
     needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]

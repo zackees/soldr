@@ -81,6 +81,30 @@ def test_runtime_and_manifest_mirrors_match_contract() -> None:
     ), "Cargo target metadata drifted from canonical-targets.json"
 
 
+def test_release_included_targets_have_execution_or_tracked_exception() -> None:
+    """A shipped target may not silently stop at successful cross-compilation."""
+
+    for row in contract_targets():
+        if row["release"]["status"] != "included":
+            continue
+        ci = row["ci"]
+        if isinstance(ci.get("run_job"), str):
+            continue
+        exception = ci.get("execution_exception")
+        assert isinstance(exception, dict), (
+            f"release-included target {row['triple']} has no execution job or "
+            "tracked execution_exception"
+        )
+        issue = exception.get("issue")
+        disposition = exception.get("release_disposition")
+        assert (
+            isinstance(issue, int) and issue > 0
+        ), f"{row['triple']} execution_exception must name a tracking issue"
+        assert (
+            isinstance(disposition, str) and disposition.strip()
+        ), f"{row['triple']} execution_exception must state its release disposition"
+
+
 def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
     rows = contract_targets()
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")

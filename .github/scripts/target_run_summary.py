@@ -117,6 +117,10 @@ def build_summary(
     run = read_junit(junit)
     if require_junit and run is None:
         raise ValueError(f"required JUnit report is missing: {junit}")
+    if discovered == 0:
+        raise ValueError("nextest selected zero tests")
+    if run is not None and run["executed"] == 0:
+        raise ValueError("nextest executed zero tests")
     if run is not None and discovered is not None and ignored is not None:
         accounted = run["executed"] + ignored
         is_complete_partition = partition in (None, "hash:1/1")
