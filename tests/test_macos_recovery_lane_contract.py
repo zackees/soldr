@@ -153,6 +153,13 @@ def test_recovery_lane_ships_the_tests_archive_to_the_guest() -> None:
     assert "nextest_list_all" in target_run or "nextest list" in target_run
 
 
+def test_recovery_lane_records_the_executor_contract_as_diagnostics() -> None:
+    target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
+    assert "macos_recovery_run.py describe-executor" in target_run
+    assert '"$RUNNER_TEMP/recovery-executor-contract.json"' in target_run
+    assert "${{ runner.temp }}/recovery-executor-contract.json" in target_run
+
+
 def test_release_workflow_has_the_macos_x64_replay_jobs() -> None:
     """soldr#3078: the release runs the same archive replay
     macos-recovery-replay.yml runs nightly (soldr#3116), pinned to the release

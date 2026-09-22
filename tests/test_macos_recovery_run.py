@@ -254,6 +254,156 @@ def test_main_emit_guest_script_writes_the_output_file(tmp_path: Path) -> None:
     assert output.read_text(encoding="utf-8").startswith("#!/bin/sh")
 
 
+def test_executor_contract_owns_every_3084_handoff_edge() -> None:
+    """soldr#3084 may close only when soldr#3294 owns every sharp edge."""
+    contract = MODULE.executor_contract()
+
+    assert contract["schema_version"] == 1
+    assert contract["superseded_issue"] == "soldr#3084"
+    assert contract["owner_issue"] == "soldr#3294"
+    assert contract["target"] == "x86_64-apple-darwin"
+    assert contract["backend"] == "macos-recovery"
+    assert contract["readiness"] == {
+        "default_enabled": False,
+        "blocked_by": ["soldr#3088", "soldr#3136"],
+        "unavailable_action": "fail-closed-with-no-run-guidance",
+    }
+    assert contract["nextest"]["argv_prefix"] == ["cargo-nextest", "nextest"]
+    assert contract["nextest"]["archive"] == "tests.tar.zst"
+    assert contract["nextest"]["inventory_arguments"] == [
+        "--archive-file=$WORK/tests.tar.zst",
+        "--extract-to=$WORK/extract",
+        "--workspace-remap=$WORK/workspace",
+        "--profile=target-run",
+        "--message-format=json-pretty",
+    ]
+    assert contract["nextest"]["reuse_arguments"] == {
+        "preferred": [
+            "--binaries-metadata=$REUSE_BIN_META",
+            "--cargo-metadata=$REUSE_CARGO_META",
+            "--target-dir-remap=$WORK/extract/target",
+        ],
+        "fallback": [
+            "--archive-file=$WORK/tests.tar.zst",
+            "--extract-to=$WORK/extract",
+            "--extract-overwrite",
+        ],
+    }
+    assert contract["nextest"]["selection_filter"] == {
+        "source_file": "$WORK/filter.txt",
+        "expression_variable": "$FILTER",
+        "argument": "-E",
+    }
+    assert contract["nextest"]["selected_list_arguments"] == [
+        "$REUSE_ARGS",
+        "--workspace-remap=$WORK/workspace",
+        "--profile=target-run",
+        "--partition=hash:1/1",
+        "-E=$FILTER",
+        "--message-format=json-pretty",
+    ]
+    assert contract["nextest"]["run_arguments"] == [
+        "$REUSE_ARGS",
+        "--workspace-remap=$WORK/workspace",
+        "--profile=target-run",
+        "--partition=hash:1/1",
+        "-E=$FILTER",
+        "--no-fail-fast",
+    ]
+    assert contract["nextest"]["zero_tests_is_failure"] is True
+    assert contract["required_guest_env"] == {
+        "HOME": "$WORK/home",
+        "TMPDIR": "$WORK/tmp",
+        "SOLDR_BIN": "/tmp/soldr",
+        "SOLDR_INTERNAL_DAEMON_EXE": "$WORK/soldr-daemon",
+        "NEXTEST_BIN": "$WORK/cargo-nextest",
+        "SOLDR_TEST_FIXTURES_DIR": "$WORK/fixtures",
+        "SOLDR_TEST_WORKSPACE_ROOT": "$WORK/workspace",
+        "SOLDR_USE_SYSTEM_CMAKE": "1",
+        "SOLDR_TARGET_WARN_FREE_GB": "1",
+        "SOLDR_TARGET_BLOCK_FREE_GB": "1",
+        "RUSTUP_TOOLCHAIN": "channel-from-toolchain-ensure",
+        "PATH": "$WORK/shims:$PATH",
+    }
+    assert set(contract["required_share_files"]) == set(MODULE.REPLAY_SHARE_FILES)
+    assert contract["capabilities"] == {
+        "shell": "bash-3.2-posix-sh",
+        "execution_model": "one-script-per-boot-no-command-exec",
+        "python3": False,
+        "git": False,
+        "dyld_shared_cache": False,
+        "system_c_compiler": False,
+        "xcrun": False,
+        "sdk": False,
+        "preinstalled_rust_toolchain": False,
+        "toolchain_provisioning": "soldr-managed-during-guest-script",
+        "isolated_toolchain_homes": False,
+        "tmp_storage": "ramdisk-bounded-by-guest-memory",
+        "scratch_storage": "formatted-qcow2-with-tmp-fallback",
+        "workspace_source_staged": True,
+        "fixtures_staged": True,
+    }
+
+
+def test_executor_contract_matches_the_emitted_guest_program() -> None:
+    contract = MODULE.executor_contract()
+    script = MODULE.build_guest_script()
+
+    for name, value in contract["required_guest_env"].items():
+        if value == "channel-from-toolchain-ensure":
+            assert f'{name}="$CHANNEL"' in script
+        else:
+            assert f'{name}="{value}"' in script or f"{name}={value}" in script
+        assert any(
+            name in line.strip().removeprefix("export ").split()
+            for line in script.splitlines()
+            if line.strip().startswith("export ")
+        )
+
+    inventory = "\n".join(MODULE._stage_nextest_list_all())
+    selected = "\n".join(MODULE._stage_nextest_list_selected())
+    run = "\n".join(MODULE._stage_nextest_run())
+
+    def assert_arguments(block: str, arguments: list[str]) -> None:
+        for argument in arguments:
+            if argument == "$REUSE_ARGS":
+                assert "nextest " in block and "$REUSE_ARGS" in block
+            elif "=" not in argument:
+                assert argument in block
+            else:
+                option, value = argument.split("=", maxsplit=1)
+                assert f'{option} "{value}"' in block or f"{option} {value}" in block
+
+    assert '"$NEXTEST_BIN" nextest list' in inventory
+    assert_arguments(inventory, contract["nextest"]["inventory_arguments"])
+    for reuse_arguments in contract["nextest"]["reuse_arguments"].values():
+        assert_arguments(inventory, reuse_arguments)
+
+    filter_contract = contract["nextest"]["selection_filter"]
+    for block in (selected, run):
+        assert f'FILTER=$(cat "{filter_contract["source_file"]}")' in block
+        assert (
+            f'{filter_contract["argument"]} '
+            f'"{filter_contract["expression_variable"]}"' in block
+        )
+    assert_arguments(selected, contract["nextest"]["selected_list_arguments"])
+    assert_arguments(run, contract["nextest"]["run_arguments"])
+    assert contract["result_gate"] == {
+        "guest_exit_code_must_be_zero": True,
+        "all_checks_must_pass": list(MODULE.CHECKS),
+        "requires_inventory": True,
+        "requires_junit": True,
+        "diagnostics_are_always_collected": True,
+    }
+
+
+def test_main_describe_executor_writes_stable_json(tmp_path: Path) -> None:
+    output = tmp_path / "executor-contract.json"
+    rc = MODULE.main(["describe-executor", "--output", str(output)])
+    assert rc == 0
+    assert json.loads(output.read_text(encoding="utf-8")) == MODULE.executor_contract()
+
+
 def test_main_verify_collected_delegates_to_verify_collected(tmp_path: Path) -> None:
     collected = write_collected_recovery_summary(
         tmp_path / "collected", _passing_summary_lines()
