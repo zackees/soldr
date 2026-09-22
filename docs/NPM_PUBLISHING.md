@@ -165,9 +165,12 @@ sidecar:
 - `crgx` (or `crgx.exe`) - the matching-target crgx binary.
 - `cargo-chef` (or `cargo-chef.exe`) - the pinned cargo-chef binary used
   by `soldr cook`.
-- `manifest.json` - schema_version 3 descriptor with soldr / embedded
+- `manifest.json` - schema_version 4 descriptor with soldr / embedded
   zccache / crgx / cargo-chef versions, target triples, soldr
-  debug-info sidecars, per-file sha256s, and archive format.
+  debug-info sidecars, per-file sha256s, archive format, and explicit
+  build/execution provenance for the archive and wheel. `not-executed` is a
+  literal absence of runtime coverage; it must never be read as a successful
+  cross-build smoke.
   The expected archive layout is versioned in
   `contracts/zccache-runtime.v1.json`.
 

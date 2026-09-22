@@ -237,7 +237,7 @@ def test_release_workflow_and_docs_reference_contract_layout() -> None:
     manifest_writer = (
         REPO_ROOT / ".github" / "scripts" / "release_manifest.py"
     ).read_text(encoding="utf-8")
-    assert "SCHEMA_VERSION = 3" in manifest_writer
+    assert "SCHEMA_VERSION = 4" in manifest_writer
     assert 'ARCHIVE_FORMAT = "tar.zst"' in manifest_writer
     assert '"debug_info": debug_info' in manifest_writer
     assert ".github/scripts/release_manifest.py" in release_workflow

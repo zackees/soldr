@@ -50,6 +50,30 @@ class TestPinnedVersions:
             )
 
 
+class TestArtifactProvenance:
+    def test_every_included_target_has_manifest_provenance(self) -> None:
+        contract = json.loads(
+            (REPO_ROOT / "ci" / "canonical-targets.json").read_text(encoding="utf-8")
+        )
+        for target in contract["targets"]:
+            if target["release"]["status"] != "included":
+                continue
+            expected = target["release"]["artifact_provenance"]
+            assert manifest_mod.load_artifact_provenance(
+                REPO_ROOT, target["triple"]
+            ) == expected
+
+    def test_missing_target_fails_instead_of_implying_execution(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "ci").mkdir()
+        (tmp_path / "ci" / "canonical-targets.json").write_text(
+            '{"targets": []}', encoding="utf-8"
+        )
+        with pytest.raises(manifest_mod.ManifestError, match="missing"):
+            manifest_mod.load_artifact_provenance(tmp_path, "aarch64-apple-darwin")
+
+
 class TestDebugSidecars:
     def test_windows_requires_a_pdb(self, tmp_path: Path) -> None:
         package = stage(tmp_path / "pkg", suffix=".exe")
@@ -106,18 +130,30 @@ class TestManifestShape:
             "versions": {"zccache": "1.13.5", "crgx": "0.1.0", "cargo_chef": "0.1.73"},
             "commits": {"crgx": "abc", "cargo_chef": "def"},
             "built_at": "2026-08-17T00:00:00Z",
+            "artifact_provenance": {
+                "build": {"status": "cross-built", "runner": "ubuntu-24.04"},
+                "execution": {
+                    "archive": {"status": "not-executed", "issue": 3071},
+                    "wheel": {"status": "not-executed", "issue": 3071},
+                },
+            },
         }
         base.update(overrides)
         return manifest_mod.build_manifest(**base)
 
     def test_schema_and_required_sections(self) -> None:
         manifest = self.build()
-        assert manifest["schema_version"] == 3
+        assert manifest["schema_version"] == 4
         for section in ("soldr", "zccache", "crgx", "cargo_chef", "archive"):
             assert section in manifest
         assert manifest["archive"] == {"format": "tar.zst", "compression_level": 19}
         assert manifest["zccache"]["embedded"] is True
         assert manifest["soldr"]["sidecars"][0]["name"] == "soldr-daemon"
+        assert manifest["artifact_provenance"]["build"]["status"] == "cross-built"
+        assert manifest["artifact_provenance"]["execution"] == {
+            "archive": {"status": "not-executed", "issue": 3071},
+            "wheel": {"status": "not-executed", "issue": 3071},
+        }
 
     def test_windows_suffixes_every_binary_name(self) -> None:
         manifest = self.build(suffix=".exe", target="x86_64-pc-windows-msvc")

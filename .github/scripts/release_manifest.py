@@ -40,6 +40,7 @@ Usage (CI):
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime
 import hashlib
 import json
@@ -51,7 +52,7 @@ from release_artifacts import binary_suffix
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 ARCHIVE_FORMAT = "tar.zst"
 ARCHIVE_COMPRESSION_LEVEL = 19
 
@@ -77,6 +78,36 @@ CARGO_CHEF_VERSION = (
 
 class ManifestError(RuntimeError):
     """A precondition the manifest cannot be written without."""
+
+
+def load_artifact_provenance(root: Path, target: str) -> dict:
+    """Return the reviewed build/execution truth for one release target.
+
+    This is deliberately sourced from the canonical target contract rather
+    than inferred from the build host.  Cross-built bytes and target-executed
+    bytes are different claims, and a missing declaration must stop manifest
+    creation instead of silently looking equivalent to execution.
+    """
+    contract_path = root / "ci" / "canonical-targets.json"
+    try:
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ManifestError(f"cannot read {contract_path}: {error}") from error
+    for entry in contract.get("targets", []):
+        if entry.get("triple") != target:
+            continue
+        release = entry.get("release")
+        provenance = (
+            release.get("artifact_provenance")
+            if isinstance(release, dict)
+            else None
+        )
+        if not isinstance(provenance, dict):
+            raise ManifestError(
+                f"{target}: release artifact_provenance is missing from {contract_path}"
+            )
+        return copy.deepcopy(provenance)
+    raise ManifestError(f"{target}: target is missing from {contract_path}")
 
 
 def read_pinned_version(root: Path, spec: tuple[str, str, str]) -> str:
@@ -152,6 +183,7 @@ def build_manifest(
     versions: dict[str, str],
     commits: dict[str, str],
     built_at: str,
+    artifact_provenance: dict,
 ) -> dict:
     """Pure assembly, so the shape is unit-testable without a staged tree."""
     return {
@@ -190,6 +222,7 @@ def build_manifest(
             "format": ARCHIVE_FORMAT,
             "compression_level": ARCHIVE_COMPRESSION_LEVEL,
         },
+        "artifact_provenance": artifact_provenance,
         "built_at": built_at,
     }
 
@@ -233,6 +266,7 @@ def main(argv: list[str] | None = None) -> int:
                 "cargo_chef": args.cargo_chef_source_commit or "unknown",
             },
             built_at=utc_now(),
+            artifact_provenance=load_artifact_provenance(args.repo_root, args.target),
         )
     except (ManifestError, OSError) as error:
         print(str(error), file=sys.stderr)
