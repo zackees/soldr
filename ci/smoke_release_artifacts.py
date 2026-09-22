@@ -47,19 +47,22 @@ script invocations instead of running in-process:
   own `exit-code` output, and fails with a named diagnostic naming exactly
   which guest-side check did not pass.
 
-The wheel is never executed anywhere, on any target -- only its declared
-METADATA version is read as a zip member (see `wheel_version`). Recovery
-could not run it even if this script wanted to: it ships no Python.
+The Recovery image itself ships no Python.  For the x64 release gate this
+script therefore stages a pinned, SHA-256-verified portable CPython beside
+the exact uploaded wheel.  The guest installs that wheel without an index,
+imports its abi3 native module, and exercises both CLI version surfaces.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
 import subprocess
 import sys
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -94,6 +97,15 @@ GUEST_BINARY_CHECKS: tuple[tuple[str, str], ...] = (
 
 RESULTS_FILE = "summary.txt"
 GUEST_HTTP_BASE = "http://10.0.2.2:8000"
+MACOS_X64_PYTHON_ARCHIVE = "cpython-macos-x64.tar.gz"
+MACOS_X64_PYTHON_URL = (
+    "https://github.com/astral-sh/python-build-standalone/releases/download/"
+    "20260901/cpython-3.13.15%2B20260901-x86_64-apple-darwin-"
+    "install_only_stripped.tar.gz"
+)
+MACOS_X64_PYTHON_SHA256 = (
+    "f712a9143c8a5d248438ec7921a0b48d548bca4f1337d33c690d28c2d0504137"
+)
 
 
 def exe_suffix(target: str) -> str:
@@ -141,10 +153,10 @@ def check_macho_architecture(binary: Path, expected_arch: str) -> None:
 def wheel_version(wheel: Path) -> str:
     """Read the `Version:` field from the wheel's own METADATA, unzipped.
 
-    No install, no execution -- a wheel is a zip file, and this needs
-    nothing about the host or the wheel's target platform. Recovery ships no
-    Python at all, so this check -- like every other wheel check -- stays
-    entirely Linux-side regardless of target.
+    This preliminary check needs nothing about the host or the wheel's target
+    platform.  The x64 Recovery path additionally installs and imports the
+    wheel with the staged portable CPython; this metadata read is not treated
+    as runtime evidence.
     """
     with zipfile.ZipFile(wheel) as archive:
         metadata_names = [
@@ -224,7 +236,41 @@ def copy_into_share_dir(extract: Path, share_dir: Path, suffix: str) -> None:
         shutil.copy2(src, share_dir / name)
 
 
-def build_release_guest_script(expected_version: str) -> str:
+def download_verified(url: str, destination: Path, expected_sha256: str) -> None:
+    """Download one immutable guest input and reject any byte drift."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    with (
+        urllib.request.urlopen(url, timeout=120) as response,
+        destination.open("wb") as output,
+    ):
+        while chunk := response.read(1024 * 1024):
+            output.write(chunk)
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if actual != expected_sha256:
+        destination.unlink(missing_ok=True)
+        sys.exit(
+            "ERROR: portable macOS Python SHA-256 mismatch: "
+            f"expected {expected_sha256}, got {actual}"
+        )
+
+
+def stage_macos_wheel_runtime(wheel: Path, share_dir: Path) -> str:
+    """Stage pinned CPython and the exact uploaded wheel for guest execution."""
+    if not re.fullmatch(r"[A-Za-z0-9_.+-]+\.whl", wheel.name):
+        sys.exit(f"ERROR: unsafe wheel basename for Recovery guest: {wheel.name!r}")
+    share_dir.mkdir(parents=True, exist_ok=True)
+    download_verified(
+        MACOS_X64_PYTHON_URL,
+        share_dir / MACOS_X64_PYTHON_ARCHIVE,
+        MACOS_X64_PYTHON_SHA256,
+    )
+    shutil.copy2(wheel, share_dir / wheel.name)
+    return wheel.name
+
+
+def build_release_guest_script(expected_version: str, wheel_name: str) -> str:
     """The bash-3.2 script the Recovery guest runs (soldr#3076).
 
     Fetches every `GUEST_BINARY_CHECKS` binary from the driving container's
@@ -308,7 +354,107 @@ def build_release_guest_script(expected_version: str) -> str:
                 "fi",
                 "",
             ]
-    lines.append('exit "$FAIL"')
+    lines += [
+        f"curl -fsS -o /tmp/{MACOS_X64_PYTHON_ARCHIVE} "
+        f"{GUEST_HTTP_BASE}/{MACOS_X64_PYTHON_ARCHIVE}",
+        "if [ $? -eq 0 ]; then",
+        '  echo "fetch_python_runtime=pass" >> "$SUMMARY"',
+        "  PYTHON_FETCH_OK=1",
+        "else",
+        '  echo "fetch_python_runtime=fail:portable CPython was unreachable" >> "$SUMMARY"',
+        "  FAIL=1",
+        "  PYTHON_FETCH_OK=0",
+        "fi",
+        f"curl -fsS -o /tmp/{wheel_name} {GUEST_HTTP_BASE}/{wheel_name}",
+        "if [ $? -eq 0 ]; then",
+        '  echo "fetch_wheel=pass" >> "$SUMMARY"',
+        "  WHEEL_FETCH_OK=1",
+        "else",
+        '  echo "fetch_wheel=fail:shipped wheel was unreachable" >> "$SUMMARY"',
+        "  FAIL=1",
+        "  WHEEL_FETCH_OK=0",
+        "fi",
+        "",
+        'if [ "$PYTHON_FETCH_OK" -eq 1 ]; then',
+        "  mkdir -p /tmp/python-runtime",
+        f"  tar -xzf /tmp/{MACOS_X64_PYTHON_ARCHIVE} -C /tmp/python-runtime",
+        "  PY_RC=$?",
+        "else",
+        "  PY_RC=1",
+        "fi",
+        "PYTHON=/tmp/python-runtime/python/bin/python3",
+        'if [ "$PY_RC" -eq 0 ] && [ -x "$PYTHON" ]; then',
+        '  PY_VERSION=$("$PYTHON" --version 2>&1)',
+        '  echo "python_runtime=pass:$PY_VERSION" >> "$SUMMARY"',
+        "  PYTHON_OK=1",
+        "else",
+        '  echo "python_runtime=fail:portable CPython extraction failed" >> "$SUMMARY"',
+        "  FAIL=1",
+        "  PYTHON_OK=0",
+        "fi",
+        "",
+        'if [ "$PYTHON_OK" -eq 1 ] && [ "$WHEEL_FETCH_OK" -eq 1 ]; then',
+        '  "$PYTHON" -m venv /tmp/soldr-wheel-venv >/tmp/wheel-venv.out 2>&1',
+        "  VENV_RC=$?",
+        "else",
+        "  VENV_RC=1",
+        "fi",
+        "VPYTHON=/tmp/soldr-wheel-venv/bin/python",
+        "WHEEL_SOLDR=/tmp/soldr-wheel-venv/bin/soldr",
+        'if [ "$VENV_RC" -eq 0 ]; then',
+        f'  "$VPYTHON" -m pip install --no-index --no-deps /tmp/{wheel_name} '
+        ">/tmp/wheel-install.out 2>&1",
+        "  INSTALL_RC=$?",
+        "else",
+        "  INSTALL_RC=1",
+        "fi",
+        'if [ "$INSTALL_RC" -eq 0 ]; then',
+        '  echo "wheel_install=pass" >> "$SUMMARY"',
+        "else",
+        '  echo "wheel_install=fail:$(tail -c 300 /tmp/wheel-install.out 2>/dev/null)" >> "$SUMMARY"',
+        "  FAIL=1",
+        "fi",
+        "",
+        'if [ "$INSTALL_RC" -eq 0 ]; then',
+        '  IMPORT_OUT=$("$VPYTHON" -c \'import soldr._native; print(soldr._native.__file__)\' 2>&1)',
+        "  IMPORT_RC=$?",
+        "else",
+        "  IMPORT_RC=1",
+        '  IMPORT_OUT="wheel install failed"',
+        "fi",
+        'if [ "$IMPORT_RC" -eq 0 ]; then',
+        '  echo "wheel_import=pass:$IMPORT_OUT" >> "$SUMMARY"',
+        "else",
+        '  echo "wheel_import=fail:$IMPORT_OUT" >> "$SUMMARY"',
+        "  FAIL=1",
+        "fi",
+        "",
+        'if [ "$INSTALL_RC" -eq 0 ]; then',
+        '  WVOUT=$("$WHEEL_SOLDR" --version 2>&1)',
+        "else",
+        '  WVOUT="wheel install failed"',
+        "fi",
+        f'if [ "$WVOUT" = "soldr {expected_version}" ]; then',
+        '  echo "wheel_version=pass:$WVOUT" >> "$SUMMARY"',
+        "else",
+        '  echo "wheel_version=fail:$WVOUT" >> "$SUMMARY"',
+        "  FAIL=1",
+        "fi",
+        'if [ "$INSTALL_RC" -eq 0 ]; then',
+        '  WJOUT=$("$WHEEL_SOLDR" version --json 2>&1)',
+        "else",
+        '  WJOUT="wheel install failed"',
+        "fi",
+        'case "$WJOUT" in',
+        f'  *\'"soldr_version": "{expected_version}"\'*)',
+        '    echo "wheel_version_json=pass:$WJOUT" >> "$SUMMARY" ;;',
+        "  *)",
+        '    echo "wheel_version_json=fail:$WJOUT" >> "$SUMMARY"',
+        "    FAIL=1 ;;",
+        "esac",
+        "",
+        'exit "$FAIL"',
+    ]
     return "\n".join(lines) + "\n"
 
 
@@ -352,6 +498,17 @@ def expected_check_names() -> list[str]:
         names.append(f"fetch_{name}")
         names.append(f"{name}_{check}")
     names.append("soldr_version_json")
+    names.extend(
+        [
+            "fetch_python_runtime",
+            "fetch_wheel",
+            "python_runtime",
+            "wheel_install",
+            "wheel_import",
+            "wheel_version",
+            "wheel_version_json",
+        ]
+    )
     return names
 
 
@@ -448,6 +605,14 @@ def main() -> int:
             "it to the docker-mac-x64 action's `run:` input."
         ),
     )
+    parser.add_argument(
+        "--require-wheel-import",
+        action="store_true",
+        help=(
+            "stage pinned portable CPython and require the shipped macOS wheel "
+            "to install and import inside the Recovery guest"
+        ),
+    )
     args = parser.parse_args()
 
     target: str = args.target
@@ -464,6 +629,8 @@ def main() -> int:
 
     if args.emit_guest_script is not None and args.share_dir is None:
         parser.error("--emit-guest-script requires --share-dir")
+    if args.require_wheel_import and args.emit_guest_script is None:
+        parser.error("--require-wheel-import requires --emit-guest-script")
 
     wheels = sorted(args.dist.glob("*.whl"))
     if len(wheels) != 1:
@@ -506,12 +673,18 @@ def main() -> int:
         check_macho_architecture(soldr_bin, arch)
 
     if args.emit_guest_script is not None:
-        # soldr#3076: Recovery has no Python/Xcode CLT, so execution moves
-        # into a generated guest script instead of running here. The
-        # Mach-O/member/wheel checks above already ran, host-side, for every
-        # target including this one.
+        # Recovery has no built-in Python/Xcode CLT, so execution moves into
+        # a generated guest script. A pinned portable CPython makes the wheel
+        # runtime check possible without pretending the Recovery image grew a
+        # compiler or SDK.
         copy_into_share_dir(extract, args.share_dir, suffix)
-        script_text = build_release_guest_script(expected)
+        if not args.require_wheel_import:
+            parser.error(
+                "macOS Recovery smoke must pass --require-wheel-import; "
+                "host-side wheel metadata is not runtime coverage"
+            )
+        wheel_name = stage_macos_wheel_runtime(wheels[0], args.share_dir)
+        script_text = build_release_guest_script(expected, wheel_name)
         args.emit_guest_script.parent.mkdir(parents=True, exist_ok=True)
         args.emit_guest_script.write_text(script_text, encoding="utf-8")
         print(

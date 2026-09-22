@@ -6,6 +6,7 @@ pure functions so they are pinned here instead of being discovered on a
 release run.
 """
 
+import hashlib
 import zipfile
 from pathlib import Path
 
@@ -148,21 +149,74 @@ def test_copy_into_share_dir_fails_when_a_binary_is_missing(tmp_path: Path) -> N
         MODULE.copy_into_share_dir(extract, share, "")
 
 
+def test_stage_macos_wheel_runtime_is_content_addressed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = _write_wheel(tmp_path, version="0.9.10")
+    payload = b"portable cpython archive"
+    observed: dict[str, str] = {}
+
+    def fake_download(url: str, destination: Path, expected_sha256: str) -> None:
+        observed["url"] = url
+        assert expected_sha256 == hashlib.sha256(payload).hexdigest()
+        destination.write_bytes(payload)
+
+    monkeypatch.setattr(MODULE, "download_verified", fake_download)
+    monkeypatch.setattr(MODULE, "MACOS_X64_PYTHON_SHA256", hashlib.sha256(payload).hexdigest())
+    share = tmp_path / "share"
+    staged_name = MODULE.stage_macos_wheel_runtime(wheel, share)
+
+    assert observed["url"] == MODULE.MACOS_X64_PYTHON_URL
+    assert (share / MODULE.MACOS_X64_PYTHON_ARCHIVE).read_bytes() == payload
+    assert staged_name == wheel.name
+    assert (share / wheel.name).read_bytes() == wheel.read_bytes()
+
+
+def test_download_verified_rejects_wrong_portable_python_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _size: int) -> bytes:
+            if getattr(self, "done", False):
+                return b""
+            self.done = True
+            return b"wrong bytes"
+
+    monkeypatch.setattr(MODULE.urllib.request, "urlopen", lambda *_args, **_kwargs: _Response())
+    with pytest.raises(SystemExit, match="SHA-256 mismatch"):
+        MODULE.download_verified("https://example.invalid/python.tar.gz", tmp_path / "python.tar.gz", "0" * 64)
+
+
 def test_build_release_guest_script_fetches_every_binary_by_basename() -> None:
-    script = MODULE.build_release_guest_script("0.9.11")
+    script = MODULE.build_release_guest_script(
+        "0.9.11", "soldr-0.9.11-cp310-abi3-macosx_11_0_x86_64.whl"
+    )
     assert script.startswith("#!/bin/sh")
     for name, _check in MODULE.GUEST_BINARY_CHECKS:
         assert f"curl -fsS -o /tmp/{name} {MODULE.GUEST_HTTP_BASE}/{name}" in script
+    assert MODULE.MACOS_X64_PYTHON_ARCHIVE in script
+    assert "-m pip install --no-index" in script
+    assert "import soldr._native" in script
     assert 'exit "$FAIL"' in script
 
 
 def test_build_release_guest_script_checks_the_expected_version() -> None:
-    script = MODULE.build_release_guest_script("0.9.11")
+    script = MODULE.build_release_guest_script(
+        "0.9.11", "soldr-0.9.11-cp310-abi3-macosx_11_0_x86_64.whl"
+    )
     assert '"soldr_version": "0.9.11"' in script
 
 
 def test_build_release_guest_script_help_check_for_daemon() -> None:
-    script = MODULE.build_release_guest_script("0.9.11")
+    script = MODULE.build_release_guest_script(
+        "0.9.11", "soldr-0.9.11-cp310-abi3-macosx_11_0_x86_64.whl"
+    )
     assert "/tmp/soldr-daemon --help" in script
     assert 'echo "soldr-daemon_help=pass"' in script
 
@@ -189,6 +243,17 @@ def _passing_summary_lines() -> list[str]:
         lines.append(f"fetch_{name}=pass")
         lines.append(f"{name}_{check}=pass:ok")
     lines.append('soldr_version_json=pass:{"soldr_version": "0.9.11"}')
+    lines.extend(
+        [
+            "fetch_python_runtime=pass",
+            "fetch_wheel=pass",
+            "python_runtime=pass:Python 3.13.15",
+            "wheel_install=pass",
+            "wheel_import=pass:soldr._native",
+            "wheel_version=pass:soldr 0.9.11",
+            'wheel_version_json=pass:{"soldr_version": "0.9.11"}',
+        ]
+    )
     return lines
 
 
