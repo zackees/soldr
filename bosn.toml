@@ -68,6 +68,14 @@ cmd = "cd /repo && uv run --no-project --with pytest pytest -q tests/test_macos_
 stack = "cook"
 cmd = "cd /repo && uv run --no-project --with 'ruff==0.12.12' ruff check ci/macos_recovery_run.py tests/test_macos_recovery_run.py tests/test_macos_recovery_lane_contract.py"
 
+[task.macos-arm64-release-contract]
+stack = "cook"
+cmd = "cd /repo && uv run --no-project --with pytest pytest -q tests/test_release_execution_contract.py tests/test_release_completeness.py tests/test_canonical_target_contract.py tests/test_cross_compile_workflows.py tests/test_release_yaml_ratchet.py && uv run --no-project --python 3.13 --with pyyaml python .github/scripts/check_workflow_python_pin.py"
+
+[task.macos-arm64-release-contract-lint]
+stack = "cook"
+cmd = "cd /repo && uv run --no-project --with 'ruff==0.12.12' ruff check .github/scripts/release_completeness.py tests/test_release_execution_contract.py"
+
 [task.ci-test-report-unit]
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-daemon ci_test_report && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli ci_test::execute::tests::report_summary_groups_repeated_normalized_identities"

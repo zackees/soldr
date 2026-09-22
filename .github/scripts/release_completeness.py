@@ -25,12 +25,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = REPO_ROOT / "ci" / "canonical-targets.json"
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 NPM_PACKAGE = "@zackees/soldr"
 PYPI_PROJECT = "soldr"
 GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "zackees/soldr")
@@ -57,6 +59,80 @@ def included_triples(contract_path: Path = CONTRACT) -> list[str]:
         for entry in data["targets"]
         if entry["release"]["status"] == "included"
     ]
+
+
+def _workflow_job(workflow: str, name: str) -> str | None:
+    match = re.search(
+        rf"^  {re.escape(name)}:\s*$(.*?)(?=^  [\w-]+:\s*$|\Z)",
+        workflow,
+        re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1) if match else None
+
+
+def _job_needs(job: str, dependency: str) -> bool:
+    scalar_or_inline = re.search(
+        r"^[ \t]+needs:[ \t]*(\S.*?)[ \t]*$", job, re.MULTILINE
+    )
+    if scalar_or_inline:
+        value = scalar_or_inline.group(1).strip()
+        if value.startswith("[") and value.endswith("]"):
+            return dependency in {
+                item.strip().strip("'\"") for item in value[1:-1].split(",")
+            }
+        return value.strip("'\"") == dependency
+    block = re.search(
+        r"^[ \t]+needs:[ \t]*$\n(?P<items>(?:[ \t]+-[ \t]+[^\n]+\n?)*)",
+        job,
+        re.MULTILINE,
+    )
+    if not block:
+        return False
+    return dependency in {
+        line.split("-", 1)[1].strip().strip("'\"")
+        for line in block.group("items").splitlines()
+    }
+
+
+def release_execution_failures(
+    contract_path: Path = CONTRACT, ci_workflow_path: Path = CI_WORKFLOW
+) -> list[str]:
+    """Return release-blocking canonical targets that still lack execution."""
+
+    data = json.loads(contract_path.read_text(encoding="utf-8"))
+    failures = []
+    for entry in data["targets"]:
+        release = entry["release"]
+        gate = release.get("execution_gate")
+        if release["status"] != "included" or not isinstance(gate, dict):
+            continue
+        if gate.get("required") is not True:
+            continue
+        run_job = entry["ci"].get("run_job")
+        prefix = (
+            f"{entry['triple']}: release execution required by "
+            f"soldr#{gate.get('issue')}"
+        )
+        if not isinstance(run_job, str) or not run_job.strip():
+            failures.append(f"{prefix} but ci.run_job is missing")
+            continue
+        workflow = ci_workflow_path.read_text(encoding="utf-8")
+        job = _workflow_job(workflow, run_job)
+        if job is None:
+            failures.append(f"{prefix} but ci.run_job {run_job!r} does not exist")
+            continue
+        build_job = entry["ci"].get("build_job")
+        if (
+            entry["triple"] not in job
+            or "./.github/workflows/_ci-target-run.yml" not in job
+            or not isinstance(build_job, str)
+            or not _job_needs(job, build_job)
+        ):
+            failures.append(
+                f"{prefix} but ci.run_job {run_job!r} is not a target-matched "
+                "replay attached to its build job"
+            )
+    return failures
 
 
 def build_matrix(contract_path: Path = CONTRACT) -> list[dict[str, str]]:
@@ -170,9 +246,23 @@ def main(argv: list[str] | None = None) -> int:
         "array for `strategy.matrix.include`, no network access "
         "(soldr#2469 step 2.1)",
     )
+    parser.add_argument(
+        "--verify-execution-contract",
+        action="store_true",
+        help="fail when a release-blocking target still has no execution job",
+    )
     opts = parser.parse_args(argv)
     if opts.build_matrix:
         print(json.dumps(build_matrix(), separators=(",", ":")))
+        return 0
+    if opts.verify_execution_contract:
+        failures = release_execution_failures()
+        if failures:
+            print("release execution contract is BLOCKED:", file=sys.stderr)
+            for failure in failures:
+                print(f"  - {failure}", file=sys.stderr)
+            return 1
+        print("release execution contract complete")
         return 0
     if not opts.version:
         parser.error("--version is required except with --build-matrix")
