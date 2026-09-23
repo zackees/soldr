@@ -32,6 +32,7 @@ def test_summary_keeps_unmeasured_capabilities_explicit():
     assert report["timings"]["iso_download_seconds"] is None
     assert report["timings"]["runtime_prep_seconds"] is None
     assert report["timings"]["runtime_install_seconds"] is None
+    assert report["timings"]["git_prep_seconds"] is None
 
 
 def test_vc_redist_download_is_pinned_and_rejects_drift(tmp_path, monkeypatch):
@@ -48,6 +49,22 @@ def test_vc_redist_download_is_pinned_and_rejects_drift(tmp_path, monkeypatch):
         assert "sha256" in str(exc).lower()
     else:
         raise AssertionError("redistributable checksum drift must fail")
+
+
+def test_mingit_download_is_pinned_and_rejects_drift(tmp_path, monkeypatch):
+    payload = b"test MinGit archive"
+    expected = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *_args, **_kwargs: BytesIO(payload)
+    )
+    probe._fetch_mingit(tmp_path, expected_sha256=expected)
+    assert (tmp_path / "mingit.zip").read_bytes() == payload
+    try:
+        probe._fetch_mingit(tmp_path, expected_sha256="0" * 64)
+    except OSError as exc:
+        assert "sha256" in str(exc).lower()
+    else:
+        raise AssertionError("MinGit checksum drift must fail")
 
 
 def test_summary_requires_real_replay_counts_for_go():
@@ -288,7 +305,7 @@ def test_shell_and_replay_have_distinct_timestamps(tmp_path, monkeypatch):
     monkeypatch.setattr(probe.time, "sleep", lambda _: None)
     clock = iter([100.0, 105.0, 107.0, 110.0])
     monkeypatch.setattr(probe.time, "time", lambda: next(clock))
-    marker_times = iter([107.0, 107.5, 108.0, 110.0])
+    marker_times = iter([107.0, 107.5, 108.0, 108.2, 108.7, 110.0])
     monkeypatch.setattr(probe, "_host_created_at", lambda *_: next(marker_times))
     shared = tmp_path / "scratch" / "shared"
 
@@ -313,6 +330,10 @@ def test_shell_and_replay_have_distinct_timestamps(tmp_path, monkeypatch):
             elif inspections == 3:
                 (shared / "runtime-ready.txt").write_text("ready")
             elif inspections == 4:
+                (shared / "git-install-start.txt").write_text("ready")
+            elif inspections == 5:
+                (shared / "tools-ready.txt").write_text("ready")
+            elif inspections == 6:
                 (shared / "guest-result.json").write_text(
                     json.dumps(
                         {
@@ -343,7 +364,8 @@ def test_shell_and_replay_have_distinct_timestamps(tmp_path, monkeypatch):
     assert report["timings"]["usable_shell_seconds"] == 2
     assert report["timings"]["runtime_prep_seconds"] == 0.5
     assert report["timings"]["runtime_install_seconds"] == 0.5
-    assert report["timings"]["replay_seconds"] == 2
+    assert report["timings"]["git_prep_seconds"] == 0.5
+    assert round(report["timings"]["replay_seconds"], 1) == 1.3
     assert report["decision"] == "go"
     assert (
         json.loads((tmp_path / "windows-guest-raw-result.json").read_text())["nextest"][
@@ -492,3 +514,14 @@ def test_guest_native_stderr_cannot_abort_nextest_replay():
     assert guest.index("$exitCode = $LASTEXITCODE") < guest.index(
         "$ErrorActionPreference = $savedErrorActionPreference"
     )
+
+
+def test_guest_stages_mingit_before_full_selected_replay():
+    guest = (ROOT / "ci" / "windows_guest_probe.ps1").read_text()
+    assert "mingit.zip" in guest
+    assert "Expand-Archive" in guest
+    assert "cmd\\git.exe" in guest
+    assert "tools-ready.txt" in guest
+    assert guest.index("Expand-Archive") < guest.index("& $nextest nextest run")
+    assert "package(soldr-core)" in guest
+    assert "not test(" not in guest

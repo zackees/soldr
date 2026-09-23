@@ -53,6 +53,18 @@ public static class ProbeWin32 {
     }
     'ready' | Set-Content -Path 'Z:\runtime-ready.txt' -Encoding ASCII
 
+    $mingitArchive = 'Z:\mingit.zip'
+    if (-not (Test-Path $mingitArchive)) { throw 'verified MinGit archive is missing from Z:' }
+    $mingitRoot = Join-Path $env:TEMP 'soldr-probe-mingit'
+    'ready' | Set-Content -Path 'Z:\git-install-start.txt' -Encoding ASCII
+    Expand-Archive -LiteralPath $mingitArchive -DestinationPath $mingitRoot -Force
+    $git = Join-Path $mingitRoot 'cmd\git.exe'
+    if (-not (Test-Path $git)) { throw 'MinGit archive did not contain cmd\git.exe' }
+    $env:PATH = "$mingitRoot\cmd;$env:PATH"
+    $result.capabilities.git = (& $git --version | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0) { throw 'MinGit failed its native version check' }
+    'ready' | Set-Content -Path 'Z:\tools-ready.txt' -Encoding ASCII
+
     $nextest = 'Z:\cargo-nextest.exe'
     $archive = 'Z:\tests.tar.zst'
     $workspace = 'Z:\workspace'

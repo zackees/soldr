@@ -14,6 +14,12 @@ its Microsoft Authenticode signature in the guest before an unattended
 install. The original `vcruntime140` capability records the cold image;
 `vcruntime140_after` records whether the installer supplied it. No installer
 or guest disk is committed or cached.
+Server Core also lacks `git.exe`: four of the 43 selected `soldr-core`
+tests failed on `git init` in the first nonempty replay. The probe stages
+[official MinGit v2.55.0(5)](https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.5)
+with the release asset's SHA-256 pin, extracts it into the ephemeral guest,
+and runs the same test selection without exclusions. The report measures
+this preparation separately from VC++ installation and Nextest replay.
 
 Run it from Actions → **Windows guest feasibility probe** → Run workflow. The
 report and container log are in the job summary and the
