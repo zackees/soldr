@@ -199,7 +199,9 @@ def test_source_driver_reuse_is_exact_sha_opportunistic_and_fails_closed() -> No
 
     assert "steps.source_driver_download.outcome == 'success'" in verify
     assert "continue-on-error: true" in verify
-    assert 'expected_sha="${{ github.sha }}"' in verify
+    # A full dispatch checks out the explicit candidate rather than the dispatch
+    # branch; provenance must follow that source ref, with github.sha as fallback.
+    assert 'expected_sha="${{ inputs.source_ref != \'\' && inputs.source_ref || github.sha }}"' in verify
     assert 'actual_sha=$(<"$artifact_dir/source-sha")' in verify
     assert '[[ "$actual_sha" == "$expected_sha" ]]' in verify
     assert verify.index('[[ "$actual_sha" == "$expected_sha" ]]') < verify.index(
