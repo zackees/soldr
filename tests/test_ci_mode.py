@@ -212,6 +212,19 @@ def test_current_full_contract_requires_both_macos_execution_jobs() -> None:
     assert COVERAGE.coverage_failures(contract, needs) == ["e2e-macos-arm64: skipped"]
 
 
+def test_native_arm_replay_provisions_rust_objcopy_runtime_before_tests() -> None:
+    target_run = (ROOT / ".github" / "workflows" / "_ci-target-run.yml").read_text()
+    provision = target_run.index("- name: Provision native ARM rust-objcopy runtime")
+    replay = target_run.index("- name: Run owned pre-built native tests")
+    assert provision < replay
+    step = target_run[provision:replay]
+    assert "inputs.target == 'aarch64-apple-darwin'" in step
+    assert "python .github/scripts/provision_macos_objcopy.py" in step
+    assert '--soldr "$SOLDR_BIN"' in step
+    assert '--channel "$RUSTUP_TOOLCHAIN"' in step
+    assert '--rustc "$RUSTC"' in step
+
+
 def test_macos_runner_modes_are_opt_in_and_architecture_matched() -> None:
     contract = json.loads((ROOT / "ci" / "canonical-targets.json").read_text())
     mac_targets = {target["triple"]: target["ci"] for target in contract["targets"] if "apple-darwin" in target["triple"]}

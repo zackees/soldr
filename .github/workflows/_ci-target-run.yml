@@ -330,6 +330,18 @@ jobs:
             echo "- Package manager: \`$package_manager_version\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # soldr#3344: native Apple Silicon replay runs nested Cargo fixtures.
+      # Run 35912103617 found that this host's pinned rust-objcopy existed but
+      # aborted because its matching libLLVM.dylib was absent. llvm-tools-preview
+      # supplies that runtime. Verify the executable now so the expensive test
+      # replay cannot fail several minutes later with an opaque strip warning.
+      - name: Provision native ARM rust-objcopy runtime
+        if: ${{ inputs.target == 'aarch64-apple-darwin' && inputs.target_execution != 'x86_64-recovery' }}
+        shell: bash
+        run: >-
+          python .github/scripts/provision_macos_objcopy.py
+          --soldr "$SOLDR_BIN" --channel "$RUSTUP_TOOLCHAIN" --rustc "$RUSTC"
+
       # soldr#2933 (phase 1 of soldr#2931): name the volume, before anything
       # writes to it.
       #
