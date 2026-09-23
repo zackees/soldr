@@ -70,10 +70,10 @@ def make_report(
         name: (guest or {}).get("capabilities", {}).get(name, "not-measured")
         for name in CAPABILITY_NAMES
     }
-    if not host.get("kvm"):
-        reason = "KVM is unavailable on this runner"
-    elif host.get("probe_error"):
+    if host.get("probe_error"):
         reason = f"Probe infrastructure error: {host['probe_error']}"
+    elif not host.get("kvm"):
+        reason = "KVM is unavailable on this runner"
     elif not guest:
         reason = "Windows did not reach the probe script within the boot budget"
     elif (
@@ -276,6 +276,50 @@ def _host_created_at(path: Path, started: float) -> float | None:
     return created if started <= created <= time.time() + 1 else None
 
 
+def _prepare_scratch(scratch: Path, *, privileged_root: Path = Path("/mnt")) -> None:
+    """Create the run-owned scratch directory on the runner's large /mnt disk."""
+    try:
+        scratch.mkdir(parents=True)
+    except PermissionError as exc:
+        if scratch.parent != privileged_root:
+            raise
+        # GitHub's Ubuntu runner exposes the large /mnt filesystem but keeps
+        # its top level root-owned. Grant only this unique run directory to the
+        # runner, so normal cleanup can remove every guest byte afterward.
+        _run(
+            "sudo",
+            "install",
+            "-d",
+            "-o",
+            str(os.getuid()),
+            "-g",
+            str(os.getgid()),
+            str(scratch),
+        )
+        if not scratch.is_dir() or not os.access(scratch, os.W_OK):
+            raise PermissionError(
+                f"scratch is not writable after setup: {scratch}"
+            ) from exc
+
+
+def _remove_scratch(
+    scratch: Path, run_id: str, *, privileged_root: Path = Path("/mnt")
+) -> None:
+    """Remove only this run's scratch, even if Docker made children root-owned."""
+    try:
+        shutil.rmtree(scratch)
+    except PermissionError as exc:
+        if scratch.parent != privileged_root or scratch.name != (
+            f"soldr-windows-guest-{run_id}"
+        ):
+            raise
+        _run("sudo", "rm", "-rf", "--", str(scratch))
+        if scratch.exists():
+            raise OSError(
+                f"scratch still exists after privileged cleanup: {scratch}"
+            ) from exc
+
+
 def run_probe(args: argparse.Namespace) -> int:
     repo, artifact, scratch = (
         Path(args.repo).resolve(),
@@ -290,11 +334,7 @@ def run_probe(args: argparse.Namespace) -> int:
     if scratch == output or scratch in output.parents:
         raise ValueError("output must live outside ephemeral guest scratch")
     output.parent.mkdir(parents=True, exist_ok=True)
-    scratch.mkdir(parents=True)
-    host: dict[str, Any] = {
-        "kvm": _kvm_usable(),
-        "free_bytes": shutil.disk_usage(scratch).free,
-    }
+    host: dict[str, Any] = {"kvm": None, "free_bytes": None}
     timings: dict[str, Any] = {}
     guest = None
     disk: dict[str, Any] = {}
@@ -304,6 +344,9 @@ def run_probe(args: argparse.Namespace) -> int:
     result_seen = None
     attempted_container = False
     try:
+        _prepare_scratch(scratch)
+        host["kvm"] = _kvm_usable()
+        host["free_bytes"] = shutil.disk_usage(scratch).free
         if host["kvm"] and host["free_bytes"] >= 32 * 1024**3:
             shared, oem, storage = (
                 scratch / "shared",
@@ -422,8 +465,9 @@ def run_probe(args: argparse.Namespace) -> int:
                 host["cleanup_error"] = str(exc)[:500]
         # All multi-GB guest state is ephemeral and never enters the Actions cache.
         try:
-            shutil.rmtree(scratch)
-        except OSError as exc:
+            if scratch.exists():
+                _remove_scratch(scratch, str(args.run_id))
+        except (OSError, subprocess.CalledProcessError) as exc:
             host["cleanup_error"] = str(exc)[:500]
     report = make_report(host=host, timings=timings, guest=guest, disk=disk)
     if host.get("preflight") == "insufficient disk (<32 GiB)":
