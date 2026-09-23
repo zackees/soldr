@@ -51,12 +51,13 @@ caller chose that exact path.
 
 ## Pruning
 
-`--prune` lists (never deletes without `--apply`) three classes of
+`--prune` lists (never deletes without `--apply`) four classes of
 reclaimable entry: keys under a `RETIRED_PREFIXES` namespace whose producer no
 longer runs, entries on a ref other than `refs/heads/main` (a PR's caches are
 never restored by another PR), and `v0-rust-*` entries on `refs/heads/main`
 that have been superseded by a newer generation of the same shared-key
-lineage. Pruning needs cache ids to call `gh cache delete`, so it requires the
+lineage. It also retires older cook locks within the same target/feature shape
+and older stable-cook hashes within the same target. Pruning needs cache ids to call `gh cache delete`, so it requires the
 live source; `--from-json` fixtures carry no ids.
 
 Usage:
@@ -74,6 +75,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -438,6 +440,11 @@ GENERATION_KEY_PREFIXES = (
     "dylint-foundation-",
 )
 
+COOK_KEY = re.compile(
+    r"^cook-(base|delta)-v2-(.+-f[0-9a-f]+)-l([0-9a-f]+)-soldr([0-9.]+)(?:-s[0-9a-f]+-g[0-9a-f]+)?$"
+)
+STABLE_COOK_KEY = re.compile(r"^(stable-cook-v2-.+)-([0-9a-f]{64})$")
+
 
 def strip_shared_key_hash(key: str) -> str:
     """Drop a generation key's trailing `-<hash|run id>` segment."""
@@ -481,6 +488,42 @@ def prune_candidates(entries: list[CacheEntry]) -> list[CacheEntry]:
         for entry in group_entries:
             if entry is not newest:
                 candidates.append(entry)
+
+    # A cook lock generation is superseded only within the same target,
+    # toolchain, feature shape, and Soldr version. A unique shape remains
+    # restorable even if another shape was written later. The newest base's
+    # lock is authoritative; its older bases and deltas are obsolete together.
+    cook_bases: dict[tuple[str, str], list[tuple[CacheEntry, str]]] = {}
+    for entry in on_main:
+        match = COOK_KEY.fullmatch(entry.key)
+        if match and match.group(1) == "base":
+            cook_bases.setdefault((match.group(2), match.group(4)), []).append(
+                (entry, match.group(3))
+            )
+    current_locks: dict[tuple[str, str], str] = {}
+    for lineage, bases in cook_bases.items():
+        newest, lock = max(bases, key=lambda pair: pair[0].created_at or "")
+        if newest.created_at:
+            current_locks[lineage] = lock
+    for entry in on_main:
+        match = COOK_KEY.fullmatch(entry.key)
+        if match and current_locks.get((match.group(2), match.group(4))) not in (
+            None,
+            match.group(3),
+        ):
+            candidates.append(entry)
+
+    # The host lane restores stable-cook by its target prefix. A newer
+    # manifest hash for that target supersedes the previous archive.
+    stable_groups: dict[str, list[CacheEntry]] = {}
+    for entry in on_main:
+        match = STABLE_COOK_KEY.fullmatch(entry.key)
+        if match:
+            stable_groups.setdefault(match.group(1), []).append(entry)
+    for group_entries in stable_groups.values():
+        if len(group_entries) > 1 and all(e.created_at for e in group_entries):
+            newest = max(group_entries, key=lambda e: e.created_at or "")
+            candidates.extend(e for e in group_entries if e is not newest)
 
     return candidates
 
@@ -583,6 +626,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         for entry in candidates:
             print(f"  {entry.key} ({entry.ref}) {entry.size_bytes / GIB:.3f} GiB")
+        candidate_ids = {id(entry) for entry in candidates}
+        effective_entries = [e for e in entries if id(e) not in candidate_ids]
+        if isinstance(budget, dict) and isinstance(budget.get("families"), dict):
+            print("effective after safe prune (projected):")
+            print(build_table(budget, effective_entries, None))
+            effective_problems = budget_problems(
+                args.manifest, manifest, effective_entries
+            )
+            for problem in effective_problems:
+                print(f"  still over budget: {problem}")
         if args.apply:
             failures = apply_prune(candidates, args.repo)
             for failure in failures:

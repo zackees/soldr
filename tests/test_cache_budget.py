@@ -339,3 +339,136 @@ def test_a_lone_bootstrap_driver_per_lineage_is_kept() -> None:
         {**entry("bootstrap-soldr-blessed-linux-gnu-def", 19), "id": 2},
     ]
     assert guard.prune_candidates(guard.normalize_entries(raw)) == []
+
+
+def test_cook_lock_prune_preserves_unique_shapes_and_newest_lock() -> None:
+    def cook(kind: str, shape: str, lock: str, when: str, suffix: str = "") -> dict:
+        return {
+            **entry(
+                f"cook-{kind}-v2-linux-x64-glibc-rustc1.98.1-f{shape}-l{lock}-soldr0.9.21{suffix}",
+                100,
+            ),
+            "createdAt": when,
+        }
+
+    old = "4503d1780e10b133"
+    new = "9506e5de4a14312c"
+    raw = [
+        cook("base", "bf1bfb42", old, "2026-09-22T01:00:00Z"),
+        cook(
+            "delta",
+            "bf1bfb42",
+            old,
+            "2026-09-22T02:00:00Z",
+            "-s4d428effa373-g1415998a4019694e",
+        ),
+        cook("base", "bf1bfb42", new, "2026-09-23T01:00:00Z"),
+        cook("base", "aaa264c8", old, "2026-09-22T01:00:00Z"),
+        cook("base", "aaa264c8", new, "2026-09-23T01:00:00Z"),
+        cook("base", "c0f411d4", old, "2026-09-22T01:00:00Z"),  # unique shape
+        cook("base", "baf623ad", new, "2026-09-23T01:00:00Z"),
+        entry("unknown-cache-prefix", 100),
+    ]
+    candidates = guard.prune_candidates(guard.normalize_entries(raw))
+    assert {e.key for e in candidates} == {raw[i]["key"] for i in (0, 1, 3)}
+
+
+def test_stable_cook_prune_keeps_newest_per_target() -> None:
+    raw = [
+        {
+            **entry("stable-cook-v2-x86_64-unknown-linux-gnu-" + "a" * 64, 100),
+            "createdAt": "2026-09-22T01:00:00Z",
+        },
+        {
+            **entry("stable-cook-v2-x86_64-unknown-linux-gnu-" + "b" * 64, 100),
+            "createdAt": "2026-09-23T01:00:00Z",
+        },
+        {
+            **entry("stable-cook-v2-aarch64-unknown-linux-gnu-" + "c" * 64, 100),
+            "createdAt": "2026-09-22T01:00:00Z",
+        },
+    ]
+    assert [e.key for e in guard.prune_candidates(guard.normalize_entries(raw))] == [
+        raw[0]["key"]
+    ]
+
+
+def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
+    # Approximate the 20:26 listing in MiB; five current shapes, two old
+    # shapes, PR copies, two unit runs, two stable-cook hashes, and residual.
+    mib = 1024**2
+    rows: list[dict] = []
+    shapes = ("bf1bfb42", "c0f411d4", "8a8107f7", "baf623ad", "aaa264c8")
+    for shape in shapes:
+        rows.append(
+            {
+                **entry(
+                    f"cook-base-v2-linux-x64-glibc-rustc1.98.1-f{shape}-l9506e5de4a14312c-soldr0.9.21",
+                    430 * mib,
+                ),
+                "createdAt": "2026-09-23T14:00:00Z",
+            }
+        )
+    for shape in shapes[:2]:
+        rows.append(
+            {
+                **entry(
+                    f"cook-base-v2-linux-x64-glibc-rustc1.98.1-f{shape}-l4503d1780e10b133-soldr0.9.21",
+                    390 * mib,
+                ),
+                "createdAt": "2026-09-22T14:00:00Z",
+            }
+        )
+    for shape in shapes[:3]:
+        rows.append(
+            entry(
+                f"cook-base-v2-linux-x64-glibc-rustc1.98.1-f{shape}-l4503d1780e10b133-soldr0.9.21",
+                400 * mib,
+                "refs/pull/3346/merge",
+            )
+        )
+    rows += [
+        {
+            **entry("zccache-unit-v1-linux-abc-111", 1300 * mib),
+            "createdAt": "2026-09-22T01:00:00Z",
+        },
+        {
+            **entry("zccache-unit-v1-linux-abc-222", 1300 * mib),
+            "createdAt": "2026-09-23T01:00:00Z",
+        },
+        {
+            **entry("stable-cook-v2-x86_64-unknown-linux-gnu-" + "a" * 64, 300 * mib),
+            "createdAt": "2026-09-22T01:00:00Z",
+        },
+        {
+            **entry("stable-cook-v2-x86_64-unknown-linux-gnu-" + "b" * 64, 650 * mib),
+            "createdAt": "2026-09-23T01:00:00Z",
+        },
+        entry("v0-rust-bootstrap-soldr-linux-gnu-dev-abc", 402 * mib),
+        entry("v0-rust-wheel-cross-aarch64-unknown-linux-gnu-release-abc", 602 * mib),
+    ]
+    entries = guard.normalize_entries(rows)
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    assert guard.budget_problems(MANIFEST, manifest, entries)
+    # The existing policy could only reclaim PR copies and the older unit run.
+    old_candidates = [
+        e for e in entries if e.ref != "refs/heads/main" or e.key.endswith("-111")
+    ]
+    assert guard.budget_problems(
+        MANIFEST, manifest, [e for e in entries if e not in old_candidates]
+    )
+    candidates = guard.prune_candidates(entries)
+    effective = [e for e in entries if e not in candidates]
+    problems = guard.budget_problems(MANIFEST, manifest, effective)
+    assert len(candidates) == 7  # PR bases, old cook locks, unit and stable generations
+    assert any("rust-cache-residual" in p for p in problems)
+    # This final producer-sized case is the only one entitled to pass.
+    shrunk = [
+        (
+            e
+            if not e.key.startswith("v0-rust-wheel-cross-")
+            else guard.CacheEntry(e.key, e.ref, 560 * mib)
+        )
+        for e in effective
+    ]
+    assert guard.budget_problems(MANIFEST, manifest, shrunk) == []
