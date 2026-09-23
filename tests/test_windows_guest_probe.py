@@ -1,9 +1,12 @@
 """Contract tests for the dispatch-only Windows guest feasibility probe."""
 
+import hashlib
 import importlib.util
 import json
+import urllib.request
 from argparse import Namespace
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +30,24 @@ def test_summary_keeps_unmeasured_capabilities_explicit():
     assert report["nextest"]["status"] == "not-run"
     assert report["capabilities"]["powershell"] == "not-measured"
     assert report["timings"]["iso_download_seconds"] is None
+    assert report["timings"]["runtime_prep_seconds"] is None
+    assert report["timings"]["runtime_install_seconds"] is None
+
+
+def test_vc_redist_download_is_pinned_and_rejects_drift(tmp_path, monkeypatch):
+    payload = b"test redistributable payload"
+    expected = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *_args, **_kwargs: BytesIO(payload)
+    )
+    probe._fetch_vc_redist(tmp_path, expected_sha256=expected)
+    assert (tmp_path / "vc_redist.x64.exe").read_bytes() == payload
+    try:
+        probe._fetch_vc_redist(tmp_path, expected_sha256="0" * 64)
+    except OSError as exc:
+        assert "sha256" in str(exc).lower()
+    else:
+        raise AssertionError("redistributable checksum drift must fail")
 
 
 def test_summary_requires_real_replay_counts_for_go():
@@ -252,7 +273,7 @@ def test_shell_and_replay_have_distinct_timestamps(tmp_path, monkeypatch):
     monkeypatch.setattr(probe.time, "sleep", lambda _: None)
     clock = iter([100.0, 105.0, 107.0, 110.0])
     monkeypatch.setattr(probe.time, "time", lambda: next(clock))
-    marker_times = iter([107.0, 110.0])
+    marker_times = iter([107.0, 107.5, 108.0, 110.0])
     monkeypatch.setattr(probe, "_host_created_at", lambda *_: next(marker_times))
     shared = tmp_path / "scratch" / "shared"
 
@@ -273,6 +294,10 @@ def test_shell_and_replay_have_distinct_timestamps(tmp_path, monkeypatch):
             if inspections == 1:
                 (shared / "guest-shell-ready.txt").write_text("ready")
             elif inspections == 2:
+                (shared / "runtime-install-start.txt").write_text("ready")
+            elif inspections == 3:
+                (shared / "runtime-ready.txt").write_text("ready")
+            elif inspections == 4:
                 (shared / "guest-result.json").write_text(
                     json.dumps(
                         {
@@ -301,7 +326,9 @@ def test_shell_and_replay_have_distinct_timestamps(tmp_path, monkeypatch):
     assert probe.run_probe(args) == 0
     report = json.loads(output.read_text())
     assert report["timings"]["usable_shell_seconds"] == 2
-    assert report["timings"]["replay_seconds"] == 3
+    assert report["timings"]["runtime_prep_seconds"] == 0.5
+    assert report["timings"]["runtime_install_seconds"] == 0.5
+    assert report["timings"]["replay_seconds"] == 2
     assert report["decision"] == "go"
     assert not shared.exists()
 
@@ -419,3 +446,15 @@ def test_workflow_is_dispatch_only_and_not_a_required_gate():
     assert "schedule:" not in workflow
     assert "_ci-cross-build-linux.yml" in workflow
     assert "windows_guest_probe.py" in workflow
+    assert "windows-guest-nextest.log" in workflow
+    assert "windows-guest-vc-redist.log" in workflow
+
+
+def test_guest_installs_signed_runtime_before_native_replay():
+    guest = (ROOT / "ci" / "windows_guest_probe.ps1").read_text()
+    assert "Get-AuthenticodeSignature" in guest
+    assert "vc_redist.x64.exe" in guest
+    assert "runtime-install-start.txt" in guest
+    assert "runtime-ready.txt" in guest
+    assert guest.index("runtime-install-start.txt") < guest.index("Start-Process")
+    assert guest.index("runtime-ready.txt") < guest.index("& $nextest nextest run")
