@@ -17,6 +17,7 @@ def load_report():
 def run(
     run_id,
     sha,
+    *,
     event="push",
     attempts=1,
     workflow=10,
@@ -50,7 +51,7 @@ def job(job_id, start, end, conclusion="success", labels=None):
     }
 
 
-class FakeAPI:
+class FakeAPI:  # pylint: disable=too-few-public-methods
     def __init__(self, runs, jobs):
         self.runs, self.jobs, self.calls = runs, jobs, []
 
@@ -116,7 +117,7 @@ class CostReportTests(unittest.TestCase):
         m = load_report()
         api = FakeAPI(
             {
-                1: [run(1, "a", attempts=2), run(2, "a", "workflow_dispatch")]
+                1: [run(1, "a", attempts=2), run(2, "a", event="workflow_dispatch")]
                 + [run(n, "other") for n in range(100, 198)],
                 2: [run(3, "b"), run(4, "a", workflow=20)],
                 3: [],
