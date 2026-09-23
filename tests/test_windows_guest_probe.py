@@ -97,6 +97,153 @@ def test_preflight_reports_no_go_and_removes_its_own_scratch(tmp_path, monkeypat
     assert not scratch.exists()
 
 
+def test_root_owned_scratch_parent_is_prepared_for_runner(tmp_path, monkeypatch):
+    scratch = tmp_path / "unique-scratch"
+    mkdir = Path.mkdir
+    calls = []
+
+    def root_owned_mkdir(path, *args, **kwargs):
+        if path == scratch:
+            raise PermissionError("root-owned /mnt")
+        return mkdir(path, *args, **kwargs)
+
+    def fake_run(*command, **_kwargs):
+        calls.append(command)
+        mkdir(scratch)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(Path, "mkdir", root_owned_mkdir)
+    monkeypatch.setattr(probe, "_run", fake_run)
+    probe._prepare_scratch(scratch, privileged_root=tmp_path)
+    assert scratch.is_dir()
+    assert calls == [
+        (
+            "sudo",
+            "install",
+            "-d",
+            "-o",
+            str(probe.os.getuid()),
+            "-g",
+            str(probe.os.getgid()),
+            str(scratch),
+        )
+    ]
+
+
+def test_scratch_setup_error_reports_no_go_and_removes_partial_directory(
+    tmp_path, monkeypatch
+):
+    scratch = tmp_path / "scratch"
+
+    def partial_setup(path):
+        path.mkdir()
+        raise OSError("simulated sudo install failure")
+
+    monkeypatch.setattr(probe, "_prepare_scratch", partial_setup)
+    output = tmp_path / "result.json"
+    args = Namespace(
+        repo=ROOT,
+        artifact=tmp_path,
+        scratch=scratch,
+        output=output,
+        run_id="test",
+        timeout_seconds=1,
+    )
+    assert probe.run_probe(args) == 0
+    report = json.loads(output.read_text())
+    assert report["decision"] == "no-go"
+    assert "simulated sudo install failure" in report["reason"]
+    assert not scratch.exists()
+
+
+def test_root_owned_guest_storage_gets_scoped_privileged_cleanup(tmp_path, monkeypatch):
+    scratch = tmp_path / "soldr-windows-guest-test"
+    scratch.mkdir()
+    rmtree = probe.shutil.rmtree
+    calls = []
+
+    def denied(_path):
+        raise PermissionError("root-owned Docker storage")
+
+    def fake_run(*command, **_kwargs):
+        calls.append(command)
+        rmtree(scratch)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(probe.shutil, "rmtree", denied)
+    monkeypatch.setattr(probe, "_run", fake_run)
+    probe._remove_scratch(scratch, "test", privileged_root=tmp_path)
+    assert not scratch.exists()
+    assert calls == [("sudo", "rm", "-rf", "--", str(scratch))]
+
+
+def test_privileged_cleanup_refuses_unowned_path(tmp_path, monkeypatch):
+    scratch = tmp_path / "unrelated"
+    scratch.mkdir()
+
+    def denied(_path):
+        raise PermissionError("root-owned")
+
+    monkeypatch.setattr(probe.shutil, "rmtree", denied)
+
+    def unexpected_run(*_args, **_kwargs):
+        raise AssertionError("sudo must not remove an unrelated directory")
+
+    monkeypatch.setattr(probe, "_run", unexpected_run)
+    try:
+        probe._remove_scratch(scratch, "test", privileged_root=tmp_path)
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError("unowned scratch path should be rejected")
+
+
+def test_privileged_cleanup_failure_is_not_hidden(tmp_path, monkeypatch):
+    scratch = tmp_path / "soldr-windows-guest-test"
+    scratch.mkdir()
+    rmtree = probe.shutil.rmtree
+
+    def denied(_path):
+        raise PermissionError("root-owned")
+
+    def sudo_denied(*_args, **_kwargs):
+        raise OSError("sudo rm denied")
+
+    monkeypatch.setattr(probe.shutil, "rmtree", denied)
+    monkeypatch.setattr(probe, "_run", sudo_denied)
+    try:
+        probe._remove_scratch(scratch, "test", privileged_root=tmp_path)
+    except OSError as exc:
+        assert "sudo rm denied" in str(exc)
+    else:
+        raise AssertionError("failed privileged cleanup must be reported")
+    finally:
+        rmtree(scratch)
+
+
+def test_scratch_cleanup_failure_is_a_failing_no_go(tmp_path, monkeypatch):
+    scratch = tmp_path / "soldr-windows-guest-test"
+    output = tmp_path / "result.json"
+    monkeypatch.setattr(probe, "_kvm_usable", lambda: False)
+
+    def denied(_path):
+        raise PermissionError("root-owned")
+
+    monkeypatch.setattr(probe.shutil, "rmtree", denied)
+    args = Namespace(
+        repo=ROOT,
+        artifact=tmp_path,
+        scratch=scratch,
+        output=output,
+        run_id="test",
+        timeout_seconds=1,
+    )
+    assert probe.run_probe(args) == 1
+    report = json.loads(output.read_text())
+    assert report["decision"] == "no-go"
+    assert "cleanup failed" in report["reason"].lower()
+
+
 def test_shell_and_replay_have_distinct_timestamps(tmp_path, monkeypatch):
     monkeypatch.setattr(probe, "_kvm_usable", lambda: True)
     monkeypatch.setattr(
