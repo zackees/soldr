@@ -56,9 +56,11 @@ reclaimable entry: keys under a `RETIRED_PREFIXES` namespace whose producer no
 longer runs, entries on a ref other than `refs/heads/main` (a PR's caches are
 never restored by another PR), and `v0-rust-*` entries on `refs/heads/main`
 that have been superseded by a newer generation of the same shared-key
-lineage. It also retires older cook locks within the same target/feature shape
-and older stable-cook hashes within the same target. Pruning needs cache ids to call `gh cache delete`, so it requires the
-live source; `--from-json` fixtures carry no ids.
+lineage. It also retires old cook locks within the same target/feature shape
+only when that shape has a base under the exact current main Cargo.lock hash.
+Stable-cook hashes remain untouched until their full source hash can be proven.
+Pruning needs cache ids to call `gh cache delete`, so it requires the live
+source; `--from-json` fixtures carry no ids.
 
 Usage:
     python .github/scripts/check_cache_budget.py [options]
@@ -73,6 +75,8 @@ Options:
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import pathlib
 import re
@@ -443,7 +447,17 @@ GENERATION_KEY_PREFIXES = (
 COOK_KEY = re.compile(
     r"^cook-(base|delta)-v2-(.+-f[0-9a-f]+)-l([0-9a-f]+)-soldr([0-9.]+)(?:-s[0-9a-f]+-g[0-9a-f]+)?$"
 )
-STABLE_COOK_KEY = re.compile(r"^(stable-cook-v2-.+)-([0-9a-f]{64})$")
+
+
+def fetch_main_lock_hash(repo: str) -> str:
+    """Hash the raw Cargo.lock bytes at the live main ref, not this checkout."""
+    payload = json.loads(run_gh(["api", f"repos/{repo}/contents/Cargo.lock?ref=main"]))
+    if not isinstance(payload, dict) or payload.get("encoding") != "base64":
+        raise ValueError("main Cargo.lock response is not base64 content")
+    encoded = payload.get("content")
+    if not isinstance(encoded, str):
+        raise ValueError("main Cargo.lock response has no content")
+    return hashlib.sha256(base64.b64decode(encoded)).hexdigest()[:16]
 
 
 def strip_shared_key_hash(key: str) -> str:
@@ -454,7 +468,9 @@ def strip_shared_key_hash(key: str) -> str:
     return key[:index] if index != -1 else key
 
 
-def prune_candidates(entries: list[CacheEntry]) -> list[CacheEntry]:
+def prune_candidates(
+    entries: list[CacheEntry], current_main_lock: str | None = None
+) -> list[CacheEntry]:
     """Entries safe to delete: retired prefix, non-main ref, or superseded.
 
     Each entry is classified into exactly the first rule it matches, so the
@@ -491,39 +507,21 @@ def prune_candidates(entries: list[CacheEntry]) -> list[CacheEntry]:
 
     # A cook lock generation is superseded only within the same target,
     # toolchain, feature shape, and Soldr version. A unique shape remains
-    # restorable even if another shape was written later. The newest base's
-    # lock is authoritative; its older bases and deltas are obsolete together.
-    cook_bases: dict[tuple[str, str], list[tuple[CacheEntry, str]]] = {}
+    # restorable even if another shape was written later. The main source's
+    # lock is authoritative even if a rollback makes an older cache current.
+    cook_bases: set[tuple[str, str]] = set()
     for entry in on_main:
         match = COOK_KEY.fullmatch(entry.key)
-        if match and match.group(1) == "base":
-            cook_bases.setdefault((match.group(2), match.group(4)), []).append(
-                (entry, match.group(3))
-            )
-    current_locks: dict[tuple[str, str], str] = {}
-    for lineage, bases in cook_bases.items():
-        newest, lock = max(bases, key=lambda pair: pair[0].created_at or "")
-        if newest.created_at:
-            current_locks[lineage] = lock
+        if match and match.group(1) == "base" and match.group(3) == current_main_lock:
+            cook_bases.add((match.group(2), match.group(4)))
     for entry in on_main:
         match = COOK_KEY.fullmatch(entry.key)
-        if match and current_locks.get((match.group(2), match.group(4))) not in (
-            None,
-            match.group(3),
+        if (
+            match
+            and (match.group(2), match.group(4)) in cook_bases
+            and match.group(3) != current_main_lock
         ):
             candidates.append(entry)
-
-    # The host lane restores stable-cook by its target prefix. A newer
-    # manifest hash for that target supersedes the previous archive.
-    stable_groups: dict[str, list[CacheEntry]] = {}
-    for entry in on_main:
-        match = STABLE_COOK_KEY.fullmatch(entry.key)
-        if match:
-            stable_groups.setdefault(match.group(1), []).append(entry)
-    for group_entries in stable_groups.values():
-        if len(group_entries) > 1 and all(e.created_at for e in group_entries):
-            newest = max(group_entries, key=lambda e: e.created_at or "")
-            candidates.extend(e for e in group_entries if e is not newest)
 
     return candidates
 
@@ -619,7 +617,19 @@ def main(argv: list[str] | None = None) -> int:
         print()
 
     if args.prune:
-        candidates = prune_candidates(entries)
+        try:
+            current_main_lock = fetch_main_lock_hash(args.repo)
+        except (
+            OSError,
+            subprocess.CalledProcessError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as error:
+            print(
+                f"prune: main Cargo.lock unavailable; cook lock pruning disabled ({error})"
+            )
+            current_main_lock = None
+        candidates = prune_candidates(entries, current_main_lock)
         reclaimed = sum(e.size_bytes for e in candidates)
         print(
             f"prune: {len(candidates)} candidate(s), {reclaimed / GIB:.2f} GiB reclaimable"

@@ -14,6 +14,8 @@ style as `tests/test_cache_ownership.py`.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 from pathlib import Path
 
@@ -369,11 +371,11 @@ def test_cook_lock_prune_preserves_unique_shapes_and_newest_lock() -> None:
         cook("base", "baf623ad", new, "2026-09-23T01:00:00Z"),
         entry("unknown-cache-prefix", 100),
     ]
-    candidates = guard.prune_candidates(guard.normalize_entries(raw))
+    candidates = guard.prune_candidates(guard.normalize_entries(raw), new)
     assert {e.key for e in candidates} == {raw[i]["key"] for i in (0, 1, 3)}
 
 
-def test_stable_cook_prune_keeps_newest_per_target() -> None:
+def test_stable_cook_prune_keeps_both_without_source_hash() -> None:
     raw = [
         {
             **entry("stable-cook-v2-x86_64-unknown-linux-gnu-" + "a" * 64, 100),
@@ -388,9 +390,7 @@ def test_stable_cook_prune_keeps_newest_per_target() -> None:
             "createdAt": "2026-09-22T01:00:00Z",
         },
     ]
-    assert [e.key for e in guard.prune_candidates(guard.normalize_entries(raw))] == [
-        raw[0]["key"]
-    ]
+    assert guard.prune_candidates(guard.normalize_entries(raw)) == []
 
 
 def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
@@ -457,12 +457,19 @@ def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
     assert guard.budget_problems(
         MANIFEST, manifest, [e for e in entries if e not in old_candidates]
     )
-    candidates = guard.prune_candidates(entries)
+    candidates = guard.prune_candidates(entries, "9506e5de4a14312c")
     effective = [e for e in entries if e not in candidates]
     problems = guard.budget_problems(MANIFEST, manifest, effective)
-    assert len(candidates) == 7  # PR bases, old cook locks, unit and stable generations
+    assert len(candidates) == 6  # PR bases, old cook locks, and old unit generation
     assert any("rust-cache-residual" in p for p in problems)
-    # This final producer-sized case is the only one entitled to pass.
+    assert any("zccache-unit" in p for p in problems)
+    # Once the stable-cook producer retires its old archive and the residual
+    # producer shrinks, and only then, the fixture fits every family.
+    effective = [
+        e
+        for e in effective
+        if e.key != "stable-cook-v2-x86_64-unknown-linux-gnu-" + "a" * 64
+    ]
     shrunk = [
         (
             e
@@ -472,3 +479,42 @@ def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
         for e in effective
     ]
     assert guard.budget_problems(MANIFEST, manifest, shrunk) == []
+
+
+def test_cook_rollback_uses_main_lock_not_creation_time() -> None:
+    base = "cook-base-v2-linux-x64-glibc-rustc1.98.1-fbf1bfb42-l{}-soldr0.9.21"
+    old = {
+        **entry(base.format("4503d1780e10b133"), 100),
+        "createdAt": "2026-09-24T01:00:00Z",
+    }
+    current = {
+        **entry(base.format("9506e5de4a14312c"), 100),
+        "createdAt": "2026-09-23T01:00:00Z",
+    }
+    entries = guard.normalize_entries([old, current])
+    assert [e.key for e in guard.prune_candidates(entries, "9506e5de4a14312c")] == [
+        old["key"]
+    ]
+    assert [e.key for e in guard.prune_candidates(entries, "4503d1780e10b133")] == [
+        current["key"]
+    ]
+    assert guard.prune_candidates(entries) == []
+
+
+def test_main_lock_hash_uses_remote_raw_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
+    lock_bytes = b"# exact source bytes\nversion = 4\n"
+    response = json.dumps(
+        {"encoding": "base64", "content": base64.b64encode(lock_bytes).decode()}
+    )
+    calls: list[list[str]] = []
+
+    def fake_gh(args: list[str]) -> str:
+        calls.append(args)
+        return response
+
+    monkeypatch.setattr(guard, "run_gh", fake_gh)
+    assert (
+        guard.fetch_main_lock_hash("zackees/soldr")
+        == hashlib.sha256(lock_bytes).hexdigest()[:16]
+    )
+    assert calls == [["api", "repos/zackees/soldr/contents/Cargo.lock?ref=main"]]
