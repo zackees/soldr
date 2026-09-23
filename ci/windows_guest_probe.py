@@ -76,6 +76,7 @@ def make_report(
                 total += value
         measured["usable_shell_seconds"] = total
     nextest = (guest or {}).get("nextest") or {"status": "not-run"}
+    guest_error = str((guest or {}).get("error") or "")[:500]
     capabilities = {
         name: (guest or {}).get("capabilities", {}).get(name, "not-measured")
         for name in CAPABILITY_NAMES
@@ -86,6 +87,8 @@ def make_report(
         reason = "KVM is unavailable on this runner"
     elif not guest:
         reason = "Windows did not reach the probe script within the boot budget"
+    elif guest_error:
+        reason = f"Windows guest probe failed: {guest_error}"
     elif (
         nextest.get("exit_code") != 0
         or nextest.get("run", 0) <= 0
@@ -110,6 +113,7 @@ def make_report(
         "timings": measured,
         "disk": disk,
         "nextest": nextest,
+        "guest_error": guest_error or None,
         "capabilities": capabilities,
         "edition": "Windows Server 2025 Core evaluation",
         "image": IMAGE,
@@ -485,6 +489,7 @@ def run_probe(args: argparse.Namespace) -> int:
         host["probe_error"] = str(exc)[:500]
     finally:
         for guest_name, host_name in (
+            ("guest-result.json", "windows-guest-raw-result.json"),
             ("nextest.log", "windows-guest-nextest.log"),
             ("vc-redist-install.log", "windows-guest-vc-redist.log"),
         ):

@@ -46,6 +46,7 @@ jobs:
           path: |
             ${{ runner.temp }}/windows-guest-report.json
             ${{ runner.temp }}/windows-guest-report.md
+            ${{ runner.temp }}/windows-guest-raw-result.json
             ${{ runner.temp }}/windows-guest-container.log
             ${{ runner.temp }}/windows-guest-nextest.log
             ${{ runner.temp }}/windows-guest-vc-redist.log
