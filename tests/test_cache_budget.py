@@ -390,7 +390,19 @@ def test_stable_cook_prune_keeps_both_without_source_hash() -> None:
             "createdAt": "2026-09-22T01:00:00Z",
         },
     ]
-    assert guard.prune_candidates(guard.normalize_entries(raw)) == []
+    entries = guard.normalize_entries(raw)
+    assert guard.prune_candidates(entries) == []
+    assert guard.prune_candidates(entries, stable_cook_source_hash="invalid") == []
+    assert [
+        e.key for e in guard.prune_candidates(entries, stable_cook_source_hash="b" * 64)
+    ] == [raw[0]["key"]]
+    # Source rollback: the older-created archive is current; the newer one
+    # may be retired only because GitHub's exact source hash says so.
+    assert [
+        e.key for e in guard.prune_candidates(entries, stable_cook_source_hash="a" * 64)
+    ] == [raw[1]["key"]]
+    # Another target's unique archive is always retained.
+    assert guard.prune_candidates(entries, stable_cook_source_hash="d" * 64) == []
 
 
 def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
@@ -457,19 +469,15 @@ def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
     assert guard.budget_problems(
         MANIFEST, manifest, [e for e in entries if e not in old_candidates]
     )
-    candidates = guard.prune_candidates(entries, "9506e5de4a14312c")
+    candidates = guard.prune_candidates(entries, "9506e5de4a14312c", "b" * 64)
     effective = [e for e in entries if e not in candidates]
     problems = guard.budget_problems(MANIFEST, manifest, effective)
-    assert len(candidates) == 6  # PR bases, old cook locks, and old unit generation
+    assert (
+        len(candidates) == 7
+    )  # PR bases, old cook locks, old unit and stable generations
     assert any("rust-cache-residual" in p for p in problems)
-    assert any("zccache-unit" in p for p in problems)
-    # Once the stable-cook producer retires its old archive and the residual
-    # producer shrinks, and only then, the fixture fits every family.
-    effective = [
-        e
-        for e in effective
-        if e.key != "stable-cook-v2-x86_64-unknown-linux-gnu-" + "a" * 64
-    ]
+    assert not any("zccache-unit" in p for p in problems)
+    # Only after the residual producer shrinks does every family fit.
     shrunk = [
         (
             e
@@ -518,3 +526,26 @@ def test_main_lock_hash_uses_remote_raw_bytes(monkeypatch: pytest.MonkeyPatch) -
         == hashlib.sha256(lock_bytes).hexdigest()[:16]
     )
     assert calls == [["api", "repos/zackees/soldr/contents/Cargo.lock?ref=main"]]
+
+
+def test_main_sha_resolves_live_ref(monkeypatch: pytest.MonkeyPatch) -> None:
+    sha = "a" * 40
+    monkeypatch.setattr(
+        guard,
+        "run_gh",
+        lambda args: (
+            json.dumps({"object": {"sha": sha}})
+            if args == ["api", "repos/zackees/soldr/git/ref/heads/main"]
+            else "{}"
+        ),
+    )
+    assert guard.fetch_main_sha("zackees/soldr") == sha
+
+
+def test_stable_cook_source_hash_matches_producer_expression() -> None:
+    producer = (REPO_ROOT / ".github/workflows/_build-and-test.yml").read_text()
+    sweep = (REPO_ROOT / ".github/workflows/cache-budget.yml").read_text()
+    expression = "hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml')"
+    assert expression in producer
+    assert expression in sweep
+    assert "if: github.ref == 'refs/heads/main'" in sweep

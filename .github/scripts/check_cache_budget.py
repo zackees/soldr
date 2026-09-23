@@ -58,7 +58,9 @@ never restored by another PR), and `v0-rust-*` entries on `refs/heads/main`
 that have been superseded by a newer generation of the same shared-key
 lineage. It also retires old cook locks within the same target/feature shape
 only when that shape has a base under the exact current main Cargo.lock hash.
-Stable-cook hashes remain untouched until their full source hash can be proven.
+Stable-cook hashes are retired within the same target only when a current
+archive matches GitHub Actions' exact `hashFiles(...)` result from a main
+checkout. A stale checkout or missing current archive retains every version.
 Pruning needs cache ids to call `gh cache delete`, so it requires the live
 source; `--from-json` fixtures carry no ids.
 
@@ -78,6 +80,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -447,6 +450,7 @@ GENERATION_KEY_PREFIXES = (
 COOK_KEY = re.compile(
     r"^cook-(base|delta)-v2-(.+-f[0-9a-f]+)-l([0-9a-f]+)-soldr([0-9.]+)(?:-s[0-9a-f]+-g[0-9a-f]+)?$"
 )
+STABLE_COOK_KEY = re.compile(r"^(stable-cook-v2-.+)-([0-9a-f]{64})$")
 
 
 def fetch_main_lock_hash(repo: str) -> str:
@@ -460,6 +464,15 @@ def fetch_main_lock_hash(repo: str) -> str:
     return hashlib.sha256(base64.b64decode(encoded)).hexdigest()[:16]
 
 
+def fetch_main_sha(repo: str) -> str:
+    """Return the current main commit to verify a workflow checkout is current."""
+    payload = json.loads(run_gh(["api", f"repos/{repo}/git/ref/heads/main"]))
+    sha = payload.get("object", {}).get("sha") if isinstance(payload, dict) else None
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError("main ref response has no commit SHA")
+    return sha
+
+
 def strip_shared_key_hash(key: str) -> str:
     """Drop a generation key's trailing `-<hash|run id>` segment."""
     if not key.startswith(GENERATION_KEY_PREFIXES):
@@ -469,7 +482,9 @@ def strip_shared_key_hash(key: str) -> str:
 
 
 def prune_candidates(
-    entries: list[CacheEntry], current_main_lock: str | None = None
+    entries: list[CacheEntry],
+    current_main_lock: str | None = None,
+    stable_cook_source_hash: str | None = None,
 ) -> list[CacheEntry]:
     """Entries safe to delete: retired prefix, non-main ref, or superseded.
 
@@ -522,6 +537,27 @@ def prune_candidates(
             and match.group(3) != current_main_lock
         ):
             candidates.append(entry)
+
+    # The host lane's exact hashFiles result identifies the current archive.
+    # Keep all versions if the source hash is unavailable or if no current
+    # archive exists for a target, including after a source rollback.
+    if stable_cook_source_hash and re.fullmatch(
+        r"[0-9a-f]{64}", stable_cook_source_hash
+    ):
+        current_targets = {
+            match.group(1)
+            for entry in on_main
+            if (match := STABLE_COOK_KEY.fullmatch(entry.key))
+            and match.group(2) == stable_cook_source_hash
+        }
+        for entry in on_main:
+            match = STABLE_COOK_KEY.fullmatch(entry.key)
+            if (
+                match
+                and match.group(1) in current_targets
+                and match.group(2) != stable_cook_source_hash
+            ):
+                candidates.append(entry)
 
     return candidates
 
@@ -629,7 +665,28 @@ def main(argv: list[str] | None = None) -> int:
                 f"prune: main Cargo.lock unavailable; cook lock pruning disabled ({error})"
             )
             current_main_lock = None
-        candidates = prune_candidates(entries, current_main_lock)
+        stable_cook_source_hash = os.environ.get("STABLE_COOK_SOURCE_HASH")
+        checkout_sha = os.environ.get("STABLE_COOK_SOURCE_SHA")
+        if stable_cook_source_hash:
+            try:
+                if not checkout_sha or checkout_sha != fetch_main_sha(args.repo):
+                    print(
+                        "prune: checkout is not current main; stable-cook pruning disabled"
+                    )
+                    stable_cook_source_hash = None
+            except (
+                OSError,
+                subprocess.CalledProcessError,
+                json.JSONDecodeError,
+                ValueError,
+            ) as error:
+                print(
+                    f"prune: main SHA unavailable; stable-cook pruning disabled ({error})"
+                )
+                stable_cook_source_hash = None
+        candidates = prune_candidates(
+            entries, current_main_lock, stable_cook_source_hash
+        )
         reclaimed = sum(e.size_bytes for e in candidates)
         print(
             f"prune: {len(candidates)} candidate(s), {reclaimed / GIB:.2f} GiB reclaimable"
