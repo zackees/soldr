@@ -21,13 +21,19 @@ pub(crate) async fn freeze(
     let cwd = std::env::current_dir()?;
     let root = crate::cook::resolve_manifest_dir(&cwd)?;
     reject_non_host_target(&root)?;
-    let host = TargetTriple::host()?.triple().to_string();
-    if let Some(target) = &invocation.requested_target {
-        if target != &host {
-            return Err(SoldrError::Other(format!(
-                "soldr ci-test: --target {target:?} is incompatible with the frozen host-validation domain ({host}); use `soldr cargo ...` for a separate target domain"
-            )));
-        }
+    let host = TargetTriple::host()?.triple();
+    let target = invocation
+        .requested_target
+        .clone()
+        .unwrap_or_else(|| host.clone());
+    // A matching OS and architecture do not prove ABI compatibility: a musl
+    // host need not have the glibc loader for a GNU target, for example.
+    // Additional host-executable triples need an explicit verified registry.
+    let host_executable = target == host;
+    if !host_executable && !invocation.no_run {
+        return Err(SoldrError::Other(format!(
+            "soldr ci-test: no executor registered for target {target}; use `soldr ci-test --no-run --target {target}` to compile and archive without executing target tests"
+        )));
     }
     let manifest = crate::core::read_rust_toolchain_manifest(&root)?;
     let stable_toolchain = manifest.channel.ok_or_else(|| {
@@ -38,7 +44,14 @@ pub(crate) async fn freeze(
     })?;
     let nightly = resolve_dylint_plan(&root, &host).await?;
     let target_root = cargo_target_root(&root)?;
-    let stable_target = target_root.join(&host);
+    let stable_target = target_root.join(&target);
+    let archive_file = invocation.no_run.then(|| {
+        target_root
+            .join("ci-test")
+            .join(format!("{target}-tests.tar.zst"))
+            .display()
+            .to_string()
+    });
     let config = cargo_config_paths(&root);
     let rustflags = effective_rustflags();
     let wrapper = wrapper_identity(cache_enabled);
@@ -87,7 +100,7 @@ pub(crate) async fn freeze(
     ));
     let mut clippy = vec!["clippy".into()];
     clippy.extend(workspace_selection(&invocation.scope));
-    clippy.extend(["--all-targets".into(), "--target".into(), host.clone()]);
+    clippy.extend(["--all-targets".into(), "--target".into(), target.clone()]);
     clippy.extend(scope_args.clone());
     clippy.extend(["--".into(), "-D".into(), "warnings".into()]);
     stages.push(stage(
@@ -151,45 +164,44 @@ pub(crate) async fn freeze(
         .iter()
         .map(|lint| format!("dylint-test-{lint}"))
         .collect();
-    for (index, lint) in DYLINTS.iter().enumerate() {
-        let dependency = if index == 0 {
-            "dylint-workspace"
-        } else {
-            dylint_test_names[index - 1].as_str()
-        };
-        stages.push(stage(
-            &dylint_test_names[index],
-            "dylint-ui-tests",
-            COMPILER,
-            cargo_command(
-                &[
-                    "test",
-                    "--manifest-path",
-                    "Cargo.toml",
-                    "--target-dir",
-                    dylint_tests.to_string_lossy().as_ref(),
-                ],
-                &[],
-            ),
-            &[dependency],
-            &root.join("dylints").join(lint),
-        ));
+    if !invocation.no_run {
+        for (index, lint) in DYLINTS.iter().enumerate() {
+            let dependency = if index == 0 {
+                "dylint-workspace"
+            } else {
+                dylint_test_names[index - 1].as_str()
+            };
+            stages.push(stage(
+                &dylint_test_names[index],
+                "dylint-ui-tests",
+                COMPILER,
+                cargo_command(
+                    &[
+                        "test",
+                        "--manifest-path",
+                        "Cargo.toml",
+                        "--target-dir",
+                        dylint_tests.to_string_lossy().as_ref(),
+                    ],
+                    &[],
+                ),
+                &[dependency],
+                &root.join("dylints").join(lint),
+            ));
+        }
     }
     let mut nextest_args = workspace_selection(&invocation.scope);
     nextest_args.extend([
         "--lib".into(),
         "--tests".into(),
         "--target".into(),
-        host.clone(),
+        target.clone(),
         "--test-threads".into(),
         nextest_test_threads.clone(),
     ]);
     nextest_args.extend(scope_args.clone());
 
-    // Compile every test binary before the Dylint branch begins. The
-    // following `nextest` stage has the identical target selection, so Cargo
-    // observes those binaries as Fresh and only executes them while Dylint
-    // performs its independent nightly compilation.
+    // Compile the selected test binaries before executing or archiving them.
     let mut nextest_compile = vec!["nextest".into(), "run".into(), "--no-run".into()];
     nextest_compile.extend(nextest_args.clone());
     stages.push(stage(
@@ -203,49 +215,176 @@ pub(crate) async fn freeze(
     // soldr#3100: one red test must not hide the rest of the suite. Nextest's
     // default fail-fast stopped scheduling after the first failure, so a red
     // run reported only the tests executed until then. The run stage keeps
-    // going; the stage still exits non-zero (nextest's 100) when any test
-    // failed. `--no-run` above makes the flag meaningless on the compile
-    // stage, which is why it is not in the shared `nextest_args`.
-    let mut nextest = vec!["nextest".into(), "run".into(), "--no-fail-fast".into()];
-    nextest.extend(nextest_args);
-    stages.push(stage(
-        "nextest",
-        "stable",
-        TEST,
-        cargo_command(&nextest, &[]),
-        &["nextest-compile"],
-        &root,
-    ));
+    // going; it still exits non-zero when any test failed. `--no-run` makes
+    // the flag meaningless on the compile stage, so it is not shared.
+    if !invocation.no_run {
+        let mut nextest = vec!["nextest".into(), "run".into(), "--no-fail-fast".into()];
+        nextest.extend(nextest_args);
+        stages.push(stage(
+            "nextest",
+            "stable",
+            TEST,
+            cargo_command(&nextest, &[]),
+            &["nextest-compile"],
+            &root,
+        ));
+    }
     let mut doctest = vec!["test".into()];
     doctest.extend(workspace_selection(&invocation.scope));
-    doctest.extend(["--doc".into(), "--target".into(), host.clone()]);
+    doctest.extend(["--doc".into(), "--target".into(), target.clone()]);
     doctest.extend(scope_args.clone());
     let tail_dependencies = tail_join_dependencies(
         dylint_test_names
             .last()
             .expect("the frozen Dylint test inventory is non-empty"),
     );
-    stages.push(stage(
-        "doctests",
-        "rustdoc",
-        COMPILER_AND_TEST,
-        cargo_command(&doctest, &[]),
-        &tail_dependencies,
-        &root,
-    ));
+    if invocation.no_run {
+        let mut archive = vec!["nextest".into(), "archive".into()];
+        archive.extend(workspace_selection(&invocation.scope));
+        archive.extend(["--lib".into(), "--tests".into()]);
+        archive.extend(["--target".into(), target.clone()]);
+        archive.extend(scope_args.clone());
+        archive.extend([
+            "--archive-file".into(),
+            archive_file.clone().expect("no-run has archive path"),
+            "--archive-format".into(),
+            "tar-zst".into(),
+        ]);
+        stages.push(stage(
+            "nextest-archive",
+            "stable",
+            COMPILER,
+            cargo_command(&archive, &[]),
+            &["nextest-compile", "dylint-workspace"],
+            &root,
+        ));
+    } else {
+        stages.push(stage(
+            "doctests",
+            "rustdoc",
+            COMPILER_AND_TEST,
+            cargo_command(&doctest, &[]),
+            &tail_dependencies,
+            &root,
+        ));
+    }
     for (name, args) in [
         ("cargo-deny-bans", vec!["deny", "check", "bans"]),
         ("cargo-audit", vec!["audit"]),
         ("cargo-machete", vec!["machete"]),
     ] {
+        let dependencies: &[&str] = if invocation.no_run {
+            &["nextest-archive"]
+        } else {
+            &tail_dependencies
+        };
         stages.push(stage(
             name,
             "policy",
             POLICY,
             cargo_command(&args, &[]),
-            &tail_dependencies,
+            dependencies,
             &root,
         ));
+    }
+    let mut domains = vec![
+        CompileDomain {
+            id: "stable",
+            family: "stable",
+            toolchain: stable_toolchain.clone(),
+            compiler_release: None,
+            compiler_commit: None,
+            target_triple: target.clone(),
+            target_directory: stable_target.display().to_string(),
+            profile: "test",
+            rustflags: rustflags.clone(),
+            cargo_config: config.clone(),
+            wrapper_identity: wrapper.clone(),
+        },
+        CompileDomain {
+            id: "dylint-libraries",
+            family: "dylint-nightly",
+            toolchain: nightly.channel.clone(),
+            compiler_release: Some(nightly.compiler_release.clone()),
+            compiler_commit: Some(nightly.compiler_commit.clone()),
+            target_triple: host.clone(),
+            target_directory: dylint_libraries.display().to_string(),
+            profile: "release",
+            rustflags: rustflags.clone(),
+            cargo_config: config.clone(),
+            wrapper_identity: wrapper.clone(),
+        },
+        CompileDomain {
+            id: "dylint-analysis",
+            family: "dylint-nightly",
+            toolchain: nightly.channel.clone(),
+            compiler_release: Some(nightly.compiler_release.clone()),
+            compiler_commit: Some(nightly.compiler_commit.clone()),
+            target_triple: host.clone(),
+            target_directory: dylint_analysis.display().to_string(),
+            profile: "dev/check",
+            rustflags: rustflags.clone(),
+            cargo_config: config.clone(),
+            wrapper_identity: wrapper.clone(),
+        },
+    ];
+    if !invocation.no_run {
+        domains.push(CompileDomain {
+            id: "dylint-ui-tests",
+            family: "dylint-nightly",
+            toolchain: nightly.channel.clone(),
+            compiler_release: Some(nightly.compiler_release.clone()),
+            compiler_commit: Some(nightly.compiler_commit.clone()),
+            target_triple: host.clone(),
+            target_directory: dylint_tests.display().to_string(),
+            profile: "test",
+            rustflags: rustflags.clone(),
+            cargo_config: config.clone(),
+            wrapper_identity: wrapper.clone(),
+        });
+        domains.push(CompileDomain {
+            id: "rustdoc",
+            family: "rustdoc",
+            toolchain: stable_toolchain,
+            compiler_release: None,
+            compiler_commit: None,
+            target_triple: target.clone(),
+            target_directory: stable_target.display().to_string(),
+            profile: "test",
+            rustflags,
+            cargo_config: config.clone(),
+            wrapper_identity: wrapper,
+        });
+    }
+    let mut compiler_execution_groups = vec![
+        group("stable-clippy", "stable", vec!["clippy".into()]),
+        group("dylint-libraries", "dylint-libraries", library_names),
+        group(
+            "dylint-workspace",
+            "dylint-analysis",
+            vec!["dylint-workspace".into()],
+        ),
+    ];
+    if !invocation.no_run {
+        compiler_execution_groups.push(group(
+            "dylint-ui-tests",
+            "dylint-ui-tests",
+            dylint_test_names,
+        ));
+    }
+    compiler_execution_groups.push(group(
+        "nextest-compile",
+        "stable",
+        vec!["nextest-compile".into()],
+    ));
+    if invocation.no_run {
+        compiler_execution_groups.push(group(
+            "nextest-archive",
+            "stable",
+            vec!["nextest-archive".into()],
+        ));
+    } else {
+        compiler_execution_groups.push(group("doctests", "rustdoc", vec!["doctests".into()]));
     }
     Ok(CiTestPlan {
         schema_version: PLAN_SCHEMA_VERSION,
@@ -258,84 +397,21 @@ pub(crate) async fn freeze(
             fingerprint: workspace_metadata_fingerprint(&root, &config)?,
         },
         host_triple: host.clone(),
+        target_triple: target.clone(),
+        no_run: invocation.no_run,
+        archive_file,
         scope: PlanScope {
             packages: invocation.scope.packages.clone(),
             features: invocation.scope.features.clone(),
             all_features: invocation.scope.all_features,
             no_default_features: invocation.scope.no_default_features,
         },
-        domains: vec![
-            CompileDomain {
-                id: "stable",
-                family: "stable",
-                toolchain: stable_toolchain.clone(),
-                compiler_release: None,
-                compiler_commit: None,
-                target_triple: host.clone(),
-                target_directory: stable_target.display().to_string(),
-                profile: "test",
-                rustflags: rustflags.clone(),
-                cargo_config: config.clone(),
-                wrapper_identity: wrapper.clone(),
-            },
-            CompileDomain {
-                id: "dylint-libraries",
-                family: "dylint-nightly",
-                toolchain: nightly.channel.clone(),
-                compiler_release: Some(nightly.compiler_release.clone()),
-                compiler_commit: Some(nightly.compiler_commit.clone()),
-                target_triple: host.clone(),
-                target_directory: dylint_libraries.display().to_string(),
-                profile: "release",
-                rustflags: rustflags.clone(),
-                cargo_config: config.clone(),
-                wrapper_identity: wrapper.clone(),
-            },
-            CompileDomain {
-                id: "dylint-analysis",
-                family: "dylint-nightly",
-                toolchain: nightly.channel.clone(),
-                compiler_release: Some(nightly.compiler_release.clone()),
-                compiler_commit: Some(nightly.compiler_commit.clone()),
-                target_triple: host.clone(),
-                target_directory: dylint_analysis.display().to_string(),
-                profile: "dev/check",
-                rustflags: rustflags.clone(),
-                cargo_config: config.clone(),
-                wrapper_identity: wrapper.clone(),
-            },
-            CompileDomain {
-                id: "dylint-ui-tests",
-                family: "dylint-nightly",
-                toolchain: nightly.channel.clone(),
-                compiler_release: Some(nightly.compiler_release.clone()),
-                compiler_commit: Some(nightly.compiler_commit.clone()),
-                target_triple: host.clone(),
-                target_directory: dylint_tests.display().to_string(),
-                profile: "test",
-                rustflags: rustflags.clone(),
-                cargo_config: config.clone(),
-                wrapper_identity: wrapper.clone(),
-            },
-            CompileDomain {
-                id: "rustdoc",
-                family: "rustdoc",
-                toolchain: stable_toolchain,
-                compiler_release: None,
-                compiler_commit: None,
-                target_triple: host,
-                target_directory: stable_target.display().to_string(),
-                profile: "test",
-                rustflags,
-                cargo_config: config,
-                wrapper_identity: wrapper,
-            },
-        ],
+        domains,
         stages,
         subsumed_steps: vec![SubsumedStep {
             name: "cargo check",
             subsumed_by: "clippy",
-            reason: "clippy covers the canonical workspace/all-targets host scope",
+            reason: "clippy covers the selected workspace/all-targets target scope",
         }],
         cook: CookDecision {
             action: "not-run",
@@ -353,18 +429,7 @@ pub(crate) async fn freeze(
             analysis: dylint_analysis.display().to_string(),
             tests: dylint_tests.display().to_string(),
         },
-        compiler_execution_groups: vec![
-            group("stable-clippy", "stable", vec!["clippy".into()]),
-            group("dylint-libraries", "dylint-libraries", library_names),
-            group(
-                "dylint-workspace",
-                "dylint-analysis",
-                vec!["dylint-workspace".into()],
-            ),
-            group("dylint-ui-tests", "dylint-ui-tests", dylint_test_names),
-            group("nextest-compile", "stable", vec!["nextest-compile".into()]),
-            group("doctests", "rustdoc", vec!["doctests".into()]),
-        ],
+        compiler_execution_groups,
         observability: super::model::Observability {
             freshness_authority: "cargo",
             zccache_counters: "reported by the Soldr child build logs where observable",

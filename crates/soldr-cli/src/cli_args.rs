@@ -312,18 +312,18 @@ pub(crate) enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Execute Soldr's frozen host-validation DAG
+    /// Execute Soldr's frozen validation DAG
     ///
     /// `soldr ci-test` is the CI-oriented orchestration exception to Soldr's
-    /// normal per-rustc boundary: it freezes the host compiler domains and
+    /// normal per-rustc boundary: it freezes the compiler domains and
     /// schedules fmt, policy checks, clippy, Dylint, nextest, doctests, and
     /// dependency policy stages. Use `--explain-plan --format json` to inspect
     /// its versioned plan without invoking compiler work.
     CiTest {
-        /// `--explain-plan [--format human|json]` or host-scope flags
+        /// `--explain-plan [--format human|json]`, `--target`, `--no-run`, or scope flags
         /// (`--package`, `--features`, `--all-features`,
-        /// `--no-default-features`). Target/toolchain/profile overrides are
-        /// rejected rather than silently creating a different compile domain.
+        /// `--no-default-features`). A target without an executor requires
+        /// `--no-run`; toolchain/profile/target-dir overrides are rejected.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },

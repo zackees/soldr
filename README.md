@@ -76,7 +76,7 @@ every later build on any branch or worktree hits the shared cache.
 | `soldr build --target <triple\|alias>` | Blessed cross-compile with a managed SDK (`win-x64`, `mac-arm64`, `linux-x64-musl`, ...) |
 | `soldr cc` / `soldr c++` | Compile C / C++ with a catalogue-backed toolchain |
 | `soldr lint` | Unified Rust and dependency lint suites |
-| `soldr ci-test` | **The supported way to test soldr-built projects.** The prescribed host-validation DAG used in CI — see [Testing strategy](#testing-strategy) |
+| `soldr ci-test` | **The supported way to test soldr-built projects.** The prescribed validation DAG used in CI — see [Testing strategy](#testing-strategy) |
 | `soldr <tool>` | Fetch and run a pre-built ecosystem tool: `nextest`, `deny`, `audit`, `mdbook`, `just`, ... |
 
 ### Testing strategy
@@ -89,21 +89,23 @@ Hand-rolled sequences of `cargo fmt` + `cargo clippy` + `cargo nextest` + doctes
 recompile the same crates several times over and drift apart from what CI runs.
 
 ```bash
-soldr ci-test                                # the whole host-validation DAG
+soldr ci-test                                # build and run the host-validation DAG
 soldr ci-test --explain-plan --format json   # inspect the plan, no compiler work
 soldr ci-test --package soldr-core           # host-scope narrowing
+soldr ci-test --no-run --target mac-arm64     # compile and archive a foreign target
 ```
 
-**Know the one boundary.** `ci-test` validates on the *host* and deliberately
-**rejects** `--target`, `--toolchain` and `--profile` rather than silently
-creating a different compile domain. So it is not the tool for *executing*
-binaries built for another platform. For that, build a nextest archive on the
-cross-build lane and replay it on the target:
+**Know the execution boundary.** `ci-test --target <triple>` runs tests by
+default for the exact host triple. A foreign target without a registered
+executor fails with guidance to pass `--no-run`; it never reports a green
+build-only result as a test pass. `--no-run` runs the compile-side checks and
+writes a Nextest archive at the printed path (also in the JSON plan). Replay
+that archive on the target:
 
 ```bash
-soldr cargo nextest archive --target <triple> --archive-file tests.tar.zst
+soldr ci-test --no-run --target <triple>
 # then, on (or emulating) the target:
-cargo-nextest nextest run --archive-file tests.tar.zst --workspace-remap <checkout>
+cargo-nextest nextest run --archive-file <printed-path> --workspace-remap <checkout>
 ```
 
 Two things bite consumers here, both observed rather than hypothesised:
@@ -115,8 +117,7 @@ Two things bite consumers here, both observed rather than hypothesised:
   workspace root. Without it: `error: workspace root manifest at ... does not
   exist`. `--workspace-remap` must point at a real checkout.
 
-A blessed `--execution container` mode that does all of this for you is proposed
-in soldr#3084.
+Automatic foreign-target executors are tracked in soldr#3294.
 
 And a caution soldr learned the hard way (soldr#2945): **a green CI lane only
 proves the verb CI runs.** When a tool has more than one entry point, check that
