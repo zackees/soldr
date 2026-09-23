@@ -75,7 +75,9 @@ Apple SDK path. Publication is gated on `smoke_macos_x64` and
 `smoke_macos_arm64`, running on hosted `macos-15-intel` and `macos-15`.
 Those jobs download the exact release artifacts, execute the shipped binaries,
 install and import the shipped wheels, and smoke the daemon/cache route on
-their matching native architectures. A Linux-side METADATA read is only a
+their matching native architectures. The Intel job also verifies the archive's
+Mach-O x86_64 identity; the ARM64 job checks its corresponding architecture.
+A Linux-side METADATA read is only a
 preliminary check, not execution evidence.
 
 `e2e_macos_x64_build` / `e2e_macos_x64_replay` (soldr#3078) also run at
