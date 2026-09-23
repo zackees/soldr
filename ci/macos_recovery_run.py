@@ -18,10 +18,9 @@ partition every other `target-run` lane replays (`_ci-target-run.yml`'s "Run
 owned pre-built native tests" step), just packed into one guest script
 instead of a dozen workflow steps, because Recovery has no per-command exec:
 
-    emit-guest-script --output PATH
-        Write the bash-3.2/POSIX-sh-compatible script the guest runs. Pure
-        function of nothing but the module constants, so it needs no
-        arguments beyond where to write it.
+    emit-guest-script --output PATH [--partition hash:K/N]
+        Write the bash-3.2/POSIX-sh-compatible script the guest runs. The
+        partition is validated before it is embedded in the guest script.
 
     verify-collected --collected DIR --guest-exit-code CODE [--manifest ...]
         Read the guest's collected results (the action's `collect` tarball,
@@ -48,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -166,7 +166,7 @@ def executor_contract() -> dict[str, object]:
                 "$REUSE_ARGS",
                 "--workspace-remap=$WORK/workspace",
                 "--profile=target-run",
-                "--partition=hash:1/1",
+                "--partition=$REPLAY_PARTITION",
                 "-E=$FILTER",
                 "--message-format=json-pretty",
             ],
@@ -174,7 +174,7 @@ def executor_contract() -> dict[str, object]:
                 "$REUSE_ARGS",
                 "--workspace-remap=$WORK/workspace",
                 "--profile=target-run",
-                "--partition=hash:1/1",
+                "--partition=$REPLAY_PARTITION",
                 "-E=$FILTER",
                 "--no-fail-fast",
             ],
@@ -222,7 +222,7 @@ def executor_contract() -> dict[str, object]:
     }
 
 
-def build_guest_script() -> str:
+def build_guest_script(partition: str = "hash:1/1") -> str:
     """The bash-3.2/POSIX-sh script the Recovery guest runs.
 
     Never raises on a failed stage: every stage runs (unless a hard
@@ -241,6 +241,10 @@ def build_guest_script() -> str:
     produces a summary that explains every stage it caused to be skipped,
     rather than stopping the script cold.
     """
+    match = re.fullmatch(r"hash:([1-9][0-9]*)/([1-9][0-9]*)", partition)
+    if match is None or int(match.group(1)) > int(match.group(2)):
+        raise ValueError(f"invalid replay partition: {partition!r}")
+
     return "\n".join(
         [
             "#!/bin/sh",
@@ -293,8 +297,8 @@ def build_guest_script() -> str:
             *_stage_toolchain(),
             *_stage_nextest_version(),
             *_stage_nextest_list_all(),
-            *_stage_nextest_list_selected(),
-            *_stage_nextest_run(),
+            *_stage_nextest_list_selected(partition),
+            *_stage_nextest_run(partition),
             *_stage_collect_results(),
             'exit "$FAIL"',
             "",
@@ -631,7 +635,7 @@ def _stage_nextest_list_all() -> list[str]:
     ]
 
 
-def _stage_nextest_list_selected() -> list[str]:
+def _stage_nextest_list_selected(partition: str) -> list[str]:
     return [
         "stage_start nextest_list_selected",
         'if [ "$LIST_ALL_OK" -eq 0 ] && [ "$FETCH_FILTER_OK" -eq 0 ]; then',
@@ -640,7 +644,7 @@ def _stage_nextest_list_selected() -> list[str]:
         '  "$NEXTEST_BIN" nextest list $REUSE_ARGS \\',
         '    --workspace-remap "$WORK/workspace" \\',
         "    --profile target-run \\",
-        "    --partition hash:1/1 \\",
+        f"    --partition {partition} \\",
         '    -E "$FILTER" \\',
         '    --message-format json-pretty > "$WORK/list.json" 2> "$WORK/list.stderr"',
         "  LS_RC=$?",
@@ -763,7 +767,7 @@ def _memory_sampler_function() -> list[str]:
     ]
 
 
-def _stage_nextest_run() -> list[str]:
+def _stage_nextest_run(partition: str) -> list[str]:
     return [
         "stage_start nextest_run",
         *_memory_sampler_function(),
@@ -789,7 +793,7 @@ def _stage_nextest_run() -> list[str]:
         '  ( "$NEXTEST_BIN" nextest run $REUSE_ARGS \\',
         '      --workspace-remap "$WORK/workspace" \\',
         "      --profile target-run \\",
-        "      --partition hash:1/1 \\",
+        f"      --partition {partition} \\",
         '      -E "$FILTER" \\',
         "      --no-fail-fast 2>&1; \\",
         '    echo $? > "$WORK/nextest-run.rc" ) | tee "$WORK/nextest-run.log"',
@@ -926,6 +930,7 @@ def verify_replay_artifacts(
     manifest: Path,
     repo_root: Path,
     target: str,
+    partition: str = "hash:1/1",
     github_summary: Path | None = None,
 ) -> int:
     """Run the same two checks the native `target-run` path runs, deferred.
@@ -1008,6 +1013,8 @@ def verify_replay_artifacts(
             "--junit",
             str(junit),
             "--require-junit",
+            "--partition",
+            partition,
         ]
         if github_summary is not None:
             summary_args += ["--github-summary", str(github_summary)]
@@ -1048,6 +1055,7 @@ def main(argv: list[str] | None = None) -> int:
         "emit-guest-script", help="write the guest script that runs the replay"
     )
     emit.add_argument("--output", required=True, type=Path)
+    emit.add_argument("--partition", default="hash:1/1")
     emit.add_argument(
         "--github-output",
         default=None,
@@ -1078,6 +1086,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     verify.add_argument("--repo-root", type=Path, default=None)
     verify.add_argument("--target", default=None)
+    verify.add_argument("--partition", default="hash:1/1")
     verify.add_argument("--github-summary", type=Path, default=None)
 
     args = parser.parse_args(argv)
@@ -1092,7 +1101,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.subcommand == "emit-guest-script":
-        script_text = build_guest_script()
+        try:
+            script_text = build_guest_script(partition=args.partition)
+        except ValueError as exc:
+            parser.error(str(exc))
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(script_text, encoding="utf-8")
         print(f"wrote Recovery guest script to {args.output}")
@@ -1110,6 +1122,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest=args.manifest,
             repo_root=args.repo_root,
             target=args.target,
+            partition=args.partition,
             github_summary=args.github_summary,
         )
     return 0

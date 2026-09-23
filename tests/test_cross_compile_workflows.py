@@ -204,7 +204,12 @@ def test_windows_gnu_target_run_is_bounded_and_disk_safe() -> None:
         {"label": "3-of-3", "value": "hash:3/3", "run_followup": False},
     ]
     assert "fromJSON(inputs.replay_partitions)" in target_run
-    assert target_run.count('--partition "$REPLAY_PARTITION"') == 4
+    # The Recovery guest forwards this partition separately when generating
+    # and verifying its script; this count guards the native replay calls.
+    native_replay = target_run.split(
+        "      - name: Prepare the Recovery guest share directory", 1
+    )[0]
+    assert native_replay.count('--partition "$REPLAY_PARTITION"') == 4
     assert "partition_args" not in target_run
     assert "nextest list" in target_run
     assert "nextest run" in target_run

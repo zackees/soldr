@@ -65,6 +65,20 @@ def test_build_guest_script_replay_stages_are_present() -> None:
     assert "SOLDR_USE_SYSTEM_CMAKE=1" in script
 
 
+def test_guest_script_uses_requested_partition_for_list_and_run() -> None:
+    script = MODULE.build_guest_script(partition="hash:2/3")
+    assert script.count("--partition hash:2/3") == 2
+    assert "--partition hash:1/1" not in script
+
+
+def test_guest_script_rejects_invalid_partition() -> None:
+    import pytest
+
+    for partition in ("hash:0/3", "hash:4/3", "hash:1/0", "hash:1/3; touch /tmp/x"):
+        with pytest.raises(ValueError):
+            MODULE.build_guest_script(partition=partition)
+
+
 def test_guest_script_samples_memory_around_nextest_run() -> None:
     """soldr#3136: memory evidence must bracket the suite and stop with it."""
     script = MODULE.build_guest_script()
@@ -298,7 +312,7 @@ def test_executor_contract_owns_every_3084_handoff_edge() -> None:
         "$REUSE_ARGS",
         "--workspace-remap=$WORK/workspace",
         "--profile=target-run",
-        "--partition=hash:1/1",
+        "--partition=$REPLAY_PARTITION",
         "-E=$FILTER",
         "--message-format=json-pretty",
     ]
@@ -306,7 +320,7 @@ def test_executor_contract_owns_every_3084_handoff_edge() -> None:
         "$REUSE_ARGS",
         "--workspace-remap=$WORK/workspace",
         "--profile=target-run",
-        "--partition=hash:1/1",
+        "--partition=$REPLAY_PARTITION",
         "-E=$FILTER",
         "--no-fail-fast",
     ]
@@ -361,11 +375,12 @@ def test_executor_contract_matches_the_emitted_guest_program() -> None:
         )
 
     inventory = "\n".join(MODULE._stage_nextest_list_all())
-    selected = "\n".join(MODULE._stage_nextest_list_selected())
-    run = "\n".join(MODULE._stage_nextest_run())
+    selected = "\n".join(MODULE._stage_nextest_list_selected("hash:2/3"))
+    run = "\n".join(MODULE._stage_nextest_run("hash:2/3"))
 
     def assert_arguments(block: str, arguments: list[str]) -> None:
         for argument in arguments:
+            argument = argument.replace("$REPLAY_PARTITION", "hash:2/3")
             if argument == "$REUSE_ARGS":
                 assert "nextest " in block and "$REUSE_ARGS" in block
             elif "=" not in argument:

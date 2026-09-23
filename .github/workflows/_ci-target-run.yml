@@ -646,6 +646,7 @@ jobs:
           set -euo pipefail
           python ci/macos_recovery_run.py emit-guest-script \
             --output "$RUNNER_TEMP/recovery-run.sh" \
+            --partition "$REPLAY_PARTITION" \
             --github-output "$GITHUB_OUTPUT"
           python ci/macos_recovery_run.py describe-executor \
             --output "$RUNNER_TEMP/recovery-executor-contract.json"
@@ -680,13 +681,14 @@ jobs:
             --manifest ci/target-run-ownership.json \
             --repo-root "$GITHUB_WORKSPACE" \
             --target '${{ inputs.target }}' \
+            --partition "$REPLAY_PARTITION" \
             --github-summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Recovery guest diagnostics
         if: ${{ always() && inputs.target_execution == 'x86_64-recovery' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: target-run-${{ inputs.target }}-recovery-diagnostics
+          name: target-run-${{ inputs.target }}-${{ matrix.replay.label }}-recovery-diagnostics
           path: |
             ${{ steps.macos.outputs.workdir }}/collected/
             ${{ steps.macos.outputs.workdir }}/results/
