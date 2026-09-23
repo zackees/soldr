@@ -60,8 +60,17 @@ public static class ProbeWin32 {
     if (-not (Test-Path $archive)) { throw 'nextest archive is missing from Z:' }
     if (-not (Test-Path "$workspace\Cargo.toml")) { throw 'workspace remap manifest is missing from Z:' }
     $env:NEXTEST_EXPERIMENTAL_LIBTEST_JSON = '1'
-    $lines = @(& $nextest nextest run --archive-file $archive --workspace-remap $workspace -E 'package(soldr-core)' --message-format libtest-json --message-format-version 0.1 2>&1 | ForEach-Object { $_.ToString() })
-    $exitCode = $LASTEXITCODE
+    # Windows PowerShell 5.1 promotes a native program's stderr to a
+    # terminating error under Stop, even when the program only prints progress.
+    # Scope Continue to this call and judge the native exit code explicitly.
+    $savedErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $lines = @(& $nextest nextest run --archive-file $archive --workspace-remap $workspace -E 'package(soldr-core)' --message-format libtest-json --message-format-version 0.1 2>&1 | ForEach-Object { $_.ToString() })
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedErrorActionPreference
+    }
     $lines | Set-Content -Path 'Z:\nextest.log' -Encoding UTF8
     $passed = 0
     $failed = 0
