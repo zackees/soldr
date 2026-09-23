@@ -30,6 +30,9 @@ IMAGE = "ghcr.io/dockur/windows@sha256:743847e75b776790c059f33ac6654f84727ba36a6
 VC_REDIST_URL = "https://aka.ms/vc14/vc_redist.x64.exe"
 VC_REDIST_SHA256 = "843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c"
 MAX_VC_REDIST_BYTES = 64 * 1024**2
+MINGIT_URL = "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/MinGit-2.55.0.5-64-bit.zip"
+MINGIT_SHA256 = "56d7b226b7693196cfc71fef26568f536c4a021ab6c37ff2db4287bed908e96e"
+MAX_MINGIT_BYTES = 64 * 1024**2
 CAPABILITY_NAMES = (
     "powershell",
     "job_objects",
@@ -39,6 +42,7 @@ CAPABILITY_NAMES = (
     "admin",
     "vcruntime140",
     "vcruntime140_after",
+    "git",
 )
 
 
@@ -58,6 +62,7 @@ def make_report(
             "boot_seconds",
             "runtime_prep_seconds",
             "runtime_install_seconds",
+            "git_prep_seconds",
             "replay_seconds",
         )
     }
@@ -136,23 +141,42 @@ def _run(
     return subprocess.run(args, check=check, text=True, capture_output=capture)
 
 
-def _fetch_vc_redist(shared: Path, *, expected_sha256: str = VC_REDIST_SHA256) -> None:
-    """Stage one exact Microsoft runtime installer; never trust a moving URL."""
-    destination = shared / "vc_redist.x64.exe"
+def _fetch_pinned(
+    *, url: str, destination: Path, expected_sha256: str, max_bytes: int
+) -> None:
+    """Stream a pinned one-off tool payload, rejecting drift and oversize files."""
     digest = hashlib.sha256()
     size = 0
-    with urllib.request.urlopen(VC_REDIST_URL, timeout=120) as response:
+    with urllib.request.urlopen(url, timeout=120) as response:
         with destination.open("wb") as output:
             while chunk := response.read(1024 * 1024):
                 size += len(chunk)
-                if size > MAX_VC_REDIST_BYTES:
-                    raise OSError("Visual C++ Redistributable exceeds 64 MiB limit")
+                if size > max_bytes:
+                    raise OSError(f"{destination.name} exceeds size limit")
                 digest.update(chunk)
                 output.write(chunk)
     if digest.hexdigest() != expected_sha256:
-        raise OSError(
-            f"Visual C++ Redistributable sha256 mismatch: {digest.hexdigest()}"
-        )
+        raise OSError(f"{destination.name} sha256 mismatch: {digest.hexdigest()}")
+
+
+def _fetch_vc_redist(shared: Path, *, expected_sha256: str = VC_REDIST_SHA256) -> None:
+    """Stage one exact Microsoft runtime installer; never trust a moving URL."""
+    _fetch_pinned(
+        url=VC_REDIST_URL,
+        destination=shared / "vc_redist.x64.exe",
+        expected_sha256=expected_sha256,
+        max_bytes=MAX_VC_REDIST_BYTES,
+    )
+
+
+def _fetch_mingit(shared: Path, *, expected_sha256: str = MINGIT_SHA256) -> None:
+    """Stage official MinGit for the four git fixture tests in Server Core."""
+    _fetch_pinned(
+        url=MINGIT_URL,
+        destination=shared / "mingit.zip",
+        expected_sha256=expected_sha256,
+        max_bytes=MAX_MINGIT_BYTES,
+    )
 
 
 def _stage_payload(repo: Path, artifact: Path, shared: Path, oem: Path) -> Path:
@@ -169,6 +193,7 @@ def _stage_payload(repo: Path, artifact: Path, shared: Path, oem: Path) -> Path:
     shutil.copy2(repo / "ci" / "windows_guest_probe.ps1", oem / "probe.ps1")
     shutil.copy2(repo / "ci" / "windows_guest_probe.bat", oem / "install.bat")
     _fetch_vc_redist(shared)
+    _fetch_mingit(shared)
     workspace = shared / "workspace"
     workspace.mkdir()
     # Nextest requires a real workspace manifest at --workspace-remap. Use the
@@ -377,6 +402,8 @@ def run_probe(args: argparse.Namespace) -> int:
     shell_ready = None
     runtime_install_start = None
     runtime_ready = None
+    git_install_start = None
+    tools_ready = None
     result_seen = None
     attempted_container = False
     try:
@@ -440,6 +467,15 @@ def run_probe(args: argparse.Namespace) -> int:
                     runtime_ready = _host_created_at(
                         shared / "runtime-ready.txt", started
                     )
+                if (
+                    git_install_start is None
+                    and (shared / "git-install-start.txt").is_file()
+                ):
+                    git_install_start = _host_created_at(
+                        shared / "git-install-start.txt", started
+                    )
+                if tools_ready is None and (shared / "tools-ready.txt").is_file():
+                    tools_ready = _host_created_at(shared / "tools-ready.txt", started)
                 if (shared / "guest-result.json").is_file():
                     result_seen = _host_created_at(
                         shared / "guest-result.json", started
@@ -475,9 +511,14 @@ def run_probe(args: argparse.Namespace) -> int:
                 if runtime_ready is not None and runtime_install_start is not None
                 else None
             )
+            timings["git_prep_seconds"] = (
+                max(0, tools_ready - git_install_start)
+                if tools_ready is not None and git_install_start is not None
+                else None
+            )
             timings["replay_seconds"] = (
-                max(0, result_seen - runtime_ready)
-                if result_seen is not None and runtime_ready is not None
+                max(0, result_seen - tools_ready)
+                if result_seen is not None and tools_ready is not None
                 else None
             )
             disk = _disk_measure(storage)

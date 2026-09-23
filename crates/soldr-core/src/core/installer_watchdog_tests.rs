@@ -122,12 +122,15 @@ fn true_stall_command() -> Command {
 }
 fn delayed_path_command() -> Command {
     if is_windows_test_host() {
-        let mut command = Command::new("powershell.exe");
+        // A cold PowerShell 5.1 startup took over four seconds in the Server
+        // Core KVM guest, consuming the fixture's six-second stall budget
+        // before its intended two-second quiet wait even began. cmd.exe plus
+        // loopback ping gives the same silent interval without that startup.
+        let mut command = Command::new("cmd.exe");
         command.args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Start-Sleep -Seconds 2; Write-Output C:\\toolchains\\nightly\\bin\\rustc.exe",
+            "/D",
+            "/C",
+            "ping -n 3 127.0.0.1 >NUL && echo C:\\toolchains\\nightly\\bin\\rustc.exe",
         ]);
         command
     } else {
@@ -222,11 +225,12 @@ fn captured_manager_lookup_can_wait_past_the_short_command_silence_budget() {
     let prior = std::env::var_os(super::super::COMMAND_OUTPUT_TIMEOUT_ENV_VAR);
     std::env::set_var(super::super::COMMAND_OUTPUT_TIMEOUT_ENV_VAR, "1");
     let mut command = delayed_path_command();
+    let started = Instant::now();
     let output = run_installer_command_output(
         &mut command,
         "manager lookup",
         "manager-which",
-        InstallerWatchdogConfig::for_test(Duration::from_secs(6), Duration::from_secs(10)),
+        InstallerWatchdogConfig::for_test(Duration::from_secs(10), test_safety_timeout()),
     )
     .expect("installer watchdog must not apply the generic one-second silence budget");
     match prior {
@@ -234,6 +238,10 @@ fn captured_manager_lookup_can_wait_past_the_short_command_silence_budget() {
         None => std::env::remove_var(super::super::COMMAND_OUTPUT_TIMEOUT_ENV_VAR),
     }
     assert!(output.status.success(), "{output:?}");
+    assert!(
+        started.elapsed() > Duration::from_secs(1),
+        "fixture did not outlast the generic one-second silence budget"
+    );
     assert!(
         String::from_utf8_lossy(&output.stdout).contains("rustc"),
         "captured lookup output was lost: {output:?}"
