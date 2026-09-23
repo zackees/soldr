@@ -4,8 +4,10 @@ name: Perf Matrix
 # convention and the full per-branch scope table. perf/README.md
 # explains the per-scenario design rationale.
 #
-# Triggered by `workflow_dispatch` (manual button) and by pushes to
-# `main` / `perf/**` / `evaluate/**`. ci.yml has a matching
+# Triggered by `workflow_dispatch` (manual button), nightly activity, and by
+# pushes to `perf/**` / `evaluate/**`. Routine main merges do not run a
+# costly sweep; the nightly schedule batches active-day measurement.
+# ci.yml has a matching
 # `branches-ignore` so perf branches only run this workflow.
 #
 # Effective scope is computed by the `setup` job from the branch
@@ -63,7 +65,6 @@ on:
       # SOLDR_DEBUG=1 unconditionally.
   push:
     branches:
-      - main
       - 'perf/**'
       - 'evaluate/**'
     paths:
@@ -102,8 +103,6 @@ concurrency:
 jobs:
   # soldr#1203 + soldr#1213 — Perf Matrix reconciles two concerns:
   #
-  #   * push:main — active-dev bursts would run the full sweep on every
-  #     merge. Skip when the last non-bot commit on main is < 24h old.
   #   * schedule — nightly cron. Run when there WAS at least one non-bot
   #     commit on main in the last 24h (active day → benchmark it).
   #     Skip on quiet days.
@@ -111,8 +110,8 @@ jobs:
   #   * perf/** / evaluate/** branch pushes — feature-branch iteration,
   #     always run (dev is watching each push).
   #
-  # Net: one perf sweep per day of activity on main, plus every dispatch
-  # and every feature-branch push. Zero per burst, zero per quiet day.
+  # Net: one perf sweep per active day, plus every dispatch and every
+  # feature-branch push. Zero on an ordinary main push or a quiet day.
   gate:
     # Coordination only; observed 0.1 min across 20 runs. soldr#1978 item 8.
     timeout-minutes: 15
@@ -149,7 +148,8 @@ jobs:
               exit 0
               ;;
           esac
-          # Remaining code paths: main-branch push OR nightly schedule.
+          # Remaining code path: nightly schedule. Keep the push handler as a
+          # fail-safe if branch-trigger policy changes later.
           case "${{ github.event_name }}" in
             schedule)
               python3 .github/scripts/perf_gate.py --mode schedule --hours 24

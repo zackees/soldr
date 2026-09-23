@@ -70,8 +70,14 @@ def is_low_risk_path(path: str) -> bool:
 
 
 def decide_windows_e2e(
-    *, event_name: str, labels: Sequence[str], changed_paths: Sequence[str]
+    *,
+    event_name: str,
+    labels: Sequence[str],
+    changed_paths: Sequence[str],
+    full: bool = False,
 ) -> Decision:
+    if full:
+        return Decision(True, "ci-full requires every platform")
     if event_name != "pull_request":
         return Decision(True, f"{event_name or 'non-PR'} events always run Windows E2E")
     if not changed_paths:
@@ -139,16 +145,22 @@ def main() -> int:
     parser.add_argument("--event-name", default=os.environ.get("GITHUB_EVENT_NAME", ""))
     parser.add_argument("--event-path", default=os.environ.get("GITHUB_EVENT_PATH", ""))
     parser.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))
+    parser.add_argument("--full", action="store_true")
     args = parser.parse_args()
 
     event: dict[str, object] = {}
     if args.event_path:
         event = json.loads(Path(args.event_path).read_text(encoding="utf-8"))
-    paths = _pull_request_paths(event) if args.event_name == "pull_request" else []
+    paths = (
+        _pull_request_paths(event)
+        if args.event_name == "pull_request" and not args.full
+        else []
+    )
     decision = decide_windows_e2e(
         event_name=args.event_name,
         labels=_labels(event),
         changed_paths=paths,
+        full=args.full,
     )
     verdict = "run" if decision.run else "skip"
     print(

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -14,6 +15,15 @@ import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
+
+_completeness_path = Path(__file__).resolve().with_name("release_completeness.py")
+_completeness_spec = importlib.util.spec_from_file_location(
+    "release_completeness", _completeness_path
+)
+if _completeness_spec is None or _completeness_spec.loader is None:
+    raise ImportError(f"cannot load {_completeness_path}")
+_completeness = importlib.util.module_from_spec(_completeness_spec)
+_completeness_spec.loader.exec_module(_completeness)
 
 # soldr#2763: the npm recovery lane pins Python 3.13, but this script is also
 # run by hand during an incident, where the interpreter is whatever the operator
@@ -135,16 +145,27 @@ def validate_recovery(
     if not isinstance(assets, list):
         raise ValidationError("GitHub release assets are missing")
     asset_names = {asset.get("name") for asset in assets if isinstance(asset, dict)}
-    checksum_name = f"soldr-v{version}-SHA256SUMS.txt"
-    if checksum_name not in asset_names:
-        raise ValidationError(f"GitHub release is missing {checksum_name}")
-    archives = {
-        name
-        for name in asset_names
-        if isinstance(name, str)
-        and name.startswith(f"soldr-v{version}-")
-        and name.endswith(".tar.zst")
-    }
+    triples = _completeness.included_triples(
+        source_dir / "ci" / "canonical-targets.json"
+    )
+    expected_assets = set(_completeness.expected_github_assets(release_ref, triples))
+    missing_assets = sorted(expected_assets - asset_names)
+    if missing_assets:
+        raise ValidationError(
+            f"GitHub release missing required assets: {', '.join(missing_assets)}"
+        )
+    for name in sorted(expected_assets):
+        matching = [
+            asset
+            for asset in assets
+            if isinstance(asset, dict) and asset.get("name") == name
+        ]
+        if (
+            len(matching) != 1
+            or type(matching[0].get("size")) is not int
+            or matching[0]["size"] <= 0
+        ):
+            raise ValidationError(f"GitHub release asset {name} has invalid size")
     github_wheels = {
         name
         for name in asset_names
@@ -152,9 +173,6 @@ def validate_recovery(
         and name.startswith(f"soldr-{version}-")
         and name.endswith(".whl")
     }
-    if not archives or not github_wheels:
-        raise ValidationError("GitHub release must contain archives and wheels")
-
     pypi_url = f"https://pypi.org/pypi/soldr/{version}/json"
     pypi = get_json(pypi_url, None)
     if pypi.get("info", {}).get("version") != version:
@@ -164,6 +182,13 @@ def validate_recovery(
         for item in pypi.get("urls", [])
         if isinstance(item, dict) and item.get("packagetype") == "bdist_wheel"
     }
+    missing_pypi = sorted(
+        set(_completeness.expected_pypi_files(release_ref, triples)) - pypi_wheels
+    )
+    if missing_pypi:
+        raise ValidationError(
+            f"PyPI missing required wheels: {', '.join(missing_pypi)}"
+        )
     if github_wheels != pypi_wheels:
         raise ValidationError("GitHub and PyPI wheel sets do not match")
 

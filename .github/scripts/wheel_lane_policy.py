@@ -80,7 +80,11 @@ def is_wheel_relevant_path(path: str) -> bool:
     return normalized in WHEEL_FILES
 
 
-def decide_wheel_lane(*, event_name: str, changed_paths: Sequence[str]) -> Decision:
+def decide_wheel_lane(
+    *, event_name: str, changed_paths: Sequence[str], full: bool = False
+) -> Decision:
+    if full:
+        return Decision(True, "ci-full requires cross-wheel verification")
     if event_name != "pull_request":
         return Decision(True, f"{event_name or 'non-PR'} event: always verify")
     if not changed_paths:
@@ -123,13 +127,20 @@ def main() -> int:
     parser.add_argument("--event-name", default=os.environ.get("GITHUB_EVENT_NAME", ""))
     parser.add_argument("--event-path", default=os.environ.get("GITHUB_EVENT_PATH", ""))
     parser.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))
+    parser.add_argument("--full", action="store_true")
     args = parser.parse_args()
 
     event: "dict[str, object]" = {}
     if args.event_path and Path(args.event_path).is_file():
         event = json.loads(Path(args.event_path).read_text(encoding="utf-8"))
-    paths = _pull_request_paths(event) if args.event_name == "pull_request" else []
-    decision = decide_wheel_lane(event_name=args.event_name, changed_paths=paths)
+    paths = (
+        _pull_request_paths(event)
+        if args.event_name == "pull_request" and not args.full
+        else []
+    )
+    decision = decide_wheel_lane(
+        event_name=args.event_name, changed_paths=paths, full=args.full
+    )
     matrix = WHEEL_MATRIX if decision.run else []
 
     print(f"soldr wheel lane: {'run' if decision.run else 'skip'} ({decision.reason})")

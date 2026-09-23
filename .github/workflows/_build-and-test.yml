@@ -19,6 +19,11 @@ on:
       target:
         required: true
         type: string
+      source_ref:
+        description: Exact commit SHA checked out by the caller
+        required: false
+        type: string
+        default: ""
       source_driver_artifact_name:
         description: >-
           Same-run exact-SHA Soldr driver to reuse only when already available.
@@ -110,6 +115,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          ref: ${{ inputs.source_ref != '' && inputs.source_ref || github.sha }}
           submodules: recursive
 
       - name: Enlarge swap (OOM headroom)
@@ -476,7 +482,7 @@ jobs:
           set -euo pipefail
           artifact_dir="${RUNNER_TEMP}/host-source-driver"
           artifact_soldr="$artifact_dir/soldr"
-          expected_sha="${{ github.sha }}"
+          expected_sha="${{ inputs.source_ref != '' && inputs.source_ref || github.sha }}"
           test -f "$artifact_dir/source-sha"
           actual_sha=$(<"$artifact_dir/source-sha")
           [[ "$actual_sha" == "$expected_sha" ]]

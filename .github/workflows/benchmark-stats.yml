@@ -1,17 +1,11 @@
 name: Benchmark Stats
 
 # Publish soldr's canary timings to the `benchmark-stats` branch + GitHub
-# Pages on every main-commit. Spec: issue #768. Inspired by
-# zackees/zccache@benchmark-stats; deviates: push-triggered (not cron),
-# per-commit slim history (not stateless), Chart.js graphs (not static).
+# Pages after an active development day. Spec: issue #768. Inspired by
+# zackees/zccache@benchmark-stats; keeps a slim history and Chart.js graphs.
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths-ignore:
-      - '*.md'
-      - '**/*.md'
   # soldr#1213 — nightly cron so an active day always produces at least one
   # benchmark run. The gate below inverts to schedule mode on this trigger:
   # runs only if there was at least one non-bot commit in the last 24h.
@@ -21,8 +15,8 @@ on:
     - cron: '17 3 * * *'
 
 concurrency:
-  # Only one publish at a time per ref; cancel a stale in-flight when a
-  # newer main-merge arrives.
+  # Only one publish at a time per ref; distinct active-day schedules retain
+  # independent run IDs on main.
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
@@ -43,16 +37,13 @@ jobs:
   # (build + bench + publish, ~30-60 min). The gate reconciles two
   # concerns:
   #
-  #   * push:main — active-dev bursts would fire this on every merge
-  #     and produce per-commit noise. Skip when the last non-bot
-  #     commit is < 24h old (i.e. burst in progress).
   #   * schedule — nightly cron. Run when there WAS at least one
   #     non-bot commit in the last 24h (i.e. active day, something
   #     new to benchmark). Skip on quiet days.
   #   * workflow_dispatch — explicit human request, always run.
   #
-  # Net: one benchmark per day of activity, zero per burst, zero on
-  # quiet days.
+  # Net: one benchmark per active day, zero on quiet days, and no
+  # benchmark runner on an ordinary main push.
   gate:
     name: Decide whether to run
     runs-on: ubuntu-24.04

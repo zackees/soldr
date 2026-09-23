@@ -304,7 +304,7 @@ jobs:
           # rebuild it. (Only used by manual callers that omit
           # bootstrap_artifact_name; main CI downloads the shared artifact,
           # whose producer job is fixed the same way.)
-          key: bootstrap-soldr-blessed-linux-gnu-${{ github.sha }}
+          key: bootstrap-soldr-blessed-linux-gnu-${{ inputs.source_ref != '' && inputs.source_ref || github.sha }}
 
       - name: Bootstrap soldr for SDK / blessed-build prep
         if: (contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')) && inputs.bootstrap_artifact_name == '' && steps.bootstrap_cache.outputs.cache-hit != 'true'

@@ -1,9 +1,4 @@
-"""No macos-* GitHub Actions runner exists anywhere (soldr#3071, soldr#3076).
-
-Owner mandate (2026-09-02): no job may run on a macos-* runner for building
-or testing. macOS execution happens only inside a zackees/docker-mac-x64
-Recovery guest (ci/macos_recovery_run.py, ci/smoke_release_artifacts.py)
-hosted on an ordinary ubuntu-24.04 runner.
+"""Recovery guest and explicitly opted-in hosted macOS lane contracts.
 
 This replaces tests/test_macos_dockur_lane_contract.py, whose contract (a
 hand-baked dockur/macos image pulled from GHCR over ssh, soldr#3071) never
@@ -34,16 +29,18 @@ def _non_comment_lines(text: str) -> list[str]:
     return [line for line in text.splitlines() if not line.strip().startswith("#")]
 
 
-def test_no_workflow_names_a_macos_runner_label() -> None:
+def test_hosted_macos_runner_labels_are_confined_to_opt_in_and_release() -> None:
     offenders = []
     for workflow in sorted(WORKFLOWS.glob("*.y*ml")):
         for line in _non_comment_lines(workflow.read_text(encoding="utf-8")):
             if RUNNER_LABEL_PATTERN.search(line):
                 offenders.append(f"{workflow.name}: {line.strip()}")
-    assert not offenders, (
-        "no GitHub Actions job may run on a macos-* runner (owner mandate "
-        f"2026-09-02, soldr#3071): {offenders}"
-    )
+    assert offenders == [
+        "ci.yml: runs_on: macos-15-intel",
+        "ci.yml: runs_on: macos-15",
+        "release-auto.yml: runs-on: macos-15-intel",
+        "release-auto.yml: runs-on: macos-15",
+    ]
 
 
 SCAN_ROOTS = (".github", "ci", "docs", "tests")
@@ -95,7 +92,7 @@ def test_x64_replay_lane_is_off_the_pull_request_critical_path() -> None:
     nightly, on dispatch, and on PRs labelled `macos-replay` -- until the
     soldr#3088 criteria are met."""
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
-    assert re.search(r"(?m)^  e2e-macos-x64:\s*$", ci) is None
+    assert re.search(r"(?m)^  e2e-macos-x64:\s*$", ci) is not None
     # The cross-build stays a per-PR, build-only lane (soldr#1978 item 3
     # shape, like aarch64-apple-darwin): a darwin cross-compile break must
     # still fail the PR even though nothing in ci.yml replays the archive.
@@ -111,20 +108,15 @@ def test_x64_replay_lane_is_off_the_pull_request_critical_path() -> None:
     assert re.search(r"(?m)^  e2e-macos-arm64-build:\s*$", ci) is not None
 
 
-def test_no_macos_arm64_run_job_exists() -> None:
+def test_macos_arm64_run_job_exists_for_opt_in_ci() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
-    assert re.search(r"(?m)^  e2e-macos-arm64:\s*$", ci) is None
-    # The build-only lane must still exist -- only its paired run job is gone.
+    assert re.search(r"(?m)^  e2e-macos-arm64:\s*$", ci) is not None
     assert re.search(r"(?m)^  e2e-macos-arm64-build:\s*$", ci) is not None
 
 
 def test_docker_mac_x64_action_is_pinned_to_a_full_sha_with_a_main_comment() -> None:
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
-    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
-    for workflow_name, text in (
-        ("_ci-target-run.yml", target_run),
-        ("release-auto.yml", release),
-    ):
+    for workflow_name, text in (("_ci-target-run.yml", target_run),):
         pattern = re.compile(
             rf"uses:\s*zackees/docker-mac-x64@{DOCKER_MAC_X64_PIN}\s*#\s*main"
         )
@@ -194,11 +186,12 @@ def test_release_workflow_has_the_macos_x64_replay_jobs() -> None:
 def test_release_macos_x64_smoke_executes_the_shipped_wheel() -> None:
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     smoke = release.split("\n  smoke_macos_x64:\n", 1)[1].split(
-        "\n  smoke_windows:\n", 1
+        "\n  smoke_macos_arm64:\n", 1
     )[0]
     assert "pypi-soldr-x86_64-apple-darwin" in smoke
     assert "--require-wheel-import" in smoke
-    assert "zackees/docker-mac-x64@" in smoke
+    assert "runs-on: macos-15-intel" in smoke
+    assert "--require-daemon-cache-smoke" in smoke
     contract = json.loads((REPO_ROOT / "ci" / "canonical-targets.json").read_text())
     x64 = next(
         row for row in contract["targets"] if row["triple"] == "x86_64-apple-darwin"

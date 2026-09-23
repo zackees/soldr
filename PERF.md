@@ -3,19 +3,20 @@
 soldr has two performance workflows:
 
 1. **`.github/workflows/perf-matrix.yml`** (the "Perf Matrix") — the regression-gate workflow. Push to a branch with a recognized name and the matrix runs the right cells automatically — no manual `workflow_dispatch` needed.
-2. **`.github/workflows/benchmark-stats.yml`** (issues #768 and #785) — per-commit trend and README comparison publishing. Runs on every push to `main`, measures 6 canaries against `perf/fixtures/medium`, measures bare cargo vs sccache vs soldr comparison bars against small setup-soldr-derived fixtures, and force-publishes to the `benchmark-stats` branch + GitHub Pages.
+2. **`.github/workflows/benchmark-stats.yml`** (issues #768 and #785) — active-day trend and README comparison publishing. Runs nightly after main activity (or by explicit dispatch), measures 6 canaries against `perf/fixtures/medium`, measures bare cargo vs sccache vs soldr comparison bars against small setup-soldr-derived fixtures, and force-publishes to the `benchmark-stats` branch + GitHub Pages.
 
-For the perf-matrix per-scenario design rationale (what each cell proves), see [`perf/README.md`](perf/README.md). For the benchmark-stats canary set + discovery URLs, see the **Per-commit benchmark stats** section near the end of this file.
+For the perf-matrix per-scenario design rationale (what each cell proves), see [`perf/README.md`](perf/README.md). For the benchmark-stats canary set + discovery URLs, see the **Active-day benchmark stats** section near the end of this file.
 
 ## How it triggers
 
 The workflow fires on:
 
 1. **`workflow_dispatch`** — the "Run workflow" button in the Actions UI. Dispatch inputs are used verbatim and the branch name is ignored.
-2. **`push`** to `main`, `perf/**`, or `evaluate/**`. The branch name is parsed into an effective `(platforms, fixtures, scenarios)` scope (see below). The dispatch inputs are not consulted.
-3. **Manual `gh workflow run` CLI** — same as the dispatch button.
+2. **`push`** to `perf/**` or `evaluate/**`. The branch name is parsed into an effective `(platforms, fixtures, scenarios)` scope (see below). The dispatch inputs are not consulted.
+3. **Nightly schedule** after a day with a non-bot main commit. This batches performance coverage without charging every ordinary main merge.
+4. **Manual `gh workflow run` CLI** — same as the dispatch button.
 
-The full matrix is always loaded; cells that fall outside the resolved scope skip themselves at the gate step. `main` always runs the full sweep.
+The full matrix is always loaded; cells that fall outside the resolved scope skip themselves at the gate step. The active-day scheduled run uses the full sweep.
 
 ## Branch-name convention
 
@@ -162,11 +163,11 @@ bash perf/scenarios/cold-tar-untar-warm/run.sh /tmp/perf-medium/medium
 
 The scripts are POSIX bash and do not require any GHA-only env vars; `measure::append_summary_md` is a no-op when `$GITHUB_STEP_SUMMARY` is unset.
 
-## Per-commit benchmark stats (issue #768)
+## Active-day benchmark stats (issue #768)
 
 The Perf Matrix above is the **regression gate** — it runs on perf-iteration branches and hard-fails if `cold-tar-untar-warm` drops below 3× speedup. It does NOT publish a permanent record.
 
-A complementary workflow, `benchmark-stats.yml`, publishes a permanent **per-main-commit canary record** for trend tracking. It runs on every push to `main`, measures 6 canaries against `perf/fixtures/medium`, and force-publishes the results to the `benchmark-stats` branch + GitHub Pages.
+A complementary workflow, `benchmark-stats.yml`, publishes a permanent **active-day canary record** for trend tracking. It runs on the nightly schedule after main activity (or explicit dispatch), measures 6 canaries against `perf/fixtures/medium`, and force-publishes the results to the `benchmark-stats` branch + GitHub Pages. This intentionally no longer produces a sample for every main commit: routine merges stay within the fractional-CI budget.
 
 ### Discovery URLs
 
