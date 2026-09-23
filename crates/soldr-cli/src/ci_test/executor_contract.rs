@@ -20,14 +20,13 @@ pub(super) fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrE
             .filter(|stage| stage.name.starts_with("dylint-test-"))
             .map(|stage| stage.name.as_str()),
     );
-    expected.extend([
-        "nextest-compile",
-        "nextest",
-        "doctests",
-        "cargo-deny-bans",
-        "cargo-audit",
-        "cargo-machete",
-    ]);
+    expected.push("nextest-compile");
+    if plan.no_run {
+        expected.push("nextest-archive");
+    } else {
+        expected.extend(["nextest", "doctests"]);
+    }
+    expected.extend(["cargo-deny-bans", "cargo-audit", "cargo-machete"]);
     let actual: Vec<&str> = plan
         .stages
         .iter()
@@ -77,6 +76,11 @@ pub(super) fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrE
         .iter()
         .filter(|stage| stage.name.starts_with("dylint-test-"))
         .collect();
+    if plan.no_run && !ui_tests.is_empty() {
+        return Err(SoldrError::Other(
+            "soldr ci-test: compile-only plan must not execute Dylint UI tests".into(),
+        ));
+    }
     for (index, stage) in ui_tests.iter().enumerate() {
         let dependency = if index == 0 {
             "dylint-workspace"
@@ -86,18 +90,28 @@ pub(super) fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrE
         require_dependencies(stage, &[dependency])?;
     }
     require_dependencies(stage_named(plan, "nextest-compile")?, &["clippy"])?;
-    let nextest = stage_named(plan, "nextest")?;
-    require_dependencies(nextest, &["nextest-compile"])?;
-    if nextest.executes_compiler {
-        return Err(SoldrError::Other(
-            "soldr ci-test: Nextest execution must not rebuild its planned test profile after nextest-compile; nested compiler fixtures launched by tests remain allowed".into(),
-        ));
+    if plan.no_run {
+        require_dependencies(
+            stage_named(plan, "nextest-archive")?,
+            &["nextest-compile", "dylint-workspace"],
+        )?;
+        for name in ["cargo-deny-bans", "cargo-audit", "cargo-machete"] {
+            require_dependencies(stage_named(plan, name)?, &["nextest-archive"])?;
+        }
+    } else {
+        let nextest = stage_named(plan, "nextest")?;
+        require_dependencies(nextest, &["nextest-compile"])?;
+        if nextest.executes_compiler {
+            return Err(SoldrError::Other(
+                "soldr ci-test: Nextest execution must not rebuild its planned test profile after nextest-compile; nested compiler fixtures launched by tests remain allowed".into(),
+            ));
+        }
+        let last_ui_test = &ui_tests
+            .last()
+            .ok_or_else(|| SoldrError::Other("soldr ci-test: no Dylint UI tests".into()))?
+            .name;
+        validate_tail_dependencies(&plan.stages, last_ui_test)?;
     }
-    let last_ui_test = &ui_tests
-        .last()
-        .ok_or_else(|| SoldrError::Other("soldr ci-test: no Dylint UI tests".into()))?
-        .name;
-    validate_tail_dependencies(&plan.stages, last_ui_test)?;
     Ok(())
 }
 

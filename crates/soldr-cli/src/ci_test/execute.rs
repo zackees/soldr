@@ -65,6 +65,31 @@ pub(crate) async fn run(
         library_decision.skip
     ));
     dylint_library_marker::finish(&library_decision);
+    if plan.no_run {
+        let archive_file = plan.archive_file.as_ref().ok_or_else(|| {
+            SoldrError::Other("soldr ci-test: compile-only plan has no archive path".into())
+        })?;
+        let parent = std::path::Path::new(archive_file).parent().ok_or_else(|| {
+            SoldrError::Other("soldr ci-test: archive path has no parent directory".into())
+        })?;
+        std::fs::create_dir_all(parent)?;
+        stop_on_failure!(run_group(&factory, plan, &["nextest-archive"]));
+        if !std::fs::metadata(archive_file)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+        {
+            return Err(SoldrError::Other(format!(
+                "soldr ci-test: Nextest archive stage succeeded without a non-empty archive at {archive_file}"
+            )));
+        }
+        println!("soldr ci-test: archive: {archive_file}");
+        policy_prefetch.join().await;
+        stop_on_failure!(run_group(
+            &factory,
+            plan,
+            &["cargo-deny-bans", "cargo-audit", "cargo-machete"]
+        ));
+        return Ok(0);
+    }
     // Compiler admission cannot account for ordinary test processes' resident
     // memory: starting Nextest before the exclusive nightly compile completed
     // once exceeded the runner envelope and SIGTERM'd the compiler with zero

@@ -609,7 +609,7 @@ source-built from the pinned registry version on Windows and macOS.
 
 ### `soldr ci-test`
 
-Run Soldr's prescribed host-validation DAG with maximum artifact sharing inside
+Run Soldr's prescribed validation DAG with maximum artifact sharing inside
 each compatible compiler domain:
 
 ```bash
@@ -617,9 +617,10 @@ soldr ci-test
 soldr ci-test --package soldr-cli --features feature-a,feature-b
 soldr ci-test --explain-plan
 soldr ci-test --explain-plan --format json
+soldr ci-test --no-run --target aarch64-apple-darwin
 ```
 
-The stable host chain runs formatting and `soldr lint ci`, Clippy, exactly one
+By default, the stable host chain runs formatting and `soldr lint ci`, Clippy, exactly one
 Nextest test-profile build/run, and doctests. After Clippy, Nextest overlaps the
 serial Dylint libraries -> workspace analysis -> UI-test branch. Doctests start
 only after both branches complete. `soldr cargo check` is not run because
@@ -664,13 +665,17 @@ Dylint correctness without causing stable Cargo fingerprints to flip between
 toolchains.
 
 Accepted scope selectors are `--package`/`-p`, `--features`,
-`--all-features`, and `--no-default-features`. An explicit `--target` is
-accepted only when it equals the detected host. Target-directory, profile,
-toolchain, manifest, release, and cross-target overrides are rejected because
-they would create an undeclared compile domain; use `soldr cargo ...` for those
-intentional variants.
+`--all-features`, and `--no-default-features`. One explicit `--target` (including
+a Soldr target alias) selects the stable compile domain. The exact host triple
+runs tests by default; a target without a registered executor fails
+closed with target-specific `--no-run` guidance. `--no-run` runs formatting,
+Clippy, Dylint libraries and workspace analysis, and Nextest test compilation
+for the selected target, then writes a Nextest archive at a stable path. It
+skips Nextest execution, Dylint UI-test execution, and doctests. The archive
+path is printed and included in the JSON plan. Target-directory, profile,
+toolchain, manifest, and release overrides remain rejected.
 
-`--explain-plan` performs no compiler work. Its schema-version-1 JSON freezes
+`--explain-plan` performs no compiler work. Its schema-version-4 JSON freezes
 workspace metadata identity, toolchain/compiler identity, host target, target
 directories, profile, scope/features, Cargo configuration, Rust flags, wrapper
 identity, stage dependencies, resource limits, and metric slots. Human output

@@ -52,6 +52,10 @@ cmd = "python3 /repo/ci/bosn_workspace_test.py"
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo fmt --all -- --check && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo clippy --workspace --all-targets -- -D warnings"
 
+[task.platform-boundary]
+stack = "cook"
+cmd = "cd /repo && python3 .github/scripts/platform_cfg_boundary_ratchet.py"
+
 [task.format]
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo fmt --all"
@@ -59,6 +63,10 @@ cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo
 [task.ci-test-acceptance]
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test guards -E 'test(/^cli_ci_test::/)'"
+
+[task.ci-test-archive-smoke]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo build -p soldr-cli --bin soldr && CARGO_TARGET_DIR=/target /target/debug/soldr ci-test --no-run --target x86_64-unknown-linux-gnu --package soldr-core"
 
 [task.macos-recovery-executor-contract]
 stack = "cook"

@@ -6,6 +6,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Invocation, SoldrError> {
     let mut format = OutputFormat::Human;
     let mut scope = Scope::default();
     let mut requested_target = None;
+    let mut no_run = false;
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].as_str();
@@ -17,6 +18,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Invocation, SoldrError> {
         };
         match arg {
             "--explain-plan" => explain = true,
+            "--no-run" => no_run = true,
             "--format" => {
                 let value = next("--format", &mut index)?;
                 format = parse_format(&value)?;
@@ -31,11 +33,13 @@ pub(crate) fn parse(args: &[String]) -> Result<Invocation, SoldrError> {
             "--all-features" => scope.all_features = true,
             "--no-default-features" => scope.no_default_features = true,
             "--all-targets" | "--workspace" => {
-                // Canonical, fixed host scope; accepting these harmless
+                // Canonical, fixed workspace scope; accepting these harmless
                 // spellings makes a copied CI command explain the same plan.
             }
-            "--target" => requested_target = Some(next("--target", &mut index)?),
-            value if value.starts_with("--target=") => requested_target = Some(value[9..].into()),
+            "--target" => set_target(&mut requested_target, next("--target", &mut index)?)?,
+            value if value.starts_with("--target=") => {
+                set_target(&mut requested_target, value[9..].into())?
+            }
             "--target-dir" | "--profile" | "--toolchain" | "--manifest-path" => {
                 return Err(incompatible_override(arg));
             }
@@ -51,12 +55,12 @@ pub(crate) fn parse(args: &[String]) -> Result<Invocation, SoldrError> {
             }
             "--" => {
                 return Err(SoldrError::Other(
-                    "soldr ci-test: compiler arguments after `--` are incompatible with the frozen host-validation plan".into(),
+                    "soldr ci-test: compiler arguments after `--` are incompatible with the frozen validation plan".into(),
                 ));
             }
             _ => {
                 return Err(SoldrError::Other(format!(
-                    "soldr ci-test: unsupported scope option {arg:?}; supported options are --package/-p, --features, --all-features, and --no-default-features"
+                    "soldr ci-test: unsupported option {arg:?}; supported options include --target, --no-run, --package/-p, --features, --all-features, and --no-default-features"
                 )));
             }
         }
@@ -81,6 +85,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Invocation, SoldrError> {
         format,
         scope,
         requested_target,
+        no_run,
     })
 }
 
@@ -92,9 +97,35 @@ fn parse_format(value: &str) -> Result<OutputFormat, SoldrError> {
     })
 }
 
+fn set_target(slot: &mut Option<String>, value: String) -> Result<(), SoldrError> {
+    if slot.is_some() {
+        return Err(SoldrError::Other(
+            "soldr ci-test: only one --target is allowed per invocation".into(),
+        ));
+    }
+    if value.is_empty() {
+        return Err(SoldrError::Other(
+            "soldr ci-test: --target requires a non-empty triple".into(),
+        ));
+    }
+    let mut args = vec!["--target".into(), value];
+    crate::target_alias::normalize_target_aliases_in_args(&mut args);
+    let target = args.pop().expect("target argument exists");
+    if !target
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(SoldrError::Other(format!(
+            "soldr ci-test: --target {target:?} must be a Rust target triple, not a path"
+        )));
+    }
+    *slot = Some(target);
+    Ok(())
+}
+
 fn incompatible_override(option: &str) -> SoldrError {
     SoldrError::Other(format!(
-        "soldr ci-test: {option} is incompatible with the frozen host-validation domain; use `soldr cargo ...` for an explicit target, toolchain, profile, target-dir, or manifest override"
+        "soldr ci-test: {option} is incompatible with the frozen validation domain; use `soldr cargo ...` for an explicit toolchain, profile, target-dir, or manifest override"
     ))
 }
 
@@ -117,14 +148,14 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_host_scope_flags() {
+    fn accepts_scope_flags() {
         let parsed = parse(&strings(&["-p", "soldr-cli", "--features", "a,b"])).unwrap();
         assert_eq!(parsed.scope.packages, ["soldr-cli"]);
         assert_eq!(parsed.scope.features, ["a", "b"]);
     }
 
     #[test]
-    fn preserves_target_for_host_validation() {
+    fn preserves_target_for_validation() {
         let parsed = parse(&strings(&["--target=x86_64-unknown-linux-gnu"])).unwrap();
         assert_eq!(
             parsed.requested_target.as_deref(),
@@ -132,7 +163,21 @@ mod tests {
         );
         for override_arg in ["+nightly", "--release"] {
             let error = parse(&strings(&[override_arg])).unwrap_err();
-            assert!(error.to_string().contains("frozen host-validation domain"));
+            assert!(error.to_string().contains("frozen validation domain"));
         }
+    }
+
+    #[test]
+    fn compile_only_accepts_one_normalized_target() {
+        let parsed = parse(&strings(&["--no-run", "--target", "mac-arm64"])).unwrap();
+        assert!(parsed.no_run);
+        assert_eq!(
+            parsed.requested_target.as_deref(),
+            Some("aarch64-apple-darwin")
+        );
+        let error = parse(&strings(&["--target", "mac-arm64", "--target", "win-x64"])).unwrap_err();
+        assert!(error.to_string().contains("only one --target"));
+        let error = parse(&strings(&["--no-run", "--target", "../archive"])).unwrap_err();
+        assert!(error.to_string().contains("must be a Rust target triple"));
     }
 }

@@ -118,7 +118,7 @@ fn ci_test_is_a_native_builtin_with_a_versioned_complete_plan_schema() {
     let plan = plan_json(&[]);
 
     assert_eq!(
-        plan["schema_version"], 3,
+        plan["schema_version"], 4,
         "the explain-plan schema is a public contract"
     );
     assert_eq!(plan["command"], "ci-test");
@@ -539,37 +539,67 @@ fn ci_test_preserves_scope_and_exposes_incompatible_overrides_as_domains_or_erro
         "an explicit host target must preserve the frozen stable host domains: {explicit_host}"
     );
 
-    // An explicit host-plan override must never silently share the stable
-    // target tree. The native surface rejects it diagnostically; callers that
-    // need an additional domain use the explicit cargo front door.
-    //
-    // The triple is chosen against the host rather than hard-coded. It used to
-    // be a literal `aarch64-unknown-linux-gnu`, which is a *foreign* target on
-    // every lane except the one where it is the host — and there it collided
-    // with the assertion directly above, which requires an explicit host
-    // target to be accepted. The two cannot both hold for the same triple, so
-    // the aarch64 Linux target-run lane failed with "target override must not
-    // silently reuse host artifacts" while doing exactly the right thing.
-    let foreign = soldr_cli::core::CANONICAL_TARGETS
+    let foreign = if host == "aarch64-apple-darwin" {
+        "x86_64-pc-windows-msvc"
+    } else {
+        "aarch64-apple-darwin"
+    };
+    let compile_only = plan_json(&["--no-run", "--target", foreign]);
+    assert_eq!(compile_only["target_triple"], foreign);
+    assert_eq!(compile_only["no_run"], true);
+    assert!(compile_only["archive_file"]
+        .as_str()
+        .is_some_and(|path| path.ends_with(&format!("{foreign}-tests.tar.zst"))));
+    assert!(find_stage(&compile_only, "nextest-archive")["command"]
+        .as_array()
+        .is_some_and(|args| args.iter().any(|arg| arg == foreign)));
+    assert_eq!(
+        find_stage(&compile_only, "nextest-archive")["depends_on"],
+        serde_json::json!(["nextest-compile", "dylint-workspace"])
+    );
+    assert!(array(&compile_only, "domains")
         .iter()
-        .copied()
-        .find(|candidate| *candidate != host)
-        .expect("the canonical list has more than one target");
-    assert_ne!(
-        foreign, host,
-        "the override case needs a target that is NOT the host, or it tests \
-         the accepted-host path above instead"
-    );
+        .any(|domain| domain["id"] == "stable" && domain["target_triple"] == foreign));
+    assert!(array(&compile_only, "domains")
+        .iter()
+        .any(|domain| domain["id"] == "dylint-analysis" && domain["target_triple"] == host));
+    assert!(array(&compile_only, "stages").iter().all(|stage| {
+        stage["name"] != "nextest"
+            && stage["name"] != "doctests"
+            && !stage["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("dylint-test-"))
+    }));
+
     let overridden = explain_plan(&["--target", foreign]);
-    assert!(
-        !overridden.status.success(),
-        "target override must not silently reuse host artifacts"
-    );
+    assert!(!overridden.status.success());
     let stderr = String::from_utf8_lossy(&overridden.stderr);
     assert!(
-        stderr.contains("--target") && stderr.contains("frozen host-validation domain"),
-        "an incompatible target override needs a domain-specific diagnostic, not an opaque failure: {stderr}"
+        stderr.contains(foreign) && stderr.contains("--no-run"),
+        "{stderr}"
     );
+
+    if host.ends_with("-unknown-linux-gnu") || host.ends_with("-unknown-linux-musl") {
+        let other_abi = if host.ends_with("-unknown-linux-gnu") {
+            host.replace("-unknown-linux-gnu", "-unknown-linux-musl")
+        } else {
+            host.replace("-unknown-linux-musl", "-unknown-linux-gnu")
+        };
+        let output = explain_plan(&["--target", &other_abi]);
+        assert!(
+            !output.status.success(),
+            "ABI compatibility needs an executor"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&other_abi) && stderr.contains("--no-run"),
+            "{stderr}"
+        );
+    }
+
+    let duplicate = explain_plan(&["--target", &host, "--target", foreign]);
+    assert!(!duplicate.status.success());
+    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("only one --target"));
 }
 
 #[test]
@@ -587,7 +617,7 @@ fn ci_test_human_explain_plan_renders_the_same_named_domains_and_stages() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     for required in [
-        "soldr ci-test plan v3",
+        "soldr ci-test plan v4",
         "stable",
         "dylint-libraries",
         "dylint-analysis",

@@ -6,10 +6,10 @@
 
 use serde::Serialize;
 
-// Version 3 preserves unset Cargo/Soldr job limits as JSON null. Consumers must
-// not interpret null as one: ci-test leaves the variable untouched and the
-// canonical Cargo/daemon schedulers retain ownership of concurrency.
-pub(crate) const PLAN_SCHEMA_VERSION: u32 = 3;
+// Version 4 adds an explicit target, compile-only mode, and an archive path.
+// Unset Cargo/Soldr job limits remain JSON null: ci-test leaves them untouched
+// and the canonical Cargo/daemon schedulers retain ownership of concurrency.
+pub(crate) const PLAN_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OutputFormat {
@@ -60,6 +60,7 @@ pub(crate) struct Invocation {
     pub(crate) format: OutputFormat,
     pub(crate) scope: Scope,
     pub(crate) requested_target: Option<String>,
+    pub(crate) no_run: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -69,6 +70,9 @@ pub(crate) struct CiTestPlan {
     pub(crate) workspace_root: String,
     pub(crate) workspace_metadata: WorkspaceMetadata,
     pub(crate) host_triple: String,
+    pub(crate) target_triple: String,
+    pub(crate) no_run: bool,
+    pub(crate) archive_file: Option<String>,
     pub(crate) scope: PlanScope,
     pub(crate) domains: Vec<CompileDomain>,
     pub(crate) stages: Vec<Stage>,

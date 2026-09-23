@@ -50,6 +50,10 @@ fn render(plan: &model::CiTestPlan, format: OutputFormat) -> Result<(), SoldrErr
             println!("soldr ci-test plan v{}", plan.schema_version);
             println!("  workspace: {}", plan.workspace_root);
             println!("  host: {}", plan.host_triple);
+            println!("  target: {}", plan.target_triple);
+            if let Some(archive) = &plan.archive_file {
+                println!("  compile-only archive: {archive}");
+            }
             println!(
                 "  integration-test link targets: {} (warn above {})",
                 plan.test_target_count, plan.test_target_warn_threshold
