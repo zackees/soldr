@@ -66,7 +66,7 @@ def verify_candidate(sha: str) -> None:
         raise GateError("checked-out candidate does not match candidate_sha")
     subprocess.run(["git", "fetch", "origin", "main"], check=True)
     if subprocess.run(
-        ["git", "merge-base", "--is-ancestor", sha, "origin/main"]
+        ["git", "merge-base", "--is-ancestor", sha, "origin/main"], check=False
     ).returncode:
         raise GateError("candidate is not a merged commit reachable from main")
 

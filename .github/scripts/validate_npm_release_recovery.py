@@ -160,10 +160,12 @@ def validate_recovery(
             for asset in assets
             if isinstance(asset, dict) and asset.get("name") == name
         ]
+        size = matching[0].get("size") if len(matching) == 1 else None
         if (
             len(matching) != 1
-            or type(matching[0].get("size")) is not int
-            or matching[0]["size"] <= 0
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size <= 0
         ):
             raise ValidationError(f"GitHub release asset {name} has invalid size")
     github_wheels = {

@@ -79,7 +79,7 @@ def seconds(start, end):
     return elapsed, 0
 
 
-def collect_sha(api, repo, sha, event, weights=None, anchor_run_id=None):
+def collect_sha(api, repo, sha, event, *, weights=None, anchor_run_id=None):
     if event not in EVENTS:
         raise ValueError(f"event must be one of {EVENTS}")
     if not sha:
@@ -269,11 +269,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.event and (args.baseline_event or args.post_event):
         parser.error("use --event or separate baseline/post events, not both")
-    if args.event:
-        baseline_event = post_event = args.event
-    elif args.baseline_event and args.post_event:
-        baseline_event, post_event = args.baseline_event, args.post_event
-    else:
+    baseline_event = args.event or args.baseline_event
+    post_event = args.event or args.post_event
+    if not baseline_event or not post_event:
         parser.error("supply --event or both --baseline-event and --post-event")
     weights = None
     if args.weights:
@@ -304,7 +302,7 @@ def main(argv=None):
             key = (sha, anchor, event)
             if key not in reports:
                 reports[key] = collect_sha(
-                    api, args.repo, sha, event, weights, anchor_run_id=anchor
+                    api, args.repo, sha, event, weights=weights, anchor_run_id=anchor
                 )
     result = compare(
         [reports[sample[0], sample[1], baseline_event] for sample in baseline_samples],

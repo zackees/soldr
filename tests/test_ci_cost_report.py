@@ -246,7 +246,9 @@ class CostReportTests(unittest.TestCase):
                 (1, 1, 2): [],
             },
         )
-        report = m.collect_sha(api, "o/r", "a", "push", {"ubuntu-latest": 4})
+        report = m.collect_sha(
+            api, "o/r", "a", "push", weights={"ubuntu-latest": 4}
+        )
         self.assertEqual(report["weighted_runner_minutes_known"], 8)
         self.assertEqual(report["unknown_weight_job_ids"], [12])
 
