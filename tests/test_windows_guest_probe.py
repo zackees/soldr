@@ -85,6 +85,21 @@ def test_failed_replay_is_not_a_go():
     assert report["decision"] == "no-go"
 
 
+def test_guest_exception_is_named_in_no_go_report():
+    report = probe.make_report(
+        host={"kvm": True},
+        timings={"observed_total_seconds": 510},
+        guest={
+            "error": "native executable could not start",
+            "nextest": {"status": "not-run", "run": 0},
+        },
+        disk={},
+    )
+    assert report["decision"] == "no-go"
+    assert report["guest_error"] == "native executable could not start"
+    assert "native executable could not start" in report["reason"]
+
+
 def test_dockur_log_timings_do_not_invent_a_boot_boundary():
     log = "\n".join(
         [
@@ -330,6 +345,12 @@ def test_shell_and_replay_have_distinct_timestamps(tmp_path, monkeypatch):
     assert report["timings"]["runtime_install_seconds"] == 0.5
     assert report["timings"]["replay_seconds"] == 2
     assert report["decision"] == "go"
+    assert (
+        json.loads((tmp_path / "windows-guest-raw-result.json").read_text())["nextest"][
+            "passed"
+        ]
+        == 8
+    )
     assert not shared.exists()
 
 
@@ -448,6 +469,7 @@ def test_workflow_is_dispatch_only_and_not_a_required_gate():
     assert "windows_guest_probe.py" in workflow
     assert "windows-guest-nextest.log" in workflow
     assert "windows-guest-vc-redist.log" in workflow
+    assert "windows-guest-raw-result.json" in workflow
 
 
 def test_guest_installs_signed_runtime_before_native_replay():
