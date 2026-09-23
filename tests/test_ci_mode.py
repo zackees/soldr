@@ -144,15 +144,16 @@ def test_full_mode_overrides_old_fast_build_policy() -> None:
 
 
 def test_label_changes_recompute_mode_on_same_head_sha() -> None:
-    event = {"pull_request": {"head": {"sha": SHA}, "labels": [{"name": "fast-build"}]}}
+    labels = [{"name": "fast-build"}]
+    event = {"pull_request": {"head": {"sha": SHA}, "labels": labels}}
     assert MODE.select_mode("pull_request", event, "") == ("minimal", SHA)
-    event["pull_request"]["labels"].append({"name": "ci-test"})
+    labels.append({"name": "ci-test"})
     assert MODE.select_mode("pull_request", event, "") == ("test", SHA)
-    event["pull_request"]["labels"].append({"name": "ci-full"})
+    labels.append({"name": "ci-full"})
     assert MODE.select_mode("pull_request", event, "") == ("full", SHA)
-    event["pull_request"]["labels"].pop()
+    labels.pop()
     assert MODE.select_mode("pull_request", event, "") == ("test", SHA)
-    event["pull_request"]["labels"].pop()
+    labels.pop()
     assert MODE.select_mode("pull_request", event, "") == ("minimal", SHA)
 
 

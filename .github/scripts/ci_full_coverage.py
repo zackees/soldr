@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 EXTRA_REQUIRED = {
@@ -20,7 +21,7 @@ EXTRA_REQUIRED = {
 }
 
 
-def required_jobs(contract: dict[str, object]) -> set[str]:
+def required_jobs(contract: dict[str, Any]) -> set[str]:
     jobs = set(EXTRA_REQUIRED)
     for target in contract["targets"]:
         ci = target["ci"]
@@ -31,7 +32,7 @@ def required_jobs(contract: dict[str, object]) -> set[str]:
 
 
 def coverage_failures(
-    contract: dict[str, object], needs: dict[str, object]
+    contract: dict[str, Any], needs: dict[str, object]
 ) -> list[str]:
     failures = []
     for job in sorted(required_jobs(contract)):
