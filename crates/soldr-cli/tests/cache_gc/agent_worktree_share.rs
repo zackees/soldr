@@ -202,7 +202,9 @@ fn windows_long_path_publication_survives_fresh_worktree_reuse() {
 
     assert!(
         warm_hits > 0,
-        "fresh worktree and target must reuse the cold build: {warm:#?}",
+        "fresh worktree and target must reuse the cold build: {warm:#?}; zccache log: {}",
+        fs::read_to_string(cache_dir.join("zccache-trace.log"))
+            .unwrap_or_else(|error| format!("unavailable: {error}")),
     );
     let warm_published = staged_counter(&warm, "publication_success");
     let warm_conflicts = staged_counter(&warm, "publication_conflict");
@@ -358,7 +360,8 @@ fn soldr_cargo_check(worktree: &Path, cache_dir: &Path, target_dir: &Path) -> St
         .current_dir(worktree)
         .env("SOLDR_CACHE_DIR", cache_dir)
         .env("CARGO_TARGET_DIR", target_dir)
-        .env("ZCCACHE_STAGING_DIR", staging_dir);
+        .env("ZCCACHE_STAGING_DIR", staging_dir)
+        .env("ZCCACHE_LOG_FILE", cache_dir.join("zccache-trace.log"));
     let output = command.output().expect("spawn soldr cargo check");
     let rendered = format!(
         "stdout={}; stderr={}",
