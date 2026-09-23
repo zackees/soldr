@@ -38,6 +38,21 @@ public static class ProbeWin32 {
         adapters = @((Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }))
     }
 
+    $runtime = 'Z:\vc_redist.x64.exe'
+    if (-not (Test-Path $runtime)) { throw 'verified VC++ Redistributable is missing from Z:' }
+    $signature = Get-AuthenticodeSignature -FilePath $runtime
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
+        throw "VC++ Redistributable Authenticode signature is not Microsoft-valid: $($signature.Status)"
+    }
+    'ready' | Set-Content -Path 'Z:\runtime-install-start.txt' -Encoding ASCII
+    $install = Start-Process -FilePath $runtime -ArgumentList @('/install', '/quiet', '/norestart', '/log', 'Z:\vc-redist-install.log') -Wait -PassThru
+    $result.capabilities.vcruntime_install_exit = $install.ExitCode
+    $result.capabilities.vcruntime140_after = Test-Path "$env:WINDIR\System32\vcruntime140.dll"
+    if ($install.ExitCode -notin @(0, 3010) -or -not $result.capabilities.vcruntime140_after) {
+        throw "VC++ Redistributable install did not provide vcruntime140.dll (exit $($install.ExitCode))"
+    }
+    'ready' | Set-Content -Path 'Z:\runtime-ready.txt' -Encoding ASCII
+
     $nextest = 'Z:\cargo-nextest.exe'
     $archive = 'Z:\tests.tar.zst'
     $workspace = 'Z:\workspace'

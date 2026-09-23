@@ -47,5 +47,7 @@ jobs:
             ${{ runner.temp }}/windows-guest-report.json
             ${{ runner.temp }}/windows-guest-report.md
             ${{ runner.temp }}/windows-guest-container.log
+            ${{ runner.temp }}/windows-guest-nextest.log
+            ${{ runner.temp }}/windows-guest-vc-redist.log
           if-no-files-found: warn
           retention-days: 7

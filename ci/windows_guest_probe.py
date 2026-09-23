@@ -8,6 +8,7 @@ turns measurements (including an honest no-go) into a durable summary.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ import stat
 import subprocess
 import tarfile
 import time
+import urllib.request
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +25,11 @@ from typing import Any
 # Upstream dockur/windows v6.03, commit f6fcb46958fb9635df49e2af09f7c800b65a89e3.
 # Pin the published multi-arch image digest, not the moving tag or stale fork.
 IMAGE = "ghcr.io/dockur/windows@sha256:743847e75b776790c059f33ac6654f84727ba36a6d458a61e37cb2b2f043d168"
+# Microsoft's documented permalink, pinned to the exact signed package read
+# for this one-off probe. A changed permalink payload fails closed for review.
+VC_REDIST_URL = "https://aka.ms/vc14/vc_redist.x64.exe"
+VC_REDIST_SHA256 = "843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c"
+MAX_VC_REDIST_BYTES = 64 * 1024**2
 CAPABILITY_NAMES = (
     "powershell",
     "job_objects",
@@ -31,6 +38,7 @@ CAPABILITY_NAMES = (
     "gpu_rendering",
     "admin",
     "vcruntime140",
+    "vcruntime140_after",
 )
 
 
@@ -48,6 +56,8 @@ def make_report(
             "iso_download_seconds",
             "install_seconds",
             "boot_seconds",
+            "runtime_prep_seconds",
+            "runtime_install_seconds",
             "replay_seconds",
         )
     }
@@ -122,6 +132,25 @@ def _run(
     return subprocess.run(args, check=check, text=True, capture_output=capture)
 
 
+def _fetch_vc_redist(shared: Path, *, expected_sha256: str = VC_REDIST_SHA256) -> None:
+    """Stage one exact Microsoft runtime installer; never trust a moving URL."""
+    destination = shared / "vc_redist.x64.exe"
+    digest = hashlib.sha256()
+    size = 0
+    with urllib.request.urlopen(VC_REDIST_URL, timeout=120) as response:
+        with destination.open("wb") as output:
+            while chunk := response.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_VC_REDIST_BYTES:
+                    raise OSError("Visual C++ Redistributable exceeds 64 MiB limit")
+                digest.update(chunk)
+                output.write(chunk)
+    if digest.hexdigest() != expected_sha256:
+        raise OSError(
+            f"Visual C++ Redistributable sha256 mismatch: {digest.hexdigest()}"
+        )
+
+
 def _stage_payload(repo: Path, artifact: Path, shared: Path, oem: Path) -> Path:
     archive = artifact / "windows-guest-probe-msvc-tests.tar.zst"
     nextest = artifact / "package" / "tools" / "cargo-nextest.exe"
@@ -135,6 +164,7 @@ def _stage_payload(repo: Path, artifact: Path, shared: Path, oem: Path) -> Path:
     shutil.copy2(nextest, shared / "cargo-nextest.exe")
     shutil.copy2(repo / "ci" / "windows_guest_probe.ps1", oem / "probe.ps1")
     shutil.copy2(repo / "ci" / "windows_guest_probe.bat", oem / "install.bat")
+    _fetch_vc_redist(shared)
     workspace = shared / "workspace"
     workspace.mkdir()
     # Nextest requires a real workspace manifest at --workspace-remap. Use the
@@ -341,6 +371,8 @@ def run_probe(args: argparse.Namespace) -> int:
     name = f"soldr-windows-probe-{args.run_id}-{uuid.uuid4().hex[:12]}"
     started = time.time()
     shell_ready = None
+    runtime_install_start = None
+    runtime_ready = None
     result_seen = None
     attempted_container = False
     try:
@@ -393,6 +425,17 @@ def run_probe(args: argparse.Namespace) -> int:
                     shell_ready = _host_created_at(
                         shared / "guest-shell-ready.txt", started
                     )
+                if (
+                    runtime_install_start is None
+                    and (shared / "runtime-install-start.txt").is_file()
+                ):
+                    runtime_install_start = _host_created_at(
+                        shared / "runtime-install-start.txt", started
+                    )
+                if runtime_ready is None and (shared / "runtime-ready.txt").is_file():
+                    runtime_ready = _host_created_at(
+                        shared / "runtime-ready.txt", started
+                    )
                 if (shared / "guest-result.json").is_file():
                     result_seen = _host_created_at(
                         shared / "guest-result.json", started
@@ -418,9 +461,19 @@ def run_probe(args: argparse.Namespace) -> int:
                 log.stdout + log.stderr, encoding="utf-8"
             )
             timings = _phase_timings(log.stdout + log.stderr, started, shell_ready)
+            timings["runtime_prep_seconds"] = (
+                max(0, runtime_install_start - shell_ready)
+                if runtime_install_start is not None and shell_ready is not None
+                else None
+            )
+            timings["runtime_install_seconds"] = (
+                max(0, runtime_ready - runtime_install_start)
+                if runtime_ready is not None and runtime_install_start is not None
+                else None
+            )
             timings["replay_seconds"] = (
-                max(0, result_seen - shell_ready)
-                if result_seen is not None and shell_ready is not None
+                max(0, result_seen - runtime_ready)
+                if result_seen is not None and runtime_ready is not None
                 else None
             )
             disk = _disk_measure(storage)
@@ -431,6 +484,16 @@ def run_probe(args: argparse.Namespace) -> int:
     except (OSError, subprocess.CalledProcessError, tarfile.TarError) as exc:
         host["probe_error"] = str(exc)[:500]
     finally:
+        for guest_name, host_name in (
+            ("nextest.log", "windows-guest-nextest.log"),
+            ("vc-redist-install.log", "windows-guest-vc-redist.log"),
+        ):
+            guest_log = scratch / "shared" / guest_name
+            try:
+                if guest_log.is_file():
+                    shutil.copy2(guest_log, output.parent / host_name)
+            except OSError as exc:
+                host["diagnostic_error"] = str(exc)[:500]
         if attempted_container:
             try:
                 if not (output.parent / "windows-guest-container.log").is_file():

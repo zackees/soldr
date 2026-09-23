@@ -7,6 +7,13 @@ image is pinned by OCI digest in `ci/windows_guest_probe.py`; no guest image is
 uploaded, cached, or kept after the job. The script stages the verified
 `cargo-nextest.exe` and cross-built archive, runs `soldr-core` tests in the
 guest, and reports actual run/passed/failed counts plus host/guest capabilities.
+Server Core lacks `vcruntime140.dll` in the first observed run, so the probe
+downloads [Microsoft's documented x64 VC++ Redistributable permalink](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170) on the
+host, verifies the pinned SHA-256 in `ci/windows_guest_probe.py`, and checks
+its Microsoft Authenticode signature in the guest before an unattended
+install. The original `vcruntime140` capability records the cold image;
+`vcruntime140_after` records whether the installer supplied it. No installer
+or guest disk is committed or cached.
 
 Run it from Actions → **Windows guest feasibility probe** → Run workflow. The
 report and container log are in the job summary and the
@@ -23,7 +30,9 @@ time to the first OEM PowerShell script. Dockur does not expose a reliable
 boundary between unattended install and first usable boot; the report labels
 that combined interval `install_seconds` and leaves `boot_seconds` explicitly
 unmeasured. Do not turn an absent marker into a zero or claim that an
-unmeasured phase met the budget. The script records the allocated and apparent
+unmeasured phase met the budget. Host-timestamped markers separate capability
+and signature preparation, the VC++ installer, and native Nextest replay.
+The script records the allocated and apparent
 disk size and streams zstd compression to a counter without creating a cache
 artifact. Its cache-viability heuristic is only a size estimate; a later
 implementation would still need restore-time and eviction measurements.
