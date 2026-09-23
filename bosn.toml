@@ -68,6 +68,18 @@ cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo build -p soldr-cli --bin soldr && CARGO_TARGET_DIR=/target /target/debug/soldr ci-test --no-run --target x86_64-unknown-linux-gnu --package soldr-core"
 
+[task.windows-guest-probe-contract]
+stack = "cook"
+cmd = "cd /repo && uv run --no-project --with pytest --with pyyaml pytest -q tests/test_windows_guest_probe.py tests/test_cross_compile_workflows.py"
+
+[task.windows-guest-probe-lint]
+stack = "cook"
+cmd = "cd /repo && uv run --no-project --with 'ruff==0.12.12' ruff check ci/windows_guest_probe.py tests/test_windows_guest_probe.py && uv run --no-project --with black black --check --target-version py310 ci/windows_guest_probe.py tests/test_windows_guest_probe.py && uv run --no-project --with isort isort --check-only ci/windows_guest_probe.py tests/test_windows_guest_probe.py && uv run --no-project --with flake8 flake8 ci/windows_guest_probe.py tests/test_windows_guest_probe.py && uv run --no-project --with pylint pylint ci/windows_guest_probe.py && uv run --no-project --with pylint --with pytest pylint --rcfile=tests/.pylintrc tests/test_windows_guest_probe.py && uv run --no-project --with mypy --with pytest mypy ci/windows_guest_probe.py tests/test_windows_guest_probe.py && uv run --no-project --with pyyaml python .github/scripts/check_workflow_python_pin.py"
+
+[task.windows-guest-probe-format]
+stack = "cook"
+cmd = "cd /repo && uv run --no-project --with isort isort ci/windows_guest_probe.py tests/test_windows_guest_probe.py && uv run --no-project --with black black --target-version py310 ci/windows_guest_probe.py tests/test_windows_guest_probe.py"
+
 [task.macos-recovery-executor-contract]
 stack = "cook"
 cmd = "cd /repo && uv run --no-project --with pytest pytest -q tests/test_macos_recovery_run.py tests/test_macos_recovery_lane_contract.py tests/test_cross_compile_workflows.py"

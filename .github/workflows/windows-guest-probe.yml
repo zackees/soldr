@@ -1,0 +1,51 @@
+# soldr#3295: one-off Windows guest go/no-go. Never a push, PR, release, or
+# scheduled gate. The established Linux MSVC producer supplies the archive and
+# a verified target-native cargo-nextest.exe; this workflow only replays it.
+name: Windows guest feasibility probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cross-build:
+    uses: ./.github/workflows/_ci-cross-build-linux.yml
+    with:
+      target: x86_64-pc-windows-msvc
+      artifact_name: windows-guest-probe-msvc
+      source_ref: ${{ github.sha }}
+
+  guest:
+    name: Windows Server Core guest on ubuntu-24.04
+    needs: cross-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-guest-probe-msvc
+          path: artifact
+      - name: Boot guest, replay native archive, and measure feasibility
+        run: >-
+          uv run --no-project --python 3.13 python ci/windows_guest_probe.py
+          --repo "$GITHUB_WORKSPACE"
+          --artifact "$GITHUB_WORKSPACE/artifact"
+          --scratch "/mnt/soldr-windows-guest-${{ github.run_id }}"
+          --output "$RUNNER_TEMP/windows-guest-report.json"
+          --run-id "${{ github.run_id }}"
+          --timeout-seconds 3600
+      - name: Upload probe measurements and guest log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-guest-probe-measurements
+          path: |
+            ${{ runner.temp }}/windows-guest-report.json
+            ${{ runner.temp }}/windows-guest-report.md
+            ${{ runner.temp }}/windows-guest-container.log
+          if-no-files-found: warn
+          retention-days: 7

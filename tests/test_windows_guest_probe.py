@@ -1,0 +1,274 @@
+"""Contract tests for the dispatch-only Windows guest feasibility probe."""
+
+import importlib.util
+import json
+from argparse import Namespace
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "ci" / "windows_guest_probe.py"
+spec = importlib.util.spec_from_file_location("windows_guest_probe", SCRIPT)
+assert spec is not None and spec.loader is not None
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+
+
+def test_summary_keeps_unmeasured_capabilities_explicit():
+    report = probe.make_report(
+        host={"kvm": False, "free_bytes": 20_000_000_000},
+        timings={},
+        guest=None,
+        disk={},
+    )
+    assert report["decision"] == "no-go"
+    assert report["reason"] == "KVM is unavailable on this runner"
+    assert report["nextest"]["status"] == "not-run"
+    assert report["capabilities"]["powershell"] == "not-measured"
+    assert report["timings"]["iso_download_seconds"] is None
+
+
+def test_summary_requires_real_replay_counts_for_go():
+    guest = {
+        "nextest": {"run": 8, "passed": 8, "failed": 0, "exit_code": 0},
+        "capabilities": {"powershell": "5.1", "admin": True},
+    }
+    report = probe.make_report(
+        host={"kvm": True, "free_bytes": 60_000_000_000},
+        timings={
+            "iso_download_seconds": 80,
+            "install_seconds": 400,
+            "boot_seconds": 65,
+        },
+        guest=guest,
+        disk={"image_bytes": 12_000_000_000, "compressed_bytes": 6_000_000_000},
+    )
+    assert report["decision"] == "go"
+    assert report["nextest"]["passed"] == 8
+    assert report["timings"]["usable_shell_seconds"] == 545
+
+
+def test_failed_replay_is_not_a_go():
+    guest = {"nextest": {"run": 1, "passed": 0, "failed": 1, "exit_code": 100}}
+    report = probe.make_report(
+        host={"kvm": True, "free_bytes": 60_000_000_000},
+        timings={
+            "iso_download_seconds": 80,
+            "install_seconds": 400,
+            "boot_seconds": 65,
+        },
+        guest=guest,
+        disk={},
+    )
+    assert report["decision"] == "no-go"
+
+
+def test_dockur_log_timings_do_not_invent_a_boot_boundary():
+    log = "\n".join(
+        [
+            "2026-09-22T00:00:10Z Downloading Windows Server 2025...",
+            "2026-09-22T00:01:10Z Extracting Windows Server 2025 image...",
+            "2026-09-22T00:02:00Z Booting Windows using QEMU v10...",
+        ]
+    )
+    shell_ready = datetime(2026, 9, 22, 0, 5, tzinfo=timezone.utc).timestamp()
+    timings = probe._phase_timings(log, shell_ready - 300, shell_ready)
+    assert timings["iso_download_seconds"] == 60
+    assert timings["boot_seconds"] is None
+    assert timings["install_seconds"] == 180
+
+
+def test_preflight_reports_no_go_and_removes_its_own_scratch(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe, "_kvm_usable", lambda: False)
+    scratch = tmp_path / "unique-scratch"
+    output = tmp_path / "result.json"
+    args = Namespace(
+        repo=ROOT,
+        artifact=tmp_path / "missing",
+        scratch=scratch,
+        output=output,
+        run_id="test",
+        timeout_seconds=1,
+    )
+    assert probe.run_probe(args) == 0
+    report = json.loads(output.read_text())
+    assert report["reason"] == "KVM is unavailable on this runner"
+    assert not scratch.exists()
+
+
+def test_shell_and_replay_have_distinct_timestamps(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe, "_kvm_usable", lambda: True)
+    monkeypatch.setattr(
+        probe.shutil, "disk_usage", lambda _: SimpleNamespace(free=60 * 1024**3)
+    )
+    monkeypatch.setattr(probe.time, "sleep", lambda _: None)
+    clock = iter([100.0, 105.0, 107.0, 110.0])
+    monkeypatch.setattr(probe.time, "time", lambda: next(clock))
+    marker_times = iter([107.0, 110.0])
+    monkeypatch.setattr(probe, "_host_created_at", lambda *_: next(marker_times))
+    shared = tmp_path / "scratch" / "shared"
+
+    def stage(_repo, _artifact, shared_dir, oem_dir):
+        shared_dir.mkdir()
+        oem_dir.mkdir()
+
+    monkeypatch.setattr(probe, "_stage_payload", stage)
+    monkeypatch.setattr(probe, "_disk_measure", lambda _: {})
+    inspections = 0
+
+    def fake_run(*command, **_kwargs):
+        nonlocal inspections
+        if command[:2] == ("docker", "inspect") and len(command) == 3:
+            return SimpleNamespace(stdout="", stderr="No such object", returncode=1)
+        if command[:2] == ("docker", "inspect"):
+            inspections += 1
+            if inspections == 1:
+                (shared / "guest-shell-ready.txt").write_text("ready")
+            elif inspections == 2:
+                (shared / "guest-result.json").write_text(
+                    json.dumps(
+                        {
+                            "nextest": {
+                                "run": 8,
+                                "passed": 8,
+                                "failed": 0,
+                                "exit_code": 0,
+                            }
+                        }
+                    )
+                )
+            return SimpleNamespace(stdout="true", stderr="", returncode=0)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(probe, "_run", fake_run)
+    output = tmp_path / "result.json"
+    args = Namespace(
+        repo=ROOT,
+        artifact=tmp_path,
+        scratch=tmp_path / "scratch",
+        output=output,
+        run_id="test",
+        timeout_seconds=1,
+    )
+    assert probe.run_probe(args) == 0
+    report = json.loads(output.read_text())
+    assert report["timings"]["usable_shell_seconds"] == 2
+    assert report["timings"]["replay_seconds"] == 3
+    assert report["decision"] == "go"
+    assert not shared.exists()
+
+
+def test_operational_failure_reports_no_go_and_cleans_unique_container(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(probe, "_kvm_usable", lambda: True)
+    monkeypatch.setattr(
+        probe.shutil, "disk_usage", lambda _: SimpleNamespace(free=60 * 1024**3)
+    )
+    monkeypatch.setattr(probe, "_stage_payload", lambda *_: None)
+    calls = []
+
+    def fake_run(*command, **_kwargs):
+        calls.append(command)
+        if command[:2] == ("docker", "run"):
+            raise OSError("simulated Docker launch failure")
+        if command[:2] == ("docker", "inspect"):
+            return SimpleNamespace(stdout="", stderr="No such object", returncode=1)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(probe, "_run", fake_run)
+    output = tmp_path / "result.json"
+    args = Namespace(
+        repo=ROOT,
+        artifact=tmp_path,
+        scratch=tmp_path / "scratch",
+        output=output,
+        run_id="test",
+        timeout_seconds=1,
+    )
+    assert probe.run_probe(args) == 0
+    report = json.loads(output.read_text())
+    assert report["decision"] == "no-go"
+    assert "simulated Docker launch failure" in report["reason"]
+    assert any(command[:3] == ("docker", "rm", "-f") for command in calls)
+    assert not (tmp_path / "scratch").exists()
+
+
+def test_host_marker_time_uses_file_change_time(tmp_path):
+    marker = tmp_path / "ready"
+    started = probe.time.time() - 1
+    marker.write_text("ready")
+    created = probe._host_created_at(marker, started)
+    assert created is not None
+    assert started <= created <= probe.time.time()
+
+
+def test_cleanup_failure_is_reported_and_fails_workflow(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe, "_kvm_usable", lambda: True)
+    monkeypatch.setattr(
+        probe.shutil, "disk_usage", lambda _: SimpleNamespace(free=60 * 1024**3)
+    )
+    monkeypatch.setattr(probe, "_stage_payload", lambda *_: None)
+
+    def fake_run(*command, **_kwargs):
+        if command[:2] == ("docker", "run"):
+            raise OSError("launch failed")
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(probe, "_run", fake_run)
+    output = tmp_path / "result.json"
+    args = Namespace(
+        repo=ROOT,
+        artifact=tmp_path,
+        scratch=tmp_path / "scratch",
+        output=output,
+        run_id="test",
+        timeout_seconds=1,
+    )
+    assert probe.run_probe(args) == 1
+    report = json.loads(output.read_text())
+    assert report["decision"] == "no-go"
+    assert "cleanup failed" in report["reason"].lower()
+
+
+def test_log_failure_still_attempts_container_removal(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe, "_kvm_usable", lambda: True)
+    monkeypatch.setattr(
+        probe.shutil, "disk_usage", lambda _: SimpleNamespace(free=60 * 1024**3)
+    )
+    monkeypatch.setattr(probe, "_stage_payload", lambda *_: None)
+    calls = []
+
+    def fake_run(*command, **_kwargs):
+        calls.append(command)
+        if command[:2] == ("docker", "run"):
+            raise OSError("launch failed")
+        if command[:2] == ("docker", "logs"):
+            raise OSError("log unavailable")
+        if command[:2] == ("docker", "inspect"):
+            return SimpleNamespace(stdout="", stderr="No such object", returncode=1)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(probe, "_run", fake_run)
+    args = Namespace(
+        repo=ROOT,
+        artifact=tmp_path,
+        scratch=tmp_path / "scratch",
+        output=tmp_path / "result.json",
+        run_id="test",
+        timeout_seconds=1,
+    )
+    assert probe.run_probe(args) == 0
+    assert any(command[:3] == ("docker", "rm", "-f") for command in calls)
+    assert not (tmp_path / "scratch").exists()
+
+
+def test_workflow_is_dispatch_only_and_not_a_required_gate():
+    workflow = (ROOT / ".github/workflows/windows-guest-probe.yml").read_text()
+    assert "workflow_dispatch:" in workflow
+    assert "pull_request:" not in workflow
+    assert "push:" not in workflow
+    assert "schedule:" not in workflow
+    assert "_ci-cross-build-linux.yml" in workflow
+    assert "windows_guest_probe.py" in workflow

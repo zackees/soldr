@@ -531,6 +531,22 @@
       "mechanism": "actions/upload-artifact",
       "tier": "none",
       "rationale": "Guest logs and test results retained for humans."
+    },
+    {
+      "id": "windows-guest-probe-archive-download",
+      "workflow": "windows-guest-probe.yml",
+      "step": "Download Linux MSVC cross-build artifact",
+      "mechanism": "actions/download-artifact",
+      "tier": "same-run-transport",
+      "rationale": "Receives the verified test archive and native Nextest executable from the cross-build job of this one dispatch run; never restored by a later build."
+    },
+    {
+      "id": "windows-guest-probe-measurements-upload",
+      "workflow": "windows-guest-probe.yml",
+      "step": "Upload probe measurements and guest log",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "One-off measurements and logs retained for human review; no guest disk or linked test product is cached across runs."
     }
   ]
 }
