@@ -77,15 +77,15 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Require merged candidate identity
-        env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-        run: python3 .github/scripts/release_full_ci_gate.py --verify-candidate --candidate-sha "$CANDIDATE_SHA"
-
       - name: Setup uv for pinned release scripts
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: false
+
+      - name: Require merged candidate identity
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: uv run --no-project --python 3.13 python .github/scripts/release_full_ci_gate.py --verify-candidate --candidate-sha "$CANDIDATE_SHA"
 
       # Contract-generated (soldr#2469 step 2.1): the build job's matrix
       # comes from ci/canonical-targets.json, so the matrix and the
@@ -117,12 +117,16 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.13"
+      - name: Setup uv for pinned release scripts
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
       - name: Verify completed full CI run and required jobs
         env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_SHA: ${{ needs.prepare.outputs.commit_sha }}
           CI_RUN_ID: ${{ inputs.full_ci_run_id }}
-        run: python3 .github/scripts/release_full_ci_gate.py --candidate-sha "$CANDIDATE_SHA" --ci-run-id "$CI_RUN_ID" --repository "$GITHUB_REPOSITORY"
+        run: uv run --no-project --python 3.13 python .github/scripts/release_full_ci_gate.py --candidate-sha "$CANDIDATE_SHA" --ci-run-id "$CI_RUN_ID" --repository "$GITHUB_REPOSITORY"
 
   build:
     name: ${{ matrix.name }}

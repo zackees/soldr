@@ -73,3 +73,25 @@ def test_workflow_requires_gate_before_build_and_preserves_npm_recovery() -> Non
     assert "needs.prepare.result == 'skipped'" in jobs["publish-npm"]["if"]
     assert "inputs.npm_release_ref != ''" in jobs["publish-npm"]["if"]
     assert "validate_npm_release_recovery.py" in str(jobs["publish-npm"]["steps"])
+
+
+def test_release_gate_scripts_use_pinned_uv_after_setup() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "release-auto.yml").read_text()
+    )
+    for job_name in ("prepare", "full_ci_gate"):
+        steps = workflow["jobs"][job_name]["steps"]
+        setup_index = next(
+            index
+            for index, step in enumerate(steps)
+            if str(step.get("uses", "")).startswith("astral-sh/setup-uv@")
+        )
+        gate_index = next(
+            index
+            for index, step in enumerate(steps)
+            if "release_full_ci_gate.py" in step.get("run", "")
+        )
+        assert setup_index < gate_index
+        assert steps[gate_index]["run"].startswith(
+            "uv run --no-project --python 3.13 python .github/scripts/release_full_ci_gate.py "
+        )
