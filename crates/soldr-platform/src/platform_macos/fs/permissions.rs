@@ -24,13 +24,13 @@ pub fn make_writable_like(
     file.set_permissions(std::fs::Permissions::from_mode(source.mode() | 0o200))
 }
 
-/// Add the execute bits to `path` (keeping every other bit): a freshly
-/// written script lands at the umask default (0o644) and must become
-/// runnable.
+/// Make `path` executable by applying a fixed 0o755, deliberately
+/// umask-independent: OR-ing exec bits onto a umask-derived base (the
+/// prior behavior) produced 0o777 world-writable shims under a
+/// container root's umask 0000 (issue #3327).
 pub fn make_executable(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(path)?.permissions().mode();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o111))
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
 }
 
 /// Publish permissions for a materialized executable: the published
@@ -54,4 +54,36 @@ pub fn make_private(path: &Path) -> std::io::Result<()> {
 pub fn mode(path: &Path) -> Option<u32> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path).ok().map(|m| m.permissions().mode())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn make_executable_is_umask_independent() {
+        // chmod (set_permissions), not a plain file create, is the point:
+        // umask masks a create's requested bits, so a freshly created file
+        // can never actually reach 0o666 under a permissive CI umask (022).
+        // Explicitly chmod-ing to 0o666 reproduces the exact base that the
+        // old `mode | 0o111` logic saw under umask 0000 (root in
+        // containers), so this test reproduces the 0o777 regression even
+        // on a CI host with umask 022. Do not "simplify" this back to a
+        // plain create — that would make the test pass unconditionally
+        // and CI could never turn red again.
+        let path = std::env::temp_dir().join(format!(
+            "soldr-platform-make-executable-{}-{}",
+            std::process::id(),
+            "umask-independent"
+        ));
+        std::fs::write(&path, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        make_executable(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        let _ = std::fs::remove_file(&path);
+        // Old code: 0o666 | 0o111 = 0o777 (world-writable, fails).
+        // New code: fixed 0o755 (passes).
+        assert_eq!(mode & 0o777, 0o755);
+    }
 }
