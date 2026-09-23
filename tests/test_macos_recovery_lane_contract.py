@@ -154,6 +154,21 @@ def test_recovery_lane_ships_the_tests_archive_to_the_guest() -> None:
     assert "nextest_list_all" in target_run or "nextest list" in target_run
 
 
+def test_recovery_replays_shard_the_full_suite_in_fresh_guests() -> None:
+    target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
+    assert '--partition "$REPLAY_PARTITION"' in target_run
+    assert '--partition "$REPLAY_PARTITION" \\' in target_run
+    assert (
+        "name: target-run-${{ inputs.target }}-${{ matrix.replay.label }}-recovery-diagnostics"
+        in target_run
+    )
+    for workflow_name in ("macos-recovery-replay.yml", "release-auto.yml"):
+        workflow = (WORKFLOWS / workflow_name).read_text(encoding="utf-8")
+        assert workflow.count('"value":"hash:1/3"') == 1
+        assert workflow.count('"value":"hash:2/3"') == 1
+        assert workflow.count('"value":"hash:3/3"') == 1
+
+
 def test_recovery_lane_records_the_executor_contract_as_diagnostics() -> None:
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
     assert "macos_recovery_run.py describe-executor" in target_run
