@@ -480,3 +480,15 @@ def test_guest_installs_signed_runtime_before_native_replay():
     assert "runtime-ready.txt" in guest
     assert guest.index("runtime-install-start.txt") < guest.index("Start-Process")
     assert guest.index("runtime-ready.txt") < guest.index("& $nextest nextest run")
+
+
+def test_guest_native_stderr_cannot_abort_nextest_replay():
+    guest = (ROOT / "ci" / "windows_guest_probe.ps1").read_text()
+    assert "# Windows PowerShell 5.1 promotes a native program's stderr" in guest
+    assert "'Continue'" in guest
+    assert guest.index("$ErrorActionPreference = 'Continue'") < guest.index(
+        "& $nextest nextest run"
+    )
+    assert guest.index("$exitCode = $LASTEXITCODE") < guest.index(
+        "$ErrorActionPreference = $savedErrorActionPreference"
+    )
