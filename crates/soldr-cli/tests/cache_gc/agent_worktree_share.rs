@@ -202,7 +202,9 @@ fn windows_long_path_publication_survives_fresh_worktree_reuse() {
 
     assert!(
         warm_hits > 0,
-        "fresh worktree and target must reuse the cold build: {warm:#?}; zccache log: {}",
+        "fresh worktree and target must reuse the cold build: {warm:#?}; daemon log: {}; zccache log: {}",
+        fs::read_to_string(cache_dir.join("daemon-spawn.log"))
+            .unwrap_or_else(|error| format!("unavailable: {error}")),
         fs::read_to_string(cache_dir.join("zccache-trace.log"))
             .unwrap_or_else(|error| format!("unavailable: {error}")),
     );
