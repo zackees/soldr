@@ -809,15 +809,9 @@ jobs:
             --target '${{ matrix.target }}' \
             --expected-version '${{ needs.prepare.outputs.version }}'
 
-  # soldr#3078: gate publish on the same positively-owned nextest partition
-  # replay `e2e-macos-x64` runs on every PR (ci.yml), pinned to the release
-  # commit rather than the tip of main. `smoke_macos_x64` above already
-  # smoke-tests the actual release archive/wheel; this is the separate,
-  # heavier native-execution gate the archive replay itself provides --
-  # x86_64-apple-darwin is cross-built on Linux and cannot execute its own
-  # test suite there, so a real macOS Recovery guest runs it instead (no
-  # macos-* GitHub Actions runner exists anywhere, owner mandate
-  # 2026-09-02).
+  # Advisory Recovery-guest replay of the positively-owned Intel macOS nextest
+  # partition, pinned to the release commit. The shipped archive/wheel are
+  # independently tested by the hosted native macOS smoke jobs above.
   e2e_macos_x64_build:
     name: cross-build x86_64-apple-darwin for replay (linux host)
     needs: [prepare, full_ci_gate]
@@ -849,10 +843,8 @@ jobs:
       extended_replay: false
       run_pep517_smoke: false
 
-  # soldr#3071: the repository has no registered Apple Silicon runner.
-  # Fail before publication while the release-included ARM64 archive and
-  # wheel have no real target execution. The eventual executor removes this
-  # block by restoring ci.run_job in the canonical target contract.
+  # Reject publication if any release-blocking target lacks a declared
+  # execution route. Hosted Apple Silicon is available in opt-in full/release.
   release_execution_contract:
     name: Require execution for release-blocking targets
     needs: prepare
