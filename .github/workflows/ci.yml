@@ -17,6 +17,15 @@ on:
     paths-ignore:
       - '*.md'
       - '**/*.md'
+  # This is deliberately unfiltered: a Markdown-only PR must report the
+  # protected `Lint` context. `path-selection` keeps that path cheap and
+  # suppresses the compiler/platform fan-out. Labels still re-run CI so the
+  # fast-build and macOS Recovery gates receive their event payload.
+  #
+  # NOTE: pushes to main always run the full sweep. Label gates evaluate
+  # open when `github.event.pull_request` is null,
+  # and windows_e2e_policy.py explicitly requires the Windows pairs on
+  # every non-PR event.
   # Label changes recompute the mode against the same PR head SHA.
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
@@ -73,9 +82,40 @@ jobs:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: python3 .github/scripts/ci_mode.py --candidate-sha "$CANDIDATE_SHA" --checked-out-sha "$(git rev-parse HEAD)"
 
+  path-selection:
+    name: CI path selection
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.select.outputs.docs_only }}
+      run_setup_soldr: ${{ steps.select.outputs.run_setup_soldr }}
+      run_cook_size_gate: ${{ steps.select.outputs.run_cook_size_gate }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+      - name: Select path-scoped CI jobs
+        id: select
+        run: uv run --no-project --python 3.13 python .github/scripts/ci_path_policy.py
+
+  # A Markdown-only PR must still report the protected `Lint` context. Keep
+  # this no-op separate from the real Lint job so docs do not allocate the
+  # toolchain and platform fan-out that they cannot affect (soldr#3318).
+  lint-docs:
+    name: Lint
+    needs: path-selection
+    if: ${{ needs.path-selection.outputs.docs_only == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "documentation-only change — canonical CI Lint satisfied"
+
   lint:
     name: Lint
-    needs: ci-mode
+    needs: [ci-mode, path-selection]
+    if: ${{ needs.path-selection.outputs.docs_only != 'true' }}
     # Run on every push to main AND on every PR — without this PRs slip
     # in unformatted code that breaks main's Lint job on merge. Repeated
     # 4 times in late 2026-06 (#1111/#1114/#1115/#1120 fallout), each
@@ -191,6 +231,13 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-project --python 3.13 --with pyyaml python .github/scripts/check_cache_ownership.py
+
+      # soldr#3318: ci.yml is the only PR entry point. Structural YAML parsing
+      # rejects both PR event kinds outside this file before any Rust work.
+      - name: Single pull-request workflow entry point
+        run: >-
+          uv run --no-project --python 3.13 --with pyyaml python
+          .github/scripts/check_pr_workflow_triggers.py
 
       # soldr#2360/#2363 — the broker-fronted daemon design deliberately
       # keeps the wire at protocol_v2/client_v2, broken in place; a
@@ -477,7 +524,8 @@ jobs:
     # canonical targets independently replay their complete archives.
     # No `if:` guard: every downstream job hangs off this one, so it must
     # run on workflow_dispatch as well as on main pushes and PRs.
-    needs: [ci-mode, lint]
+    needs: [ci-mode, path-selection, lint]
+    if: ${{ always() && needs.path-selection.outputs.docs_only != 'true' && needs.lint.result == 'success' }}
     uses: ./.github/workflows/_build-and-test.yml
     with:
       runner: ubuntu-24.04
@@ -1196,6 +1244,47 @@ jobs:
           path: dist/*.whl
           if-no-files-found: warn
           retention-days: 7
+
+  # Former standalone PR signals. The reusable workflows retain their
+  # push/main, schedule, and manual operational surfaces; canonical CI owns
+  # their PR selection so no second PR workflow can become a required check.
+  cache-budget:
+    name: Repository Actions cache budget
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+      - name: Repository Actions cache budget
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --no-project --python 3.13 python
+          .github/scripts/check_cache_budget.py
+
+  setup-soldr-action:
+    name: Setup soldr action smoke
+    needs: path-selection
+    if: ${{ needs.path-selection.outputs.run_setup_soldr == 'true' }}
+    uses: ./.github/workflows/setup-soldr-action.yml
+    secrets: inherit
+
+  cook-size-gate:
+    name: Cook size gate
+    needs: path-selection
+    if: ${{ needs.path-selection.outputs.run_cook_size_gate == 'true' }}
+    uses: ./.github/workflows/cook-size-gate.yml
+    secrets: inherit
+
+  macos-recovery-replay:
+    name: macOS Recovery replay
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'macos-replay' }}
+    uses: ./.github/workflows/macos-recovery-replay.yml
+    secrets: inherit
 
   # ---------- Cancel-on-first-failure sentinels (soldr#3037 follow-up) ----------
   #

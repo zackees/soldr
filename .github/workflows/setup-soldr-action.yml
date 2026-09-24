@@ -1,15 +1,7 @@
 name: Setup Soldr Action
 
 on:
-  pull_request:
-    paths:
-      - action.yml
-      - install.sh
-      - rust-toolchain.toml
-      - Cargo.toml
-      - Cargo.lock
-      - .github/actions/setup-soldr/**
-      - .github/workflows/setup-soldr-action.yml
+  workflow_call:
   # Run on main pushes too so the dogfood zccache gets saved at the base
   # branch scope (refs/heads/main). GitHub Actions caches are scoped per ref:
   # a PR run can read caches from its base branch but cannot read other PRs'
@@ -33,9 +25,11 @@ permissions:
 
 # soldr#1985 - stop superseded runs from holding runner slots.
 concurrency:
+  # A called workflow inherits the caller's github.workflow; use a literal
+  # prefix so this job cannot cancel the canonical CI run that invoked it.
   # run_id fallback on non-PR events: GitHub keeps at most ONE pending run
   # per group, so a ref-only group silently cancels queued main-push SHAs.
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  group: setup-soldr-action-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:

@@ -202,7 +202,19 @@ fn windows_long_path_publication_survives_fresh_worktree_reuse() {
 
     assert!(
         warm_hits > 0,
-        "fresh worktree and target must reuse the cold build: {warm:#?}",
+        "fresh worktree and target must reuse the cold build: {warm:#?}; daemon log: {}; zccache log: {}; zccache lifecycle: {}",
+        fs::read_to_string(cache_dir.join("daemon-spawn.log"))
+            .unwrap_or_else(|error| format!("unavailable: {error}")),
+        fs::read_to_string(cache_dir.join("zccache-trace.log"))
+            .unwrap_or_else(|error| format!("unavailable: {error}")),
+        fs::read_to_string(
+            embedded_artifact_dir(&cache_dir)
+                .parent()
+                .expect("embedded cache root")
+                .join(zccache::core::config::versioned_subdir())
+                .join("logs/daemon-lifecycle.log"),
+        )
+        .unwrap_or_else(|error| format!("unavailable: {error}")),
     );
     let warm_published = staged_counter(&warm, "publication_success");
     let warm_conflicts = staged_counter(&warm, "publication_conflict");
@@ -358,7 +370,8 @@ fn soldr_cargo_check(worktree: &Path, cache_dir: &Path, target_dir: &Path) -> St
         .current_dir(worktree)
         .env("SOLDR_CACHE_DIR", cache_dir)
         .env("CARGO_TARGET_DIR", target_dir)
-        .env("ZCCACHE_STAGING_DIR", staging_dir);
+        .env("ZCCACHE_STAGING_DIR", staging_dir)
+        .env("ZCCACHE_LOG_FILE", cache_dir.join("zccache-trace.log"));
     let output = command.output().expect("spawn soldr cargo check");
     let rendered = format!(
         "stdout={}; stderr={}",

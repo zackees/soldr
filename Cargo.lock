@@ -760,6 +760,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "framehop"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09a5a3f0acb82df800ca3aa50c0d60d286c5d13d4cfc3114b3a9663f13b032fe"
+dependencies = [
+ "arrayvec",
+ "cfg-if",
+ "fallible-iterator",
+ "gimli",
+ "macho-unwind-info",
+ "pe-unwind-info",
+]
+
+[[package]]
 name = "fs-set-times"
 version = "0.20.3"
 dependencies = [
@@ -882,6 +896,16 @@ dependencies = [
  "r-efi",
  "rand_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "gimli"
+version = "0.31.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07e28edb80900c19c28f1072f2e8aeca7fa06b23cd4169cefe1af5aa3260783f"
+dependencies = [
+ "fallible-iterator",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -1330,12 +1354,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b94c51f178a6e7d1dffc73bc8432cb65218dcec05353bf3d794e5fb1b3f0e232"
 dependencies = [
  "blake3",
+ "crash-handler",
  "dirs",
+ "framehop",
+ "getrandom 0.4.3",
  "globset",
+ "interprocess",
  "jwalk",
  "libc",
  "mach2",
  "memmap2",
+ "notify",
+ "object",
  "reflink-copy",
  "running-process",
  "sysinfo",
@@ -1496,6 +1526,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "macho-unwind-info"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb4bdc8b0ce69932332cf76d24af69c3a155242af95c226b2ab6c2e371ed1149"
+dependencies = [
+ "thiserror",
+ "zerocopy",
+ "zerocopy-derive",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1555,9 +1596,9 @@ dependencies = [
 
 [[package]]
 name = "mimalloc-pprof"
-version = "0.9.5"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9143eb24178e618a9671d22074e2e64badd61454a1ae5c042325daf8238f5407"
+checksum = "f51af22471c0f8e22c9d9413bf4d3cec756ad6ee02179a923b346fcef74af670"
 dependencies = [
  "cc",
 ]
@@ -1685,6 +1726,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.36.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1723,6 +1773,19 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "pe-unwind-info"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "500fa4cdeacd98997c5865e3d0d1cb8fe7e9d7d75ecc775e07989a433a9a9a59"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.13.1",
+ "thiserror",
+ "zerocopy",
+ "zerocopy-derive",
 ]
 
 [[package]]
@@ -3725,48 +3788,56 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.14.0"
+version = "1.14.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf88a1eb87edb7f9600f4342d42972a50036564d821aa7405a81ed03d24c42f7"
+checksum = "eb7856fc41e652c6d263fb26b79482fd5aaaae1cd5d1940c81289c1f0fb50fc7"
 dependencies = [
  "arc-swap",
  "bincode",
- "blake3",
  "bytes",
  "clang",
  "console-subscriber",
- "crash-handler",
  "dashmap",
- "filetime",
  "flate2",
- "fs2",
- "globset",
- "interprocess",
- "jwalk",
+ "kernal-api",
  "libc",
- "memmap2",
  "mimalloc-pprof",
- "notify",
  "prost",
  "prost-build",
  "protoc-bin-vendored",
  "rayon",
- "reflink-copy",
  "regex",
  "rkyv",
- "running-process",
  "serde",
  "serde_json",
- "sysinfo",
  "tar",
  "tempfile",
  "thiserror",
  "tokio",
- "tokio-util",
  "tracing",
  "typed-path",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "zerocopy"
+version = "0.8.57"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d35102a9f36d089ccae9e4c6802bc118be4487b80aaffc0ab4e0cf5ce92d2873"
+dependencies = [
+ "zerocopy-derive",
+]
+
+[[package]]
+name = "zerocopy-derive"
+version = "0.8.57"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "146c01f5ab44258da43cf276c74a2763db2ff3969c9c652c3f2de07041d0b2bc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

@@ -88,9 +88,9 @@ def test_x64_lane_uses_the_recovery_guest_on_an_ubuntu_runner() -> None:
 def test_x64_replay_lane_is_off_the_pull_request_critical_path() -> None:
     """soldr#3116: the replay lane produced 0 green results in 25 CI runs and
     was the last job to finish in most of them (34-40 min of a wedged guest).
-    Nothing in ci.yml consumed its output. It runs from its own workflow --
-    nightly, on dispatch, and on PRs labelled `macos-replay` -- until the
-    soldr#3088 criteria are met."""
+    Nothing in ci.yml consumed its output until the PR-entry consolidation:
+    ci.yml now calls the reusable replay only when `macos-replay` is applied,
+    while the standalone workflow retains nightly and manual operation."""
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     assert re.search(r"(?m)^  e2e-macos-x64:\s*$", ci) is not None
     # The cross-build stays a per-PR, build-only lane (soldr#1978 item 3
@@ -100,7 +100,10 @@ def test_x64_replay_lane_is_off_the_pull_request_critical_path() -> None:
     replay = (WORKFLOWS / "macos-recovery-replay.yml").read_text(encoding="utf-8")
     assert "schedule:" in replay
     assert "workflow_dispatch:" in replay
-    assert "types: [labeled]" in replay
+    assert "workflow_call:" in replay
+    assert "pull_request:" not in replay
+    assert "macos-recovery-replay:" in ci
+    assert "github.event.label.name == 'macos-replay'" in ci
     assert "github.event.label.name == 'macos-replay'" in replay
     assert "uses: ./.github/workflows/_ci-cross-build-linux.yml" in replay
     assert "target: x86_64-apple-darwin" in replay

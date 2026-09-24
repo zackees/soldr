@@ -79,7 +79,12 @@ def test_minimal_jobs_and_full_jobs_have_explicit_dependencies() -> None:
     for name in full_jobs:
         job = _job(name)
         assert "ci-mode" in job, name
-        expected = "!= 'minimal'" if name in {"e2e-cross-bootstrap-soldr", "e2e-macos-arm64-build", "e2e-macos-arm64"} else "== 'full'"
+        expected = (
+            "!= 'minimal'"
+            if name
+            in {"e2e-cross-bootstrap-soldr", "e2e-macos-arm64-build", "e2e-macos-arm64"}
+            else "== 'full'"
+        )
         assert f"needs.ci-mode.outputs.mode {expected}" in job, name
     assert "needs.ci-mode.outputs.mode != 'minimal'" in _job("e2e-linux-x64")
     scheduled = set(
@@ -97,6 +102,14 @@ def test_minimal_jobs_and_full_jobs_have_explicit_dependencies() -> None:
         "full-coverage",
         "cancel-on-bootstrap-failure",
         "cancel-on-e2e-linux-x64-failure",
+        # Path- or event-scoped side jobs from the consolidated PR entry
+        # point (#3349); each carries its own gate independent of CI mode.
+        "path-selection",
+        "lint-docs",
+        "cache-budget",
+        "setup-soldr-action",
+        "cook-size-gate",
+        "macos-recovery-replay",
     }
 
 
@@ -227,7 +240,11 @@ def test_native_arm_replay_provisions_rust_objcopy_runtime_before_tests() -> Non
 
 def test_macos_runner_modes_are_opt_in_and_architecture_matched() -> None:
     contract = json.loads((ROOT / "ci" / "canonical-targets.json").read_text())
-    mac_targets = {target["triple"]: target["ci"] for target in contract["targets"] if "apple-darwin" in target["triple"]}
+    mac_targets = {
+        target["triple"]: target["ci"]
+        for target in contract["targets"]
+        if "apple-darwin" in target["triple"]
+    }
     assert mac_targets["x86_64-apple-darwin"]["runner"] == "macos-15-intel"
     assert mac_targets["aarch64-apple-darwin"]["runner"] == "macos-15"
     for ci in mac_targets.values():
@@ -237,7 +254,10 @@ def test_macos_runner_modes_are_opt_in_and_architecture_matched() -> None:
         assert "uses: ./.github/workflows/_ci-target-run.yml" in run
         assert f"runs_on: {ci['runner']}" in run
         assert "source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}" in run
-        assert "needs.ci-mode.outputs.mode != 'minimal'" in run or "needs.ci-mode.outputs.mode == 'full'" in run
+        assert (
+            "needs.ci-mode.outputs.mode != 'minimal'" in run
+            or "needs.ci-mode.outputs.mode == 'full'" in run
+        )
     assert "needs.ci-mode.outputs.mode == 'full'" in _job("e2e-macos-x64")
     assert "needs.ci-mode.outputs.mode != 'minimal'" in _job("e2e-macos-arm64")
 

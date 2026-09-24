@@ -23,13 +23,7 @@ name: Cook Size Gate
 # measures the raw post-trim cook output directly, so the numbers diverge.
 
 on:
-  pull_request:
-    paths:
-      - 'crates/soldr-cli/src/cook.rs'
-      - 'crates/soldr-cache/src/cache_lib/strip_target.rs'
-      - 'crates/soldr-cache/**'
-      - '.github/workflows/cook-size-gate.yml'
-      - 'tests/test_cook_size_gate_workflow.py'
+  workflow_call:
   push:
     branches: [main]
     paths:
@@ -53,7 +47,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  # A called workflow inherits the caller's github.workflow; use a literal
+  # prefix so this job cannot cancel the canonical CI run that invoked it.
+  group: cook-size-gate-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
@@ -130,7 +126,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: zackees/zccache
-          ref: "1.14.0"
+          ref: "1.14.11"
           path: zccache-fixture
 
       - name: Install uv
