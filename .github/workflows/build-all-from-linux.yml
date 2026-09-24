@@ -18,9 +18,8 @@ name: Build all targets from Linux (pinned soldr, zero host toolchain)
 #
 # Dry-run: builds + format-verifies each binary; no packaging/publish.
 #
-# Triggers: workflow_dispatch (on-demand, choose the pin) + a
-# path-scoped pull_request so a change to this workflow validates
-# itself before merge.
+# This is an on-demand operational N-1 sweep. Canonical ci.yml already
+# validates the same target catalogue on pull requests (soldr#3318).
 
 on:
   workflow_dispatch:
@@ -30,10 +29,6 @@ on:
         required: false
         default: "0.9.6"
         type: string
-  pull_request:
-    paths:
-      - ".github/workflows/build-all-from-linux.yml"
-      - "ci/canonical-targets.json"
 
 permissions:
   contents: read

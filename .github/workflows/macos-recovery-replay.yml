@@ -13,9 +13,9 @@
 # clock (34-40 min) and its colour. The release side already treats it as
 # advisory (release-auto.yml: `publish` does not depend on
 # `e2e_macos_x64_replay`, soldr#3088). Here it runs nightly against main, on
-# demand, and on any pull request labelled `macos-replay`, so anyone working
-# soldr#3087 / soldr#3088 can still exercise it per PR. Restoring it to ci.yml
-# is the block that was removed, under the criteria soldr#3088 holds.
+# demand. Canonical ci.yml calls this reusable workflow when a pull request is
+# labelled `macos-replay`, so anyone working soldr#3087 / soldr#3088 can still
+# exercise it per PR without creating a second PR workflow entry point.
 #
 # `aarch64-apple-darwin` is unaffected: its cross-build lane stays in ci.yml
 # (release-included, no paired target-run). `smoke_macos_x64` in
@@ -29,14 +29,15 @@ on:
     # Cache Budget sweep at :17.
     - cron: '23 3 * * *'
   workflow_dispatch:
-  pull_request:
-    types: [labeled]
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  # A called workflow inherits the caller's github.workflow; use a literal
+  # prefix so this job cannot cancel the canonical CI run that invoked it.
+  group: macos-recovery-replay-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:

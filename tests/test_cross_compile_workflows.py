@@ -571,11 +571,12 @@ def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
 def test_native_linux_integration_backstop_runs_on_pull_requests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     block = _job_block(ci, "build-linux-x64", "pep517-daemon-smoke")
-    # Serial gate (2026-09-04): the host lane is stage 2 behind Lint and every
-    # other root job hangs off it, so it carries no event guard of its own --
-    # a workflow_dispatch run must be able to pass through it too.
-    assert "\n    needs: lint\n" in block
-    assert "\n    if:" not in block[: block.index("    uses:")]
+    # The serial gate stays behind the real Lint job. Canonical CI now lets a
+    # docs-only PR report a cheap Lint context, so the host lane explicitly
+    # waits for path selection and skips only that docs-only case.
+    assert "needs: [path-selection, lint]" in block
+    assert "needs.path-selection.outputs.docs_only != 'true'" in block
+    assert "needs.lint.result == 'success'" in block
     assert "soldr#1676" in block
     assert "canonical native exception" in block
 
@@ -596,7 +597,7 @@ def test_host_validation_opportunistically_reuses_exact_sha_bootstrap() -> None:
     # path, and the producer carries no event guard of its own.
     assert "\n    if:" not in producer_header
     assert "\n    needs: build-linux-x64\n" in producer_header
-    assert re.search(r"(?m)^    needs: lint$", host)
+    assert "needs: [path-selection, lint]" in host
     assert not re.search(r"(?m)^    needs: e2e-cross-bootstrap-soldr", host)
     # The producer's artifact cannot exist when the host starts, so the host
     # no longer asks for it; the template skips the download on an empty name.
