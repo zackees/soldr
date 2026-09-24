@@ -804,6 +804,12 @@ jobs:
           retention-days: 7
           compression-level: 0
 
+      # soldr#3347: identify the surviving rust-cache producer paths before
+      # choosing a trim. This is read-only and runs before rust-cache's post job.
+      - name: Inventory bootstrap rust-cache inputs
+        if: steps.bootstrap_cache.outputs.cache-hit != 'true'
+        run: bash .github/scripts/cache_path_inventory.sh x86_64-unknown-linux-gnu
+
   # soldr#1051 / #1038: all cross-builds go through the consolidated
   # _ci-cross-build-linux.yml workflow on ubuntu-24.04. Each pair
   # below is "cross-build on linux + target-run on native runner".
@@ -1244,6 +1250,11 @@ jobs:
           path: dist/*.whl
           if-no-files-found: warn
           retention-days: 7
+
+      # soldr#3347: record per-path input sizes before rust-cache's post job.
+      - name: Inventory wheel rust-cache inputs
+        if: success()
+        run: bash .github/scripts/cache_path_inventory.sh "${{ matrix.target }}"
 
   # Former standalone PR signals. The reusable workflows retain their
   # push/main, schedule, and manual operational surfaces; canonical CI owns
