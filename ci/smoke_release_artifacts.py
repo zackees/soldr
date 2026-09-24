@@ -2,7 +2,8 @@
 """Native smoke for a release archive + wheel pair (soldr#2294).
 
 Release binaries are cross-built on Linux; EXECUTION still needs the
-target's native OS. The `smoke_macos_x64` and `smoke_windows` jobs in
+target's native OS. The `smoke_macos_x64`, `smoke_macos_arm64`, and
+`smoke_windows` jobs in
 `release-auto.yml` download the lane's artifacts into `dist/` and run
 this script. It:
 
@@ -22,13 +23,9 @@ this script. It:
 Runnable locally: `python3 ci/smoke_release_artifacts.py
 --target aarch64-pc-windows-msvc --expected-version v0.8.40 --dist dist`.
 
-soldr#3076: no macos-* GitHub Actions runner exists any more, and the
-dockur/macos x86_64 guest from soldr#3071 never got a bootable image. macOS
-binary execution now happens inside a `zackees/docker-mac-x64` Recovery
-guest (https://github.com/zackees/docker-mac-x64) instead of this host --
-the guest has neither Python nor Xcode CLT, and there is no persistent
-image or ssh: one boot runs exactly one script, fetched over HTTP from a
-`share-dir`.
+The release workflow now executes both macOS targets on hosted native
+runners. The older `zackees/docker-mac-x64` Recovery path remains available
+through the guest-script flags for diagnostic callers.
 
 That means step 5 (execution) for `x86_64-apple-darwin` splits into two
 script invocations instead of running in-process:
@@ -62,6 +59,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -189,6 +187,23 @@ def run(cmd: list[str | Path]) -> subprocess.CompletedProcess[str]:
     argv = [str(part) for part in cmd]
     print(f"+ {' '.join(argv)}", flush=True)
     return subprocess.run(argv, check=True, capture_output=True, text=True)
+
+
+def check_native_wheel_import(wheel: Path, expected: str) -> None:
+    """Install the shipped wheel offline in an isolated pinned-Python venv."""
+    with tempfile.TemporaryDirectory(prefix="soldr-release-wheel-") as root:
+        env_dir = Path(root) / "venv"
+        run(["uv", "venv", "--python", sys.executable, env_dir])
+        python = env_dir / "bin" / "python"
+        run(
+            ["uv", "pip", "install", "--python", python, "--no-index", "--no-deps", wheel]
+        )
+        imported = run(
+            [python, "-c", "import soldr._native; print(soldr._native.__file__)"]
+        )
+        if not imported.stdout.strip():
+            sys.exit("ERROR: installed release wheel did not expose soldr._native")
+        check_version_output(env_dir / "bin" / "soldr", expected, "installed wheel")
 
 
 def check_version_output(binary: Path, expected: str, label: str) -> None:
@@ -609,9 +624,14 @@ def main() -> int:
         "--require-wheel-import",
         action="store_true",
         help=(
-            "stage pinned portable CPython and require the shipped macOS wheel "
-            "to install and import inside the Recovery guest"
+            "require the shipped wheel to install and import on the native "
+            "runner or inside the Recovery guest"
         ),
+    )
+    parser.add_argument(
+        "--require-daemon-cache-smoke",
+        action="store_true",
+        help="start the shipped daemon and require its native status and cache report",
     )
     args = parser.parse_args()
 
@@ -629,8 +649,6 @@ def main() -> int:
 
     if args.emit_guest_script is not None and args.share_dir is None:
         parser.error("--emit-guest-script requires --share-dir")
-    if args.require_wheel_import and args.emit_guest_script is None:
-        parser.error("--require-wheel-import requires --emit-guest-script")
 
     wheels = sorted(args.dist.glob("*.whl"))
     if len(wheels) != 1:
@@ -700,6 +718,14 @@ def main() -> int:
     run([extract / f"soldr-daemon{suffix}", "--help"])
     run([extract / f"crgx{suffix}", "--version"])
     run([extract / f"cargo-chef{suffix}", "--version"])
+    if args.require_daemon_cache_smoke:
+        run([soldr_bin, "daemon", "start"])
+        status = json.loads(run([soldr_bin, "daemon", "status", "--json"]).stdout)
+        if status.get("running") is not True:
+            sys.exit(f"ERROR: shipped daemon did not report running: {status!r}")
+        run([soldr_bin, "cache", "report", "--json"])
+    if args.require_wheel_import:
+        check_native_wheel_import(wheels[0], expected)
     print(f"native smoke OK: {target} {version}")
     return 0
 

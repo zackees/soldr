@@ -5,6 +5,15 @@ name: Windows guest feasibility probe
 
 on:
   workflow_dispatch:
+    inputs:
+      guest_edition:
+        description: One-off Windows edition to boot and measure
+        type: choice
+        required: true
+        default: server-core
+        options:
+          - server-core
+          - win11-enterprise
 
 permissions:
   contents: read
@@ -37,6 +46,7 @@ jobs:
           --scratch "/mnt/soldr-windows-guest-${{ github.run_id }}"
           --output "$RUNNER_TEMP/windows-guest-report.json"
           --run-id "${{ github.run_id }}"
+          --guest-edition "${{ inputs.guest_edition }}"
           --timeout-seconds 3600
       - name: Upload probe measurements and guest log
         if: always()

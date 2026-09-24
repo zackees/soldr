@@ -2,7 +2,8 @@
 
 `windows-guest-probe.yml` is dispatch-only. It reuses the established Linux
 cross-build of `x86_64-pc-windows-msvc`, then boots an ephemeral Windows Server
-2025 Core evaluation guest under upstream dockur/windows v6.03. The container
+2025 Core or Windows 11 Enterprise evaluation guest under upstream
+dockur/windows v6.03. The container
 image is pinned by OCI digest in `ci/windows_guest_probe.py`; no guest image is
 uploaded, cached, or kept after the job. The script stages the verified
 `cargo-nextest.exe` and cross-built archive, runs `soldr-core` tests in the
@@ -22,7 +23,13 @@ and runs the same test selection without exclusions. The report measures
 this preparation separately from VC++ installation and Nextest replay.
 
 Run it from Actions → **Windows guest feasibility probe** → Run workflow. The
-report and container log are in the job summary and the
+`guest_edition` input defaults to `server-core`; select `win11-enterprise` for
+a full Windows 11 desktop comparison using upstream dockur's `11e` image
+selector. Both selections reuse the same Linux-built test archive and the
+same guest script, so boot/disk/capability differences are directly comparable.
+Each dispatch uses a fresh disk and discards it after reporting.
+
+The report and container log are in the job summary and the
 `windows-guest-probe-measurements` artifact. A no-go is a legitimate probe
 result, so the workflow itself is not a required check. The local host in
 which this probe was developed has no `/dev/kvm`; bosn verifies the host-side
@@ -58,6 +65,13 @@ confirm the applicable license terms before replacing native Windows runners
 with a recurring guest lane. Do not cache or reuse an activated evaluation
 disk to evade expiry.
 
+For the desktop comparison, [Microsoft's Windows 11 Enterprise evaluation](https://www.microsoft.com/en-us/evalcenter/evaluate-windows-11-enterprise)
+is a full-featured 90-day trial. That permits a one-shot feasibility study,
+not an assumption that an indefinitely recurring unactivated CI guest is
+licensed. A recurring lane needs a separate licensing decision.
+
 The Server Core result does not prove Windows 11 UI/WebView2 capability.
-`webview2` and `gpu_rendering` are reported separately; a future consumer
-requiring them needs its own full-desktop probe and license decision.
+Use the `win11-enterprise` selection to measure the desktop guest;
+`webview2` and `gpu_rendering` are reported separately. A consumer requiring
+screenshots still needs an actual UI-test and license decision, not a
+capability-name inference.

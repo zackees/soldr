@@ -25,6 +25,10 @@ from typing import Any
 # Upstream dockur/windows v6.03, commit f6fcb46958fb9635df49e2af09f7c800b65a89e3.
 # Pin the published multi-arch image digest, not the moving tag or stale fork.
 IMAGE = "ghcr.io/dockur/windows@sha256:743847e75b776790c059f33ac6654f84727ba36a6d458a61e37cb2b2f043d168"
+GUEST_EDITIONS = {
+    "server-core": ("2025", "core", "Windows Server 2025 Core evaluation"),
+    "win11-enterprise": ("11e", None, "Windows 11 Enterprise evaluation"),
+}
 # Microsoft's documented permalink, pinned to the exact signed package read
 # for this one-off probe. A changed permalink payload fails closed for review.
 VC_REDIST_URL = "https://aka.ms/vc14/vc_redist.x64.exe"
@@ -52,6 +56,7 @@ def make_report(
     timings: dict[str, Any],
     guest: dict[str, Any] | None,
     disk: dict[str, Any],
+    guest_edition: str = "server-core",
 ) -> dict[str, Any]:
     """Never turn missing evidence into a success or a measured zero."""
     measured = {
@@ -120,7 +125,8 @@ def make_report(
         "nextest": nextest,
         "guest_error": guest_error or None,
         "capabilities": capabilities,
-        "edition": "Windows Server 2025 Core evaluation",
+        "edition": GUEST_EDITIONS[guest_edition][2],
+        "dockur_version": GUEST_EDITIONS[guest_edition][0],
         "image": IMAGE,
     }
 
@@ -291,6 +297,8 @@ def _write_summary(report: dict[str, Any], path: Path) -> None:
         "",
     ]
     lines.extend(["| Measure | Result |", "|---|---|"])
+    lines.append(f"| edition | {report['edition']} |")
+    lines.append(f"| dockur_version | {report['dockur_version']} |")
     for key, value in report["timings"].items():
         lines.append(f"| {key} | {value if value is not None else 'not measured'} |")
     for key, value in report["disk"].items():
@@ -380,6 +388,10 @@ def _remove_scratch(
 
 
 def run_probe(args: argparse.Namespace) -> int:
+    guest_edition = getattr(args, "guest_edition", "server-core")
+    if guest_edition not in GUEST_EDITIONS:
+        raise ValueError(f"unsupported guest edition: {guest_edition}")
+    dockur_version, dockur_edition, _ = GUEST_EDITIONS[guest_edition]
     repo, artifact, scratch = (
         Path(args.repo).resolve(),
         Path(args.artifact).resolve(),
@@ -420,7 +432,7 @@ def run_probe(args: argparse.Namespace) -> int:
             _stage_payload(repo, artifact, shared, oem)
             started = time.time()
             attempted_container = True
-            _run(
+            docker_args = [
                 "docker",
                 "run",
                 "-d",
@@ -431,25 +443,30 @@ def run_probe(args: argparse.Namespace) -> int:
                 "--cap-add=NET_ADMIN",
                 "--stop-timeout=120",
                 "-e",
-                "VERSION=2025",
-                "-e",
-                "EDITION=core",
-                "-e",
-                "DISK_SIZE=32G",
-                "-e",
-                "RAM_SIZE=8G",
-                "-e",
-                "CPU_CORES=4",
-                "-e",
-                "LOG=Y",
-                "-v",
-                f"{storage}:/storage",
-                "-v",
-                f"{shared}:/shared",
-                "-v",
-                f"{oem}:/oem",
-                IMAGE,
+                f"VERSION={dockur_version}",
+            ]
+            if dockur_edition is not None:
+                docker_args.extend(("-e", f"EDITION={dockur_edition}"))
+            docker_args.extend(
+                (
+                    "-e",
+                    "DISK_SIZE=32G",
+                    "-e",
+                    "RAM_SIZE=8G",
+                    "-e",
+                    "CPU_CORES=4",
+                    "-e",
+                    "LOG=Y",
+                    "-v",
+                    f"{storage}:/storage",
+                    "-v",
+                    f"{shared}:/shared",
+                    "-v",
+                    f"{oem}:/oem",
+                    IMAGE,
+                )
             )
+            _run(*docker_args)
             deadline = time.monotonic() + args.timeout_seconds
             while time.monotonic() < deadline:
                 if shell_ready is None and (shared / "guest-shell-ready.txt").is_file():
@@ -578,7 +595,13 @@ def run_probe(args: argparse.Namespace) -> int:
                 _remove_scratch(scratch, str(args.run_id))
         except (OSError, subprocess.CalledProcessError) as exc:
             host["cleanup_error"] = str(exc)[:500]
-    report = make_report(host=host, timings=timings, guest=guest, disk=disk)
+    report = make_report(
+        host=host,
+        timings=timings,
+        guest=guest,
+        disk=disk,
+        guest_edition=guest_edition,
+    )
     if host.get("preflight") == "insufficient disk (<32 GiB)":
         report["decision"] = "no-go"
         report["reason"] = "Runner scratch has less than dockur's 32 GiB minimum"
@@ -600,6 +623,9 @@ def main() -> int:
     parser.add_argument("--scratch", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument(
+        "--guest-edition", choices=tuple(GUEST_EDITIONS), default="server-core"
+    )
     parser.add_argument("--timeout-seconds", type=int, default=3600)
     return run_probe(parser.parse_args())
 

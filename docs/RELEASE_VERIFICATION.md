@@ -70,34 +70,28 @@ Current release assets follow this shape:
 - `soldr-vX.Y.Z-aarch64-pc-windows-msvc.tar.zst`
 - `soldr-vX.Y.Z-SHA256SUMS.txt`
 
-The Intel macOS archive and wheel are cross-built on Linux through the blessed
-Apple SDK path. Publication is gated on a `smoke_macos_x64` job (running on an
-`ubuntu-24.04` runner, executing inside a
-[zackees/docker-mac-x64](https://github.com/zackees/docker-mac-x64) macOS
-Recovery guest -- soldr#3076, no GitHub Actions job runs on a native macOS
-runner) that verifies the archive is Mach-O x86_64 and executes the archive's
-binaries (`soldr`, `soldr-daemon`, `crgx`, `cargo-chef`) inside the guest.
-Recovery has no built-in Python, so the gate stages a version- and
-SHA-256-pinned portable x86_64 CPython alongside the exact uploaded wheel. The
-guest installs the wheel without an index, imports `soldr._native`, and checks
-both `soldr --version` and `soldr version --json`; the Linux-side METADATA read
-remains a preliminary version check, not execution evidence.
+Both macOS archives and wheels are cross-built on Linux through the blessed
+Apple SDK path. Publication is gated on `smoke_macos_x64` and
+`smoke_macos_arm64`, running on hosted `macos-15-intel` and `macos-15`.
+Those jobs download the exact release artifacts, execute the shipped binaries,
+install and import the shipped wheels, and smoke the daemon/cache route on
+their matching native architectures. The Intel job also verifies the archive's
+Mach-O x86_64 identity; the ARM64 job checks its corresponding architecture.
+A Linux-side METADATA read is only a
+preliminary check, not execution evidence.
 
 `e2e_macos_x64_build` / `e2e_macos_x64_replay` (soldr#3078) also run at
-release time: they cross-build `x86_64-apple-darwin` at the release commit
-and replay the same positively-owned nextest partition the
-`macos-recovery-replay.yml` workflow replays -- inside the same Recovery
-guest, toolchain provisioning included, not just the binary-only smoke
-`smoke_macos_x64` above runs. That workflow runs nightly against `main`, on
+release time as a separate Recovery-guest diagnostic. They cross-build
+`x86_64-apple-darwin` at the release commit and replay the positively-owned
+nextest partition with toolchain provisioning. The dedicated
+`macos-recovery-replay.yml` workflow runs nightly against `main`, on
 `workflow_dispatch`, and on pull requests labelled `macos-replay`; soldr#3116
 moved it out of `ci.yml`, where it had set the run's wall clock (34-40 min of
 a wedged guest) without a green result in 25 runs.
 
-They are **advisory, not a publication gate** (soldr#3088). The replay lane
-was briefly a `publish` dependency, but it has never been green: both
-v0.9.12 release attempts were blocked by bugs in the replay harness itself
-while `smoke_macos_x64` passed on the shipped archive. `publish` therefore
-requires only `smoke_macos_x64` and `smoke_windows`. A red replay lane
+The Recovery replay is **advisory, not a publication gate** (soldr#3088).
+Both native macOS artifact-smoke jobs and `smoke_windows` gate publication;
+the exact-SHA full-CI coverage gate is separate. A red Recovery replay
 should be investigated, but it cannot make a release unpublishable.
 soldr#3088 tracks restoring the gate once the lane can stay green.
 

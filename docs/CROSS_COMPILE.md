@@ -142,14 +142,12 @@ one blessed build surface:
   not the default macOS recipe.
 
 `x86_64-apple-darwin` is supported for local, CI, and release cross-builds.
-Official Intel macOS archives and PyPI wheels are built on Linux through this
-blessed path and smoke-tested inside a
-[zackees/docker-mac-x64](https://github.com/zackees/docker-mac-x64) macOS
-Recovery guest hosted on an `ubuntu-24.04` runner before publication
-(soldr#3076: no GitHub Actions job runs on a native macOS runner). Recovery
-has no Xcode CLT, no Homebrew, and no persistent state across boots, so only
-binary execution happens there — the wheel is never exercised in the guest
-(no Python) and stays a Linux-side METADATA check.
+Official Intel and Apple Silicon macOS archives and PyPI wheels are built on
+Linux through this blessed path. Opt-in `ci-full` and exact-SHA release
+validation replay them on hosted `macos-15-intel` and `macos-15` runners,
+including installation and import of the shipped wheels. Ordinary PR/main
+validation does not allocate hosted macOS runners. The separate Intel macOS
+Recovery-guest replay remains available as an advisory diagnostic lane.
 
 PyPI wheels cross-built this way must be `abi3-py310` PyO3 extensions — the
 fleet-wide policy, and the only ABI `soldr wheel` supports without a

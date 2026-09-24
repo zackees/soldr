@@ -1,4 +1,5 @@
 name: CI
+run-name: ${{ inputs.candidate_sha && format('CI full {0}', inputs.candidate_sha) || github.event.pull_request.title || github.event.head_commit.message || 'CI' }}
 
 on:
   push:
@@ -25,9 +26,15 @@ on:
   # open when `github.event.pull_request` is null,
   # and windows_e2e_policy.py explicitly requires the Windows pairs on
   # every non-PR event.
+  # Label changes recompute the mode against the same PR head SHA.
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full 40-character commit SHA to validate
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -54,6 +61,27 @@ env:
   SOLDR_GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
+  ci-mode:
+    name: CI mode
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+      checkout_sha: ${{ steps.mode.outputs.checkout_sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ inputs.candidate_sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - name: Select mode and verify checkout
+        id: mode
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: python3 .github/scripts/ci_mode.py --candidate-sha "$CANDIDATE_SHA" --checked-out-sha "$(git rev-parse HEAD)"
+
   path-selection:
     name: CI path selection
     runs-on: ubuntu-24.04
@@ -86,7 +114,7 @@ jobs:
 
   lint:
     name: Lint
-    needs: path-selection
+    needs: [ci-mode, path-selection]
     if: ${{ needs.path-selection.outputs.docs_only != 'true' }}
     # Run on every push to main AND on every PR — without this PRs slip
     # in unformatted code that breaks main's Lint job on merge. Repeated
@@ -117,6 +145,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          ref: ${{ needs.ci-mode.outputs.checkout_sha }}
           submodules: recursive
           # soldr#1966: the line-ceiling ratchet below needs `git merge-base`,
           # which the default depth-1 checkout cannot compute.
@@ -495,12 +524,13 @@ jobs:
     # canonical targets independently replay their complete archives.
     # No `if:` guard: every downstream job hangs off this one, so it must
     # run on workflow_dispatch as well as on main pushes and PRs.
-    needs: [path-selection, lint]
+    needs: [ci-mode, path-selection, lint]
     if: ${{ always() && needs.path-selection.outputs.docs_only != 'true' && needs.lint.result == 'success' }}
     uses: ./.github/workflows/_build-and-test.yml
     with:
       runner: ubuntu-24.04
       target: x86_64-unknown-linux-gnu
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       # No `source_driver_artifact_name`: under the serial gate the bootstrap
       # producer (e2e-cross-bootstrap-soldr) runs AFTER this job, so its
       # artifact can never exist yet and the opportunistic download only
@@ -509,22 +539,16 @@ jobs:
 
   pep517-daemon-smoke:
     name: PEP 517 daemon smoke (${{ matrix.name }})
-    needs: build-linux-x64
-    if: ${{ github.ref_name == 'main' || !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
+    needs: [ci-mode, build-linux-x64]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' }}
     runs-on: ${{ matrix.runner }}
     # Includes native wheel compilation plus 3m and 15m inner smoke limits.
     timeout-minutes: 35
     strategy:
       fail-fast: false
-      # PEP 517 is a public wheel boundary, so the native platform smokes run
-      # on pull requests as well as main. No GitHub Actions job may run on a
-      # macos-* runner (owner mandate 2026-09-02), so there is no native
-      # macOS leg here at all — macOS execution happens only inside a
-      # zackees/docker-mac-x64 Recovery guest, which has no Python/maturin
-      # and so cannot host this smoke (see `run_pep517_smoke: false` in
-      # macos-recovery-replay.yml, soldr#3116).
-      # windows-x64 is the sole leg. The matrix stays selected rather than
-      # filtered per-leg so a `fast-build` PR allocates no runner.
+      # PEP 517 is a public wheel boundary. This job currently has one
+      # Windows x64 leg; the macOS full-mode jobs below replay test archives
+      # but do not run this wheel smoke.
       matrix:
         include: ${{ fromJSON('[{"name":"windows-x64","runner":"windows-2025","python":"3.13t"}]') }}
     env:
@@ -534,6 +558,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          ref: ${{ needs.ci-mode.outputs.checkout_sha }}
           submodules: recursive
 
       - name: Setup Python ${{ matrix.python }}
@@ -623,12 +648,8 @@ jobs:
           --timeout 900
           --require-free-threaded
 
-  # There is no native macOS build job anywhere. The native Linux
-  # integration sweep covers target-independent logic; the x86_64-apple-darwin
-  # archive is cross-built on Linux and replayed inside a
-  # zackees/docker-mac-x64 Recovery guest on an ubuntu-24.04 runner by
-  # .github/workflows/macos-recovery-replay.yml (soldr#3116; soldr#3076: no
-  # GitHub Actions job runs on a macos-* runner).
+  # Linux builds the macOS target archives. Explicit ci-test/ci-full and
+  # exact-SHA release validation replay them on hosted native macOS runners.
 
   # build-windows-{x64,arm64} removed. The unit-test sweep for
   # windows runs on linux x86 via `build-linux-x64` (target-
@@ -637,46 +658,26 @@ jobs:
   # downloaded onto the windows runner. ONE windows runner per
   # arch — goal of the consolidation pass.
 
-  # soldr#3018 changed this. It previously read: "Linux glibc/musl e2e jobs
-  # always run -- they are the proof of life and are cheap. macOS E2E pairs
-  # always run. fast-build may skip only the Windows MSVC E2E pairs."
-  #
-  # The proof-of-life half stands and is unchanged: `e2e-linux-x64` is never
-  # gated. A proof of life a heuristic can skip is not one, and it is the
-  # cheapest lane, so gating it would save least and risk most.
-  #
-  # What changed is the rest. A docs-only PR paid for eight platform fan-outs,
-  # and on macOS each also re-pays a 12-23 minute queue -- soldr#2996 measured
-  # that queue as the largest single source of wall-clock variance, moving a
-  # run from 52 to 80 minutes. The same fast-build classification that already
-  # gated Windows now gates the macOS pairs and the non-x64 Linux lanes, via
-  # `run_platform_e2e`.
-  #
-  # The gate is fail-open by construction: pushes, an empty diff, and any
-  # path it cannot classify all run everything. A documentation/metadata-only
-  # PR skips without needing the fast-build label -- the same filter
-  # `paths-ignore` applies at the trigger level, extended to the re-runs
-  # (`labeled`/`unlabeled`) where trigger filters cannot be trusted. For
-  # every other PR the fast-build label remains the request channel.
-  #
-  # The separate PEP 517 platform smoke remains label-gated as a pair.
+  # Platform work runs in full mode only. The Linux x64 prescribed host gate
+  # above remains on every ordinary PR and main push. `ci-full` overrides the
+  # older path policies, which cannot silently skip a full-mode target.
   e2e-linux-x64:
     name: build
-    needs: build-linux-x64
+    needs: [ci-mode, build-linux-x64]
+    if: ${{ needs.ci-mode.outputs.mode != 'minimal' }}
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: ubuntu-24.04
       target: x86_64-unknown-linux-gnu
       binary_name: soldr
-      source_ref: ${{ github.sha }}
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
 
-  # soldr#1697: a stable, always-reported check decides whether the Windows
-  # E2E pairs may be skipped. A failed/empty classification runs them; pushes
-  # always run them. This keeps required-check behavior deterministic while a
-  # docs-only fast-build PR can still avoid two Linux builds + target runners.
+  # Keep the platform policy output for the target fan-out; full mode forces
+  # both outputs true, including on a PR with the older fast-build label.
   windows-e2e-policy:
     name: Windows E2E policy
-    needs: build-linux-x64
+    needs: [ci-mode, build-linux-x64]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -686,13 +687,14 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          ref: ${{ needs.ci-mode.outputs.checkout_sha }}
           fetch-depth: 0
       # soldr#2763: uv must exist before the first step that uses it.
       - name: Install uv
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
       - name: Classify Windows E2E requirement
         id: policy
-        run: uv run --no-project --python 3.13 python .github/scripts/windows_e2e_policy.py
+        run: uv run --no-project --python 3.13 python .github/scripts/windows_e2e_policy.py --full
 
   # soldr#1248: darwin/MSVC cross-build lanes need a current in-tree
   # host soldr to drive the blessed `soldr build --target ...` surface.
@@ -701,7 +703,8 @@ jobs:
   # resulting artifact to those lanes.
   e2e-cross-bootstrap-soldr:
     name: bootstrap soldr for darwin/msvc cross-builds
-    needs: build-linux-x64
+    needs: [ci-mode, build-linux-x64]
+    if: ${{ needs.ci-mode.outputs.mode != 'minimal' }}
     runs-on: ubuntu-24.04
     # Bounds the shared prerequisite; cold-cache successes are normally under 3m.
     timeout-minutes: 15
@@ -711,7 +714,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           submodules: recursive
-          ref: ${{ github.sha }}
+          ref: ${{ needs.ci-mode.outputs.checkout_sha }}
 
       - name: Cache rustup 1.98.1 in ~/.rustup
         id: rustup_cache
@@ -743,7 +746,7 @@ jobs:
           # stale; same-SHA re-runs still hit. This dev-profile binary is also
           # the exact build shape used by prescribed host validation, so the
           # same-run artifact can replace that lane's local source build.
-          key: bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ github.sha }}
+          key: bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ needs.ci-mode.outputs.checkout_sha }}
 
       # soldr#3016, narrowed by soldr#3047: the ONLY lane that still keeps a
       # Swatinem/rust-cache as a named `cook-unreachable-lane` exception after
@@ -790,7 +793,7 @@ jobs:
           set -euo pipefail
           chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
           "$RUNNER_TEMP/soldr-bin/soldr" --version
-          printf '%s\n' "${{ github.sha }}" > "$RUNNER_TEMP/soldr-bin/source-sha"
+          printf '%s\n' "${{ needs.ci-mode.outputs.checkout_sha }}" > "$RUNNER_TEMP/soldr-bin/source-sha"
 
       - name: Upload bootstrap soldr artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -824,32 +827,34 @@ jobs:
   # build/run split soldr#1978 item 3 is about.
   e2e-linux-x64-gnu-build:
     name: native-build x86_64-unknown-linux-gnu (glibc floor)
-    needs: e2e-cross-bootstrap-soldr
+    needs: [ci-mode, e2e-cross-bootstrap-soldr]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: x86_64-unknown-linux-gnu
       artifact_name: soldr-ci-e2e-linux-x64-gnu
-      source_ref: ${{ github.sha }}
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
 
   # ---------- Linux ARM64 (gnu) ----------
   e2e-linux-arm64-build:
     name: cross-build aarch64-unknown-linux-gnu (linux host)
-    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
-    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
+    needs: [ci-mode, e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' && needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-unknown-linux-gnu
       artifact_name: soldr-ci-e2e-linux-arm64
-      source_ref: ${{ github.sha }}
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
 
   e2e-linux-arm64:
     name: target-run aarch64-unknown-linux-gnu
-    needs: [e2e-linux-arm64-build, windows-e2e-policy]
-    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
+    needs: [ci-mode, e2e-linux-arm64-build, windows-e2e-policy]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' && needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       runs_on: ubuntu-24.04-arm
       target: aarch64-unknown-linux-gnu
       artifact_name: soldr-ci-e2e-linux-arm64
@@ -866,21 +871,22 @@ jobs:
   # musl archive selects and executes a non-empty target-specific partition.
   e2e-linux-x64-musl-build:
     name: cross-build x86_64-unknown-linux-musl (linux host)
-    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
-    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
+    needs: [ci-mode, e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' && needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: x86_64-unknown-linux-musl
       artifact_name: soldr-ci-e2e-linux-x64-musl
-      source_ref: ${{ github.sha }}
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
 
   e2e-linux-x64-musl:
     name: target-run x86_64-unknown-linux-musl
-    needs: [e2e-linux-x64-musl-build, windows-e2e-policy]
-    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
+    needs: [ci-mode, e2e-linux-x64-musl-build, windows-e2e-policy]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' && needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       runs_on: ubuntu-24.04
       target: x86_64-unknown-linux-musl
       artifact_name: soldr-ci-e2e-linux-x64-musl
@@ -895,95 +901,99 @@ jobs:
   # ---------- Linux ARM64 (musl) ----------
   e2e-linux-arm64-musl-build:
     name: cross-build aarch64-unknown-linux-musl (linux host)
-    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
-    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
+    needs: [ci-mode, e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' && needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-unknown-linux-musl
       artifact_name: soldr-ci-e2e-linux-arm64-musl
-      source_ref: ${{ github.sha }}
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
 
   e2e-linux-arm64-musl:
     name: target-run aarch64-unknown-linux-musl
-    needs: [e2e-linux-arm64-musl-build, windows-e2e-policy]
-    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
+    needs: [ci-mode, e2e-linux-arm64-musl-build, windows-e2e-policy]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' && needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       runs_on: ubuntu-24.04-arm
       target: aarch64-unknown-linux-musl
       artifact_name: soldr-ci-e2e-linux-arm64-musl
       require_wasm32_wasip1_threads_materialization: true
 
   # ---------- macOS x64 ----------
-  # Owner mandate (2026-09-02): no GitHub Actions job may run on a macos-*
-  # runner for building or testing. x86_64-apple-darwin is cross-built on
-  # Linux, same as Windows, and *executed* only inside a
-  # zackees/docker-mac-x64 Recovery guest (KVM) hosted on an ordinary
-  # ubuntu-24.04 runner -- see ci/macos_recovery_run.py and
-  # .github/workflows/_ci-target-run.yml.
-  #
-  # soldr#3116: the Recovery replay (`e2e-macos-x64`) no longer runs here.
-  # It lives in .github/workflows/macos-recovery-replay.yml -- nightly against
-  # main, on `workflow_dispatch`, and on pull requests labelled
-  # `macos-replay`. It was the last job to finish in most runs (34-40 min of
-  # a wedged guest heartbeating, 0 green results in 25 runs, soldr#3089) and
-  # nothing here consumed its output; it set the run's wall clock and colour
-  # and nothing else. The release-side gate was already advisory
-  # (soldr#3088), which also holds the criteria for bringing it back. The
-  # cross-build stays: like aarch64-apple-darwin below it is a build-only
-  # lane, so a darwin cross-compile break still fails the PR.
+  # Full CI uses a hosted Intel Mac to replay the Linux cross-built archive.
+  # Routine PR/main runs remain Linux-only; this lane runs only in full mode.
   e2e-macos-x64-build:
     name: cross-build x86_64-apple-darwin (linux host)
-    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
-    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
+    needs: [ci-mode, e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' && needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: x86_64-apple-darwin
       artifact_name: soldr-ci-e2e-macos-x64
-      source_ref: ${{ github.sha }}
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
-      # Nothing in this workflow replays the archive any more (soldr#3116);
-      # macos-recovery-replay.yml builds its own.
-      upload_test_archive: false
+      upload_test_archive: true
+
+  e2e-macos-x64:
+    name: run x86_64-apple-darwin archive (macOS Intel)
+    needs: [ci-mode, e2e-macos-x64-build]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' && needs.e2e-macos-x64-build.result == 'success' }}
+    uses: ./.github/workflows/_ci-target-run.yml
+    with:
+      target: x86_64-apple-darwin
+      runs_on: macos-15-intel
+      artifact_name: soldr-ci-e2e-macos-x64
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
+      extended_replay: true
 
   # ---------- macOS ARM64 ----------
-  # aarch64-apple-darwin is cross-built on Linux (release-included) but not
-  # executed anywhere in CI: zackees/docker-mac-x64 (like soldr#3071's
-  # retired dockur/macos guest before it) has no supported ARM guest, and
-  # the owner mandate above rules out a native macos-* runner. Re-enabling
-  # execution is tracked by soldr#3071 (see the compatibility_decisions entry
-  # in ci/canonical-targets.json). Only the build lane remains, and — like
-  # x86_64-apple-darwin in this workflow — it has no paired target-run.
+  # Full CI uses a hosted ARM Mac to replay the Linux cross-built archive.
   e2e-macos-arm64-build:
     name: cross-build aarch64-apple-darwin (linux host)
-    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
-    if: ${{ needs.windows-e2e-policy.outputs.run_platform_e2e == 'true' }}
+    needs: [ci-mode, e2e-cross-bootstrap-soldr]
+    if: ${{ needs.ci-mode.outputs.mode != 'minimal' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-apple-darwin
       artifact_name: soldr-ci-e2e-macos-arm64
-      source_ref: ${{ github.sha }}
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
-      upload_test_archive: false
+      upload_test_archive: true
+
+  e2e-macos-arm64:
+    name: run aarch64-apple-darwin archive (macOS ARM)
+    needs: [ci-mode, e2e-macos-arm64-build]
+    if: ${{ needs.ci-mode.outputs.mode != 'minimal' && needs.e2e-macos-arm64-build.result == 'success' }}
+    uses: ./.github/workflows/_ci-target-run.yml
+    with:
+      target: aarch64-apple-darwin
+      runs_on: macos-15
+      artifact_name: soldr-ci-e2e-macos-arm64
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
+      extended_replay: true
 
   # ---------- Windows x64 ----------
   e2e-windows-x64-build:
     name: cross-build x86_64-pc-windows-msvc (linux host)
-    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
-    if: ${{ needs.windows-e2e-policy.outputs.run_windows_e2e == 'true' }}
+    needs: [ci-mode, e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' && needs.windows-e2e-policy.outputs.run_windows_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: x86_64-pc-windows-msvc
       artifact_name: soldr-ci-e2e-windows-x64
-      source_ref: ${{ github.sha }}
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
 
   e2e-windows-x64:
     name: target-run x86_64-pc-windows-msvc
-    needs: e2e-windows-x64-build
+    needs: [ci-mode, e2e-windows-x64-build]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       runs_on: windows-2025
       target: x86_64-pc-windows-msvc
       artifact_name: soldr-ci-e2e-windows-x64
@@ -1001,20 +1011,22 @@ jobs:
   # as MSVC; the ABI is a build-toolchain choice, not a separate host class.
   e2e-windows-x64-gnu-build:
     name: cross-build x86_64-pc-windows-gnu (linux host)
-    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
-    if: ${{ needs.windows-e2e-policy.outputs.run_windows_e2e == 'true' }}
+    needs: [ci-mode, e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' && needs.windows-e2e-policy.outputs.run_windows_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: x86_64-pc-windows-gnu
       artifact_name: soldr-ci-e2e-windows-x64-gnu
-      source_ref: ${{ github.sha }}
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
 
   e2e-windows-x64-gnu:
     name: target-run x86_64-pc-windows-gnu
-    needs: e2e-windows-x64-gnu-build
+    needs: [ci-mode, e2e-windows-x64-gnu-build]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       runs_on: windows-2025
       target: x86_64-pc-windows-gnu
       artifact_name: soldr-ci-e2e-windows-x64-gnu
@@ -1032,20 +1044,22 @@ jobs:
   # make this the same blessed build + nextest archive path as x64 MSVC.
   e2e-windows-arm64-build:
     name: cross-build aarch64-pc-windows-msvc (linux host)
-    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
-    if: ${{ needs.windows-e2e-policy.outputs.run_windows_e2e == 'true' }}
+    needs: [ci-mode, e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' && needs.windows-e2e-policy.outputs.run_windows_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-pc-windows-msvc
       artifact_name: soldr-ci-e2e-windows-arm64
-      source_ref: ${{ github.sha }}
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
 
   e2e-windows-arm64:
     name: target-run aarch64-pc-windows-msvc
-    needs: e2e-windows-arm64-build
+    needs: [ci-mode, e2e-windows-arm64-build]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
       runs_on: windows-11-arm
       target: aarch64-pc-windows-msvc
       artifact_name: soldr-ci-e2e-windows-arm64
@@ -1069,13 +1083,12 @@ jobs:
   # ELF and prove the tag matches the bytes.
   #
   # Cost (soldr#1978): this is one extra ubuntu-24.04 runner doing a full
-  # cross compile, so it is NOT on every PR. The policy job below selects the
-  # matrix; on a PR that touches no wheel-relevant path the matrix is `[]` and
-  # the build job is never scheduled -- no runner is allocated at all, which a
-  # step-level `if:` would not achieve. Pushes to main always run it.
+  # cross compile. Full mode always selects the wheel matrix; minimal mode
+  # skips the policy job and the build job before allocating either runner.
   wheel-cross-policy:
     name: wheel lane policy
-    needs: build-linux-x64
+    needs: [ci-mode, build-linux-x64]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -1084,19 +1097,20 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          ref: ${{ needs.ci-mode.outputs.checkout_sha }}
           fetch-depth: 0
       # soldr#2763: uv must exist before the first step that uses it.
       - name: Install uv
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
       - name: Select wheel lane matrix
         id: policy
-        run: uv run --no-project --python 3.13 python .github/scripts/wheel_lane_policy.py
+        run: uv run --no-project --python 3.13 python .github/scripts/wheel_lane_policy.py --full
 
   wheel-cross-verify:
     name: soldr wheel --target ${{ matrix.target }} (tag vs bytes)
-    needs: [wheel-cross-policy, e2e-cross-bootstrap-soldr]
+    needs: [ci-mode, wheel-cross-policy, e2e-cross-bootstrap-soldr]
     # An empty matrix schedules zero jobs. See wheel_lane_policy.py.
-    if: ${{ needs.wheel-cross-policy.outputs.matrix != '[]' }}
+    if: ${{ needs.ci-mode.outputs.mode == 'full' && needs.wheel-cross-policy.outputs.matrix != '[]' }}
     runs-on: ${{ matrix.runner }}
     # Cross-compiling the whole workspace cold, plus catalogue sysroot download.
     timeout-minutes: 45
@@ -1117,7 +1131,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           submodules: recursive
-          ref: ${{ github.sha }}
+          ref: ${{ needs.ci-mode.outputs.checkout_sha }}
 
       - name: Setup Python 3.13
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -1325,6 +1339,24 @@ jobs:
   # No `.github/scripts/*.py` here: each step is one `gh run cancel` call
   # with no branching, looping, or parsing (see CLAUDE.md's "GitHub Actions
   # workflow conventions").
+
+  full-coverage:
+    name: Full coverage
+    needs: [ci-mode, lint, build-linux-x64, pep517-daemon-smoke, e2e-linux-x64, windows-e2e-policy, e2e-cross-bootstrap-soldr, e2e-linux-x64-gnu-build, e2e-linux-arm64-build, e2e-linux-arm64, e2e-linux-x64-musl-build, e2e-linux-x64-musl, e2e-linux-arm64-musl-build, e2e-linux-arm64-musl, e2e-macos-x64-build, e2e-macos-x64, e2e-macos-arm64-build, e2e-macos-arm64, e2e-windows-x64-build, e2e-windows-x64, e2e-windows-x64-gnu-build, e2e-windows-x64-gnu, e2e-windows-arm64-build, e2e-windows-arm64, wheel-cross-policy, wheel-cross-verify]
+    if: ${{ always() && needs.ci-mode.outputs.mode == 'full' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      CI_NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.ci-mode.outputs.checkout_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - run: python3 .github/scripts/ci_full_coverage.py
 
   cancel-on-bootstrap-failure:
     name: Cancel run (bootstrap soldr failed)

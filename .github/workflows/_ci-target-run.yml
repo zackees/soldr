@@ -25,6 +25,11 @@ on:
         type: string
         required: true
         description: Name of the artifact produced by _ci-cross-build-linux.yml.
+      source_ref:
+        type: string
+        required: false
+        default: ""
+        description: Exact source commit SHA of the cross-build archive.
       run_pep517_smoke:
         type: boolean
         required: false
@@ -59,8 +64,9 @@ on:
         description: >-
           Execution contract for packaged target tools: native, x86_64-rosetta,
           or x86_64-recovery (soldr#3076: a zackees/docker-mac-x64 Recovery
-          guest hosted on an ubuntu-24.04 runner. No GitHub Actions job may
-          run on a macos-* runner, owner mandate 2026-09-02). x86_64-recovery
+          guest hosted on an ubuntu-24.04 runner). Hosted macOS runners are
+          reserved for explicit ci-test/ci-full and release validation.
+          x86_64-recovery
           skips the general nextest archive replay steps below (they assume
           per-command exec and a pre-provisioned toolchain; Recovery boots
           fresh per script and provisions its own toolchain from scratch) and
@@ -128,8 +134,16 @@ jobs:
       # tests also inspect vendored sources, so preserve complete source context.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          ref: ${{ inputs.source_ref != '' && inputs.source_ref || github.sha }}
           fetch-depth: 1
           submodules: recursive
+
+      - name: Verify archive source checkout
+        if: inputs.source_ref != ''
+        shell: bash
+        env:
+          EXPECTED_SOURCE_REF: ${{ inputs.source_ref }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REF"
 
       - name: Set up diagnostics interpreter
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -315,6 +329,18 @@ jobs:
             echo "- Compiler: \`$(printf '%s\n' "$compiler_version" | sed -n '1p')\`"
             echo "- Package manager: \`$package_manager_version\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # soldr#3344: native Apple Silicon replay runs nested Cargo fixtures.
+      # Run 35912103617 found that this host's pinned rust-objcopy existed but
+      # aborted because its matching libLLVM.dylib was absent. llvm-tools-preview
+      # supplies that runtime. Verify the executable now so the expensive test
+      # replay cannot fail several minutes later with an opaque strip warning.
+      - name: Provision native ARM rust-objcopy runtime
+        if: ${{ inputs.target == 'aarch64-apple-darwin' && inputs.target_execution != 'x86_64-recovery' }}
+        shell: bash
+        run: >-
+          python .github/scripts/provision_macos_objcopy.py
+          --soldr "$SOLDR_BIN" --channel "$RUSTUP_TOOLCHAIN" --rustc "$RUSTC"
 
       # soldr#2933 (phase 1 of soldr#2931): name the volume, before anything
       # writes to it.

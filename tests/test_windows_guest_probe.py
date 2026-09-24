@@ -87,6 +87,18 @@ def test_summary_requires_real_replay_counts_for_go():
     assert report["timings"]["usable_shell_seconds"] == 545
 
 
+def test_desktop_report_identifies_edition_and_selector():
+    report = probe.make_report(
+        host={"kvm": False},
+        timings={},
+        guest=None,
+        disk={},
+        guest_edition="win11-enterprise",
+    )
+    assert report["edition"] == "Windows 11 Enterprise evaluation"
+    assert report["dockur_version"] == "11e"
+
+
 def test_failed_replay_is_not_a_go():
     guest = {"nextest": {"run": 1, "passed": 0, "failed": 1, "exit_code": 100}}
     report = probe.make_report(
@@ -412,6 +424,42 @@ def test_operational_failure_reports_no_go_and_cleans_unique_container(
     assert not (tmp_path / "scratch").exists()
 
 
+def test_desktop_launch_uses_11e_without_server_core_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe, "_kvm_usable", lambda: True)
+    monkeypatch.setattr(
+        probe.shutil, "disk_usage", lambda _: SimpleNamespace(free=60 * 1024**3)
+    )
+    monkeypatch.setattr(probe, "_stage_payload", lambda *_: None)
+    launches = []
+
+    def fake_run(*command, **_kwargs):
+        if command[:2] == ("docker", "run"):
+            launches.append(command)
+            raise OSError("simulated Docker launch failure")
+        if command[:2] == ("docker", "inspect"):
+            return SimpleNamespace(stdout="", stderr="No such object", returncode=1)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(probe, "_run", fake_run)
+    output = tmp_path / "result.json"
+    args = Namespace(
+        repo=ROOT,
+        artifact=tmp_path,
+        scratch=tmp_path / "scratch",
+        output=output,
+        run_id="test",
+        timeout_seconds=1,
+        guest_edition="win11-enterprise",
+    )
+    assert probe.run_probe(args) == 0
+    assert len(launches) == 1
+    assert "VERSION=11e" in launches[0]
+    assert "EDITION=core" not in launches[0]
+    assert (
+        json.loads(output.read_text())["edition"] == "Windows 11 Enterprise evaluation"
+    )
+
+
 def test_host_marker_time_uses_file_change_time(tmp_path):
     marker = tmp_path / "ready"
     started = probe.time.time() - 1
@@ -492,6 +540,8 @@ def test_workflow_is_dispatch_only_and_not_a_required_gate():
     assert "windows-guest-nextest.log" in workflow
     assert "windows-guest-vc-redist.log" in workflow
     assert "windows-guest-raw-result.json" in workflow
+    assert "guest_edition:" in workflow
+    assert "win11-enterprise" in workflow
 
 
 def test_guest_installs_signed_runtime_before_native_replay():

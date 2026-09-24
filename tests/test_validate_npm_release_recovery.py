@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +12,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 validate = load_script_module(
     REPO_ROOT / ".github" / "scripts" / "validate_npm_release_recovery.py"
 )
+completeness = load_script_module(
+    REPO_ROOT / ".github" / "scripts" / "release_completeness.py"
+)
 
 
 def _source(tmp_path: Path, version: str = "0.9.0") -> Path:
+    (tmp_path / "ci").mkdir()
+    shutil.copyfile(
+        REPO_ROOT / "ci" / "canonical-targets.json",
+        tmp_path / "ci" / "canonical-targets.json",
+    )
     (tmp_path / "package.json").write_text(
         json.dumps({"version": version}), encoding="utf-8"
     )
@@ -28,17 +37,15 @@ def _source(tmp_path: Path, version: str = "0.9.0") -> Path:
 
 
 def _release(version: str = "0.9.0") -> dict[str, Any]:
-    names = [
-        f"soldr-v{version}-SHA256SUMS.txt",
-        f"soldr-v{version}-x86_64-pc-windows-msvc.tar.zst",
-        f"soldr-{version}-py3-none-win_amd64.whl",
-    ]
+    names = completeness.expected_github_assets(
+        f"v{version}", completeness.included_triples()
+    )
     return {
         "tag_name": f"v{version}",
         "draft": False,
         "immutable": True,
         "target_commitish": "a" * 40,
-        "assets": [{"name": name} for name in names],
+        "assets": [{"name": name, "size": 1024} for name in names],
     }
 
 
@@ -46,10 +53,10 @@ def _pypi(version: str = "0.9.0") -> dict[str, Any]:
     return {
         "info": {"version": version},
         "urls": [
-            {
-                "filename": f"soldr-{version}-py3-none-win_amd64.whl",
-                "packagetype": "bdist_wheel",
-            }
+            {"filename": name, "packagetype": "bdist_wheel"}
+            for name in completeness.expected_pypi_files(
+                f"v{version}", completeness.included_triples()
+            )
         ],
     }
 
@@ -143,7 +150,9 @@ def test_rejects_unpublished_or_mutable_release(
 
 def test_rejects_github_pypi_wheel_mismatch(tmp_path: Path) -> None:
     pypi = _pypi()
-    pypi["urls"][0]["filename"] = "soldr-0.9.0-py3-none-manylinux.whl"
+    pypi["urls"].append(
+        {"filename": "soldr-0.9.0-py3-none-extra.whl", "packagetype": "bdist_wheel"}
+    )
     with pytest.raises(validate.ValidationError, match="wheel sets do not match"):
         validate.validate_recovery(
             repository="zackees/soldr",
@@ -151,5 +160,55 @@ def test_rejects_github_pypi_wheel_mismatch(tmp_path: Path) -> None:
             source_dir=_source(tmp_path),
             token=None,
             get_json=_fetcher(_release(), pypi),
+            run_git=_git,
+        )
+
+
+@pytest.mark.parametrize("kind", ["archive", "wheel", "checksum", "pypi-wheel"])
+def test_rejects_missing_canonical_release_cell(tmp_path: Path, kind: str) -> None:
+    release = _release()
+    pypi = _pypi()
+    if kind == "pypi-wheel":
+        pypi["urls"].pop()
+    else:
+        suffix = {
+            "archive": ".tar.zst",
+            "wheel": ".whl",
+            "checksum": "SHA256SUMS.txt",
+        }[kind]
+        removed = next(
+            asset["name"]
+            for asset in release["assets"]
+            if asset["name"].endswith(suffix)
+        )
+        release["assets"] = [
+            asset for asset in release["assets"] if asset["name"] != removed
+        ]
+        if kind == "wheel":
+            pypi["urls"] = [
+                item for item in pypi["urls"] if item["filename"] != removed
+            ]
+    with pytest.raises(validate.ValidationError, match="missing"):
+        validate.validate_recovery(
+            repository="zackees/soldr",
+            release_ref="v0.9.0",
+            source_dir=_source(tmp_path),
+            token=None,
+            get_json=_fetcher(release, pypi),
+            run_git=_git,
+        )
+
+
+@pytest.mark.parametrize("size", [0, -1, None, "1024", True])
+def test_rejects_invalid_expected_asset_size(tmp_path: Path, size: object) -> None:
+    release = _release()
+    release["assets"][0]["size"] = size
+    with pytest.raises(validate.ValidationError, match="invalid size"):
+        validate.validate_recovery(
+            repository="zackees/soldr",
+            release_ref="v0.9.0",
+            source_dir=_source(tmp_path),
+            token=None,
+            get_json=_fetcher(release, _pypi()),
             run_git=_git,
         )

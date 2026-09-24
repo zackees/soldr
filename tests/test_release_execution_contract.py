@@ -306,7 +306,7 @@ def test_always_publisher_must_require_runtime_gate_success(tmp_path: Path) -> N
     assert expected in "\n".join(failures)
 
 
-def test_arm64_contract_is_an_explicit_release_blocker() -> None:
+def test_arm64_contract_requires_native_release_archive_and_wheel_smoke() -> None:
     payload = json.loads(CONTRACT.read_text(encoding="utf-8"))
     arm64 = next(
         row for row in payload["targets"] if row["triple"] == "aarch64-apple-darwin"
@@ -315,17 +315,21 @@ def test_arm64_contract_is_an_explicit_release_blocker() -> None:
     assert arm64["release"]["artifact_provenance"] == {
         "build": {"status": "cross-built", "runner": "ubuntu-24.04"},
         "execution": {
-            "archive": {"status": "not-executed", "issue": 3071},
-            "wheel": {"status": "not-executed", "issue": 3071},
+            "archive": {
+                "status": "required-before-publication",
+                "gate_job": "smoke_macos_arm64",
+            },
+            "wheel": {
+                "status": "required-before-publication",
+                "gate_job": "smoke_macos_arm64",
+            },
         },
     }
 
 
-def test_checked_in_contract_blocks_release(capsys) -> None:
-    assert MODULE.main(["--verify-execution-contract"]) == 1
-    stderr = capsys.readouterr().err
-    assert "release execution contract is BLOCKED" in stderr
-    assert "aarch64-apple-darwin" in stderr
+def test_checked_in_contract_allows_release_after_required_smokes(capsys) -> None:
+    assert MODULE.main(["--verify-execution-contract"]) == 0
+    assert "release execution contract complete" in capsys.readouterr().out
 
 
 def test_publish_requires_execution_contract_gate() -> None:
@@ -352,4 +356,11 @@ def test_publish_requires_execution_contract_gate() -> None:
 
     assert "should_publish_pypi == 'true'" in gate
     assert "should_publish_npm == 'true'" in gate
-    assert "inputs.npm_release_ref != ''" in gate
+    # npm-only recovery verifies an already immutable release in its own job;
+    # prepare and release artifact smoke jobs intentionally skip on that path.
+    assert "inputs.npm_release_ref != ''" not in gate
+    npm = workflow.split("\n  publish-npm:\n", 1)[1].split(
+        "\n  release-completeness:", 1
+    )[0]
+    assert "needs.prepare.result == 'skipped'" in npm
+    assert "validate_npm_release_recovery.py" in npm

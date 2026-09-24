@@ -154,10 +154,13 @@ def test_windows_target_runner_pairs_share_their_producer_artifacts() -> None:
         run = _job_block(ci, run_name)
         assert "uses: ./.github/workflows/_ci-cross-build-linux.yml" in build
         assert "uses: ./.github/workflows/_ci-target-run.yml" in run
-        assert re.search(rf"(?m)^    needs: {re.escape(build_name)}$", run)
+        assert re.search(rf"(?m)^    needs: \[ci-mode, {re.escape(build_name)}\]$", run)
         assert _job_input(build, "artifact_name") == artifact
         assert _job_input(run, "artifact_name") == artifact
-        assert _job_input(build, "source_ref") == "${{ github.sha }}"
+        assert (
+            _job_input(build, "source_ref")
+            == "${{ needs.ci-mode.outputs.checkout_sha }}"
+        )
         assert _job_input(build, "target") == target
         assert _job_input(run, "target") == target
         assert _job_input(run, "runs_on") == runner
@@ -438,19 +441,18 @@ def test_fast_build_only_skips_windows_e2e_for_low_risk_changes() -> None:
     #    can skip is not one, and it is the cheapest lane besides.
     linux_x64 = _job_block(ci, "e2e-linux-x64", "windows-e2e-policy")
     assert "run_platform_e2e" not in linux_x64
-    assert "if:" not in linux_x64
+    assert "needs.ci-mode.outputs.mode != 'minimal'" in linux_x64
 
-    # 2. The broader gate exists, is driven by the same policy job, and the
-    #    macOS lanes -- where a skipped lane also avoids a queue -- are
-    #    behind it. Both are build-only now: aarch64-apple-darwin has no
-    #    paired run job (soldr#3071: no macos-* runner anywhere) and the
-    #    x86_64-apple-darwin Recovery replay moved to
-    #    macos-recovery-replay.yml (soldr#3116).
+    # 2. The broader gate still protects macOS x64 in full mode. ARM64 is
+    #    explicitly requested by ci-test as well, so it bypasses path policy.
     assert "run_platform_e2e" in policy
-    for job in ("e2e-macos-x64-build", "e2e-macos-arm64-build"):
-        block = _job_block(ci, job)
-        assert "needs.windows-e2e-policy.outputs.run_platform_e2e == 'true'" in block
-        assert "fast-build" not in block
+    assert "needs.windows-e2e-policy.outputs.run_platform_e2e == 'true'" in _job_block(
+        ci, "e2e-macos-x64-build"
+    )
+    assert "needs.ci-mode.outputs.mode != 'minimal'" in _job_block(
+        ci, "e2e-macos-arm64-build"
+    )
+    assert "fast-build" not in _job_block(ci, "e2e-macos-x64-build")
 
 
 def test_cross_workflow_bootstraps_toolchain_dependencies_through_soldr() -> None:
@@ -571,10 +573,9 @@ def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
 def test_native_linux_integration_backstop_runs_on_pull_requests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     block = _job_block(ci, "build-linux-x64", "pep517-daemon-smoke")
-    # The serial gate stays behind the real Lint job. Canonical CI now lets a
-    # docs-only PR report a cheap Lint context, so the host lane explicitly
-    # waits for path selection and skips only that docs-only case.
-    assert "needs: [path-selection, lint]" in block
+    # The serial gate stays behind the real Lint job and CI mode. A docs-only
+    # PR reports a cheap Lint context, so the host lane skips only that case.
+    assert "\n    needs: [ci-mode, path-selection, lint]\n" in block
     assert "needs.path-selection.outputs.docs_only != 'true'" in block
     assert "needs.lint.result == 'success'" in block
     assert "soldr#1676" in block
@@ -594,17 +595,20 @@ def test_host_validation_opportunistically_reuses_exact_sha_bootstrap() -> None:
     # The host must not wait for the producer: under the serial gate the
     # producer runs AFTER the host (stage 3), so the host always takes the
     # local source-build fallback rather than extending the native critical
-    # path, and the producer carries no event guard of its own.
-    assert "\n    if:" not in producer_header
-    assert "\n    needs: build-linux-x64\n" in producer_header
-    assert "needs: [path-selection, lint]" in host
+    # path. The producer runs for opt-in ci-test and full modes.
+    assert "needs.ci-mode.outputs.mode != 'minimal'" in producer_header
+    assert "\n    needs: [ci-mode, build-linux-x64]\n" in producer_header
+    assert re.search(r"(?m)^    needs: \[ci-mode, path-selection, lint\]$", host)
     assert not re.search(r"(?m)^    needs: e2e-cross-bootstrap-soldr", host)
     # The producer's artifact cannot exist when the host starts, so the host
     # no longer asks for it; the template skips the download on an empty name.
     assert "source_driver_artifact_name:" not in host
     assert "if: inputs.source_driver_artifact_name != ''" in host_template
 
-    assert "bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ github.sha }}" in producer
+    assert (
+        "bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ needs.ci-mode.outputs.checkout_sha }}"
+        in producer
+    )
     assert "key: rustup-1.98.1-linux-x64-v1" in producer
     assert "rustup toolchain install 1.98.1 --profile minimal" in producer
     assert "toolchain: 1.98.1" in host_template
@@ -616,7 +620,7 @@ def test_host_validation_opportunistically_reuses_exact_sha_bootstrap() -> None:
     assert "--target x86_64-unknown-linux-gnu" in producer
     assert "--features" not in producer
     assert (
-        'printf \'%s\\n\' "${{ github.sha }}" > "$RUNNER_TEMP/soldr-bin/source-sha"'
+        'printf \'%s\\n\' "${{ needs.ci-mode.outputs.checkout_sha }}" > "$RUNNER_TEMP/soldr-bin/source-sha"'
         in verify
     )
     assert "path: ${{ runner.temp }}/soldr-bin" in upload
@@ -645,7 +649,7 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
     # downstream build-backend replay remains separate from this matrix.
     assert '"name":"macos-arm64"' not in block
     assert '"name":"windows-x64"' in block
-    assert "github.event.pull_request.labels" in block
+    assert "needs.ci-mode.outputs.mode == 'full'" in block
     assert "fromJSON('[" in block
 
     replay = (WORKFLOWS / "macos-recovery-replay.yml").read_text(encoding="utf-8")
@@ -1121,11 +1125,8 @@ def test_release_supports_isolated_npm_recovery_from_an_immutable_ref() -> None:
 
     assert "      npm_release_ref:\n" in release
     assert '        type: string\n        default: ""\n' in release
-    assert (
-        "if: github.event_name != 'workflow_dispatch' || inputs.npm_release_ref == ''"
-        in prepare
-    )
-    assert "github.event_name == 'workflow_dispatch'" in publish_npm
+    assert "if: inputs.npm_release_ref == ''" in prepare
+    assert "needs.prepare.result == 'skipped'" in publish_npm
     assert "inputs.npm_release_ref != ''" in publish_npm
     assert "needs.prepare.outputs.should_publish_npm == 'true'" in publish_npm
     assert "needs.verify_github_release.result == 'success'" in publish_npm
@@ -1251,7 +1252,7 @@ def test_cross_compile_docs_match_current_blessed_surfaces() -> None:
     assert "_cross-build-windows-host.yml" not in docs
     assert "cross-build-from-windows-x64-linux" not in docs
     assert "build-macos-x64.yml" not in ci
-    # soldr#3071: no GitHub Actions job runs on a macos-* runner any more.
-    assert "macos-15-intel" not in ci
+    assert "runs_on: macos-15-intel" in ci
+    assert "runs_on: macos-15" in ci
     assert "soldr#1237" not in release
     assert "x86_64-apple-darwin: **intentionally omitted**" not in release

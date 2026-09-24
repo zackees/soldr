@@ -197,12 +197,14 @@ degenerate split soldr#1978 item 3 removed. Their artifact-level invariants are
 checked in the build lane instead (`verify_static_link.py`,
 `verify_glibc_baseline.py`).
 
-Owner mandate (2026-09-02, soldr#3071): no GitHub Actions job may run on a
-`macos-*` runner. `x86_64-apple-darwin` keeps a target-run, but "native to
-that target" now means a
+The former no-hosted-macOS mandate (soldr#3071) has a narrow exception:
+opt-in `ci-full` and exact-SHA release validation execute Intel and Apple
+Silicon target tests on hosted `macos-15-intel` and `macos-15` runners.
+Ordinary PR/main validation remains Mac-free; the opt-in `ci-test` label also
+runs the Apple Silicon archive replay. A separate advisory Intel replay uses a
 [zackees/docker-mac-x64](https://github.com/zackees/docker-mac-x64) macOS
-**Recovery** guest (KVM) hosted on an `ubuntu-24.04` runner rather than a
-native macOS runner — see `ci/macos_recovery_run.py` and the
+**Recovery** guest (KVM) hosted on an `ubuntu-24.04` runner — see
+`ci/macos_recovery_run.py` and the
 `target_execution: x86_64-recovery` contract in
 `.github/workflows/_ci-target-run.yml` (soldr#3076; this replaced soldr#3071's
 hand-baked dockur/macos guest, whose image was never published and whose ssh
@@ -228,11 +230,10 @@ time (`e2e_macos_x64_build` / `e2e_macos_x64_replay`), pinned to the release
 commit. That release-time replay is advisory: soldr#3088 removed it from
 `publish`'s gate after it blocked v0.9.12 twice on harness bugs without
 ever having been green.
-`aarch64-apple-darwin` is a third build-only
-lane alongside the two above: it is still cross-built and release-included,
-but has no execution environment (real or virtualized) anywhere in CI until
-soldr#3071 re-enables it before release, so "every cross-arch target keeps
-its target-run" no longer holds for it specifically.
+`aarch64-apple-darwin` is still cross-built on Linux, but it is no longer
+build-only in full validation: its archived tests execute on hosted Apple
+Silicon. The complete opt-in matrix and ordinary minimal lane are documented
+in [CI_MODES.md](CI_MODES.md).
 
 Linux-runnable contract tests in `tests/test_cross_compile_workflows.py` protect
 that route from silently dropping native tests. Add a new runner only when the

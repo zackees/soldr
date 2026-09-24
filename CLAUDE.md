@@ -3,6 +3,11 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 > [!IMPORTANT]
+> Ordinary PR and `main` CI runs lint plus Linux x64 `soldr ci-test`. Add the
+> `ci-full` PR label for platform-sensitive or target/toolchain changes; release
+> candidates require full CI on the exact commit SHA. See [CI modes](docs/CI_MODES.md).
+
+> [!IMPORTANT]
 > ## ⚡ Performance work → read [PERF.md](PERF.md) FIRST ⚡
 >
 > **The Perf Matrix GitHub Action is the MOST important workflow in this repo.**
