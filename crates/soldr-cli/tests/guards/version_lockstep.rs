@@ -375,7 +375,7 @@ fn externalized_dependencies_are_exact_and_consistent() {
     for (dependency, version, manifests) in [
         (
             "zccache",
-            "1.14.11",
+            "1.14.12",
             &[
                 "crates/soldr-cli/Cargo.toml",
                 "crates/soldr-cache/Cargo.toml",
@@ -393,7 +393,7 @@ fn externalized_dependencies_are_exact_and_consistent() {
         ),
         (
             "kernal-api",
-            "0.1.17",
+            "0.1.20",
             &["crates/soldr-platform/Cargo.toml"][..],
         ),
     ] {

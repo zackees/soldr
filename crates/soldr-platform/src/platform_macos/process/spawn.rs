@@ -16,11 +16,14 @@ pub fn spawn_detached(command: &mut Command) -> io::Result<Child> {
 
 /// Test seam for soldr#3098: spawn `command` but hold the child between
 /// fork and exec for `hold`, so any descriptor it inherited from this
-/// process stays open that long. Takes the shared spawn guard like every
-/// other funnel, so a staged write in progress makes this block first.
+/// process stays open that long. With `spawn_guard` it takes the shared
+/// spawn guard like every other funnel, so a staged write in progress makes
+/// this block first; without it, it models a spawner outside soldr's lock
+/// (soldr#3350).
 pub fn spawn_holding_fork_window(
     command: &mut Command,
     hold: std::time::Duration,
+    spawn_guard: bool,
 ) -> io::Result<Child> {
     use std::os::unix::process::CommandExt;
     // SAFETY: the closure only sleeps, which is async-signal-safe.
@@ -30,7 +33,7 @@ pub fn spawn_holding_fork_window(
             Ok(())
         });
     }
-    let _spawn = crate::platform::process::spawn_exclusion::spawn_shared();
+    let _spawn = spawn_guard.then(crate::platform::process::spawn_exclusion::spawn_shared);
     command.spawn()
 }
 

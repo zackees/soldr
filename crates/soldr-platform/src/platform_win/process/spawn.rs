@@ -34,11 +34,12 @@ pub fn exec_or_status(command: &mut Command) -> io::Result<ExitStatus> {
 
 /// Test seam for soldr#3098. Windows has no fork-to-exec window in which
 /// a child inherits this process's descriptors, so `hold` is ignored; the
-/// child is spawned under the same shared spawn guard as everything else.
+/// child is spawned under the shared spawn guard when `spawn_guard` is set.
 pub fn spawn_holding_fork_window(
     command: &mut Command,
     _hold: std::time::Duration,
+    spawn_guard: bool,
 ) -> io::Result<Child> {
-    let _spawn = crate::platform::process::spawn_exclusion::spawn_shared();
+    let _spawn = spawn_guard.then(crate::platform::process::spawn_exclusion::spawn_shared);
     command.spawn()
 }

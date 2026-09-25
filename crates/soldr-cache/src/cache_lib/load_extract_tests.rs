@@ -55,6 +55,24 @@ fn archive_with_executable(root: &Path) -> (PathBuf, PathBuf) {
 /// it and the exec succeeds.
 #[test]
 fn child_forked_during_staged_write_cannot_make_the_restored_file_busy() {
+    restored_file_runs_after_a_fork_during_its_staged_write(true);
+}
+
+/// soldr#3350: the spawn guard only excludes spawns that take it. The daemon
+/// shares its process with embedded zccache and libraries that fork under
+/// their own lock or none; such a child inherits the staged write descriptor
+/// across the rename. `load` must still return only once no process holds
+/// a restored executable open for writing.
+#[test]
+fn a_fork_outside_the_spawn_guard_cannot_make_the_restored_file_busy() {
+    restored_file_runs_after_a_fork_during_its_staged_write(false);
+}
+
+/// Both tests drive the one process-global extraction hook and probe name.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn restored_file_runs_after_a_fork_during_its_staged_write(spawn_guard: bool) {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     // The fork-to-exec window this test drives is a Unix mechanism; the
     // platform boundary (#2493) forbids a `cfg` here, so gate at runtime.
     if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
@@ -102,12 +120,13 @@ fn child_forked_during_staged_write_cannot_make_the_restored_file_busy() {
     // The worker is now parked with a write descriptor open on the staged
     // inode. Fork a child through the same funnel soldr's spawns use; hold
     // it between fork and exec so any inherited descriptor stays alive.
-    let spawner = std::thread::spawn(|| {
+    let spawner = std::thread::spawn(move || {
         let mut command = std::process::Command::new("sh");
         command.args(["-c", ":"]);
         crate::platform::process::spawn::spawn_holding_fork_window(
             &mut command,
             CHILD_PRE_EXEC_HOLD,
+            spawn_guard,
         )
         .expect("fork the lingering child")
     });
