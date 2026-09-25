@@ -124,6 +124,7 @@ As of the `0.6.x` line, `soldr` enforces integrity on every third-party fetch:
 - `SOLDR_TRUST_MODE=strict` refuses to install any tool that does not have a matching pin
 - `SOLDR_TRUST_MODE=permissive` (the default) installs and emits a `trust: unverified` warning when no pin is available; this preserves the convenience/bootstrap path while making the trust state legible
 - zccache is not fetched by the runtime tool resolver; Cargo verifies and builds the exact dependency recorded in `Cargo.lock`, and release archives contain only the embedded implementation
+- `reld` (the polylinker) is fetched only when a project or `SOLDR_LINKER` selects it (`reld` or the `fast` default); the fetch is pinned to v0.1.0 (the static musl asset on Linux x64 hosts) and verified against built-in SHA-256 pins sourced from reld's own `SHA256SUMS`, going through the same trust verification as every other runtime fetch — `SOLDR_CHECKSUMS_FILE` and `SOLDR_TRUST_MODE=strict` both apply
 
 Example pin file layout:
 

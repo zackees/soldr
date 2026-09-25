@@ -15,7 +15,7 @@ use crate::core::{
 };
 use crate::{
     resolve_toolchain_binary,
-    toolchain::{run_prepare_inner, PrepareSummary},
+    toolchain::{run_prepare_inner, LinkerSummary, PrepareSummary},
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -28,6 +28,10 @@ pub(crate) struct ToolchainEnsureOutput {
     pub components_added: Vec<String>,
     pub targets_added: Vec<String>,
     pub plugins_installed: Vec<String>,
+    /// Additive (soldr#3276 T4): reports the fetched `reld` linker when the
+    /// project selects it (`SOLDR_LINKER=reld` or `linker = "reld"` in
+    /// `config.toml`), `null` otherwise. Does not bump `schema_version`.
+    pub linker: Option<LinkerSummary>,
     pub smoke_verify: SmokeVerify,
     pub elapsed_ms: u128,
 }
@@ -94,6 +98,7 @@ pub(crate) async fn run_toolchain_ensure(json: bool) -> Result<i32, SoldrError> 
                 components_added: prepare_summary.components_added,
                 targets_added: prepare_summary.targets_added,
                 plugins_installed: prepare_summary.plugins_installed,
+                linker: prepare_summary.linker,
                 smoke_verify: SmokeVerify::default(),
                 elapsed_ms: started.elapsed().as_millis(),
             })?;
@@ -125,6 +130,7 @@ pub(crate) async fn run_toolchain_ensure(json: bool) -> Result<i32, SoldrError> 
         components_added: prepare_summary.components_added,
         targets_added: prepare_summary.targets_added,
         plugins_installed: prepare_summary.plugins_installed,
+        linker: prepare_summary.linker,
         smoke_verify: smoke,
         elapsed_ms: started.elapsed().as_millis(),
     };
@@ -282,6 +288,7 @@ mod tests {
             components_added: vec!["clippy".to_string()],
             targets_added: vec![],
             plugins_installed: vec!["cargo-nextest@0.9".to_string()],
+            linker: None,
             smoke_verify: SmokeVerify {
                 cargo_version: Some("cargo 1.94.1".to_string()),
                 rustc_version: Some("rustc 1.94.1".to_string()),
@@ -295,5 +302,60 @@ mod tests {
         assert_eq!(parsed["channel"], Value::from("1.94.1"));
         assert!(parsed["targets_added"].is_array());
         assert_eq!(parsed["smoke_verify"]["ok"], Value::from(true));
+        assert!(parsed["linker"].is_null());
+    }
+
+    /// soldr#3276 T4: the additive `linker` key must serialize as an object
+    /// when the project selected `reld`, and as JSON `null` (not an omitted
+    /// key) when it did not. Does not bump `schema_version`.
+    #[test]
+    fn linker_key_serializes_as_object_when_selected_else_null() {
+        let with_linker = ToolchainEnsureOutput {
+            schema_version: SCHEMA_VERSION,
+            channel: Some("1.94.1".to_string()),
+            rustup_bootstrapped: false,
+            components_added: vec![],
+            targets_added: vec![],
+            plugins_installed: vec![],
+            linker: Some(LinkerSummary {
+                choice: "reld".to_string(),
+                path: "/home/user/.soldr/bin/reld-0.1.0/reld".to_string(),
+                version: "0.1.0".to_string(),
+            }),
+            smoke_verify: SmokeVerify {
+                cargo_version: Some("cargo 1.94.1".to_string()),
+                rustc_version: Some("rustc 1.94.1".to_string()),
+                ok: true,
+            },
+            elapsed_ms: 7,
+        };
+        let json = serde_json::to_string(&with_linker).expect("serialise");
+        let parsed: Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(parsed["linker"]["choice"], Value::from("reld"));
+        assert_eq!(parsed["linker"]["version"], Value::from("0.1.0"));
+        assert_eq!(parsed["schema_version"], Value::from(1));
+
+        let without_linker = ToolchainEnsureOutput {
+            linker: None,
+            ..without_linker_defaults()
+        };
+        let json = serde_json::to_string(&without_linker).expect("serialise");
+        let parsed: Value = serde_json::from_str(&json).expect("parse");
+        assert!(parsed["linker"].is_null());
+        assert!(json.contains("\"linker\":null"));
+    }
+
+    fn without_linker_defaults() -> ToolchainEnsureOutput {
+        ToolchainEnsureOutput {
+            schema_version: SCHEMA_VERSION,
+            channel: None,
+            rustup_bootstrapped: false,
+            components_added: vec![],
+            targets_added: vec![],
+            plugins_installed: vec![],
+            linker: None,
+            smoke_verify: SmokeVerify::default(),
+            elapsed_ms: 0,
+        }
     }
 }

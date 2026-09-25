@@ -168,20 +168,43 @@ pub async fn run(
     Ok(())
 }
 
-/// Fetch a pinned `reld` when the caller explicitly selected it through the
-/// same environment or soldr config inputs the cargo front door accepts.
+/// Fetch a pinned `reld` when the caller's project (env, config, or the
+/// project's own `.cargo/config.toml`) selects it. `reld` is a host tool —
+/// it links whatever's being built, so it is resolved against the host
+/// triple regardless of `--target`.
+///
+/// Called exactly once per `soldr prepare` invocation (outside any
+/// per-target loop, see `run()` ~L92) — `--target all` fans `run()` out
+/// per triple at the `soldr_main_dispatch` call site, but the fetch itself
+/// is idempotent (an already-downloaded `reld` short-circuits before any
+/// network call), so repeated invocations across targets do not re-fetch.
 async fn ensure_selected_reld(paths: &SoldrPaths) -> Result<Option<PathBuf>, SoldrError> {
-    let config = paths
-        .load_config()
-        .map_err(|error| SoldrError::Other(error.to_string()))?;
-    let choice = crate::linker::from_env_and_config(
-        std::env::var_os(crate::LINKER_ENV_VAR).as_deref(),
-        config.linker.as_deref(),
-    )?;
-    if matches!(choice, crate::linker::LinkerChoice::Reld) {
-        crate::fetch::ensure_reld(paths).await.map(Some)
-    } else {
-        Ok(None)
+    let host_triple = crate::core::TargetTriple::host()?.triple();
+    let selection = crate::linker::resolve_project_choice_from_cwd(Some(&host_triple), paths)?;
+    ensure_selected_reld_with(&selection, || crate::fetch::ensure_reld(paths)).await
+}
+
+/// Testable core of [`ensure_selected_reld`]: the fetch is injected so unit
+/// tests can assert it is invoked exactly once (or zero times) without
+/// touching the network.
+async fn ensure_selected_reld_with<Fut>(
+    selection: &crate::linker::ProjectLinkerSelection,
+    fetch: impl FnOnce() -> Fut,
+) -> Result<Option<PathBuf>, SoldrError>
+where
+    Fut: std::future::Future<Output = Result<PathBuf, SoldrError>>,
+{
+    if !selection.needs_reld() {
+        return Ok(None);
+    }
+    match fetch().await {
+        Ok(path) => Ok(Some(path)),
+        // An explicit `reld` selection that fails to fetch is a hard error —
+        // the caller asked for reld by name. An automatic/fast selection
+        // that merely tried reld opportunistically falls back silently, the
+        // same way `resolve_for_target`'s `Fast` arm does.
+        Err(error) if selection.is_explicit() => Err(crate::linker::reld_fetch_error(error)),
+        Err(_) => Ok(None),
     }
 }
 
@@ -614,6 +637,21 @@ pub(crate) fn expected_state_paths(
             path: package,
         });
     }
+    // reld selection is independent of `attrs` (it's a host tool, not a
+    // per-target one) but the resolution is synchronous and file-only — no
+    // network call — so it's cheap to resolve once here, per the same
+    // per-target/sync contract every other entry in this function follows.
+    if reld_selected_for_restore_report(paths)? {
+        let reld_dir = paths
+            .bin
+            .join(format!("reld-{}", crate::fetch::MANAGED_RELD_VERSION));
+        let reld_bin = reld_dir.join(format!("reld{}", std::env::consts::EXE_SUFFIX));
+        entries.push(RestoreEntry {
+            label: format!("reld {}", crate::fetch::MANAGED_RELD_VERSION),
+            present: reld_bin.is_file(),
+            path: reld_dir,
+        });
+    }
     if attrs.needs_apple_sdk {
         let selection = crate::fetch::apple_sdk::resolve_apple_sdk_selection(Some(&attrs.triple));
         let sdk = crate::fetch::apple_sdk::install_dir_for_selection(paths, &selection);
@@ -629,6 +667,14 @@ pub(crate) fn expected_state_paths(
         });
     }
     Ok(entries)
+}
+
+/// Whether the active project selects `reld`, resolved without any network
+/// call — same inputs `ensure_selected_reld` uses, minus the fetch.
+fn reld_selected_for_restore_report(paths: &SoldrPaths) -> Result<bool, SoldrError> {
+    let host_triple = crate::core::TargetTriple::host()?.triple();
+    let selection = crate::linker::resolve_project_choice_from_cwd(Some(&host_triple), paths)?;
+    Ok(selection.needs_reld())
 }
 
 pub(crate) fn blessed_xwin_cache_root(paths: &SoldrPaths, target: &str) -> PathBuf {
@@ -690,7 +736,11 @@ pub(crate) fn prepare_state_roots(paths: &SoldrPaths) -> Result<Vec<PathBuf>, So
         for entry in entries.flatten() {
             let name = entry.file_name();
             let n = name.to_string_lossy();
-            if n.starts_with("zig-") || n.starts_with("llvm-") || n == "apple-sdk" {
+            if n.starts_with("zig-")
+                || n.starts_with("llvm-")
+                || n.starts_with("reld-")
+                || n == "apple-sdk"
+            {
                 roots.push(entry.path());
             }
         }
@@ -753,7 +803,7 @@ pub(crate) fn save_prepare_state(
         roots
     };
     if roots.is_empty() {
-        eprintln!("soldr prepare: nothing to save (no zig/llvm/apple-sdk/mingw/gnu-linux/musl-linux/xwin dirs found)");
+        eprintln!("soldr prepare: nothing to save (no zig/llvm/reld/apple-sdk/mingw/gnu-linux/musl-linux/xwin dirs found)");
         return Ok(());
     }
 
