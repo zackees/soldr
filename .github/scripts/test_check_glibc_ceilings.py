@@ -72,9 +72,11 @@ def _seed(
     (workflows / "_ci-cross-build-linux.yml").write_text(first, encoding="utf-8")
     (workflows / "cross-compile-all-targets.yml").write_text(second, encoding="utf-8")
     # release-auto is part of the contract now, not an exclusion, so every
-    # fixture supplies it — defaulting to the values on main.
+    # fixture supplies it — defaulting to the values on main (own-binary
+    # 2.17, matching the per-PR lanes since soldr#1060; bundled archive
+    # 2.39, still pinned by prebuilt crgx/cargo-chef, soldr#2170).
     if release is None:
-        release = _release_workflow("2.39", "2.39")
+        release = _release_workflow("2.17", "2.39")
     (workflows / "release-auto.yml").write_text(release, encoding="utf-8")
 
 

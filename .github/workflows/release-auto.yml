@@ -344,28 +344,33 @@ jobs:
             "target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
       # soldr#1060 names glibc 2.17 as the baseline for the -gnu artifacts,
-      # and warns "do not build on modern Ubuntu and call it portable". That
-      # is what happens today: these are built natively here, so the
-      # published v0.8.29 binaries require GLIBC_2.39 (measured, x86_64 and
-      # aarch64) and cannot start on RHEL 9, Debian 12 or Ubuntu 22.04 --
-      # the distros the fallback exists for.
+      # and warns "do not build on modern Ubuntu and call it portable". Both
+      # -gnu legs now build through the blessed `soldr build` surface
+      # (`native_release_build.py::build_matrix_binary`), the same code path
+      # `target_lifecycle::prepare_target` routes through the managed
+      # gcc-13.3.0-glibc-2.17 sysroot for (soldr#2145/#2609). The per-PR
+      # lanes that exercise the identical mechanism
+      # (`cross-compile-all-targets.yml`, `_ci-cross-build-linux.yml`)
+      # already ratchet at 2.17 and pass, so this is now a real gate rather
+      # than a "current measured floor" ratchet.
       #
-      # The ceiling below is therefore the CURRENT measured floor, not the
-      # target: a ratchet, in the same spirit as loc_ratchet. It cannot break
-      # today's release, and it cannot silently get worse. The real fix is to
-      # link against the baseline (zigbuild `<triple>.2.17` or an old-glibc
-      # container), after which this drops to 2.17 and becomes a real gate.
+      # This step covers ONLY soldr's own build output
+      # (`target/<triple>/release/<binary>`), not the staged archive. The
+      # bundled-archive check below stays at a looser ceiling: it also
+      # covers `crgx`/`cargo-chef`, fetched prebuilt from soldr-toolchain,
+      # whose glibc floor soldr does not control (soldr#2170, closed as
+      # out of scope for this issue -- fixing it needs an upstream rebuild).
       #
       # If a runner image bump raises the floor, this step failing IS the
       # intended signal -- raise the ceiling deliberately, with a note, rather
       # than by reflex.
-      - name: Check glibc baseline of gnu binary (soldr#1060 ratchet)
+      - name: Check glibc baseline of gnu binary (soldr#1060 gate)
         if: contains(matrix.target, 'unknown-linux-gnu')
         shell: bash
         run: |
           set -euo pipefail
           uv run --no-project --python 3.13 .github/scripts/verify_glibc_baseline.py \
-            --max-glibc 2.39 \
+            --max-glibc 2.17 \
             "target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
       # soldr#3085: every lane below cross-builds on an x86_64 Linux runner

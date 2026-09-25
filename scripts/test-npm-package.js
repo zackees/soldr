@@ -231,12 +231,15 @@ assert.strictEqual(
 );
 
 // 2. A glibc that is too old must NOT take the gnu build. This is the live
-//    bug: Debian 12 reports 2.36, the published gnu binary requires
-//    GLIBC_2.39, and it dies with "version `GLIBC_2.39' not found" while the
-//    musl artifact from the same release runs fine.
+//    bug soldr#1060 exists to prevent: a host whose glibc is below what the
+//    published gnu binary actually requires must not be sent to it, or it
+//    dies with "version `GLIBC_2.xx' not found" while the musl artifact
+//    from the same release runs fine. RHEL 7 / CentOS 7 (glibc 2.17,
+//    exactly the shipped floor) is the boundary case; one below it is
+//    unambiguously too old regardless of where the floor currently sits.
 assert.strictEqual(
   install.detectLibc("linux", {
-    readHeader: () => ({ glibcVersionRuntime: "2.36" }),
+    readHeader: () => ({ glibcVersionRuntime: "2.12" }),
     listLib: () => ["ld-linux-x86-64.so.2", "libc.so.6"],
   }),
   "musl",
