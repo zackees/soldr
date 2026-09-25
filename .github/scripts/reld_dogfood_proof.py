@@ -105,8 +105,14 @@ def run_verbose_build(
 
 def final_link_invocations(build_log: str, package_bin_crate: str) -> list[str]:
     """Every rustc invocation line that links a `bin` crate-type artifact."""
+    # `str.splitlines()` also splits on bare `\r` (and other unicode line
+    # separators), and soldr's own progress banner writes `\r`-terminated
+    # updates to the same stream cargo's `-v` output goes to. That can slice
+    # a single long rustc invocation line into fragments at a `\r`, so a
+    # substring check against any one fragment misses it even though the
+    # full text is present in `build_log`. Split on `\n` only.
     lines = []
-    for line in build_log.splitlines():
+    for line in build_log.split("\n"):
         if "Running `" not in line:
             continue
         if "--crate-type bin" not in line:
