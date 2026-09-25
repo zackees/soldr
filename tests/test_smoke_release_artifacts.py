@@ -205,7 +205,7 @@ def test_build_release_guest_script_fetches_every_binary_by_basename() -> None:
         assert f"curl -fsS -o /tmp/{name} {MODULE.GUEST_HTTP_BASE}/{name}" in script
     assert MODULE.MACOS_X64_PYTHON_ARCHIVE in script
     assert "-m pip install --no-index" in script
-    assert "import soldr._native" in script
+    assert "import soldr;" in script
     assert 'exit "$FAIL"' in script
 
 
@@ -252,7 +252,7 @@ def _passing_summary_lines() -> list[str]:
             "fetch_wheel=pass",
             "python_runtime=pass:Python 3.13.15",
             "wheel_install=pass",
-            "wheel_import=pass:soldr._native",
+            "wheel_import=pass:soldr",
             "wheel_version=pass:soldr 0.9.11",
             'wheel_version_json=pass:{"soldr_version": "0.9.11"}',
         ]
@@ -264,3 +264,20 @@ def test_verify_collected_matches_the_shared_recovery_contract(tmp_path: Path) -
     assert_recovery_verify_collected_contract(
         MODULE, tmp_path, passing_lines=_passing_summary_lines()
     )
+
+
+def test_wheel_import_targets_a_module_the_wheel_ships() -> None:
+    """The release wheel is a maturin *binary* wheel: `crates/soldr-cli` has
+    no pyo3 library, so `[tool.maturin] module-name` builds no extension and
+    the wheel ships only the `src/soldr` package plus the `soldr` script.
+    Importing a module the wheel does not contain fails every release."""
+    module = MODULE.WHEEL_IMPORT_MODULE
+    package_root = Path(__file__).resolve().parents[1] / "src"
+    parts = module.split(".")
+    as_package = package_root.joinpath(*parts, "__init__.py")
+    as_module = package_root.joinpath(*parts[:-1], f"{parts[-1]}.py")
+    assert as_package.is_file() or as_module.is_file(), module
+    script = MODULE.build_release_guest_script(
+        "0.9.11", "soldr-0.9.11-cp310-abi3-macosx_11_0_x86_64.whl"
+    )
+    assert f"import {module}" in script

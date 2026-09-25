@@ -9,11 +9,12 @@ this script. It:
 
 1. checks the wheel's declared version (soldr#1202);
 2. extracts the `.tar.zst` archive (host-side, via `tar` -- soldr ships as a
-   Python C-extension module (`soldr._native`, see pyproject.toml
-   `[tool.maturin] module-name`), so a *wheel's* console script can only run
-   on a Python able to import that native module for its own platform; the
-   *archive*, by contrast, is a plain compressed tarball and needs nothing
-   but `tar` to open);
+   maturin *binary* wheel (`crates/soldr-cli` has no pyo3 library, so
+   `[tool.maturin] module-name` builds no extension module): the wheel
+   carries the pure-Python `soldr` package plus the native `soldr` script,
+   which must be installed on its own platform to run; the *archive*, by
+   contrast, is a plain compressed tarball and needs nothing but `tar` to
+   open);
 3. asserts the required bundle members are present (including the
    required `.pdb` sidecar on Windows, docs/DEBUG_SIDECARS.md);
 4. on macOS, asserts the Mach-O architecture matches the target;
@@ -189,6 +190,12 @@ def run(cmd: list[str | Path]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, check=True, capture_output=True, text=True)
 
 
+# The module a shipped wheel must import. The wheel is a maturin binary
+# wheel with no extension module, so this is the pure-Python package; the
+# native coverage is running the installed `soldr` script below.
+WHEEL_IMPORT_MODULE = "soldr"
+
+
 def check_native_wheel_import(wheel: Path, expected: str) -> None:
     """Install the shipped wheel offline in an isolated pinned-Python venv."""
     with tempfile.TemporaryDirectory(prefix="soldr-release-wheel-") as root:
@@ -199,10 +206,14 @@ def check_native_wheel_import(wheel: Path, expected: str) -> None:
             ["uv", "pip", "install", "--python", python, "--no-index", "--no-deps", wheel]
         )
         imported = run(
-            [python, "-c", "import soldr._native; print(soldr._native.__file__)"]
+            [
+                python,
+                "-c",
+                f"import {WHEEL_IMPORT_MODULE}; print({WHEEL_IMPORT_MODULE}.__file__)",
+            ]
         )
         if not imported.stdout.strip():
-            sys.exit("ERROR: installed release wheel did not expose soldr._native")
+            sys.exit(f"ERROR: installed release wheel did not expose {WHEEL_IMPORT_MODULE}")
         check_version_output(env_dir / "bin" / "soldr", expected, "installed wheel")
 
 
@@ -431,7 +442,8 @@ def build_release_guest_script(expected_version: str, wheel_name: str) -> str:
         "fi",
         "",
         'if [ "$INSTALL_RC" -eq 0 ]; then',
-        '  IMPORT_OUT=$("$VPYTHON" -c \'import soldr._native; print(soldr._native.__file__)\' 2>&1)',
+        f'  IMPORT_OUT=$("$VPYTHON" -c \'import {WHEEL_IMPORT_MODULE}; '
+        f"print({WHEEL_IMPORT_MODULE}.__file__)' 2>&1)",
         "  IMPORT_RC=$?",
         "else",
         "  IMPORT_RC=1",
