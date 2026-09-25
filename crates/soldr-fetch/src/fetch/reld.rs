@@ -10,7 +10,7 @@ use crate::core::{SoldrError, SoldrPaths, TargetTriple};
 use crate::platform::host::facts::{HostArch, HostOs};
 
 /// The release soldr installs when a project explicitly selects `reld`.
-pub const MANAGED_RELD_VERSION: &str = "0.1.0";
+pub const MANAGED_RELD_VERSION: &str = "0.2.1";
 
 /// Explicit local development override. It must name an absolute executable.
 pub const RELD_BIN_ENV_VAR: &str = "SOLDR_RELD_BIN";
@@ -122,32 +122,32 @@ fn release_asset_for(os: HostOs, arch: HostArch) -> Result<ReleaseAsset, SoldrEr
         (HostOs::Linux, HostArch::X86_64) => ReleaseAsset {
             triple: "x86_64-unknown-linux-musl",
             extension: "tar.gz",
-            sha256: "f22603473c72e97272793e19d8c40bffd2002215be4c034436b27a9bc1c7e660",
+            sha256: "c245ffd07363e9b3a691f38f4fca04c787243b421ce9df183fc8ce368a78be87",
         },
         (HostOs::Linux, HostArch::Aarch64) => ReleaseAsset {
             triple: "aarch64-unknown-linux-gnu",
             extension: "tar.gz",
-            sha256: "3ef6633abfd2cab02ff23e223acbdc2d254d6576a864456a8ca54832691bf3b0",
+            sha256: "fc392f3f60c53020f13d815e61b0bc4469c0ebabf5943bfe1c2125bd27707945",
         },
         (HostOs::MacOs, HostArch::X86_64) => ReleaseAsset {
             triple: "x86_64-apple-darwin",
             extension: "tar.gz",
-            sha256: "b92a2c2dca417f8057f000bce71aadd17ce6434b1659af29a6f698db76159cb2",
+            sha256: "fc537376148d60c638fd7a9ceb87cd1fb837f1e6dae60db8a9a2c110801fa18e",
         },
         (HostOs::MacOs, HostArch::Aarch64) => ReleaseAsset {
             triple: "aarch64-apple-darwin",
             extension: "tar.gz",
-            sha256: "b726a0323c5690aa2ee9f94893fbfc086d4e534c7fef9a7f6eb31bd3799ffb67",
+            sha256: "c5941c264a6e23212a018b06883922621eb3e80f15553fb292948d62faeb63c0",
         },
         (HostOs::Windows, HostArch::X86_64) => ReleaseAsset {
             triple: "x86_64-pc-windows-msvc",
             extension: "zip",
-            sha256: "2ba7fe09af8c66d0d020d8ee7d520ca1c0f5d449b1c98b23c82d170a92104d06",
+            sha256: "9f8a1c348636c5e29c507c720173521aea936d420a518ca440e73c998aa83670",
         },
         (HostOs::Windows, HostArch::Aarch64) => ReleaseAsset {
             triple: "aarch64-pc-windows-msvc",
             extension: "zip",
-            sha256: "cfa1d9c0468a19f3178b70189ca25c26d5e412ee1602074ef94d4b462a42797f",
+            sha256: "9dbd909b4c7bc4abe97936aa12a0fe1009faf48040f6da3630e313ece7043ad8",
         },
         (os, arch) => {
             return Err(SoldrError::UnsupportedPlatform(format!(

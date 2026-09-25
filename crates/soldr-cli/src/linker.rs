@@ -252,11 +252,17 @@ pub fn resolve_for_target_with_probe(
         // does not inject the CRT startup objects, so a direct
         // `-C linker=reld` would link a binary with no `_start`: drive reld
         // through clang (`--ld-path=reld`) so the driver injects CRT and the
-        // interpreter. On Windows/macOS reld bridges to lld-link/ld64.lld,
-        // which handle the CRT themselves, so the direct `reld` injection is
-        // fine there.
+        // interpreter. Apple targets need the clang driver too (soldr#3359):
+        // rustc's default Apple linker flavor is `darwin-cc`, which hands the
+        // linker clang-driver arguments (`-mmacosx-version-min`, `-Wl,...`,
+        // `-nodefaultlibs`) that ld64.lld cannot parse and that reld refuses
+        // to translate (reld#192); clang turns them into raw ld64 argv and
+        // supplies the SDK. On Windows reld bridges to lld-link, which takes
+        // rustc's MSVC argv directly, so the bare `reld` injection is right.
         LinkerChoice::Reld => match kind {
-            TargetKind::Linux => Ok(LinkerInjection::clang_with_ld_path("reld")),
+            TargetKind::Linux | TargetKind::Apple => {
+                Ok(LinkerInjection::clang_with_ld_path("reld"))
+            }
             _ => Ok(LinkerInjection::reld()),
         },
         // `Fast` is the automatic/default choice (soldr#3262): prefer reld,
@@ -281,7 +287,8 @@ pub fn resolve_for_target_with_probe(
             }
             TargetKind::Apple => {
                 if reld_present() {
-                    Ok(LinkerInjection::reld())
+                    // Same `darwin-cc` constraint as the explicit arm above.
+                    Ok(LinkerInjection::clang_with_ld_path("reld"))
                 } else {
                     Ok(LinkerInjection::apple_fast_linker())
                 }
