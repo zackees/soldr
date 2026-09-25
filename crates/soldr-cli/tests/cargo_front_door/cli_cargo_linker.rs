@@ -73,8 +73,9 @@ fn prepend_to_path(command: &mut Command, dir: &Path) {
 
 /// soldr#3262: reld is the default (and `fast`) linker. Assert it is injected
 /// the way `resolve_for_target` prescribes for the host: through clang
-/// `--ld-path=reld` on Linux (so the driver injects CRT), direct on
-/// Windows/macOS (reld bridges to lld-link/ld64.lld).
+/// `--ld-path=reld` on Linux (so the driver injects CRT) and macOS (rustc's
+/// `darwin-cc` flavor passes clang-driver argv, soldr#3359), direct on Windows
+/// (reld bridges to lld-link).
 fn assert_reld_injected(log: &str) {
     let linker = extract_linker_env_value(log).unwrap_or_else(|| {
         panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
@@ -82,15 +83,15 @@ fn assert_reld_injected(log: &str) {
     let rustflags = extract_rustflags_env_value(log);
     if matches!(
         soldr_platform::host::facts::os(),
-        soldr_platform::host::facts::HostOs::Linux
+        soldr_platform::host::facts::HostOs::Linux | soldr_platform::host::facts::HostOs::MacOs
     ) {
         assert!(
             linker.contains("linker-shims"),
-            "linux reld uses a generated clang driver shim: {log}"
+            "linux/macos reld uses a generated clang driver shim: {log}"
         );
         assert!(
             rustflags.is_none(),
-            "linux linker selection must not replace [build] rustflags: {log}"
+            "linux/macos linker selection must not replace [build] rustflags: {log}"
         );
     } else {
         assert_eq!(linker, "reld", "reld injected directly: {log}");

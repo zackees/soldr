@@ -535,6 +535,73 @@ pub(crate) fn apply_resolved_toolchain_homes(
     if home_origin_for_binary(binary, &paths) == HomeOrigin::Managed {
         apply_managed_toolchain_homes_if_available(command, start_dir.as_deref());
         apply_managed_toolchain_library_path_if_available(command, binary, &paths);
+    } else {
+        apply_rustup_toolchain_library_path_on_macos(command, binary);
+    }
+}
+
+/// Restore, for a binary Soldr resolved inside a caller-owned rustup
+/// toolchain, the loader path that rustup's own proxy would have given it
+/// (soldr#3359).
+///
+/// Soldr resolves `cargo`/`rustc` to the toolchain's real executables instead
+/// of running them through rustup's proxies, and the proxies are what prepend
+/// `<toolchain>/lib` to `DYLD_FALLBACK_LIBRARY_PATH` (rustup
+/// `Toolchain::set_ldpath`). Since Rust 1.98 the Apple toolchains link their
+/// companion tools (`rust-objcopy`, `rust-lld`) against `@rpath/libLLVM.dylib`
+/// with an rpath of `lib/rustlib/<host>/lib`, while the `rustc` component ships
+/// the library only as `<toolchain>/lib/libLLVM.dylib` (rust-lang/rust#157205).
+/// Without the proxy's entry, rustc's requested `rust-objcopy` strip aborts in
+/// dyld and Soldr (rightly) refuses to publish the unstripped artifact.
+///
+/// The directory added is the caller's own toolchain library directory, never
+/// a Soldr-managed one, so this does not leak Soldr's loader path into a
+/// caller-owned toolchain. Other hosts keep their current environment: their
+/// dist tools resolve LLVM through their own rpath.
+fn apply_rustup_toolchain_library_path_on_macos(
+    command: &mut std::process::Command,
+    binary: &std::path::Path,
+) {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::MacOs {
+        return;
+    }
+    if let Some(library_dir) = rustup_toolchain_library_dir(binary) {
+        prepend_loader_library_path(command, "DYLD_FALLBACK_LIBRARY_PATH", library_dir);
+    }
+}
+
+/// `<rustup-home>/toolchains/<name>/lib` for a binary at
+/// `<rustup-home>/toolchains/<name>/bin/<tool>`, when that directory exists.
+fn rustup_toolchain_library_dir(binary: &Path) -> Option<PathBuf> {
+    let bin = binary.parent()?;
+    if bin.file_name()? != "bin" {
+        return None;
+    }
+    let toolchain = bin.parent()?;
+    if toolchain.parent()?.file_name()? != "toolchains" {
+        return None;
+    }
+    let library_dir = toolchain.join("lib");
+    library_dir.is_dir().then_some(library_dir)
+}
+
+fn prepend_loader_library_path(
+    command: &mut std::process::Command,
+    variable: &str,
+    library_dir: PathBuf,
+) {
+    let existing = command
+        .get_envs()
+        .find(|(key, _)| *key == variable)
+        .map(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
+        .unwrap_or_else(|| std::env::var_os(variable));
+    let mut entries = vec![library_dir];
+    if let Some(existing) = existing.filter(|value| !value.is_empty()) {
+        entries.extend(std::env::split_paths(&existing));
+    }
+    entries.dedup();
+    if let Ok(value) = std::env::join_paths(entries) {
+        command.env(variable, value);
     }
 }
 
