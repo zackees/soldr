@@ -697,6 +697,15 @@ fn extract_one(job: &ExtractJob) -> Result<()> {
                 let _ = std::fs::remove_file(&staged);
                 return Err(io(&job.dest, e));
             }
+            // soldr#3350: the exclusive guard above excludes only spawns that
+            // take soldr's lock. This process also hosts embedded zccache and
+            // libraries that fork under their own lock or none, and such a
+            // child inherits the staged write descriptor across the rename.
+            // Before an executable is handed back to cargo, wait until no
+            // process holds it open for writing.
+            if job.mode_bits.is_some_and(|mode| mode & 0o111 != 0) {
+                await_restored_executable(&job.dest);
+            }
         }
         tar::EntryType::Directory => {
             // Already handled by the driver, but if somehow we got here,
@@ -716,4 +725,33 @@ fn extract_one(job: &ExtractJob) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Longest `load` waits for a foreign child to exec. A fork-to-exec window is
+/// normally microseconds; this bounds a pathological one.
+const RESTORED_WRITER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Best effort: a timeout or an unobservable host is logged, never an error.
+fn await_restored_executable(path: &Path) {
+    use crate::platform::fs::writers::{await_no_writers, WriterWait};
+
+    match await_no_writers(path, RESTORED_WRITER_TIMEOUT) {
+        Ok(WriterWait::Clear { waited }) if !waited.is_zero() => tracing::info!(
+            event = "load_awaited_inherited_writer",
+            path = %path.display(),
+            waited_us = waited.as_micros() as u64,
+            "a forked child held the restored executable open for writing"
+        ),
+        Ok(WriterWait::TimedOut) => tracing::warn!(
+            event = "load_inherited_writer_timeout",
+            path = %path.display(),
+            "the restored executable is still open for writing by another process"
+        ),
+        Ok(_) => {}
+        Err(error) => tracing::debug!(
+            event = "load_writer_probe_failed",
+            path = %path.display(),
+            %error
+        ),
+    }
 }

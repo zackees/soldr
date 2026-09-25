@@ -15,3 +15,8 @@ pub mod permissions;
 pub mod positioned_io;
 pub mod replace;
 pub mod volume;
+
+/// Whether any process still holds a file open for writing (soldr#3350).
+pub mod writers {
+    pub use kernal_api::platform::fs::{await_no_writers, WriterWait};
+}
