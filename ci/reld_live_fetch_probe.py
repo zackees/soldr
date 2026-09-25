@@ -82,6 +82,7 @@ def main() -> int:
             capture_output=True,
             text=True,
             timeout=600,
+            check=False,
         )
         if result.returncode != 0:
             print(result.stdout, file=sys.stderr)
@@ -98,7 +99,7 @@ def main() -> int:
                 f"reld_live_fetch_probe: expected linked binary missing: {built_bin}"
             )
         run_result = subprocess.run(
-            [str(built_bin)], capture_output=True, text=True, timeout=30
+            [str(built_bin)], capture_output=True, text=True, timeout=30, check=False
         )
         if (
             run_result.returncode != 0

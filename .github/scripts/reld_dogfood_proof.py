@@ -81,6 +81,7 @@ def run_verbose_build(
         capture_output=True,
         text=True,
         timeout=900,
+        check=False,
     )
     combined = result.stdout + result.stderr
     if result.returncode != 0:
@@ -162,7 +163,7 @@ def main() -> int:
         # confirm the embedded --ld-path= is itself an absolute, existing
         # reld executable -- not a second layer of indirection to a bare name.
         if "linker-shims" in linker:
-            shim_body = pathlib.Path(linker).read_text()
+            shim_body = pathlib.Path(linker).read_text(encoding="utf-8")
             shim_match = re.search(r"--ld-path=(\S+)", shim_body)
             if shim_match is None:
                 failures.append(f"linker shim has no --ld-path=: {shim_body}")
