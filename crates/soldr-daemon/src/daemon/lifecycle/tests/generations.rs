@@ -8,7 +8,6 @@
 #[cfg(test)]
 mod generation_tests {
     use crate::core::SoldrPaths;
-    use crate::daemon::backend_handle_adoption::TEST_GENERATION_KEY;
     use crate::daemon::backend_handle_adoption::{
         broker_route_claim_path, publish_broker_route_claim, read_broker_route_claim,
     };
@@ -20,24 +19,26 @@ mod generation_tests {
     use running_process::broker::protocol::Endpoint;
     use tempfile::TempDir;
 
-    /// RAII guard: selects this thread's daemon generation (the test seam
-    /// behind `SOLDR_BROKER_SERVICE`) and restores "none" on drop.
+    use crate::daemon::backend_handle_adoption::set_generation_override;
+
+    /// Selects this thread's daemon generation (the seam behind
+    /// `SOLDR_BROKER_SERVICE`) and clears it on drop.
     struct ServiceEnv;
 
     impl ServiceEnv {
         fn set(service: &str) -> Self {
-            TEST_GENERATION_KEY.with(|key| *key.borrow_mut() = Some(service.to_string()));
+            set_generation_override(Some(service.to_string()));
             Self
         }
         fn unset() -> Self {
-            TEST_GENERATION_KEY.with(|key| *key.borrow_mut() = None);
+            set_generation_override(None);
             Self
         }
     }
 
     impl Drop for ServiceEnv {
         fn drop(&mut self) {
-            TEST_GENERATION_KEY.with(|key| *key.borrow_mut() = None);
+            set_generation_override(None);
         }
     }
 
@@ -324,5 +325,33 @@ mod generation_tests {
             path,
             crate::cache_lib::soldr_daemon_dir(&paths).join("broker-route-claim.pb")
         );
+    }
+
+    /// Brokers from before soldr#3374 read only the version-independent slot
+    /// and are never replaced automatically. With that slot free, a new
+    /// generation mirrors its claim there so such a broker still sees the
+    /// daemon it launched; the generation's own reads stay keyed.
+    #[test]
+    fn free_legacy_slot_is_mirrored_for_pre_generation_brokers() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let bin_dir = temp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let (child, exe) = spawn_fake_daemon(&bin_dir, daemon_stem());
+
+        {
+            let _env = ServiceEnv::set("soldr-daemon-generation-mirror");
+            publish_broker_route_claim(&paths, &claim_for(child.id(), &exe))
+                .expect("publish claim");
+        }
+        let _env = ServiceEnv::unset();
+        let legacy = read_broker_route_claim(&paths)
+            .expect("read legacy slot")
+            .expect("legacy slot mirrored");
+        assert_eq!(legacy.pid, child.id());
+
+        let mut child = child;
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }

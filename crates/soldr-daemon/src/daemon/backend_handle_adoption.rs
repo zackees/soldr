@@ -450,10 +450,13 @@ const GENERATIONS_SUBDIR: &str = "generations";
 /// as its own, so an older daemon living there is neither overwritten nor
 /// seen as this generation's daemon.
 fn resolved_generation_key() -> Option<String> {
-    // Tests pick a generation per thread instead of mutating the process
-    // environment, which every other claim test in this binary reads.
+    if let Some(key) = GENERATION_OVERRIDE.with(|key| key.borrow().clone()) {
+        return Some(key).filter(|value| !value.is_empty());
+    }
+    // Unit tests never fall through to the process environment, which every
+    // other claim test in this binary reads concurrently.
     #[cfg(test)]
-    let key = TEST_GENERATION_KEY.with(|key| key.borrow().clone());
+    let key: Option<String> = None;
     #[cfg(not(test))]
     let key = std::env::var(SOLDR_BROKER_SERVICE_ENV_VAR)
         .ok()
@@ -479,10 +482,33 @@ fn derive_generation_key() -> Option<String> {
     key
 }
 
-#[cfg(test)]
 thread_local! {
-    pub(crate) static TEST_GENERATION_KEY: std::cell::RefCell<Option<String>> =
+    static GENERATION_OVERRIDE: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with route-claim state keyed to `service_name` on this thread.
+///
+/// The broker serves every route from one process, so its launcher cannot
+/// use the process-wide `SOLDR_BROKER_SERVICE`; it names the route of the
+/// request it is handling instead. Tests use the same seam.
+#[cfg(test)]
+pub(crate) fn set_generation_override(key: Option<String>) {
+    GENERATION_OVERRIDE.with(|slot| *slot.borrow_mut() = key);
+}
+
+pub fn with_generation_key<R>(service_name: &str, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            GENERATION_OVERRIDE.with(|key| *key.borrow_mut() = previous);
+        }
+    }
+    let previous =
+        GENERATION_OVERRIDE.with(|key| key.borrow_mut().replace(service_name.to_string()));
+    let _restore = Restore(previous);
+    f()
 }
 
 fn generation_state_dir(paths: &SoldrPaths) -> PathBuf {
@@ -526,7 +552,42 @@ pub fn publish_broker_route_claim(paths: &SoldrPaths, daemon: &DaemonProcess) ->
     let target = broker_route_claim_path(paths);
     replace_route_claim(&temporary, &target).inspect_err(|_| {
         let _ = std::fs::remove_file(&temporary);
-    })
+    })?;
+    mirror_to_legacy_slot(paths, &target, daemon.pid);
+    Ok(())
+}
+
+/// Brokers and tools from before soldr#3374 read only the version-independent
+/// slot, and the broker is a stable singleton that is never replaced
+/// automatically (soldr#2549). Keep that slot populated for them, but only
+/// when no *other* live daemon owns it: a live older generation's claim is
+/// never overwritten. Current readers use the keyed slot exclusively, so the
+/// mirror can never make one generation see another. Best effort.
+fn mirror_to_legacy_slot(paths: &SoldrPaths, keyed: &Path, own_pid: u32) {
+    let legacy = soldr_daemon_dir(paths).join(BROKER_ROUTE_CLAIM_FILE);
+    if legacy == keyed {
+        return;
+    }
+    if let Ok(Some((pid, _))) = read_claim_owner_identity_at(&legacy) {
+        if pid != own_pid
+            && pid_is_alive(pid)
+            && (pid_exe_stem_matches(pid, SOLDR_DAEMON_SERVICE_NAME)
+                || pid_exe_stem_matches(pid, "soldr"))
+        {
+            return;
+        }
+    }
+    let Ok(temporary) = tempfile::NamedTempFile::new_in(soldr_daemon_dir(paths)) else {
+        return;
+    };
+    let Ok(temporary) = temporary.into_temp_path().keep() else {
+        return;
+    };
+    if std::fs::copy(keyed, &temporary).is_err()
+        || replace_route_claim(&temporary, &legacy).is_err()
+    {
+        let _ = std::fs::remove_file(&temporary);
+    }
 }
 
 fn replace_route_claim(source: &Path, target: &Path) -> io::Result<()> {
@@ -558,9 +619,13 @@ pub fn read_broker_route_claim(paths: &SoldrPaths) -> io::Result<Option<DaemonPr
 pub(crate) fn read_broker_route_claim_owner_identity(
     paths: &SoldrPaths,
 ) -> io::Result<Option<(u32, PathBuf)>> {
+    read_claim_owner_identity_at(&broker_route_claim_path(paths))
+}
+
+fn read_claim_owner_identity_at(path: &Path) -> io::Result<Option<(u32, PathBuf)>> {
     use prost::Message as _;
 
-    let bytes = match std::fs::read(broker_route_claim_path(paths)) {
+    let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),

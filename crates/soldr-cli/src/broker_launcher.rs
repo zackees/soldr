@@ -101,6 +101,16 @@ impl SoldrBackendLauncher {
         loader: &CombinedServiceDefinitionLoader,
         service_name: &str,
     ) -> Result<Option<(BrokerInstanceKey, BackendHandle)>, String> {
+        crate::daemon::backend_handle_adoption::with_generation_key(service_name, || {
+            self.adopt_existing_control_route_keyed(loader, service_name)
+        })
+    }
+
+    fn adopt_existing_control_route_keyed(
+        &self,
+        loader: &CombinedServiceDefinitionLoader,
+        service_name: &str,
+    ) -> Result<Option<(BrokerInstanceKey, BackendHandle)>, String> {
         let definition = loader
             .lookup_or_reload(service_name)
             .map_err(|error| error.to_string())?;
@@ -166,6 +176,20 @@ impl SoldrBackendLauncher {
 
 impl BackendLauncher for SoldrBackendLauncher {
     fn launch(
+        &self,
+        request: &BackendLaunchRequest<'_>,
+    ) -> Result<BackendHandle, BackendLaunchError> {
+        // soldr#3374: one broker serves every route, so claim state is keyed
+        // by the route being launched, never by the broker's own environment.
+        crate::daemon::backend_handle_adoption::with_generation_key(
+            &request.key.service_name,
+            || self.launch_keyed(request),
+        )
+    }
+}
+
+impl SoldrBackendLauncher {
+    fn launch_keyed(
         &self,
         request: &BackendLaunchRequest<'_>,
     ) -> Result<BackendHandle, BackendLaunchError> {
@@ -363,6 +387,19 @@ fn daemon_launch_failure(error: &std::io::Error, log_path: &std::path::Path) -> 
 
 impl SoldrBackendLauncher {
     fn adopt_route_claim(
+        &self,
+        request: &BackendLaunchRequest<'_>,
+        paths: &crate::core::SoldrPaths,
+        expected_binary: &std::path::Path,
+        prune_invalid: bool,
+    ) -> Option<BackendHandle> {
+        crate::daemon::backend_handle_adoption::with_generation_key(
+            &request.key.service_name,
+            || self.adopt_route_claim_keyed(request, paths, expected_binary, prune_invalid),
+        )
+    }
+
+    fn adopt_route_claim_keyed(
         &self,
         request: &BackendLaunchRequest<'_>,
         paths: &crate::core::SoldrPaths,
