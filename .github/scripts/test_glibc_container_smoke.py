@@ -22,7 +22,7 @@ def mod():
     return load_script_module(SCRIPT, "glibc_container_smoke")
 
 
-class _Result:
+class _Result:  # pylint: disable=too-few-public-methods
     def __init__(self, returncode: int, stdout: str = "", stderr: str = ""):
         self.returncode = returncode
         self.stdout = stdout
