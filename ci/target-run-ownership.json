@@ -781,9 +781,9 @@
       "reason": "Exercise target-native executable probing through the embedded compiler service."
     },
     {
-      "id": "embedded-cache-unreadable-link",
+      "id": "embedded-cache-dangling-link",
       "source_id": "daemon-embedded-target-replay",
-      "test_name": "legacy_sweep_retains_version_with_unreadable_linked_tree",
+      "test_name": "legacy_sweep_purges_a_dangling_link_instead_of_pinning_the_store",
       "targets": [
         "x86_64-apple-darwin",
         "aarch64-apple-darwin",
