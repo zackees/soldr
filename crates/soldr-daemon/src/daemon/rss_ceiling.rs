@@ -106,7 +106,7 @@ pub const RSS_CEILING_ENV_VAR: &str = "SOLDR_DAEMON_RSS_CEILING_BYTES";
 pub const RSS_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
 const SCHEMA_VERSION: u32 = 1;
-const BREACH_SCHEMA_VERSION: u32 = 2;
+const BREACH_SCHEMA_VERSION: u32 = 3;
 
 /// Which long-lived soldr process is reporting a sample or a breach. Carried
 /// end to end — through the status file, the breach dump, and the legible
@@ -815,8 +815,8 @@ mod tests {
         .expect("write_breach_dump must succeed under a writable tempdir");
 
         assert_eq!(
-            BREACH_SCHEMA_VERSION, 2,
-            "soldr#3053 bumped the breach schema to add cgroup.json"
+            BREACH_SCHEMA_VERSION, 3,
+            "soldr#3053 bumped the breach schema to add forensics artifacts"
         );
         assert_eq!(summary.schema_version, BREACH_SCHEMA_VERSION);
         assert_eq!(summary.pid, pid);

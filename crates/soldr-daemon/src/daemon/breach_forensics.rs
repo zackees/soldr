@@ -144,9 +144,7 @@ fn capture_on_cpu_profile_with(dir: &Path, perf_bin: Option<PathBuf>) -> Artifac
     let mut child = match record {
         Ok(child) => child,
         Err(error) => {
-            return ArtifactOutcome::unavailable(format!(
-                "failed to spawn perf record: {error}"
-            ));
+            return ArtifactOutcome::unavailable(format!("failed to spawn perf record: {error}"));
         }
     };
 
@@ -339,7 +337,9 @@ pub(crate) fn capture_off_cpu_approximation(dir: &Path) -> ArtifactOutcome {
         };
         let run_delta = run_after.saturating_sub(run_before);
         let wait_delta = wait_after.saturating_sub(wait_before);
-        let off_cpu_estimate = window_ns.saturating_sub(run_delta).saturating_sub(wait_delta);
+        let off_cpu_estimate = window_ns
+            .saturating_sub(run_delta)
+            .saturating_sub(wait_delta);
         let comm = read_comm(task_dir, tid).unwrap_or_else(|| "unknown".to_string());
         threads.push(OffCpuThreadSample {
             tid,
@@ -350,9 +350,8 @@ pub(crate) fn capture_off_cpu_approximation(dir: &Path) -> ArtifactOutcome {
         });
     }
 
-    let tracefs_readable =
-        Path::new("/sys/kernel/tracing/events/sched/sched_switch").is_file()
-            && std::fs::File::open("/sys/kernel/tracing/events/sched/sched_switch").is_ok();
+    let tracefs_readable = Path::new("/sys/kernel/tracing/events/sched/sched_switch").is_file()
+        && std::fs::File::open("/sys/kernel/tracing/events/sched/sched_switch").is_ok();
 
     let payload = serde_json::json!({
         "method": "per-tid /proc/<tid>/schedstat delta",
@@ -405,7 +404,7 @@ fn read_all_schedstat(task_dir: &Path) -> std::collections::HashMap<u32, (u64, u
 /// Parse `/proc/<pid>/task/<tid>/schedstat`'s three whitespace-separated
 /// fields: run_ns, wait_ns, timeslices. `None` on anything else.
 fn parse_schedstat(s: &str) -> Option<(u64, u64, u64)> {
-    let mut fields = s.trim().split_whitespace();
+    let mut fields = s.split_whitespace();
     let run_ns = fields.next()?.parse::<u64>().ok()?;
     let wait_ns = fields.next()?.parse::<u64>().ok()?;
     let timeslices = fields.next()?.parse::<u64>().ok()?;
