@@ -1295,8 +1295,8 @@ jobs:
 
   # soldr#3276 §6 live-acceptance gap: prior evidence (soldr#3356) covered
   # only Linux x64. reld bridges to lld-link on Windows MSVC and ld64.lld on
-  # macOS (`crates/soldr-cli/src/linker.rs` `LinkerChoice::Reld` /
-  # `apple_fast_linker`), so it is meant to support these hosts -- this
+  # macOS (driven through clang `--ld-path`, soldr#3359; see
+  # `crates/soldr-cli/src/linker.rs` `LinkerChoice::Reld`), so it is meant to support these hosts -- this
   # exercises a real, network-touching `SOLDR_LINKER=reld` fetch + link on
   # each native runner, using the already cross-built soldr binary from the
   # matching e2e lane rather than paying for a second native build.

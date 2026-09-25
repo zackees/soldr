@@ -19,12 +19,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
-import time
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,6 +45,42 @@ def find_reld_under(home: pathlib.Path) -> list[pathlib.Path]:
             if path.is_file() and os.access(path, os.X_OK):
                 hits.append(path)
     return hits
+
+
+def linked_executable(cargo_stdout: str) -> pathlib.Path | None:
+    """The executable Cargo reports for the scratch crate, from its JSON messages.
+
+    Cargo's output directory depends on whether `--target` was passed (soldr
+    passes the host triple explicitly on Windows, so the binary lands under
+    `target/<triple>/debug`), so the probe asks Cargo instead of guessing.
+    """
+    for line in cargo_stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(message, dict)
+            and message.get("reason") == "compiler-artifact"
+            and message.get("target", {}).get("name") == "reld-live-probe"
+            and message.get("executable")
+        ):
+            return pathlib.Path(message["executable"])
+    return None
+
+
+def reld_linked_outputs(invocation_log: pathlib.Path) -> list[str]:
+    """File names of outputs reld reports having linked successfully."""
+    if not invocation_log.is_file():
+        return []
+    names: list[str] = []
+    for line in invocation_log.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        if record.get("status") == "success" and isinstance(record.get("output"), str):
+            # reld records the path as the linker saw it; split on either
+            # separator so a Windows path parses on any host.
+            names.append(re.split(r"[\\/]", record["output"])[-1])
+    return names
 
 
 def main() -> int:
@@ -78,12 +115,21 @@ def main() -> int:
             '[toolchain]\nchannel = "stable"\n'
         )
 
+        invocation_log = pathlib.Path(tmp) / "reld-invocations.jsonl"
         env = dict(os.environ)
         env["SOLDR_LINKER"] = "reld"
         env.pop("SOLDR_RELD_BIN", None)
-
+        # reld's own evidence that it performed the link: the route line on
+        # stderr and a JSONL record per successful invocation.
+        env["RELD_LOG_ENGINE"] = "1"
+        env["RELD_INVOCATION_LOG"] = str(invocation_log)
         result = subprocess.run(
-            [str(soldr_bin), "cargo", "build"],
+            [
+                str(soldr_bin),
+                "cargo",
+                "build",
+                "--message-format=json-render-diagnostics",
+            ],
             cwd=project,
             env=env,
             capture_output=True,
@@ -101,21 +147,19 @@ def main() -> int:
                 "reld_live_fetch_probe: SOLDR_LINKER=reld build of a scratch crate "
                 f"failed (exit {result.returncode}) on this host."
             )
-
-        exe_suffix = ".exe" if os.name == "nt" else ""
-        built_bin = project / "target" / "debug" / f"reld-live-probe{exe_suffix}"
-        # Cargo's own "Finished" line can print slightly before the daemon-
-        # cached artifact is fully materialized at its final path on
-        # Windows; give it a few seconds rather than failing on what may
-        # just be a staging race.
-        for _ in range(20):
-            if built_bin.is_file():
-                break
-            time.sleep(0.5)
-        if not built_bin.is_file():
+        built_bin = linked_executable(result.stdout)
+        if built_bin is None or not built_bin.is_file():
             raise SystemExit(
-                f"reld_live_fetch_probe: expected linked binary missing: {built_bin} "
-                f"(build exited {result.returncode} with no reported error)"
+                "reld_live_fetch_probe: cargo reported no linked executable for "
+                f"reld-live-probe (reported: {built_bin}; build exited "
+                f"{result.returncode} with no reported error)"
+            )
+        linked = reld_linked_outputs(invocation_log)
+        print(f"reld_live_fetch_probe: reld invocation records: {linked}")
+        if not any(name.startswith("reld_live_probe") for name in linked):
+            raise SystemExit(
+                "reld_live_fetch_probe: reld recorded no successful link of "
+                f"reld-live-probe in {invocation_log}; the binary was not linked by reld."
             )
         run_result = subprocess.run(
             [str(built_bin)], capture_output=True, text=True, timeout=30, check=False

@@ -147,10 +147,12 @@ fn reld_injects_reld_linker_on_every_target() {
     // reld is a drop-in linker with a native ELF backend (Linux) plus an lld
     // bridge for COFF/Mach-O. On Linux its native backend does not inject the
     // CRT startup objects, so reld is driven through clang (`--ld-path=reld`,
-    // since `-fuse-ld` rejects unknown linker names) there; on Windows/macOS it
-    // bridges to lld-link/ld64.lld, which handle the CRT, so reld is injected
-    // directly on PATH with no extra flags.
-    for triple in [LINUX, LINUX_MUSL] {
+    // since `-fuse-ld` rejects unknown linker names) there. On Windows it
+    // bridges to lld-link, which takes rustc's MSVC argv, so reld is injected
+    // directly with no extra flags.
+    // soldr#3359: Apple targets also go through clang, because rustc's
+    // `darwin-cc` flavor hands the linker clang-driver arguments.
+    for triple in [LINUX, LINUX_MUSL, MAC_X64, MAC_ARM] {
         let i = resolve_for_target(LinkerChoice::Reld, triple).unwrap();
         assert_eq!(i.linker.as_deref(), Some("clang"), "{triple}");
         assert_eq!(
@@ -159,7 +161,7 @@ fn reld_injects_reld_linker_on_every_target() {
             "{triple}"
         );
     }
-    for triple in [MAC_X64, MAC_ARM, WIN_MSVC, WIN_GNU] {
+    for triple in [WIN_MSVC, WIN_GNU] {
         let i = resolve_for_target(LinkerChoice::Reld, triple).unwrap();
         assert_eq!(i.linker.as_deref(), Some("reld"), "{triple}");
         assert!(i.rustflags.is_none(), "{triple}");
@@ -276,12 +278,35 @@ fn windows_linker_driver_shim_quotes_spaces_and_cmd_metacharacters() {
 }
 
 #[test]
-fn fast_on_apple_uses_reld() {
+fn fast_on_apple_uses_reld_via_clang_ld_path() {
     for triple in [MAC_X64, MAC_ARM] {
         let i = resolve_for_target_with_probe(LinkerChoice::Fast, triple, &|| true).unwrap();
-        assert_eq!(i.linker.as_deref(), Some("reld"), "{triple}");
-        assert!(i.rustflags.is_none(), "{triple}");
+        assert_eq!(i.linker.as_deref(), Some("clang"), "{triple}");
+        assert_eq!(
+            i.rustflags.as_deref(),
+            Some("-C link-arg=--ld-path=reld"),
+            "{triple}"
+        );
     }
+}
+
+/// soldr#3359: the Apple clang route carries its `--ld-path` in a
+/// content-addressed shim, like Linux, so it never enters Cargo's rustflags
+/// precedence (which would replace a project's own `[build] rustflags`).
+#[test]
+fn apple_reld_driver_argument_moves_into_a_linker_shim() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+    let mut injection = resolve_for_target(LinkerChoice::Reld, MAC_ARM).unwrap();
+    inject_resolved_reld(&mut injection, Path::new("/managed/reld")).unwrap();
+
+    materialize_linker_driver_shim(&paths, MAC_ARM, &mut injection).unwrap();
+
+    assert!(injection.rustflags.is_none());
+    let path = PathBuf::from(injection.linker.as_deref().unwrap());
+    assert!(path.starts_with(paths.bin.join("linker-shims").join("v1")));
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(body.contains("--ld-path=/managed/reld"), "{body}");
 }
 
 #[test]

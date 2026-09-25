@@ -616,3 +616,58 @@ fn caller_toolchain_does_not_receive_managed_library_path() {
         "caller-owned toolchains must not inherit a managed loader path"
     );
 }
+
+/// soldr#3359: a binary inside a rustup toolchain maps to that toolchain's
+/// own `lib` directory (the entry rustup's proxy prepends); anything else maps
+/// to nothing.
+#[test]
+fn rustup_toolchain_library_dir_is_the_callers_own_toolchain_lib() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let toolchain = root
+        .path()
+        .join(".rustup")
+        .join("toolchains")
+        .join("stable-aarch64-apple-darwin");
+    std::fs::create_dir_all(toolchain.join("bin")).unwrap();
+    let rustc = toolchain.join("bin").join("rustc");
+
+    assert_eq!(rustup_toolchain_library_dir(&rustc), None, "no lib dir yet");
+    std::fs::create_dir_all(toolchain.join("lib")).unwrap();
+    assert_eq!(
+        rustup_toolchain_library_dir(&rustc),
+        Some(toolchain.join("lib"))
+    );
+
+    let cargo_home_proxy = root.path().join(".cargo").join("bin").join("cargo");
+    assert_eq!(rustup_toolchain_library_dir(&cargo_home_proxy), None);
+    let loose = root.path().join("bin").join("rustc");
+    assert_eq!(rustup_toolchain_library_dir(&loose), None);
+}
+
+#[test]
+fn prepend_loader_library_path_keeps_existing_entries_after_the_toolchain() {
+    let mut command = std::process::Command::new("unused");
+    let existing =
+        std::env::join_paths([PathBuf::from("/first"), PathBuf::from("/second")]).expect("join");
+    command.env("SOLDR_TEST_LOADER_PATH", &existing);
+
+    prepend_loader_library_path(
+        &mut command,
+        "SOLDR_TEST_LOADER_PATH",
+        PathBuf::from("/toolchain/lib"),
+    );
+
+    let value = command
+        .get_envs()
+        .find(|(key, _)| *key == "SOLDR_TEST_LOADER_PATH")
+        .and_then(|(_, value)| value)
+        .expect("variable set");
+    assert_eq!(
+        std::env::split_paths(value).collect::<Vec<_>>(),
+        vec![
+            PathBuf::from("/toolchain/lib"),
+            PathBuf::from("/first"),
+            PathBuf::from("/second")
+        ]
+    );
+}

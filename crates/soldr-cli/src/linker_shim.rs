@@ -49,7 +49,7 @@ pub fn inject_resolved_reld(
     }
 }
 
-/// Move a Linux clang driver argument out of target-scoped rustflags and into
+/// Move a Linux or Apple clang driver argument out of target-scoped rustflags and into
 /// a content-addressed executable shim.
 ///
 /// Cargo does not merge `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` with
@@ -63,7 +63,9 @@ pub fn materialize_linker_driver_shim(
     target: &str,
     injection: &mut LinkerInjection,
 ) -> Result<(), SoldrError> {
-    if target_kind(target) != TargetKind::Linux || injection.linker.as_deref() != Some("clang") {
+    if !matches!(target_kind(target), TargetKind::Linux | TargetKind::Apple)
+        || injection.linker.as_deref() != Some("clang")
+    {
         return Ok(());
     }
     let Some(rustflags) = injection.rustflags.as_deref() else {
