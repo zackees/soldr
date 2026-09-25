@@ -223,7 +223,15 @@ where
             // Last-poll-wins: never cancel a compile that already finished.
             match poll_once(fut.as_mut()) {
                 std::task::Poll::Ready(out) => DispatchOutcome::Completed(out),
-                std::task::Poll::Pending => DispatchOutcome::ClientDisconnected(reason),
+                std::task::Poll::Pending => {
+                    crate::daemon::kill_decisions::record(
+                        "cancel-on-disconnect",
+                        None,
+                        format!("client disconnect: {reason:?}"),
+                    )
+                    .resolve("compile-future-dropped");
+                    DispatchOutcome::ClientDisconnected(reason)
+                }
             }
         }
         out = &mut fut => DispatchOutcome::Completed(out),

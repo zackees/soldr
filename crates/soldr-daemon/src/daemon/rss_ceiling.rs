@@ -106,7 +106,7 @@ pub const RSS_CEILING_ENV_VAR: &str = "SOLDR_DAEMON_RSS_CEILING_BYTES";
 pub const RSS_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
 const SCHEMA_VERSION: u32 = 1;
-const BREACH_SCHEMA_VERSION: u32 = 2;
+const BREACH_SCHEMA_VERSION: u32 = 3;
 
 /// Which long-lived soldr process is reporting a sample or a breach. Carried
 /// end to end — through the status file, the breach dump, and the legible
@@ -282,6 +282,19 @@ pub struct BreachSummary {
     /// `newest_breach_summary` reads whatever dump it finds on disk.
     #[serde(default)]
     pub cgroup_path: Option<PathBuf>,
+    /// `Some` iff `kill-decisions.json` was written: pending and recently
+    /// resolved terminate/cancel decisions (soldr#3053).
+    #[serde(default)]
+    pub kill_decisions_path: Option<PathBuf>,
+    /// On-CPU profile (`perf record`) outcome; names why when unavailable.
+    #[serde(default)]
+    pub on_cpu_profile: Option<crate::daemon::breach_forensics::ArtifactOutcome>,
+    /// Off-CPU schedstat approximation outcome.
+    #[serde(default)]
+    pub off_cpu_profile: Option<crate::daemon::breach_forensics::ArtifactOutcome>,
+    /// Tokio task inventory outcome.
+    #[serde(default)]
+    pub task_inventory: Option<crate::daemon::breach_forensics::ArtifactOutcome>,
 }
 
 /// Directory a breach dump for `pid` at `created_at_ms` is written to.
@@ -343,6 +356,27 @@ pub fn write_breach_dump(
     .ok()
     .map(|_| cgroup_dest);
 
+    let kill_dest = dir.join("kill-decisions.json");
+    let kill_decisions_path = std::fs::write(
+        &kill_dest,
+        serde_json::to_vec_pretty(&crate::daemon::kill_decisions::snapshot()).unwrap_or_default(),
+    )
+    .ok()
+    .map(|_| kill_dest);
+
+    use crate::daemon::breach_forensics as forensics;
+    let on_cpu_profile = Some(forensics::capture_on_cpu_profile(&dir));
+    let off_cpu_profile = Some(forensics::capture_off_cpu_approximation(&dir));
+    #[cfg(not(feature = "tokio-console"))]
+    let task_inventory = Some(forensics::capture_task_inventory(&dir));
+    #[cfg(feature = "tokio-console")]
+    let task_inventory = Some(forensics::capture_task_inventory(
+        &dir,
+        std::env::var_os("SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH")
+            .map(PathBuf::from)
+            .as_deref(),
+    ));
+
     let summary = BreachSummary {
         schema_version: BREACH_SCHEMA_VERSION,
         pid,
@@ -358,6 +392,10 @@ pub fn write_breach_dump(
         proc_status_path,
         proc_smaps_rollup_path,
         cgroup_path,
+        kill_decisions_path,
+        on_cpu_profile,
+        off_cpu_profile,
+        task_inventory,
     };
     let summary_json = serde_json::to_vec_pretty(&summary).map_err(std::io::Error::other)?;
     std::fs::write(dir.join("summary.json"), summary_json)?;
@@ -777,8 +815,8 @@ mod tests {
         .expect("write_breach_dump must succeed under a writable tempdir");
 
         assert_eq!(
-            BREACH_SCHEMA_VERSION, 2,
-            "soldr#3053 bumped the breach schema to add cgroup.json"
+            BREACH_SCHEMA_VERSION, 3,
+            "soldr#3053 bumped the breach schema to add forensics artifacts"
         );
         assert_eq!(summary.schema_version, BREACH_SCHEMA_VERSION);
         assert_eq!(summary.pid, pid);
@@ -934,6 +972,10 @@ mod tests {
             proc_status_path: None,
             proc_smaps_rollup_path: None,
             cgroup_path: None,
+            kill_decisions_path: None,
+            on_cpu_profile: None,
+            off_cpu_profile: None,
+            task_inventory: None,
         };
         let message = legible_breach_message(&summary);
         assert!(message.contains("broker"), "{message}");
