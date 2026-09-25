@@ -696,18 +696,27 @@ fn terminate_pid(pid: u32, deadline: Option<Instant>) {
     // short grace, then escalate to SIGKILL. The deadline
     // bookkeeping is lifecycle policy; the platform crate owns the
     // signaling.
+    let decision = crate::daemon::kill_decisions::record(
+        "terminate-pid",
+        Some(pid),
+        "lifecycle terminate: SIGTERM then SIGKILL after grace".to_string(),
+    );
     let _ = crate::platform::process::terminate::signal_pid(pid, false);
     let grace = deadline
         .map(|deadline| deadline.saturating_duration_since(Instant::now()))
         .unwrap_or(Duration::from_secs(3))
         .min(Duration::from_secs(3));
     if grace.is_zero() || wait_for_pid_exit(pid, grace) {
+        decision.resolve("exited-within-grace");
         return;
     }
     if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        decision.resolve("deadline-expired");
         return;
     }
+    decision.mark_escalated();
     let _ = crate::platform::process::terminate::signal_pid(pid, true);
+    decision.resolve("sigkill-sent");
 }
 
 /// Why a lifecycle transition happened.
