@@ -24,18 +24,22 @@ loosened alone and the others would keep reporting the old number.
 
   :499  `target/<triple>/release/<binary>` — **soldr's own build**, the
         same fact the three per-PR ceilings measure. It is not out of
-        scope, it just disagrees: 2.39 against their 2.28.
+        scope, and as of soldr#1060's glibc-2.17 pass it agrees with them:
+        both -gnu legs build through the blessed `soldr build` surface
+        (`native_release_build.py::build_matrix_binary`), the same
+        managed gcc-13.3.0-glibc-2.17-sysroot path the per-PR lanes
+        exercise, so there is no longer a reason for this one to be
+        looser.
 
-That disagreement is real and currently intended: soldr#2145 sequences
-lowering it *after* a release run confirms the number, because a wrong
-guess fails a release rather than a PR. But "intended" and "invisible"
-are different things — the old exclusion meant nothing would notice if
-it drifted further, or if it were lowered and silently reverted. So it
-is asserted here against an explicit expected value instead.
+That agreement was reached deliberately: soldr#2145/#2609 established
+2.17 is achievable for soldr's own binaries via the managed sysroot, and
+this release-lane step was the one remaining place still pinned to the
+pre-fix 2.39 measurement. So it is asserted here against an explicit
+expected value, the same way the other three are pooled.
 
-When a release confirms 2.28, lower it in the workflow and update
-`RELEASE_OWN_BINARY_CEILING` to match; this check then guards it the
-same way it guards the other three.
+If a future change regresses the release lane's own-binary floor above
+2.17, raise `RELEASE_OWN_BINARY_CEILING` deliberately, with a note
+explaining why, rather than by reflex.
 
 `verify_wheel_glibc.py` is a different script against different
 artifacts (manylinux wheels, 2.17) and is out of scope.
@@ -72,10 +76,11 @@ MIN_EXPECTED_INVOCATIONS = 3
 
 RELEASE_WORKFLOW = ".github/workflows/release-auto.yml"
 
-# `release-auto.yml`'s own-binary ceiling. Higher than the per-PR ones on
-# purpose (see module docs) — pinned rather than ignored so the gap cannot
-# widen, or close and reopen, without this failing.
-RELEASE_OWN_BINARY_CEILING = "2.39"
+# `release-auto.yml`'s own-binary ceiling. Now matches the per-PR ceilings
+# (see module docs, soldr#1060) — still pinned explicitly, rather than pooled
+# with the other three, so a future regression is named against this file's
+# rationale instead of silently drifting.
+RELEASE_OWN_BINARY_CEILING = "2.17"
 
 # Tells the two release invocations apart. The own-binary step invokes the
 # ELF verifier directly for one built artifact. The bundled step dispatches to

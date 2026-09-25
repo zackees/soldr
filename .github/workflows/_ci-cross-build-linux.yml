@@ -677,6 +677,25 @@ jobs:
             --max-glibc 2.17 \
             "target/${{ inputs.target }}/ci-nextest/soldr"
 
+      # soldr#1060 item 3: `verify_glibc_baseline.py` above proves the
+      # binary's *declared* symbol floor statically, via `readelf -V`. That
+      # is necessary but not the RFC's actual acceptance bar -- "the -gnu
+      # artifact launches on a glibc-2.17-era environment". This step is the
+      # real thing: it runs the freshly built binary's `--version` inside
+      # `quay.io/pypa/manylinux2014_x86_64` (CentOS 7 based, glibc 2.17 --
+      # the same baseline `manylinux_2_17` names) and asserts it actually
+      # starts. x86_64 only: it is the runner's native arch, so no emulation
+      # is needed to execute the container; aarch64's glibc floor is proven
+      # by the readelf check above and by the identical toolchain/sysroot
+      # this lane's x86_64 leg already exercises end-to-end.
+      - name: Prove the gnu binary launches on glibc 2.17 (soldr#1060 item 3)
+        if: inputs.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/glibc_container_smoke.py \
+            "target/${{ inputs.target }}/ci-nextest/soldr"
+
       # The macOS and Windows equivalents of the ratchet above. Both targets
       # are cross-built through this lane on every PR, so the drift they guard
       # against is catchable here rather than only during a release.
