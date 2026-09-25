@@ -72,6 +72,11 @@ pub struct SoldrMetadata {
     /// from this checkout. Disabled unless the project opts in.
     #[serde(default)]
     pub prefer_newer_global: bool,
+    /// Project-declared linker choice (soldr#3276), e.g. `"reld"`. Consumed by
+    /// `linker::resolve_project_choice`, which validates the value; this
+    /// reader does no validation of its own.
+    #[serde(default)]
+    pub linker: Option<String>,
 }
 
 /// Read soldr metadata from the `Cargo.toml` at `path`. Returns the
@@ -337,6 +342,55 @@ version = "0.1.0"
         std::fs::create_dir_all(&nested).expect("mkdir");
         let found = find_cargo_toml(&nested).expect("walked up");
         assert_eq!(found, p);
+    }
+
+    #[test]
+    fn reads_workspace_linker() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let p = write_fixture(
+            tmp.path(),
+            r#"
+[workspace]
+
+[workspace.metadata.soldr]
+linker = "reld"
+"#,
+        );
+        let meta = read_soldr_metadata(&p).expect("parse");
+        assert_eq!(meta.linker.as_deref(), Some("reld"));
+    }
+
+    #[test]
+    fn reads_package_linker_when_no_workspace() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let p = write_fixture(
+            tmp.path(),
+            r#"
+[package]
+name = "thing"
+version = "0.1.0"
+
+[package.metadata.soldr]
+linker = "mold"
+"#,
+        );
+        let meta = read_soldr_metadata(&p).expect("parse");
+        assert_eq!(meta.linker.as_deref(), Some("mold"));
+    }
+
+    #[test]
+    fn no_metadata_linker_is_none() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let p = write_fixture(
+            tmp.path(),
+            r#"
+[package]
+name = "thing"
+version = "0.1.0"
+"#,
+        );
+        let meta = read_soldr_metadata(&p).expect("parse");
+        assert!(meta.linker.is_none());
     }
 
     #[test]

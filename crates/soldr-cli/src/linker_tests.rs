@@ -594,6 +594,252 @@ fn project_target_config_dot_cargo_config_without_extension_is_read() {
     );
 }
 
+// soldr#3276: the shared project-level linker resolver.
+
+fn write_cargo_config(root: &Path, body: &str) {
+    std::fs::create_dir_all(root.join(".cargo")).expect("create .cargo dir");
+    std::fs::write(root.join(".cargo/config.toml"), body).expect("write .cargo/config.toml");
+}
+
+fn write_cargo_toml_metadata(root: &Path, body: &str) {
+    std::fs::write(root.join("Cargo.toml"), body).expect("write Cargo.toml");
+}
+
+#[test]
+fn resolve_project_choice_env_wins_over_everything() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_config(
+        root.path(),
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"reld\"\n",
+    );
+    write_cargo_toml_metadata(
+        root.path(),
+        "[package]\nname = \"x\"\nversion = \"0\"\n\n[package.metadata.soldr]\nlinker = \"mold\"\n",
+    );
+    let selection = resolve_project_choice(
+        Some(OsStr::new("ld")),
+        Some("rust-lld"),
+        Some(LINUX),
+        root.path(),
+        None,
+    )
+    .expect("resolve");
+    assert_eq!(selection.choice, LinkerChoice::Ld);
+    assert_eq!(selection.source, LinkerSource::Env);
+    assert!(selection.reld_cargo_config.is_none());
+    assert!(selection.is_explicit());
+    assert!(!selection.needs_reld());
+}
+
+#[test]
+fn resolve_project_choice_cargo_config_wins_over_metadata_and_user_config() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_config(
+        root.path(),
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"reld\"\n",
+    );
+    write_cargo_toml_metadata(
+        root.path(),
+        "[package]\nname = \"x\"\nversion = \"0\"\n\n[package.metadata.soldr]\nlinker = \"mold\"\n",
+    );
+    let selection = resolve_project_choice(None, Some("rust-lld"), Some(LINUX), root.path(), None)
+        .expect("resolve");
+    assert_eq!(selection.choice, LinkerChoice::Reld);
+    assert_eq!(selection.source, LinkerSource::CargoConfig);
+    assert_eq!(
+        selection.reld_cargo_config,
+        Some(ReldCargoConfig::BareLinker)
+    );
+    assert!(selection.needs_reld());
+}
+
+#[test]
+fn resolve_project_choice_metadata_wins_over_user_config() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_toml_metadata(
+        root.path(),
+        "[package]\nname = \"x\"\nversion = \"0\"\n\n[package.metadata.soldr]\nlinker = \"mold\"\n",
+    );
+    let selection = resolve_project_choice(None, Some("rust-lld"), Some(LINUX), root.path(), None)
+        .expect("resolve");
+    assert_eq!(selection.choice, LinkerChoice::Mold);
+    assert_eq!(selection.source, LinkerSource::CargoTomlMetadata);
+    assert!(selection.reld_cargo_config.is_none());
+}
+
+#[test]
+fn resolve_project_choice_package_metadata_fallback_when_no_workspace() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_toml_metadata(
+        root.path(),
+        "[package]\nname = \"x\"\nversion = \"0\"\n\n[package.metadata.soldr]\nlinker = \"rust-lld\"\n",
+    );
+    let selection =
+        resolve_project_choice(None, None, Some(LINUX), root.path(), None).expect("resolve");
+    assert_eq!(selection.choice, LinkerChoice::RustLld);
+    assert_eq!(selection.source, LinkerSource::CargoTomlMetadata);
+}
+
+#[test]
+fn resolve_project_choice_invalid_metadata_value_errors() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_toml_metadata(
+        root.path(),
+        "[package]\nname = \"x\"\nversion = \"0\"\n\n[package.metadata.soldr]\nlinker = \"gold\"\n",
+    );
+    let err = resolve_project_choice(None, None, Some(LINUX), root.path(), None).unwrap_err();
+    assert!(err.to_string().contains("invalid SOLDR_LINKER value"));
+}
+
+#[test]
+fn resolve_project_choice_user_config_when_nothing_else_declares() {
+    let root = tempfile::tempdir().expect("project root");
+    let selection = resolve_project_choice(None, Some("mold"), Some(LINUX), root.path(), None)
+        .expect("resolve");
+    assert_eq!(selection.choice, LinkerChoice::Mold);
+    assert_eq!(selection.source, LinkerSource::UserConfig);
+}
+
+#[test]
+fn resolve_project_choice_default_when_nothing_declares_anything() {
+    let root = tempfile::tempdir().expect("project root");
+    let selection =
+        resolve_project_choice(None, None, Some(LINUX), root.path(), None).expect("resolve");
+    assert_eq!(selection.choice, LinkerChoice::Fast);
+    assert_eq!(selection.source, LinkerSource::Default);
+    assert!(!selection.is_explicit());
+}
+
+#[test]
+fn resolve_project_choice_bare_reld_rustflags_is_detected() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_config(
+        root.path(),
+        "[target.x86_64-unknown-linux-gnu]\nrustflags = [\"-C\", \"link-arg=--ld-path=reld\"]\n",
+    );
+    let selection =
+        resolve_project_choice(None, None, Some(LINUX), root.path(), None).expect("resolve");
+    assert_eq!(selection.choice, LinkerChoice::Reld);
+    assert_eq!(selection.source, LinkerSource::CargoConfig);
+    assert_eq!(
+        selection.reld_cargo_config,
+        Some(ReldCargoConfig::Rustflags)
+    );
+    assert!(selection.needs_reld());
+}
+
+#[test]
+fn resolve_project_choice_absolute_path_reld_linker_is_not_bare() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_config(
+        root.path(),
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"/opt/reld/bin/reld\"\n",
+    );
+    let selection =
+        resolve_project_choice(None, None, Some(LINUX), root.path(), None).expect("resolve");
+    // An absolute-path reld is left alone: `Default` injects nothing so
+    // soldr does not overwrite the project's own pinned linker.
+    assert_eq!(selection.choice, LinkerChoice::Default);
+    assert_eq!(selection.source, LinkerSource::CargoConfig);
+    assert!(selection.reld_cargo_config.is_none());
+    assert!(!selection.needs_reld());
+}
+
+#[test]
+fn resolve_project_choice_other_declared_linker_suppresses_default_without_reld() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_config(
+        root.path(),
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"cc\"\n",
+    );
+    let selection = resolve_project_choice(None, Some("mold"), Some(LINUX), root.path(), None)
+        .expect("resolve");
+    assert_eq!(selection.choice, LinkerChoice::Default);
+    assert_eq!(selection.source, LinkerSource::CargoConfig);
+}
+
+#[test]
+fn resolve_project_choice_reads_cargo_home_config_when_project_has_none() {
+    let root = tempfile::tempdir().expect("project root");
+    let cargo_home = tempfile::tempdir().expect("cargo home");
+    std::fs::write(
+        cargo_home.path().join("config.toml"),
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"reld\"\n",
+    )
+    .expect("write cargo home config");
+    let selection = resolve_project_choice(
+        None,
+        None,
+        Some(LINUX),
+        root.path(),
+        Some(cargo_home.path()),
+    )
+    .expect("resolve");
+    assert_eq!(selection.choice, LinkerChoice::Reld);
+    assert_eq!(selection.source, LinkerSource::CargoConfig);
+    assert_eq!(
+        selection.reld_cargo_config,
+        Some(ReldCargoConfig::BareLinker)
+    );
+}
+
+#[test]
+fn resolve_project_choice_project_config_wins_over_cargo_home() {
+    let root = tempfile::tempdir().expect("project root");
+    let cargo_home = tempfile::tempdir().expect("cargo home");
+    write_cargo_config(
+        root.path(),
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"cc\"\n",
+    );
+    std::fs::write(
+        cargo_home.path().join("config.toml"),
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"reld\"\n",
+    )
+    .expect("write cargo home config");
+    let selection = resolve_project_choice(
+        None,
+        None,
+        Some(LINUX),
+        root.path(),
+        Some(cargo_home.path()),
+    )
+    .expect("resolve");
+    // Project config declares `cc`; cargo_home's `reld` must not surface.
+    assert_eq!(selection.choice, LinkerChoice::Default);
+    assert_eq!(selection.source, LinkerSource::CargoConfig);
+}
+
+#[test]
+fn resolve_project_choice_missing_cargo_toml_is_not_an_error() {
+    let root = tempfile::tempdir().expect("project root");
+    let selection = resolve_project_choice(None, Some("mold"), Some(LINUX), root.path(), None)
+        .expect("resolve");
+    assert_eq!(selection.choice, LinkerChoice::Mold);
+    assert_eq!(selection.source, LinkerSource::UserConfig);
+}
+
+#[test]
+fn resolve_project_choice_no_target_skips_cargo_config_lookup() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_config(
+        root.path(),
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"reld\"\n",
+    );
+    let selection =
+        resolve_project_choice(None, Some("mold"), None, root.path(), None).expect("resolve");
+    assert_eq!(selection.choice, LinkerChoice::Mold);
+    assert_eq!(selection.source, LinkerSource::UserConfig);
+}
+
+#[test]
+fn linker_candidate_identity_differs_across_reld_versions() {
+    let mut a = LinkerInjection::reld();
+    a.linker = Some("/managed/reld-0.1.0/reld".to_string());
+    let mut b = LinkerInjection::reld();
+    b.linker = Some("/managed/reld-0.2.0/reld".to_string());
+    assert_ne!(linker_candidate_identity(&a), linker_candidate_identity(&b));
+}
+
 #[test]
 fn project_target_config_does_not_match_cfg_sections() {
     // Known soldr#3277 limitation: cfg-spec target sections (e.g.

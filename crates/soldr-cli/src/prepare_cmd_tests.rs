@@ -5,6 +5,78 @@ use super::*;
 use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
 use std::ffi::{OsStr, OsString};
 
+fn reld_selection(
+    choice: crate::linker::LinkerChoice,
+    source: crate::linker::LinkerSource,
+) -> crate::linker::ProjectLinkerSelection {
+    crate::linker::ProjectLinkerSelection {
+        choice,
+        source,
+        reld_cargo_config: None,
+    }
+}
+
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(future)
+}
+
+#[test]
+fn ensure_selected_reld_fetches_once_when_selected() {
+    let calls = std::cell::Cell::new(0);
+    let selection = reld_selection(
+        crate::linker::LinkerChoice::Reld,
+        crate::linker::LinkerSource::CargoTomlMetadata,
+    );
+    let result = block_on(ensure_selected_reld_with(&selection, || {
+        calls.set(calls.get() + 1);
+        async { Ok(PathBuf::from("/managed/reld-0.1.0/reld")) }
+    }))
+    .expect("fetch ok");
+    assert_eq!(calls.get(), 1);
+    assert_eq!(result, Some(PathBuf::from("/managed/reld-0.1.0/reld")));
+}
+
+#[test]
+fn ensure_selected_reld_skips_fetch_when_not_selected() {
+    let calls = std::cell::Cell::new(0);
+    let selection = reld_selection(
+        crate::linker::LinkerChoice::Fast,
+        crate::linker::LinkerSource::Default,
+    );
+    let result = block_on(ensure_selected_reld_with(&selection, || {
+        calls.set(calls.get() + 1);
+        async { Ok(PathBuf::from("/unused")) }
+    }))
+    .expect("no fetch");
+    assert_eq!(calls.get(), 0);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn ensure_selected_reld_explicit_failure_is_hard_error() {
+    let selection = reld_selection(
+        crate::linker::LinkerChoice::Reld,
+        crate::linker::LinkerSource::Env,
+    );
+    let error = block_on(ensure_selected_reld_with(&selection, || async {
+        Err(SoldrError::Other("offline".to_string()))
+    }))
+    .expect_err("explicit reld must fail loudly");
+    let message = error.to_string();
+    assert!(
+        message.contains(crate::fetch::MANAGED_RELD_VERSION),
+        "{message}"
+    );
+    assert!(
+        message.contains(crate::fetch::RELD_BIN_ENV_VAR),
+        "{message}"
+    );
+}
+
 fn write_host_script(path: &Path, windows: &str, unix: &str) {
     let body =
         if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {

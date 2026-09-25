@@ -6,7 +6,7 @@
 //! future without dragging the full `run_cargo_front_door` body along.
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::{linker, LINKER_ENV_VAR};
+use crate::linker;
 
 use super::subcommand::{cargo_args_specify_target, cargo_args_target_value};
 
@@ -107,45 +107,49 @@ pub(super) async fn apply_linker_override(
     explicit_target: Option<&str>,
     paths: &SoldrPaths,
 ) -> Result<(), SoldrError> {
-    let config = paths
-        .load_config()
-        .map_err(|error| SoldrError::Other(error.to_string()))?;
-    let linker_env = std::env::var_os(LINKER_ENV_VAR);
-    let choice = linker::from_env_and_config(linker_env.as_deref(), config.linker.as_deref())?;
-    let automatic = linker_env.is_none() && config.linker.is_none();
+    // `Fast` is the automatic/default linker (soldr#3262): it is a best-effort
+    // convenience, not a hard requirement. If the triple cannot be detected
+    // (e.g. a repo-local fake rustc without rustup, or a non-build command
+    // like `cargo --version`), skip injection rather than failing the whole
+    // cargo invocation. An explicit `reld`/`mold`/`rust-lld` request still
+    // surfaces the detection error.
+    let target_result = resolve_active_target_triple(args, explicit_target);
+
+    // soldr#3276: one shared resolver (env > project/cargo-home cargo config
+    // > Cargo.toml metadata > ~/.soldr/config.toml > default). It also owns
+    // the soldr#3277 suppression: a project-declared non-reld linker for
+    // this target resolves to `Default`, so nothing is injected over it.
+    let selection = linker::resolve_project_choice_from_cwd(
+        target_result.as_ref().ok().map(String::as_str),
+        paths,
+    )?;
+    let choice = selection.choice;
     if matches!(choice, linker::LinkerChoice::Default) {
-        // Fast-path: skip target detection entirely when there is nothing
-        // to inject. Keeps `soldr cargo` no-ops on platforms where target
-        // detection might fail or be slow.
         return Ok(());
     }
-
-    // `Fast` is the automatic/default linker (soldr#3262): it is a best-effort
-    // convenience, not a hard requirement. If the host triple cannot be
-    // detected (e.g. a repo-local fake rustc without rustup, or a non-build
-    // command like `cargo --version`), skip injection rather than failing the
-    // whole cargo invocation. An explicit `reld`/`mold`/`rust-lld` request
-    // still surfaces the detection error.
-    let target = match resolve_active_target_triple(args, explicit_target) {
+    let target = match target_result {
         Ok(target) => target,
         Err(_) if matches!(choice, linker::LinkerChoice::Fast) => return Ok(()),
         Err(error) => return Err(error),
     };
 
-    // soldr#3277: Cargo gives CARGO_TARGET_<TRIPLE>_LINKER/_RUSTFLAGS env vars
-    // precedence over `.cargo/config.toml`, so injecting the *automatic*
-    // default here would silently replace a linker the project declared for
-    // this target. `apply_pep517_override` guards the same thing; both call
-    // sites now share one predicate instead of growing a third copy. An
-    // explicit SOLDR_LINKER / config.toml `linker =` is a user decision and
-    // still wins.
-    if automatic && linker::project_declares_target_linker(&target) {
+    if selection.reld_cargo_config == Some(linker::ReldCargoConfig::Rustflags) {
+        // The project's own rustflags drive a bare `reld` through PATH; leave
+        // its flags alone and just make the pinned managed reld resolvable.
+        let reld = crate::fetch::ensure_reld(paths)
+            .await
+            .map_err(linker::reld_fetch_error)?;
+        if let Some(dir) = reld.parent() {
+            prepend_command_path(command, dir)?;
+        }
         return Ok(());
     }
 
     let mut injection = linker::resolve_for_target(choice, &target)?;
     if matches!(choice, linker::LinkerChoice::Reld) {
-        let reld = crate::fetch::ensure_reld(paths).await?;
+        let reld = crate::fetch::ensure_reld(paths)
+            .await
+            .map_err(linker::reld_fetch_error)?;
         linker::inject_resolved_reld(&mut injection, &reld)?;
     }
     linker::materialize_linker_driver_shim(paths, &target, &mut injection)?;
@@ -181,6 +185,27 @@ pub(super) fn apply_linker_override_blocking(
     tokio::runtime::Runtime::new()
         .map_err(|error| SoldrError::Other(error.to_string()))?
         .block_on(apply_linker_override(command, args, explicit_target, paths))
+}
+
+/// Prepend `dir` to the PATH the cargo child will see (the command's own
+/// PATH override if set, else the inherited process PATH).
+fn prepend_command_path(
+    command: &mut std::process::Command,
+    dir: &std::path::Path,
+) -> Result<(), SoldrError> {
+    let existing = command
+        .get_envs()
+        .find(|(key, _)| *key == std::ffi::OsStr::new("PATH"))
+        .map(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
+        .unwrap_or_else(|| std::env::var_os("PATH"));
+    let mut entries = vec![dir.to_path_buf()];
+    if let Some(existing) = existing {
+        entries.extend(std::env::split_paths(&existing));
+    }
+    let joined = std::env::join_paths(entries)
+        .map_err(|error| SoldrError::Other(format!("invalid PATH: {error}")))?;
+    command.env("PATH", joined);
+    Ok(())
 }
 
 fn resolve_active_target_triple(

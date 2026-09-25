@@ -391,7 +391,7 @@ fn cargo_front_door_respects_project_target_linker_config() {
     // ancestors looking for one and falls back to the start directory when
     // none is found, and `unique_temp_dir` lives under `std::env::temp_dir()`
     // (outside any crate's workspace), so this fixture directory is itself
-    // the project root that `project_target_config_value` will read from.
+    // the project root that `linker::resolve_project_choice_from_cwd` reads.
     let project = cache_root.join("project");
     fs::create_dir_all(project.join(".cargo")).expect("create project/.cargo");
 

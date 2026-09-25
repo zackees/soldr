@@ -98,6 +98,16 @@ Failures to locate or probe a global executable leave the local invocation
 unchanged. Explicit `soldr --as <version>` / `SOLDR_AS` pins remain
 authoritative.
 
+`[workspace.metadata.soldr]` (or `[package.metadata.soldr]`) also accepts a
+`linker` field, which selects the linker the same way `SOLDR_LINKER` does (see
+the `SOLDR_LINKER` entry in the environment variable table below for the
+accepted values and the full precedence chain):
+
+```toml
+[workspace.metadata.soldr]
+linker = "reld"
+```
+
 ### Mode 2: Tool Fetcher
 
 ```bash
@@ -1298,6 +1308,14 @@ that future builds may use.
 
 The first non-zero exit short-circuits the chain.
 
+When the project selects `reld` as its linker (`SOLDR_LINKER=reld`/`fast`,
+`~/.soldr/config.toml` `linker =`, a project `.cargo/config.toml`
+`[target.<triple>] linker`/`rustflags`, or `[workspace|package.metadata.soldr]
+linker`), `soldr prepare` and `soldr toolchain prepare`/`ensure` also fetch the
+pinned, sha256-verified `reld` binary described under the `SOLDR_LINKER` entry
+in the environment variable table below, so the linker is in place before the
+child build starts.
+
 #### `soldr toolchain ensure`
 
 One-shot "make sure this host can build" verb (issue #407 Phase 2):
@@ -1333,9 +1351,15 @@ existing field names and types will not change without a schema bump:
     "rustc_version": "rustc 1.95.0 (def5678 2026-04-15)",
     "ok": true
   },
-  "elapsed_ms": 12345
+  "elapsed_ms": 12345,
+  "linker": "reld"
 }
 ```
+
+`linker` is an additive field reporting the resolved linker selection (see the
+`SOLDR_LINKER` entry below); its presence and value follow the same
+env/config/manifest precedence used for `soldr cargo ...` builds and do not
+change any other field's meaning.
 
 Notes on the schema:
 
@@ -2309,7 +2333,8 @@ Commands:
 | `SOLDR_SOURCE_BUILD_CACHE` | Falsy (`0`/`false`/`no`/`off`) restores the historical fully-uncached source-build spawn. By default `soldr build-from-source` and dylint source preparation route compiler work through Soldr so fresh machines can reuse cached objects. | unset (cached) |
 | `SOLDR_TOOLCHAIN_BIN_CACHE` | `off` (case-insensitive) disables the in-process memo and on-disk cache (`<soldr root>/cache/toolchain-bins/v2/<rustup-home+host-scope>/<channel>/<tool>.path`) for channel-scoped `rustup which` binary resolution. The cache saves one `rustup which` subprocess spawn per tool per nested cargo-dylint re-entry; entries self-invalidate when the cached path no longer exists, and the v2 scope prevents one toolchain home or host architecture from reusing another's path. | unset (on) |
 | `DYLINT_DRIVER_PATH` | Soldr sets this on the dylint child process tree to `<soldr root>/dylint/drivers` (a stable soldr-owned home for cargo-dylint's per-toolchain driver builds) **only when the caller has not already set it** — an explicit caller value always wins. A fixed path means warm runs reuse the already-built driver and CI caches have a deterministic path to restore. | soldr-injected |
-| `SOLDR_LINKER` | Pick the linker injected for `soldr cargo ...` builds (issue #285). Accepted values: `default` (no injection — keep the rust-toolchain default), `ld` (system linker — also no injection on every supported platform), `mold` (Linux only; hard error elsewhere), `rust-lld` (Windows MSVC and Linux/MinGW via `clang -fuse-ld=lld`; **no-op on macOS** — see below), `reld` (the polylinker, on every platform: driven through `clang --ld-path=reld` on Linux, direct on Windows/macOS), `fast` (reld — the fastest available; same as `reld`). **Unset defaults to `fast`, i.e. reld** (soldr#3262). The choice resolves to `CARGO_TARGET_<TRIPLE>_LINKER` injected into the spawned cargo process; Linux clang driver arguments are carried by a content-addressed generated linker shim instead of `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, so a project's `[build] rustflags` remain active (soldr#3277). The active target is the same one Cargo would pick (`--target` flag, `CARGO_BUILD_TARGET`, or the host triple). soldr skips the injection when a `CARGO_TARGET_<TRIPLE>_LINKER` / `_RUSTFLAGS` env var already carries a non-empty value, and — when the choice is the *automatic* default, i.e. neither `SOLDR_LINKER` nor `~/.soldr/config.toml` `linker =` is set — also when the project's own `.cargo/config.toml` declares `[target.<triple>] linker` or `rustflags` (soldr#3277: Cargo gives the env vars precedence over the config file, so the default would otherwise silently replace a linker the project declared for itself). Only exact-triple sections are detected; cfg-spec sections such as `[target.'cfg(all())']` are not. An explicit `SOLDR_LINKER=` request is a user decision and still overrides project config. A `linker = "..."` field in `~/.soldr/config.toml` is honored when the env var is unset. On macOS targets `rust-lld` falls back silently to the platform default linker (issue #509): Apple clang only accepts `-fuse-ld=lld` when the toolchain wires up an `ld64.lld` shim, and stock macOS toolchains do not — injecting it would break even `cc-rs` build-script compilations. `reld`/`fast` are unaffected and inject reld on macOS. | unset (resolves to reld) |
+| `SOLDR_LINKER` | Pick the linker injected for `soldr cargo ...` builds (issue #285). Accepted values: `default` (no injection — keep the rust-toolchain default), `ld` (system linker — also no injection on every supported platform), `mold` (Linux only; hard error elsewhere), `rust-lld` (Windows MSVC and Linux/MinGW via `clang -fuse-ld=lld`; **no-op on macOS** — see below), `reld` (the polylinker, on every platform: driven through `clang --ld-path=reld` on Linux, direct on Windows/macOS), `fast` (reld — the fastest available; same as `reld`). **Unset defaults to `fast`, i.e. reld** (soldr#3262). The choice resolves to `CARGO_TARGET_<TRIPLE>_LINKER` injected into the spawned cargo process; Linux clang driver arguments are carried by a content-addressed generated linker shim instead of `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, so a project's `[build] rustflags` remain active (soldr#3277). The active target is the same one Cargo would pick (`--target` flag, `CARGO_BUILD_TARGET`, or the host triple). soldr skips the injection when a `CARGO_TARGET_<TRIPLE>_LINKER` / `_RUSTFLAGS` env var already carries a non-empty value, and — when the choice is the *automatic* default, i.e. neither `SOLDR_LINKER` nor `~/.soldr/config.toml` `linker =` is set — also when the project's own `.cargo/config.toml` declares `[target.<triple>] linker` or `rustflags` (soldr#3277: Cargo gives the env vars precedence over the config file, so the default would otherwise silently replace a linker the project declared for itself). Only exact-triple sections are detected; cfg-spec sections such as `[target.'cfg(all())']` are not. An explicit `SOLDR_LINKER=` request is a user decision and still overrides project config. A `linker = "..."` field in `~/.soldr/config.toml` is honored when the env var is unset. On macOS targets `rust-lld` falls back silently to the platform default linker (issue #509): Apple clang only accepts `-fuse-ld=lld` when the toolchain wires up an `ld64.lld` shim, and stock macOS toolchains do not — injecting it would break even `cc-rs` build-script compilations. `reld`/`fast` are unaffected and inject reld on macOS. **Selection precedence** (highest wins): `SOLDR_LINKER` env var > project or `$CARGO_HOME` `.cargo/config.toml` `[target.<triple>] linker`/`rustflags` > `Cargo.toml` `[workspace.metadata.soldr]`/`[package.metadata.soldr]` `linker` > `~/.soldr/config.toml` `linker =` > the automatic default (`fast`, i.e. reld). **On-demand `reld` fetch** (soldr#3276): when the resolved choice is an explicit `reld` request — `SOLDR_LINKER=reld`, `~/.soldr/config.toml` `linker = "reld"`, `[workspace|package.metadata.soldr] linker = "reld"`, or a bare `linker = "reld"` in a `.cargo/config.toml` `[target.<triple>]` section — soldr downloads a pinned, sha256-verified `reld` v0.1.0 on demand from `github.com/zackees/reld/releases` into `~/.soldr/bin/reld-0.1.0/` before cargo starts (Linux x64 hosts use the static musl asset), injects its absolute path, and fails hard with no fallback if the fetch fails. A bare `linker = "reld"` in cargo config is satisfied the same way by the managed binary; `--ld-path=reld` / `-C linker=reld` supplied via `rustflags` instead gets the managed reld directory prepended to `PATH` so the bare name resolves; an already-absolute path to a linker in cargo config is left alone (no fetch, no rewrite). The automatic default (`fast`/unset) never triggers a network fetch — it only uses a `reld` already discoverable on `PATH`. `SOLDR_RELD_BIN` (see below) overrides the managed install for reld development. | unset (resolves to reld) |
+| `SOLDR_RELD_BIN` | Absolute path to a `reld` executable that overrides the managed on-demand install described under `SOLDR_LINKER`. Intended for reld development — build reld locally and point soldr at it instead of fetching the pinned release. | unset (managed install) |
 | `SOLDR_QUIET_DEFENDER` | Suppress the once-per-day pre-build warning emitted by the cargo front door when Defender is actively scanning the soldr cache directory (issue #358). Truthy values silence the warning; the warning is also automatically suppressed in CI environments. | unset |
 | `SOLDR_OPTIMIZE_HELPER_OUTPUT` | Internal: set by the parent soldr process when it re-launches itself elevated via `--as-elevated-helper`. The elevated child writes its JSON status to this path so the parent can read and propagate it. | unset |
 | `SOLDR_TARGET_WARN_FREE_GB` | Free-space threshold (in GiB) below which the host-volume disk watchdog (issue #574) emits a one-line stderr warning before `soldr cargo ...` dispatches the build. The watchdog probes the disk hosting the project's `target/` dir, falling back to CWD when `target/` doesn't exist yet. | `10` |

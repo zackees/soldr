@@ -296,6 +296,214 @@ pub fn from_env_and_config(
     Ok(LinkerChoice::Fast)
 }
 
+/// Where a resolved project linker choice came from, highest precedence
+/// first: `Env` > `CargoConfig` > `CargoTomlMetadata` > `UserConfig` >
+/// `Default`. Section 4 of soldr#3276 — one shared resolver so `soldr build`,
+/// `soldr cargo`, and the PEP 517 front door all read the same precedence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkerSource {
+    Env,
+    CargoConfig,
+    CargoTomlMetadata,
+    UserConfig,
+    Default,
+}
+
+/// How a project's own `.cargo/config.toml` (or `$CARGO_HOME/config.toml`)
+/// named `reld` as a bare linker, when it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReldCargoConfig {
+    /// `[target.<triple>] linker = "reld"` (or `"reld.exe"`).
+    BareLinker,
+    /// `[target.<triple>] rustflags` contains a bare `--ld-path=reld` or
+    /// `linker=reld` fragment.
+    Rustflags,
+}
+
+/// The resolved project-level linker choice plus where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectLinkerSelection {
+    pub choice: LinkerChoice,
+    pub source: LinkerSource,
+    /// `Some` when the choice traces back to a project/cargo_home cargo
+    /// config declaring a bare `reld`, and which shape it was declared as.
+    pub reld_cargo_config: Option<ReldCargoConfig>,
+}
+
+impl ProjectLinkerSelection {
+    /// Whether a source other than the compiled-in default made this choice.
+    pub fn is_explicit(&self) -> bool {
+        self.source != LinkerSource::Default
+    }
+
+    /// Whether resolving this selection into an injection requires a
+    /// verified `reld` executable path first.
+    pub fn needs_reld(&self) -> bool {
+        self.choice == LinkerChoice::Reld || self.reld_cargo_config.is_some()
+    }
+}
+
+/// Whether a `[target.<triple>] linker` value names `reld` as a bare
+/// command (resolved via `PATH`), not an absolute path. soldr must not
+/// overwrite an absolute-path reld linker a project already pinned itself.
+fn is_bare_reld_linker(value: &str) -> bool {
+    matches!(value.trim(), "reld" | "reld.exe")
+}
+
+/// Whether a `[target.<triple>] rustflags` value drives a bare `reld` via
+/// `--ld-path=reld` or `linker=reld` (not an absolute path to either).
+fn rustflags_declares_bare_reld(rustflags: &str) -> bool {
+    matches!(extract_flag_value(rustflags, "--ld-path="), Some("reld"))
+        || matches!(extract_flag_value(rustflags, "linker="), Some("reld"))
+}
+
+/// Resolve the project-level linker choice from (in precedence order,
+/// highest first):
+///
+/// 1. `env` (`SOLDR_LINKER`) — an invalid value is a hard error.
+/// 2. `[target.<triple>]` in `project_root/.cargo/config.toml` (or the
+///    legacy `.cargo/config`), then `cargo_home/config.toml` (project config
+///    wins when both declare the target). A bare `reld` linker or rustflags
+///    fragment resolves to `LinkerChoice::Reld`; any other declared
+///    linker/rustflags resolves to `LinkerChoice::Default` so soldr does not
+///    override a project's own choice (soldr#3277) — including an
+///    absolute-path `reld`, which is left alone rather than re-resolved.
+/// 3. `[workspace.metadata.soldr].linker` / `[package.metadata.soldr].linker`
+///    from `project_root/Cargo.toml` — an invalid value is a hard error. A
+///    missing `Cargo.toml` is treated as "not declared", not an error.
+/// 4. `user_config` (`~/.soldr/config.toml` `linker = "..."`).
+/// 5. Otherwise `LinkerChoice::Fast` (reld is the default linker,
+///    soldr#3262).
+pub fn resolve_project_choice(
+    env: Option<&OsStr>,
+    user_config: Option<&str>,
+    target: Option<&str>,
+    project_root: &Path,
+    cargo_home: Option<&Path>,
+) -> Result<ProjectLinkerSelection, SoldrError> {
+    if let Some(env) = env {
+        let env = env
+            .to_str()
+            .ok_or_else(|| SoldrError::Other("SOLDR_LINKER is not valid UTF-8".to_string()))?;
+        let choice = LinkerChoice::from_str(env)?;
+        return Ok(ProjectLinkerSelection {
+            choice,
+            source: LinkerSource::Env,
+            reld_cargo_config: None,
+        });
+    }
+
+    if let Some(target) = target {
+        let mut config_files = vec![
+            project_root.join(".cargo/config.toml"),
+            project_root.join(".cargo/config"),
+        ];
+        if let Some(cargo_home) = cargo_home {
+            config_files.push(cargo_home.join("config.toml"));
+            config_files.push(cargo_home.join("config"));
+        }
+        let linker_value = target_config_value_in_files(&config_files, target, "linker");
+        let rustflags_value = target_config_value_in_files(&config_files, target, "rustflags");
+
+        if linker_value.as_deref().is_some_and(is_bare_reld_linker) {
+            return Ok(ProjectLinkerSelection {
+                choice: LinkerChoice::Reld,
+                source: LinkerSource::CargoConfig,
+                reld_cargo_config: Some(ReldCargoConfig::BareLinker),
+            });
+        }
+        if rustflags_value
+            .as_deref()
+            .is_some_and(rustflags_declares_bare_reld)
+        {
+            return Ok(ProjectLinkerSelection {
+                choice: LinkerChoice::Reld,
+                source: LinkerSource::CargoConfig,
+                reld_cargo_config: Some(ReldCargoConfig::Rustflags),
+            });
+        }
+        if linker_value.is_some() || rustflags_value.is_some() {
+            // soldr#3277: something is declared (including an absolute-path
+            // reld) but it is not a bare reld we can resolve -- decline to
+            // inject anything so the project's own setting stands.
+            return Ok(ProjectLinkerSelection {
+                choice: LinkerChoice::Default,
+                source: LinkerSource::CargoConfig,
+                reld_cargo_config: None,
+            });
+        }
+    }
+
+    let cargo_toml = project_root.join("Cargo.toml");
+    if cargo_toml.is_file() {
+        let metadata = crate::cargo_metadata_soldr::read_soldr_metadata(&cargo_toml)?;
+        if let Some(value) = metadata.linker {
+            let choice = LinkerChoice::from_str(&value)?;
+            return Ok(ProjectLinkerSelection {
+                choice,
+                source: LinkerSource::CargoTomlMetadata,
+                reld_cargo_config: None,
+            });
+        }
+    }
+
+    if let Some(user_config) = user_config {
+        let choice = LinkerChoice::from_str(user_config)?;
+        return Ok(ProjectLinkerSelection {
+            choice,
+            source: LinkerSource::UserConfig,
+            reld_cargo_config: None,
+        });
+    }
+
+    Ok(ProjectLinkerSelection {
+        choice: LinkerChoice::Fast,
+        source: LinkerSource::Default,
+        reld_cargo_config: None,
+    })
+}
+
+/// [`resolve_project_choice`] driven from process-ambient state: the current
+/// working directory locates the project root, `SOLDR_LINKER` is read
+/// directly, `paths.load_config()` supplies the user config, and
+/// `CARGO_HOME` (falling back to `~/.cargo`) supplies the cargo-home config
+/// fallback.
+pub fn resolve_project_choice_from_cwd(
+    target: Option<&str>,
+    paths: &SoldrPaths,
+) -> Result<ProjectLinkerSelection, SoldrError> {
+    let env = std::env::var_os(crate::LINKER_ENV_VAR);
+    let config = paths
+        .load_config()
+        .map_err(|error| SoldrError::Other(error.to_string()))?;
+    let cwd = std::env::current_dir()
+        .map_err(|error| SoldrError::Other(format!("soldr: current directory: {error}")))?;
+    let root = project_root(&cwd);
+    let cargo_home = crate::core::resolve_cargo_home();
+
+    resolve_project_choice(
+        env.as_deref(),
+        config.linker.as_deref(),
+        target,
+        &root,
+        cargo_home.as_deref(),
+    )
+}
+
+/// Wrap a failed `ensure_reld` for an *explicit* reld selection into an
+/// actionable error: name the managed version, the release URL prefix, and
+/// the escape hatch env var so the message stands alone in a build log.
+pub fn reld_fetch_error(err: SoldrError) -> SoldrError {
+    SoldrError::Other(format!(
+        "soldr: could not resolve the reld linker (managed version {}, \
+         releases at https://github.com/zackees/reld/releases): {err}. \
+         Set {} to an absolute path to an existing reld executable to bypass \
+         the managed download.",
+        crate::fetch::MANAGED_RELD_VERSION,
+        crate::fetch::RELD_BIN_ENV_VAR,
+    ))
+}
+
 fn target_kind(target: &str) -> TargetKind {
     if target.contains("-windows-msvc") {
         TargetKind::WindowsMsvc
@@ -427,41 +635,37 @@ pub async fn apply_pep517_override(
     target: &str,
     paths: &SoldrPaths,
 ) -> Result<Pep517LinkerState, SoldrError> {
-    let config = match paths.load_config() {
-        Ok(config) => config,
-        Err(error) => {
-            tracing::warn!(%error, "ignoring invalid soldr config while applying linker settings");
-            crate::core::SoldrConfig::default()
-        }
-    };
-    let explicit_env = std::env::var_os(crate::LINKER_ENV_VAR);
-    let explicit_config = config.linker.as_deref();
-    let project_target_linker_configured = project_declares_target_linker(target);
-    let no_explicit_request = explicit_env.is_none() && explicit_config.is_none();
-    let automatic_fast = no_explicit_request
-        && !project_target_linker_configured
+    // soldr#3276: `resolve_project_choice_from_cwd` is the one shared
+    // resolver -- it already implements the env > cargo-config >
+    // Cargo.toml-metadata > user-config > default precedence, including the
+    // soldr#3277 suppression for a project's own `.cargo/config.toml`
+    // linker/rustflags declaration (that case resolves to
+    // `LinkerChoice::Default`, source `CargoConfig`).
+    let selection = resolve_project_choice_from_cwd(Some(target), paths)?;
+    let automatic_fast = selection.source == LinkerSource::Default
         && std::env::var(PEP517_LINKER_POLICY_ENV)
             .ok()
             .is_some_and(|value| value.trim().eq_ignore_ascii_case("auto"));
     let choice = if automatic_fast {
         LinkerChoice::Fast
-    } else if no_explicit_request && project_target_linker_configured {
-        // soldr#3277: the project declared its own linker/rustflags for this
-        // target and nobody asked soldr for a specific one. Falling through to
-        // `from_env_and_config(None, None)` would hand back `Fast` — the reld
-        // default of soldr#3262 — and re-inject the very thing the
-        // `project_target_linker_configured` guard above exists to suppress,
-        // because a `CARGO_TARGET_<TRIPLE>_*` env var outranks the config file
-        // in Cargo. `Default` injects nothing, which is what docs/API.md
-        // promises ("Target-specific linker or rustflags settings from ...
-        // project `.cargo/config.toml` retain precedence").
-        LinkerChoice::Default
     } else {
-        from_env_and_config(explicit_env.as_deref(), explicit_config)?
+        selection.choice
     };
-    let mut injection = resolve_for_target(choice, target)?;
-    if matches!(choice, LinkerChoice::Reld) {
-        let reld = crate::fetch::ensure_reld(paths).await?;
+
+    let rustflags_already_declared =
+        selection.reld_cargo_config == Some(ReldCargoConfig::Rustflags);
+    let mut injection = if rustflags_already_declared {
+        // The project's own cargo config already drives a bare reld through
+        // rustflags; leave the environment untouched rather than layering a
+        // second, possibly-conflicting injection on top of it.
+        LinkerInjection::default()
+    } else {
+        resolve_for_target(choice, target)?
+    };
+    if choice == LinkerChoice::Reld && !rustflags_already_declared {
+        let reld = crate::fetch::ensure_reld(paths)
+            .await
+            .map_err(reld_fetch_error)?;
         inject_resolved_reld(&mut injection, &reld)?;
     }
     materialize_linker_driver_shim(paths, target, &mut injection)?;
@@ -543,22 +747,29 @@ fn project_root(start: &Path) -> PathBuf {
     start.to_path_buf()
 }
 
-/// Read `[target.<triple>] <key>` from the project's `.cargo/config.toml`
-/// (or legacy `.cargo/config`), resolving the project root from the current
-/// working directory.
-///
-/// Only exact-triple sections are recognised: cfg-spec sections such as
-/// `[target.'cfg(all())']` (used by this repo's `dylints/*` crates) are
-/// deliberately NOT detected and are out of scope for soldr#3277.
-pub(crate) fn project_target_config_value(target: &str, key: &str) -> Option<String> {
-    let current = std::env::current_dir().ok()?;
-    let root = project_root(&current);
-    target_config_value_in_root(&root, target, key)
+/// Read `[target.<triple>] <key>` from `root/.cargo/config.toml` (or legacy
+/// `.cargo/config`). Only exact-triple sections are recognised: cfg-spec
+/// sections such as `[target.'cfg(all())']` are deliberately NOT detected.
+#[cfg(test)]
+fn target_config_value_in_root(root: &Path, target: &str, key: &str) -> Option<String> {
+    let config_files: Vec<PathBuf> = [".cargo/config.toml", ".cargo/config"]
+        .iter()
+        .map(|relative| root.join(relative))
+        .collect();
+    target_config_value_in_files(&config_files, target, key)
 }
 
-fn target_config_value_in_root(root: &Path, target: &str, key: &str) -> Option<String> {
-    for relative in [".cargo/config.toml", ".cargo/config"] {
-        let path = root.join(relative);
+/// Read `[target.<triple>] <key>` from the first of `config_files` (in
+/// order) that exists, parses, and declares the key. Generalized out of
+/// `target_config_value_in_root` (soldr#3276) so callers can layer a
+/// project's `.cargo/config.toml` ahead of `$CARGO_HOME/config.toml`
+/// without duplicating the TOML-walk logic.
+fn target_config_value_in_files(
+    config_files: &[PathBuf],
+    target: &str,
+    key: &str,
+) -> Option<String> {
+    for path in config_files {
         let Ok(contents) = std::fs::read_to_string(path) else {
             continue;
         };
@@ -585,20 +796,6 @@ fn target_config_value_in_root(root: &Path, target: &str, key: &str) -> Option<S
         }
     }
     None
-}
-
-/// Whether the project's own `.cargo/config.toml` declares a linker or
-/// rustflags for `target`.
-///
-/// soldr#3277: Cargo gives the `CARGO_TARGET_<TRIPLE>_LINKER` / `_RUSTFLAGS`
-/// env vars precedence over the config file, so injecting soldr's *automatic*
-/// linker choice here would silently replace a linker the project declared
-/// for itself. An explicit `SOLDR_LINKER=` / `config.toml linker =` request is
-/// a user decision and still applies. Both the PEP 517 path and the
-/// `soldr cargo` front door must ask this one predicate.
-pub(crate) fn project_declares_target_linker(target: &str) -> bool {
-    project_target_config_value(target, "linker").is_some()
-        || project_target_config_value(target, "rustflags").is_some()
 }
 
 fn pep517_fallback_key(target: &str, injection: &LinkerInjection) -> Option<String> {
@@ -711,13 +908,19 @@ fn linker_candidate_identity(injection: &LinkerInjection) -> Vec<u8> {
 /// Extract the linker name from a `--ld-path=<name>` fragment of a
 /// `-C link-arg=...` rustflags value, if present.
 fn extract_ld_path(rustflags: &str) -> Option<&str> {
-    let marker = "--ld-path=";
-    let start = rustflags.find(marker)? + marker.len();
-    let end = rustflags[start..]
+    extract_flag_value(rustflags, "--ld-path=")
+}
+
+/// Extract the value following the first occurrence of `marker` in `text`,
+/// stopping at the next whitespace. Shared by `extract_ld_path` and the
+/// project-linker resolver's bare-`reld` detection (soldr#3276).
+fn extract_flag_value<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
+    let start = text.find(marker)? + marker.len();
+    let end = text[start..]
         .find(char::is_whitespace)
-        .map_or(rustflags.len(), |offset| start + offset);
-    let path = rustflags[start..end].trim();
-    (!path.is_empty()).then_some(path)
+        .map_or(text.len(), |offset| start + offset);
+    let value = text[start..end].trim();
+    (!value.is_empty()).then_some(value)
 }
 
 fn hash_field(hasher: &mut Sha256, name: &[u8], value: &[u8]) {
