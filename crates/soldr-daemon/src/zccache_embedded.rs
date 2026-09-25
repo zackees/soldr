@@ -959,6 +959,7 @@ fn scrub_compile_journal_file(path: &std::path::Path) -> std::io::Result<()> {
 mod legacy;
 pub(crate) use legacy::migrate_legacy_cache_root;
 pub use legacy::sweep_legacy_cache_roots;
+pub use legacy::{measure_retired_stores, RetiredStoresUsage};
 #[cfg(test)]
 use legacy::{derive_legacy_identity, select_legacy_candidate};
 

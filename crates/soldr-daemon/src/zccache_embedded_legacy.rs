@@ -265,6 +265,77 @@ pub fn sweep_legacy_cache_roots(
     report
 }
 
+/// Footprint of the retired version stores beside the current one (soldr#3329).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RetiredStoresUsage {
+    pub stores: u64,
+    pub bytes: u64,
+}
+
+/// Measure every retired `v<VERSION>` store under `embedded_root`, skipping
+/// `current_version_dir`. Read-only; follows no links, and a hardlinked file
+/// is counted once.
+pub fn measure_retired_stores(
+    embedded_root: &std::path::Path,
+    current_version_dir: &std::path::Path,
+) -> RetiredStoresUsage {
+    let mut usage = RetiredStoresUsage::default();
+    let Ok(entries) = std::fs::read_dir(embedded_root) else {
+        return usage;
+    };
+    let mut seen = std::collections::HashSet::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == current_version_dir
+            || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+            || !entry
+                .file_name()
+                .to_str()
+                .is_some_and(zccache::core::config::is_version_dir_name)
+        {
+            continue;
+        }
+        usage.stores += 1;
+        let mut pending = vec![path];
+        while let Some(dir) = pending.pop() {
+            let Ok(children) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for child in children.flatten() {
+                let Ok(metadata) = std::fs::symlink_metadata(child.path()) else {
+                    continue;
+                };
+                if crate::cache_lib::path_safety::is_link_or_reparse(&metadata) {
+                    continue;
+                }
+                if metadata.is_dir() {
+                    pending.push(child.path());
+                } else if metadata.is_file() && first_link_seen(&mut seen, &metadata) {
+                    usage.bytes = usage.bytes.saturating_add(metadata.len());
+                }
+            }
+        }
+    }
+    usage
+}
+
+#[cfg(unix)]
+fn first_link_seen(
+    seen: &mut std::collections::HashSet<(u64, u64)>,
+    m: &std::fs::Metadata,
+) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    m.nlink() <= 1 || seen.insert((m.dev(), m.ino()))
+}
+
+#[cfg(not(unix))]
+fn first_link_seen(
+    _seen: &mut std::collections::HashSet<(u64, u64)>,
+    _m: &std::fs::Metadata,
+) -> bool {
+    true
+}
+
 enum RetiredStoreRemoval {
     Removed,
     Live,
@@ -358,6 +429,26 @@ mod legacy_gc_tests {
         assert!(current.join("artifact").is_file());
         assert!(malformed.join("artifact").is_file());
         assert!(sibling_sentinel.is_file());
+    }
+
+    /// soldr#3329: the measurement counts retired stores and skips the current one.
+    #[test]
+    fn measure_retired_stores_skips_the_current_version_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let embedded = temp.path().join("embedded-v1");
+        let current = embedded.join(zccache::core::config::versioned_subdir());
+        let retired = embedded.join("v0.0.1");
+        std::fs::create_dir_all(current.join("nested")).unwrap();
+        std::fs::create_dir_all(retired.join("nested")).unwrap();
+        std::fs::write(current.join("nested/artifact"), vec![0u8; 4096]).unwrap();
+        std::fs::write(retired.join("nested/artifact"), vec![0u8; 1000]).unwrap();
+        std::fs::write(retired.join("top"), vec![0u8; 24]).unwrap();
+        std::fs::create_dir_all(embedded.join("vprivate")).unwrap();
+        std::fs::write(embedded.join("vprivate/x"), b"ignored").unwrap();
+
+        let usage = measure_retired_stores(&embedded, &current);
+
+        assert_eq!(usage, RetiredStoresUsage { stores: 1, bytes: 1024 });
     }
 
     /// soldr#3251: a retired store whose writer lock is held belongs to a

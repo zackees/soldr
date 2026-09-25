@@ -30,6 +30,10 @@ const FULL_ATTEMPT_MARKER: &str = "last-full-attempt-v1";
 /// store (soldr#3251). Each store pass scans the whole store, so it is throttled
 /// unless the store is already over its budget.
 const STORE_PASS_INTERVAL: Duration = Duration::from_secs(30 * 60);
+/// Consecutive build-deferred full passes after which a deferred full pass
+/// still runs its lease-free, build-safe work (soldr#3329). A deferred full
+/// pass is retried every pressure tick, so ~12 pressure ticks = 1h.
+const FULL_STARVATION_DEFERRALS: u32 = 12;
 
 #[derive(Clone)]
 pub struct MaintenanceContext {
@@ -84,6 +88,16 @@ pub struct MaintenanceStatus {
     pub workspace_targets: ComponentOutcome,
     pub daemon_events: ComponentOutcome,
     pub legacy_zccache: ComponentOutcome,
+    /// Bytes held by retired embedded zccache version stores, measured before
+    /// this pass swept them (soldr#3329). Retired stores sit beside the live
+    /// store, so `zccache.usage_before_bytes` alone understates the footprint.
+    #[serde(default)]
+    pub retired_store_bytes: Option<u64>,
+    #[serde(default)]
+    pub retired_store_count: Option<u64>,
+    /// Full passes deferred by an active build in a row (soldr#3329).
+    #[serde(default)]
+    pub consecutive_full_deferrals: u32,
 }
 
 impl MaintenanceStatus {
@@ -122,8 +136,20 @@ impl MaintenanceStatus {
             workspace_targets: ComponentOutcome::default(),
             daemon_events: ComponentOutcome::default(),
             legacy_zccache: ComponentOutcome::default(),
+            retired_store_bytes: None,
+            retired_store_count: None,
+            consecutive_full_deferrals: 0,
         }
     }
+}
+
+/// Record the retired-store footprint. Read-only, so it needs no lease.
+fn measure_retired(context: &MaintenanceContext, status: &mut MaintenanceStatus) {
+    let embedded_root = crate::zccache_embedded::embedded_cache_root(&context.paths);
+    let current = embedded_root.join(zccache::core::config::versioned_subdir());
+    let usage = crate::zccache_embedded::measure_retired_stores(&embedded_root, &current);
+    status.retired_store_bytes = Some(usage.bytes);
+    status.retired_store_count = Some(usage.stores);
 }
 
 pub fn status_path(paths: &SoldrPaths) -> PathBuf {
@@ -242,6 +268,13 @@ async fn run_once_with_lease_state(
     now: SystemTime,
 ) -> RunOnceOutcome {
     let mut status = MaintenanceStatus::new(context, kind, now);
+    let previous = read_status(&context.paths);
+    let previous_deferrals = previous
+        .as_ref()
+        .map_or(0, |previous| previous.consecutive_full_deferrals);
+    status.consecutive_full_deferrals = previous_deferrals;
+    // Measured before any sweep, so the report shows what the pass found.
+    measure_retired(context, &mut status);
     let _maintenance_lease =
         match crate::cache_lib::build_active::MaintenanceLease::try_acquire(&context.paths) {
             Ok(None) => {
@@ -250,7 +283,23 @@ async fn run_once_with_lease_state(
                 // (soldr#3251): on a host that is always building, deferring it
                 // too meant it never ran.
                 status.deferred_reason = Some("build_active".to_string());
-                if store_pass_due(read_status(&context.paths).as_ref(), now) {
+                let mut escape = false;
+                if kind == MaintenanceKind::Full {
+                    status.consecutive_full_deferrals = previous_deferrals.saturating_add(1);
+                    // soldr#3329: a continuously building host would defer the
+                    // full pass forever. At the threshold, run the build-safe
+                    // part unconditionally: the store pass and the retired-store
+                    // sweep, which proves death by the writer lock and removes
+                    // only nlink==1 files (#3365). The counter restarts so the
+                    // escape recurs once per threshold, not on every tick.
+                    if status.consecutive_full_deferrals >= FULL_STARVATION_DEFERRALS {
+                        escape = true;
+                        status.consecutive_full_deferrals = 0;
+                        status.deferred_reason =
+                            Some("build_active_starvation_escape".to_string());
+                    }
+                }
+                if escape || store_pass_due(previous.as_ref(), now) {
                     run_store_pass(context, kind, now, &mut status).await;
                 }
                 return RunOnceOutcome {
@@ -267,6 +316,9 @@ async fn run_once_with_lease_state(
             }
             Ok(Some(lease)) => lease,
         };
+    if kind == MaintenanceKind::Full {
+        status.consecutive_full_deferrals = 0;
+    }
 
     measure_store(context, kind == MaintenanceKind::Full, now, &mut status).await;
     let zccache_pressure = status
@@ -525,6 +577,11 @@ fn run_local_components(
     let config = paths.load_config();
     let policy_actions = daemon_policy_actions(config.as_ref().cloned().unwrap_or_default(), kind);
     let has_action = |id: &str| policy_actions.iter().any(|action| action.category_id == id);
+    // soldr#3329: retired stores have zero hit value, so they are reclaimed
+    // before any collector that evicts live cache content.
+    if let Some(legacy) = legacy_zccache_outcome(paths, kind, now, &policy_actions) {
+        out.legacy_zccache = legacy;
+    }
     match &config {
         Ok(config) if has_action("cook") => {
             let cook = crate::cache_lib::cook_gc::cook_evict_pass_with_absolute_age(
@@ -611,9 +668,6 @@ fn run_local_components(
             Ok(removed) => out.daemon_events.items_removed = removed,
             Err(error) => out.daemon_events.error = Some(error.to_string()),
         }
-    }
-    if let Some(legacy) = legacy_zccache_outcome(paths, kind, now, &policy_actions) {
-        out.legacy_zccache = legacy;
     }
     out
 }

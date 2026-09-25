@@ -560,7 +560,29 @@ fn status_attempted_at(attempted_at_ms: i64) -> MaintenanceStatus {
         workspace_targets: ComponentOutcome::default(),
         daemon_events: ComponentOutcome::default(),
         legacy_zccache: ComponentOutcome::default(),
+        retired_store_bytes: None,
+        retired_store_count: None,
+        consecutive_full_deferrals: 0,
     }
+}
+
+/// soldr#3329: a status file written before the retired-store and starvation
+/// fields existed still deserializes.
+#[test]
+fn old_status_json_without_retired_and_starvation_fields_deserializes() {
+    let mut legacy = serde_json::to_value(completed_pass(100, 1 << 30)).expect("encode");
+    let object = legacy.as_object_mut().expect("status object");
+    for field in [
+        "retired_store_bytes",
+        "retired_store_count",
+        "consecutive_full_deferrals",
+    ] {
+        assert!(object.remove(field).is_some(), "{field} must be serialized");
+    }
+    let decoded: MaintenanceStatus = serde_json::from_value(legacy).expect("old status decodes");
+    assert_eq!(decoded.retired_store_bytes, None);
+    assert_eq!(decoded.retired_store_count, None);
+    assert_eq!(decoded.consecutive_full_deferrals, 0);
 }
 
 fn completed_pass(attempted_at_ms: i64, usage_after_bytes: u64) -> MaintenanceStatus {
@@ -906,4 +928,114 @@ fn pressure_tick_expires_the_host_shaped_retired_store() {
             file.display()
         );
     }
+}
+
+/// soldr#3329: the status reports the retired stores beside the live one, so
+/// `usage_before_bytes` next to a huge retired store is never read alone.
+#[test]
+fn status_reports_retired_store_bytes() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("owned"));
+        std::fs::create_dir_all(&paths.root).expect("root");
+        let service = Arc::new(
+            SoldrZccacheService::start(&paths, &store_test_daemon_identity())
+                .await
+                .expect("start embedded zccache service"),
+        );
+        let retired = crate::zccache_embedded::embedded_cache_root(&paths).join("v0.0.1");
+        std::fs::create_dir_all(&retired).expect("retired store");
+        std::fs::write(retired.join("artifact"), vec![0u8; 4321]).expect("retired artifact");
+        let context = MaintenanceContext {
+            paths: paths.clone(),
+            db_path: crate::cache_lib::data_db_path(&paths),
+            compile_service: Arc::clone(&service),
+            shutdown: Arc::new(ShutdownSignal::default()),
+        };
+
+        let status = run_once(&context, MaintenanceKind::Pressure, SystemTime::now()).await;
+
+        assert_eq!(status.retired_store_bytes, Some(4321), "{status:?}");
+        assert_eq!(status.retired_store_count, Some(1), "{status:?}");
+
+        drop(context);
+        if let Ok(service) = Arc::try_unwrap(service) {
+            service
+                .shutdown(zccache::embedded::ShutdownMode::Graceful)
+                .await
+                .expect("shutdown");
+        }
+    });
+}
+
+/// soldr#3329: on a host that is always building, a full pass deferred
+/// `FULL_STARVATION_DEFERRALS` times in a row still runs its build-safe work.
+#[test]
+fn deferred_full_pass_escapes_starvation_after_threshold() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("owned"));
+        std::fs::create_dir_all(&paths.root).expect("root");
+        let service = Arc::new(
+            SoldrZccacheService::start(&paths, &store_test_daemon_identity())
+                .await
+                .expect("start embedded zccache service"),
+        );
+        let context = MaintenanceContext {
+            paths: paths.clone(),
+            db_path: crate::cache_lib::data_db_path(&paths),
+            compile_service: Arc::clone(&service),
+            shutdown: Arc::new(ShutdownSignal::default()),
+        };
+        let build = crate::cache_lib::build_active::BuildActivityLease::acquire(&paths, 7)
+            .expect("build lease");
+
+        for expected in 1..FULL_STARVATION_DEFERRALS {
+            let status = run_once(&context, MaintenanceKind::Full, SystemTime::now()).await;
+            assert_eq!(status.deferred_reason.as_deref(), Some("build_active"));
+            assert_eq!(status.consecutive_full_deferrals, expected, "{status:?}");
+            persist_status(&paths, status).expect("persist");
+        }
+
+        // A retired store with no writer lock: its service is dead. Created only
+        // now so the earlier throttled store passes cannot have swept it.
+        let retired = crate::zccache_embedded::embedded_cache_root(&paths).join("v0.0.1");
+        std::fs::create_dir_all(&retired).expect("retired store");
+        std::fs::write(retired.join("artifact"), b"payload").expect("retired artifact");
+        age_tree(
+            &retired,
+            30 * 24 * 60 * 60 * Duration::from_secs(1) + Duration::from_secs(60),
+        );
+
+        let status = run_once(&context, MaintenanceKind::Full, SystemTime::now()).await;
+
+        assert_eq!(
+            status.deferred_reason.as_deref(),
+            Some("build_active_starvation_escape"),
+            "{status:?}"
+        );
+        assert_eq!(status.successful_at_ms, None, "collectors stay deferred");
+        assert!(status.zccache_measured_at_ms.is_some(), "{status:?}");
+        assert_eq!(status.legacy_zccache.items_removed, 1, "{status:?}");
+        assert!(!retired.exists());
+
+        drop(build);
+        drop(context);
+        if let Ok(service) = Arc::try_unwrap(service) {
+            service
+                .shutdown(zccache::embedded::ShutdownMode::Graceful)
+                .await
+                .expect("shutdown");
+        }
+    });
 }
