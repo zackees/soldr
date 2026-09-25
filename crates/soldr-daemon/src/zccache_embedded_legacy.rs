@@ -448,7 +448,13 @@ mod legacy_gc_tests {
 
         let usage = measure_retired_stores(&embedded, &current);
 
-        assert_eq!(usage, RetiredStoresUsage { stores: 1, bytes: 1024 });
+        assert_eq!(
+            usage,
+            RetiredStoresUsage {
+                stores: 1,
+                bytes: 1024
+            }
+        );
     }
 
     /// soldr#3251: a retired store whose writer lock is held belongs to a

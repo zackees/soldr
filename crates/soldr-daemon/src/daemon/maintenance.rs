@@ -295,8 +295,7 @@ async fn run_once_with_lease_state(
                     if status.consecutive_full_deferrals >= FULL_STARVATION_DEFERRALS {
                         escape = true;
                         status.consecutive_full_deferrals = 0;
-                        status.deferred_reason =
-                            Some("build_active_starvation_escape".to_string());
+                        status.deferred_reason = Some("build_active_starvation_escape".to_string());
                     }
                 }
                 if escape || store_pass_due(previous.as_ref(), now) {
