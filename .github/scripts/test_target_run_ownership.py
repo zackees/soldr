@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -703,6 +705,32 @@ class TargetRunOwnershipTests(unittest.TestCase):
         )
 
         ownership.validate_source_ownership(declared, repo_root)
+
+    def test_repository_selectors_name_tests_that_exist(self) -> None:
+        # A renamed test leaves its selector matching nothing, which only the
+        # full-mode target-run lanes discover (soldr#3366 renamed
+        # legacy_sweep_retains_version_with_unreadable_linked_tree). Catch it
+        # here, against the sources, on every run.
+        repo_root = Path(__file__).resolve().parents[2]
+        manifest = json.loads(
+            (repo_root / "ci" / "target-run-ownership.json").read_text(encoding="utf-8")
+        )
+        sources = "\n".join(
+            path.read_text(encoding="utf-8", errors="replace")
+            for path in (repo_root / "crates").rglob("*.rs")
+        )
+        stale = [
+            selector["id"]
+            for entries in manifest.values()
+            if isinstance(entries, list)
+            for selector in entries
+            if isinstance(selector, dict) and "test_name" in selector
+            if not re.search(
+                rf"\bfn\s+{re.escape(selector['test_name'].split('::')[-1])}\b",
+                sources,
+            )
+        ]
+        self.assertEqual(stale, [], "selectors naming tests that no longer exist")
 
     def test_filter_only_matches_the_expression_build_selection_would_emit(
         self,
