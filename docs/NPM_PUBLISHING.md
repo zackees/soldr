@@ -43,10 +43,13 @@ The npm postinstall picks the Linux artifact with `detectLibc()` in
    before staging and therefore also runs correctly on glibc hosts.
 
 `MIN_GLIBC_FOR_GNU` is currently `2.39`. It is kept in lockstep with the
-`--max-glibc` ceiling that `release-auto.yml` passes to
-`.github/scripts/verify_glibc_baseline.py` by an assertion in
-`scripts/test-npm-package.js`: when the release build moves to a 2.17
-baseline, the installer constant follows it down.
+`--max-glibc` ceiling that `release-auto.yml` passes to the bundled-archive
+check (`verify_release_bundle.py --check glibc-baseline`) by an assertion in
+`scripts/test-npm-package.js`. It tracks the archive rather than soldr's own
+binary: `soldr` and `soldr-daemon` already need only glibc 2.17, but the
+bundled prebuilt `crgx` and `cargo-chef` still need 2.39. When those are
+rebuilt against 2.17 and the bundle ceiling drops, the installer constant
+follows it down.
 
 soldr#1060 adds a sibling-libc retry on top of that selection. The installer
 builds an ordered candidate list, and if the selected artifact fails for any

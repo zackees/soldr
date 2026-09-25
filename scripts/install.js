@@ -43,19 +43,16 @@ const BUNDLED_BINARIES = zccacheContract.RELEASE_BUNDLED_BINARIES;
 // The lowest glibc a host must have before the `-gnu` artifact is worth
 // downloading (soldr#1060).
 //
-// This tracks release-auto.yml's OWN-BINARY glibc ceiling specifically
-// (test-npm-package.js's lockstep check is anchored on the
-// `verify_glibc_baseline.py` invocation, not the bundled-archive one --
-// see that file for why). As of soldr#1060's glibc-2.17 pass, both -gnu
-// legs build through soldr's blessed `soldr build` surface, which routes
-// host-native gnu builds through the managed glibc-2.17 sysroot
-// (soldr#2145/#2609), so soldr's own binary genuinely runs starting at
-// glibc 2.17 -- verified end-to-end inside a manylinux2014 (glibc 2.17)
-// container, not just via the static symbol check.
+// This tracks release-auto.yml's BUNDLED-ARCHIVE glibc ceiling
+// (`verify_release_bundle.py --check glibc-baseline`), because the installer
+// downloads the whole archive. soldr's own binaries reach glibc 2.17 through
+// the managed sysroot (soldr#1060, verified in manylinux2014), but the
+// archive also ships prebuilt `crgx` and `cargo-chef` from soldr-toolchain,
+// which measure GLIBC_2.39. Until those are rebuilt against 2.17, a host
+// below 2.39 must get the musl archive, whose tools all run.
 //
-// Kept in lockstep with the `--max-glibc` ceiling in release-auto.yml by a
-// check in test-npm-package.js.
-const MIN_GLIBC_FOR_GNU = "2.17";
+// Kept in lockstep with that ceiling by a check in test-npm-package.js.
+const MIN_GLIBC_FOR_GNU = "2.39";
 
 function compareVersions(left, right) {
   // Numeric, part by part. A lexical compare would rank "2.9" above "2.39"
