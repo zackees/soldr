@@ -1347,7 +1347,10 @@ jobs:
           path: dist
       - name: Live SOLDR_LINKER=reld fetch + link probe
         run: |
-          chmod +x dist/package/soldr
+          # soldr's own daemon spawn needs the sidecar binary executable too
+          # (soldr#3276 §6 CI iteration: a daemon spawn "Permission denied"
+          # on macOS traced back to only `soldr` itself being chmod +x'd).
+          chmod +x dist/package/soldr dist/package/soldr-daemon
           uv run --no-project --python 3.13 python \
             ci/reld_live_fetch_probe.py --soldr-bin dist/package/soldr
 

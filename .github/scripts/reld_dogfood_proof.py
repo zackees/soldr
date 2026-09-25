@@ -34,6 +34,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 
 # A `-C linker=<path>` value soldr injects must always be an absolute path:
 # either the content-addressed clang driver shim (Linux) or the direct
@@ -62,14 +63,22 @@ def parse_args() -> argparse.Namespace:
 
 
 def force_rebuild(repo_root: pathlib.Path) -> None:
-    """Touch the CLI binary's entry point so the link step always reruns.
+    """Change the CLI binary's entry point so the link step always reruns.
 
-    Without this, an already-cached final link produces zero rustc
+    A bare `touch()` is not reliable here: soldr's own compile cache keys on
+    content (blake3), and in CI this script typically runs immediately after
+    a step that already built the same package, so cargo's own fingerprint
+    may also see nothing new to do. Appending a harmless, uniquely-timestamped
+    comment changes the file's content hash, guaranteeing both cargo and
+    soldr's cache see a real change and actually re-invoke rustc for the
+    final link -- without it, an already-cached build produces zero rustc
     invocations under `-v` and the proof would vacuously "pass" by finding
     nothing to check.
     """
     entry = repo_root / "crates" / "soldr-cli" / "src" / "main.rs"
-    entry.touch()
+    marker = f"\n// reld_dogfood_proof cache-bust: {time.time_ns()}\n"
+    with entry.open("a", encoding="utf-8") as handle:
+        handle.write(marker)
 
 
 def run_verbose_build(

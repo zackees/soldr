@@ -54,7 +54,13 @@ def main() -> int:
     home = pathlib.Path.home()
     before = set(find_reld_under(home))
 
-    with tempfile.TemporaryDirectory(prefix="soldr-reld-live-probe-") as tmp:
+    # `ignore_cleanup_errors=True`: soldr's daemon can still hold an open
+    # handle inside this directory on Windows when the `with` block exits,
+    # which otherwise raises `PermissionError` during cleanup and masks
+    # whatever real failure (or success) happened above it.
+    with tempfile.TemporaryDirectory(
+        prefix="soldr-reld-live-probe-", ignore_cleanup_errors=True
+    ) as tmp:
         project = pathlib.Path(tmp) / "probe"
         project.mkdir()
         (project / "Cargo.toml").write_text(
@@ -84,9 +90,12 @@ def main() -> int:
             timeout=600,
             check=False,
         )
+        # Always surface the build's own output: a returncode of 0 with a
+        # missing binary is just as diagnosable as a nonzero returncode, and
+        # printing only on the latter hid the real cause once already.
+        print(result.stdout, file=sys.stderr)
+        print(result.stderr, file=sys.stderr)
         if result.returncode != 0:
-            print(result.stdout, file=sys.stderr)
-            print(result.stderr, file=sys.stderr)
             raise SystemExit(
                 "reld_live_fetch_probe: SOLDR_LINKER=reld build of a scratch crate "
                 f"failed (exit {result.returncode}) on this host."
@@ -96,7 +105,8 @@ def main() -> int:
         built_bin = project / "target" / "debug" / f"reld-live-probe{exe_suffix}"
         if not built_bin.is_file():
             raise SystemExit(
-                f"reld_live_fetch_probe: expected linked binary missing: {built_bin}"
+                f"reld_live_fetch_probe: expected linked binary missing: {built_bin} "
+                f"(build exited {result.returncode} with no reported error)"
             )
         run_result = subprocess.run(
             [str(built_bin)], capture_output=True, text=True, timeout=30, check=False
