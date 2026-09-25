@@ -24,8 +24,14 @@ pub enum Driver {
 }
 
 /// Static cost-to-restore ordering. Lower tiers are evicted first.
+///
+/// `LegacyRoot` is the lowest tier: retired/legacy zccache stores are never
+/// read again, so they have zero restore value and are evicted before
+/// everything else, including scratch space and the live compile cache
+/// (soldr#3329).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CostTier {
+    LegacyRoot,
     Scratch,
     Trash,
     NetworkRefetch,
@@ -35,7 +41,6 @@ pub enum CostTier {
     CookArtifact,
     WorkspaceTarget,
     CompileCache,
-    LegacyRoot,
 }
 
 /// Where a category records its last use. This is descriptive in v1; the
@@ -355,6 +360,7 @@ mod tests {
         assert_eq!(
             ids,
             vec![
+                "legacy_zccache",
                 "trash",
                 "daemon_events",
                 "history",
@@ -363,7 +369,6 @@ mod tests {
                 "cook",
                 "workspace_targets",
                 "zccache_compile",
-                "legacy_zccache",
             ]
         );
     }
@@ -444,5 +449,14 @@ mod tests {
                 "workspace_targets",
             ]
         );
+    }
+
+    #[test]
+    fn legacy_root_is_evicted_before_live_compile_cache() {
+        assert!(CostTier::LegacyRoot < CostTier::CompileCache);
+        assert!(CostTier::LegacyRoot < CostTier::Scratch);
+        let mut categories = registry();
+        categories.sort_by_key(|category| category.cost_tier);
+        assert_eq!(categories[0].id, "legacy_zccache");
     }
 }
