@@ -360,9 +360,9 @@ assert.strictEqual(
 }
 
 // MIN_GLIBC_FOR_GNU must track the ceiling release-auto.yml enforces on the
-// gnu BINARIES. If the release build is fixed to link a 2.17 baseline and that
-// ceiling drops, the installer must follow it down -- otherwise every glibc
-// host below 2.39 keeps being sent to musl long after gnu would work.
+// gnu ARCHIVE (see the lockstep assertion below). When that ceiling drops,
+// the installer must follow it down -- otherwise glibc hosts keep being sent
+// to musl long after gnu would work -- and it must never go below it.
 //
 // Anchored on the script name rather than on any `--max-glibc`. release-auto
 // now passes that flag twice: 2.39 to verify_glibc_baseline.py for the
@@ -451,17 +451,23 @@ const releaseWorkflow = fs.readFileSync(
   path.join(root, ".github", "workflows", "release-auto.yml"),
   "utf8",
 );
-const binaryCeiling = glibcCeilingFor(releaseWorkflow, "verify_glibc_baseline.py");
+// The installer downloads the whole -gnu ARCHIVE, not just soldr's own
+// binary, so its floor must be the ceiling release-auto.yml enforces on the
+// bundle (`verify_release_bundle.py --check glibc-baseline`), which also
+// covers the prebuilt `crgx` / `cargo-chef` fetched from soldr-toolchain.
+// Tracking the own-binary ceiling instead (2.17 since soldr#1060) would send
+// glibc 2.17-2.38 hosts an archive whose bundled tools need 2.39.
+const bundleCeiling = glibcCeilingFor(releaseWorkflow, "--check glibc-baseline");
 assert(
-  binaryCeiling,
-  "release-auto.yml must pass --max-glibc to verify_glibc_baseline.py",
+  bundleCeiling,
+  "release-auto.yml must pass --max-glibc to the bundled glibc-baseline check",
 );
 assert.strictEqual(
   install.MIN_GLIBC_FOR_GNU,
-  binaryCeiling,
+  bundleCeiling,
   `install.js MIN_GLIBC_FOR_GNU (${install.MIN_GLIBC_FOR_GNU}) must match the ` +
-    `--max-glibc ceiling verify_glibc_baseline.py enforces in release-auto.yml ` +
-    `(${binaryCeiling})`,
+    `--max-glibc ceiling release-auto.yml enforces on the bundled -gnu archive ` +
+    `(${bundleCeiling})`,
 );
 
 assert.strictEqual(
