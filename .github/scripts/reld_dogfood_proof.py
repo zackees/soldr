@@ -137,10 +137,12 @@ def main() -> int:
 
     invocations = final_link_invocations(build_log, "soldr")
     if not invocations:
+        print(build_log, file=sys.stderr)
         raise SystemExit(
             "reld_dogfood_proof: no `--crate-type bin` rustc invocation was "
             "captured under `-v` -- the build may have been fully cached. "
-            "This script must run against a build that actually relinks."
+            "This script must run against a build that actually relinks. "
+            "(full build log printed above for diagnosis)"
         )
 
     failures: list[str] = []
