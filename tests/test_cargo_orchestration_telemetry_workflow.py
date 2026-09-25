@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 from pathlib import Path
 
 from conftest import load_script_module
@@ -20,11 +21,11 @@ def test_driver_fixes_the_requested_one_two_eight_matrix(tmp_path: Path) -> None
 
     arguments = matrix.matrix_arguments(source_soldr, evidence)
 
-    assert matrix.BASELINE_JOBS == "1,2"
+    assert matrix.BASELINE_JOBS == "1,2,auto"
     assert matrix.RAISED_JOBS == 8
     assert arguments[:5] == [
         "--jobs",
-        "1,2",
+        "1,2,auto",
         "--raised-jobs",
         "8",
         "--allow-raised-count",
@@ -38,6 +39,15 @@ def test_driver_fixes_the_requested_one_two_eight_matrix(tmp_path: Path) -> None
     ]
     assert str(evidence / "telemetry.json") in arguments
     assert str(evidence / "cases") in arguments
+
+
+def test_upload_glob_also_covers_the_jobs_auto_case_directory() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    upload = workflow[
+        workflow.index("- name: Upload Cargo orchestration telemetry evidence") :
+    ]
+    assert "cases/jobs-*/command.log" in upload
+    assert fnmatch.fnmatch("cases/jobs-auto/command.log", "cases/jobs-*/command.log")
 
 
 def test_workflow_is_dispatch_only_and_is_not_a_perf_matrix_hook() -> None:

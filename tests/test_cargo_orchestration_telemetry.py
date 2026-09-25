@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -238,6 +239,129 @@ def test_summary_uses_sampled_peak_not_only_post_failure_state() -> None:
     assert maxima["max_toolchain_processes"] == 7
 
 
+def test_parse_jobs_accepts_auto_alongside_positive_ints_and_dedupes() -> None:
+    assert telemetry.parse_jobs("1,auto,2,auto") == [1, "auto", 2]
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        telemetry.parse_jobs("bogus")
+
+
+def test_run_case_auto_removes_job_env_and_marks_the_telemetry_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CARGO_BUILD_JOBS", "4")
+    monkeypatch.setenv("SOLDR_JOBS", "4")
+    cgroup = write_cgroup(
+        tmp_path / "cgroup",
+        memory_current="1\n",
+        memory_peak="1\n",
+        memory_swap_current="0\n",
+        pids_current="1\n",
+        memory_events="oom_kill 0\n",
+    )
+    case_root = tmp_path / "jobs-auto"
+    expression = (
+        "import os; "
+        "assert 'CARGO_BUILD_JOBS' not in os.environ; "
+        "assert 'SOLDR_JOBS' not in os.environ; "
+        "print(os.environ['SOLDR_CI_ORCHESTRATION_TELEMETRY_JOBS'])"
+    )
+
+    result = telemetry.run_case(
+        "auto",
+        [sys.executable, "-c", expression],
+        case_root=case_root,
+        cgroup_root=cgroup,
+        interval_seconds=0.001,
+    )
+
+    assert result["returncode"] == 0
+    assert result["requested_jobs"] == "auto"
+    assert (case_root / "command.log").read_text(encoding="utf-8") == "auto\n"
+
+
+def test_run_case_explicit_int_still_stamps_cargo_build_jobs(
+    tmp_path: Path,
+) -> None:
+    cgroup = write_cgroup(
+        tmp_path / "cgroup",
+        memory_current="1\n",
+        memory_peak="1\n",
+        memory_swap_current="0\n",
+        pids_current="1\n",
+        memory_events="oom_kill 0\n",
+    )
+    case_root = tmp_path / "jobs-3"
+    expression = "import os; print(os.environ['CARGO_BUILD_JOBS'])"
+
+    result = telemetry.run_case(
+        3,
+        [sys.executable, "-c", expression],
+        case_root=case_root,
+        cgroup_root=cgroup,
+        interval_seconds=0.001,
+    )
+
+    assert result["requested_jobs"] == 3
+    assert (case_root / "command.log").read_text(encoding="utf-8") == "3\n"
+
+
+def test_classify_failure_phase() -> None:
+    assert telemetry.classify_failure_phase(0, False, None) == "none"
+    assert telemetry.classify_failure_phase(1, False, None) == "pre_compiler"
+    assert telemetry.classify_failure_phase(1, False, 12) == "compiler"
+    assert telemetry.classify_failure_phase(0, True, None) == "pre_compiler"
+
+
+def test_log_reports_enomem(tmp_path: Path) -> None:
+    clean = tmp_path / "clean.log"
+    clean.write_text("build succeeded\n", encoding="utf-8")
+    assert not telemetry.log_reports_enomem(clean)
+
+    noisy = tmp_path / "noisy.log"
+    noisy.write_text(
+        "failed to spawn: Cannot allocate memory (os error 12)\n", encoding="utf-8"
+    )
+    assert telemetry.log_reports_enomem(noisy)
+
+    assert not telemetry.log_reports_enomem(tmp_path / "missing.log")
+
+
+def test_run_case_classifies_pre_compiler_enomem_failure(tmp_path: Path) -> None:
+    cgroup = write_cgroup(
+        tmp_path / "cgroup",
+        memory_current="1\n",
+        memory_peak="1\n",
+        memory_swap_current="0\n",
+        pids_current="1\n",
+        memory_events="oom_kill 0\n",
+    )
+    case_root = tmp_path / "jobs-1"
+    # An empty fake /proc keeps unrelated host compilers (e.g. a concurrent
+    # ci-test rustc) from being counted as this case's compiler phase.
+    empty_proc = tmp_path / "proc"
+    empty_proc.mkdir()
+    expression = (
+        "import sys; "
+        "print('failed to spawn: Cannot allocate memory (os error 12)'); "
+        "sys.exit(101)"
+    )
+
+    result = telemetry.run_case(
+        1,
+        [sys.executable, "-c", expression],
+        case_root=case_root,
+        cgroup_root=cgroup,
+        proc_root=empty_proc,
+        interval_seconds=0.001,
+    )
+
+    assert result["returncode"] == 101
+    assert result["first_compiler_offset_ms"] is None
+    assert result["failure_phase"] == "pre_compiler"
+    assert result["enomem_in_log"] is True
+
+
 def test_markdown_includes_the_required_cross_run_metrics() -> None:
     rendered = telemetry.format_markdown(
         [
@@ -261,4 +385,6 @@ def test_markdown_includes_the_required_cross_run_metrics() -> None:
     assert "max current" in rendered
     assert "max PIDs" in rendered
     assert "max Cargo/compiler/tools" in rendered
-    assert "| 8 | 1 | 1234 ms | 9 | 12 | 2/3/6 | 1 |" in rendered
+    assert "phase" in rendered
+    assert "ENOMEM" in rendered
+    assert "| 8 | 1 | ? | no | 1234 ms | 9 | 12 | 2/3/6 | 1 |" in rendered

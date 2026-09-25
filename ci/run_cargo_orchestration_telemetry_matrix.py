@@ -3,10 +3,11 @@
 
 This is deliberately a small dispatch-workflow adapter around
 ``cargo_orchestration_telemetry.py``.  It fixes the comparison at N=1, N=2,
-and N=8, while the lower-level runner owns fresh case directories, cgroup
-sampling, command logs, and the failure result.  Keeping that control flow in
-Python lets the Actions workflow remain an auditable setup/execute/upload
-sequence rather than embedding resource orchestration in YAML.
+auto, and N=8, while the lower-level runner owns fresh case directories,
+cgroup sampling, command logs, and the failure result.  Keeping that control
+flow in Python lets the Actions workflow remain an auditable
+setup/execute/upload sequence rather than embedding resource orchestration in
+YAML.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-BASELINE_JOBS = "1,2"
+BASELINE_JOBS = "1,2,auto"
 RAISED_JOBS = 8
 SOURCE_DIR = Path(__file__).resolve().parent
 TELEMETRY_SCRIPT = SOURCE_DIR / "cargo_orchestration_telemetry.py"
@@ -38,7 +39,7 @@ def load_telemetry_runner(path: Path = TELEMETRY_SCRIPT) -> ModuleType:
 
 
 def matrix_arguments(source_soldr: Path, evidence_root: Path) -> list[str]:
-    """Construct the invariant N=1/N=2/N=8 source-Soldr check invocation."""
+    """Construct the invariant N=1/N=2/auto/N=8 source-Soldr check invocation."""
     return [
         "--jobs",
         BASELINE_JOBS,
