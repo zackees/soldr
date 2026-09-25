@@ -24,6 +24,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,6 +104,14 @@ def main() -> int:
 
         exe_suffix = ".exe" if os.name == "nt" else ""
         built_bin = project / "target" / "debug" / f"reld-live-probe{exe_suffix}"
+        # Cargo's own "Finished" line can print slightly before the daemon-
+        # cached artifact is fully materialized at its final path on
+        # Windows; give it a few seconds rather than failing on what may
+        # just be a staging race.
+        for _ in range(20):
+            if built_bin.is_file():
+                break
+            time.sleep(0.5)
         if not built_bin.is_file():
             raise SystemExit(
                 f"reld_live_fetch_probe: expected linked binary missing: {built_bin} "
