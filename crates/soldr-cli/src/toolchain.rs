@@ -120,24 +120,41 @@ pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, S
     };
     std::fs::create_dir_all(&cache_root)?;
     let cwd = std::env::current_dir()?;
+    // soldr#2877: snapshot explicitly named source files before the daemon
+    // lease is acquired, so a killed formatter child cannot be mistaken for
+    // a clean failure.
+    let snapshot = crate::rustfmt_admission::SourceSnapshot::capture(args, &cwd);
+    let controller = crate::rustfmt_admission::DaemonRustfmtLeaseController {
+        permits: crate::rustfmt_admission::RUSTFMT_RESIDENT_PERMITS,
+    };
     // soldr#2899: the daemon-free `formatter` API, not the CLI dispatcher.
     // Soldr keeps ownership of child-process policy through the runner.
-    zccache::formatter::run_rustfmt_cached_with_runner(
-        &rustfmt,
-        args,
-        &cwd,
-        Some(&cache_root),
-        |command| {
-            crate::binaries::apply_resolved_toolchain_homes(command, &rustfmt);
-            apply_zccache_child_env(command)
-                .map_err(|err| std::io::Error::other(err.to_string()))?;
-            suppress_windows_console_window(command);
-            let status = run_toolchain_command(command, "embedded rustfmt formatter")
-                .map_err(|err| std::io::Error::other(err.to_string()))?;
-            Ok(status.code().unwrap_or(1))
-        },
-    )
-    .map_err(SoldrError::from)
+    let result = crate::rustfmt_admission::with_rustfmt_lease(&controller, || {
+        zccache::formatter::run_rustfmt_cached_with_runner(
+            &rustfmt,
+            args,
+            &cwd,
+            Some(&cache_root),
+            |command| {
+                crate::binaries::apply_resolved_toolchain_homes(command, &rustfmt);
+                apply_zccache_child_env(command)
+                    .map_err(|err| std::io::Error::other(err.to_string()))?;
+                suppress_windows_console_window(command);
+                let status = run_toolchain_command(command, "embedded rustfmt formatter")
+                    .map_err(|err| std::io::Error::other(err.to_string()))?;
+                Ok(status.code().unwrap_or(1))
+            },
+        )
+    });
+
+    let succeeded = matches!(result, Ok(0));
+    if let Err(err) = snapshot.restore_if_damaged(succeeded) {
+        eprintln!(
+            "soldr rustfmt: failed to verify source integrity after formatter failure: {err}"
+        );
+    }
+
+    result.map_err(SoldrError::from)
 }
 
 /// Run rustdoc directly. zccache currently has rustc/clippy-driver

@@ -119,6 +119,17 @@ recursive invocations always execute the real formatter. The embedded marker
 shortcut is used only when the invocation explicitly sets
 `skip_children=true`, making the source-file set complete and safe to cache.
 
+Each cached rustfmt child holds one permit of the daemon's resident
+compile-capacity lease for the duration of its run (soldr#2877), so a large
+`cargo fmt` fan-out is bounded by the same effective `SOLDR_JOBS` /
+`[jobs] max_parallel_compiles` capacity the compiler admission gate already
+enforces, with no separate global job cap. The lease is best-effort: if the
+daemon is unreachable, formatting proceeds unleased with a warning rather than
+failing the format. Set `SOLDR_RUSTFMT_ADMISSION_TRACE=1` to print the
+admission line for each lease acquire/release. Source files named explicitly
+on the command line are snapshotted before the formatter runs and restored if
+a failed formatter leaves any of them empty or unreadable.
+
 Resolution order:
 
 1. **Cargo verb shorthand** — if `<tool>` (with no `@<version>` suffix) is either a cargo subcommand soldr already prebuilds (`nextest`, `deny`, `audit`, ...) OR one of cargo's own first-party verbs (`build`, `test`, `clippy`, ...), the invocation is rewritten as `soldr cargo <tool> [args...]` and dispatched through the cargo front door. See [Cargo Verb Shorthand](#cargo-verb-shorthand) below for the full list.
@@ -2275,6 +2286,7 @@ Commands:
 | `SOLDR_SAVE_PROFILE` | Default payload profile for `soldr save` when `--ci` / `--minimal` is not passed. Values: `full`/`default`/`complete` for historical all-files archives; `ci`/`minimal` for the CI/minimal profile that excludes runtime-only files, zccache runtime binaries, and reports `excluded_files` / `excluded_bytes`; or `cook` for archiving a cargo **target directory's dependency graph** while dropping the linked products soldr#2931 classifies tier 3. CLI flags win over the env var. | `full` |
 | `ZCCACHE_CACHE_DIR` | Auxiliary zccache front-door/session and direct-rustfmt cache-root override. It does not relocate the compiler service embedded in `soldr-daemon`; use `SOLDR_CACHE_DIR` for that. `soldr cargo ...` ignores inherited values by default so stale workspace state from setup/action wrappers cannot bleed across projects; pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only when intentionally injecting this state. | unset |
 | `ZCCACHE_SESSION_ID` | Per-build zccache session identifier set by soldr | unset |
+| `SOLDR_RUSTFMT_ADMISSION_TRACE` | Truthy values print the daemon resident-permit lease acquire/release line for each cached `rustfmt` child (soldr#2877). | unset |
 | `SOLDR_NATIVE_CACHE` | Native C/C++ compiler cache toggle. Falsy values (`0`/`false`/`no`/`off`) disable only cc-rs `CC`/`CXX` wrapper injection, leaving rustc-side zccache enabled. Useful when a target cross compiler, such as the managed MinGW `gcc.exe` / `g++.exe` path, must run directly while Rust compilation still uses the cache. | unset (on) |
 | `SOLDR_CARGO_WAIT_TIMEOUT_SECS` | Opt-in wall-clock watchdog for the Cargo child. Normal `soldr Cargo ...` invocations have no Soldr-imposed wall-clock deadline and may run for hours. A timeout terminates the process tree, records abort diagnostics, and returns failure without changing compile topology. | unset (no deadline) |
 | `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` | Overrides the compile-dispatch reply timeout. Default is 30 min so a legitimate slow release compile is never cut off; set a small value (e.g. `30`) to fail fast instead of waiting out the backstop if the daemon stops responding. `0`/empty/unparseable falls back to the default. | 1800 |
