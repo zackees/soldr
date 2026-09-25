@@ -315,6 +315,8 @@ pub(crate) mod host_pressure;
 pub mod install;
 pub mod install_shims;
 pub mod linker;
+pub mod linker_project;
+pub mod linker_shim;
 /// soldr#2038 - extensible CI/build-surface policy engine (`soldr lint ci`).
 pub mod lint_ci;
 /// soldr#820 — `soldr logs` discoverable runtime-log surface.
@@ -371,6 +373,7 @@ pub mod toolchain;
 pub mod toolchain_doctor;
 pub mod toolchain_ensure;
 pub mod toolchain_link;
+pub(crate) mod toolchain_prepare;
 pub mod toolchain_readiness;
 pub mod trampoline;
 /// soldr#2024 — the `--as <version>` trampoline, split out of

@@ -2,6 +2,7 @@
 //! production-source ceiling.
 
 use super::*;
+use crate::linker_shim::render_windows_linker_driver_shim;
 
 const LINUX: &str = "x86_64-unknown-linux-gnu";
 const LINUX_MUSL: &str = "x86_64-unknown-linux-musl";

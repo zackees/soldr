@@ -15,10 +15,20 @@ pub const MANAGED_RELD_VERSION: &str = "0.1.0";
 /// Explicit local development override. It must name an absolute executable.
 pub const RELD_BIN_ENV_VAR: &str = "SOLDR_RELD_BIN";
 
-struct ReleaseAsset {
-    triple: &'static str,
-    extension: &'static str,
-    sha256: &'static str,
+/// Overrides the `https://github.com/zackees/reld/releases/download` prefix
+/// used to build the release download URL. Test-only seam (soldr#3276 §2):
+/// lets an integration test point `ensure_reld` at a local HTTP fixture
+/// instead of live GitHub, while going through the exact same
+/// download -> verify -> extract -> stamp -> reuse path production uses.
+/// This does not weaken trust: the sha256 pin is still enforced by
+/// `download_and_extract_with_pin`, it is just supplied by the caller
+/// instead of the built-in release table (see `ensure_reld_from`).
+pub const RELD_BASE_URL_ENV_VAR: &str = "SOLDR_RELD_BASE_URL_OVERRIDE";
+
+pub(crate) struct ReleaseAsset {
+    pub(crate) triple: &'static str,
+    pub(crate) extension: &'static str,
+    pub(crate) sha256: &'static str,
 }
 
 /// Resolve a verified host executable for an explicit `reld` selection.
@@ -27,11 +37,26 @@ pub async fn ensure_reld(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
         return Ok(path);
     }
 
-    let host = TargetTriple::host()?;
     let asset = release_asset_for(
         crate::platform::host::facts::os(),
         crate::platform::host::facts::arch(),
     )?;
+    let base_url = std::env::var(RELD_BASE_URL_ENV_VAR)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "https://github.com/zackees/reld/releases/download".to_string());
+    ensure_reld_from(paths, &base_url, &asset).await
+}
+
+/// Core of [`ensure_reld`] with the release base URL and asset (name +
+/// pinned sha256) injected, so both production and tests share the exact
+/// download/verify/extract/stamp/reuse logic.
+pub(crate) async fn ensure_reld_from(
+    paths: &SoldrPaths,
+    base_url: &str,
+    asset: &ReleaseAsset,
+) -> Result<PathBuf, SoldrError> {
+    let host = TargetTriple::host()?;
     let binary = managed_binary_path(paths);
     if binary.is_file() {
         return Ok(binary);
@@ -41,9 +66,7 @@ pub async fn ensure_reld(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
         "reld-v{MANAGED_RELD_VERSION}-{}.{}",
         asset.triple, asset.extension
     );
-    let url = format!(
-        "https://github.com/zackees/reld/releases/download/v{MANAGED_RELD_VERSION}/{asset_name}"
-    );
+    let url = format!("{base_url}/v{MANAGED_RELD_VERSION}/{asset_name}");
     eprintln!("soldr: fetching reld v{MANAGED_RELD_VERSION} ({asset_name})...");
     let resolved = super::archive::download_and_extract_with_pin(
         paths,
@@ -138,6 +161,150 @@ fn release_asset_for(os: HostOs, arch: HostArch) -> Result<ReleaseAsset, SoldrEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::SoldrPaths;
+    use crate::fetch::trust;
+    use sha2::Digest;
+    use std::io::Write as _;
+    use std::sync::Mutex;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// Serialised: these tests mutate process env (`SOLDR_TRUST_MODE`,
+    /// `SOLDR_CHECKSUMS_FILE`).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build test runtime")
+    }
+
+    /// Build a `tar.gz` archive containing one executable named `reld`
+    /// (plus the platform's exe suffix) with the given body, mirroring the
+    /// on-disk shape a real release asset extracts into.
+    fn build_fixture_archive(body: &[u8]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        let name = format!("reld{}", std::env::consts::EXE_SUFFIX);
+        builder
+            .append_data(&mut header, &name, body)
+            .expect("append fixture reld binary");
+        let tar_bytes = builder.into_inner().expect("finish tar");
+
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&tar_bytes).expect("write tar into gzip");
+        gz.finish().expect("finish gzip")
+    }
+
+    /// Serve `body` for exactly one GET request, then close. Returns the
+    /// server's `http://127.0.0.1:<port>` base.
+    async fn serve_once(body: Vec<u8>) -> (String, std::sync::Arc<std::sync::atomic::AtomicU32>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let hits_clone = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                hits_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = [0_u8; 2048];
+                let _ = socket.read(&mut buf).await;
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(header.as_bytes()).await;
+                let _ = socket.write_all(&body).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (format!("http://{address}"), hits)
+    }
+
+    /// soldr#3276 §2/§3: `ensure_reld_from` against a local HTTP fixture
+    /// (no live GitHub) proves the full download -> verify -> extract ->
+    /// stamp -> reuse path, that a second call performs no network access,
+    /// and that `SOLDR_TRUST_MODE=strict` passes on the built-in-style pin
+    /// supplied here (the pin -- not the trust-mode env var -- is what
+    /// `download_and_extract_with_pin` enforces; strict mode must not
+    /// additionally require a `SOLDR_CHECKSUMS_FILE` entry for it).
+    #[test]
+    fn ensure_reld_from_downloads_verifies_and_reuses_without_a_second_fetch() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let previous_trust_mode = std::env::var_os(trust::TRUST_MODE_ENV_VAR);
+        std::env::set_var(trust::TRUST_MODE_ENV_VAR, "strict");
+
+        let body = b"#!/bin/sh\necho fake-reld\n".to_vec();
+        let sha256 = hex::encode(sha2::Sha256::digest(build_fixture_archive(&body)));
+        let asset = ReleaseAsset {
+            triple: "test-fixture",
+            extension: "tar.gz",
+            sha256: Box::leak(sha256.into_boxed_str()),
+        };
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+
+        let rt = runtime();
+        let (base_url, hits) = rt.block_on(serve_once(build_fixture_archive(&body)));
+
+        let first = rt
+            .block_on(ensure_reld_from(&paths, &base_url, &asset))
+            .expect("first fetch succeeds under strict trust mode with a matching pin");
+        assert!(first.is_file(), "resolved reld path must exist: {first:?}");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "first call must hit the network exactly once"
+        );
+
+        // Second call reuses the stamped managed install; the server is
+        // still listening, so a network hit here would show up in `hits`.
+        let second = rt
+            .block_on(ensure_reld_from(&paths, &base_url, &asset))
+            .expect("second fetch reuses the managed install");
+        assert_eq!(second, first);
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "second call must perform no network access"
+        );
+
+        match previous_trust_mode {
+            Some(value) => std::env::set_var(trust::TRUST_MODE_ENV_VAR, value),
+            None => std::env::remove_var(trust::TRUST_MODE_ENV_VAR),
+        }
+    }
+
+    /// A pin mismatch is a hard error even under strict mode's default
+    /// (permissive) counterpart -- the manifest-style pin passed to
+    /// `download_and_extract_with_pin` is always enforced, matching the
+    /// "explicit reld never falls back silently" acceptance criterion.
+    #[test]
+    fn ensure_reld_from_rejects_a_body_that_does_not_match_the_pin() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let body = b"unexpected content".to_vec();
+        let asset = ReleaseAsset {
+            triple: "test-fixture",
+            extension: "tar.gz",
+            sha256: "0000000000000000000000000000000000000000000000000000000000000",
+        };
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+
+        let rt = runtime();
+        let (base_url, _hits) = rt.block_on(serve_once(build_fixture_archive(&body)));
+
+        let result = rt.block_on(ensure_reld_from(&paths, &base_url, &asset));
+        assert!(result.is_err(), "sha256 mismatch must be a hard error");
+    }
 
     #[test]
     fn release_assets_cover_supported_hosts_and_prefer_static_linux_x64() {

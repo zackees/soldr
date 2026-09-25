@@ -16,6 +16,7 @@ mod cli_startup_smoke;
 mod daemon_console_policy_guard;
 mod daemon_state_db_ownership_guard;
 mod env_lock_lint;
+mod linker_shared_resolver_lint;
 mod msrv_doc_matches_manifest;
 mod multicall_bin_layout;
 mod no_panicking_argv_collection;
