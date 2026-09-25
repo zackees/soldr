@@ -468,6 +468,9 @@ fn a_writer_that_keeps_writing_cannot_pin_the_store() {
 
         // written-<d>.bin: nlink == 1 — the eager rule means it must never
         // survive a sweep, however fresh it is.
+        // A writer recreates its layout: a pass that expired every artifact
+        // legitimately removes the whole store (see the empty-store test).
+        std::fs::create_dir_all(&artifacts).expect("writer recreates artifacts dir");
         let written = artifacts.join(format!("written-{d}.bin"));
         let written_mtime = now_d - Duration::from_secs(60);
         std::fs::write(&written, b"payload").expect("written artifact");
