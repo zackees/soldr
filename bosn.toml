@@ -112,6 +112,10 @@ cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-daemon shutdown_waits_for_compile_publication_and_closes_admission"
 
+[task.retired-store-expiry]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-daemon --lib -- retired_store_tests:: pressure_tick_expires_the_host_shaped_retired_store"
+
 [task.ci-test-proof]
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target CARGO_BUILD_JOBS=1 SOLDR_JOBS=1 /opt/soldr-bootstrap/bin/soldr cargo build -p soldr-cli --bin soldr && CARGO_TARGET_DIR=/target CARGO_BUILD_JOBS=1 SOLDR_JOBS=1 /target/debug/soldr ci-test"

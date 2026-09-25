@@ -989,3 +989,7 @@ mod zccache_embedded_process_tests;
 #[cfg(test)]
 #[path = "zccache_embedded_private_root_tests.rs"]
 mod private_root_tests;
+
+#[cfg(test)]
+#[path = "zccache_embedded_retired_store_tests.rs"]
+pub(crate) mod retired_store_tests;

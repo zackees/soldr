@@ -834,3 +834,55 @@ fn a_build_holding_the_root_lease_no_longer_starves_the_store_pass() {
         }
     });
 }
+
+/// soldr#3365 RED: this is the real 5-minute daemon pressure tick's planning
+/// path (`daemon_policy_actions` + `legacy_zccache_outcome`), not just the
+/// underlying sweep. It must expire the host-shaped retired store per file
+/// the same way the direct `zccache_embedded::retired_store_tests` suite
+/// requires.
+#[test]
+fn pressure_tick_expires_the_host_shaped_retired_store() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(temp.path().join("owned"));
+    let now = SystemTime::now();
+    let fixture = crate::zccache_embedded::retired_store_tests::host_shaped_stores(&paths, now);
+
+    let actions = daemon_policy_actions(
+        crate::core::SoldrConfig::default(),
+        MaintenanceKind::Pressure,
+    );
+    let outcome = legacy_zccache_outcome(&paths, MaintenanceKind::Pressure, now, &actions)
+        .expect("pressure tick plans the legacy sweep");
+
+    assert!(
+        outcome.bytes_reclaimed >= fixture.cold_artifact_bytes,
+        "expected at least {} bytes reclaimed, got {}: outcome={outcome:?}",
+        fixture.cold_artifact_bytes,
+        outcome.bytes_reclaimed,
+    );
+
+    let cold_survivors: Vec<&PathBuf> = fixture
+        .cold_artifacts
+        .iter()
+        .filter(|path| path.exists())
+        .collect();
+    assert!(
+        cold_survivors.is_empty(),
+        "{} of {} cold artifacts survived the pressure tick, e.g. {:?}; outcome={outcome:?}",
+        cold_survivors.len(),
+        fixture.cold_artifacts.len(),
+        cold_survivors.iter().take(5).collect::<Vec<_>>(),
+    );
+
+    for file in fixture
+        .warm_artifacts
+        .iter()
+        .chain(fixture.current_files.iter())
+    {
+        assert!(
+            file.exists(),
+            "must survive the pressure tick: {}",
+            file.display()
+        );
+    }
+}
