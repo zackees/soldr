@@ -837,9 +837,11 @@ fn a_build_holding_the_root_lease_no_longer_starves_the_store_pass() {
 
 /// soldr#3365 RED: this is the real 5-minute daemon pressure tick's planning
 /// path (`daemon_policy_actions` + `legacy_zccache_outcome`), not just the
-/// underlying sweep. It must expire the host-shaped retired store per file
-/// the same way the direct `zccache_embedded::retired_store_tests` suite
-/// requires.
+/// underlying sweep. It must expire the host-shaped retired store per file,
+/// link-count aware, the same way the direct
+/// `zccache_embedded::retired_store_tests` suite requires: `nlink == 1`
+/// files are purged eagerly, `nlink > 1` files are age-gated and only the
+/// cache's own link is removed, and `bytes_reclaimed` counts only the former.
 #[test]
 fn pressure_tick_expires_the_host_shaped_retired_store() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -855,33 +857,52 @@ fn pressure_tick_expires_the_host_shaped_retired_store() {
         .expect("pressure tick plans the legacy sweep");
 
     assert!(
-        outcome.bytes_reclaimed >= fixture.cold_artifact_bytes,
-        "expected at least {} bytes reclaimed, got {}: outcome={outcome:?}",
-        fixture.cold_artifact_bytes,
+        outcome.bytes_reclaimed >= fixture.unlinked_artifact_bytes,
+        "expected at least {} bytes reclaimed (the unlinked/nlink==1 artifacts), got {}: \
+         outcome={outcome:?}",
+        fixture.unlinked_artifact_bytes,
         outcome.bytes_reclaimed,
     );
 
-    let cold_survivors: Vec<&PathBuf> = fixture
-        .cold_artifacts
+    let unlinked_survivors: Vec<&PathBuf> = fixture
+        .cold_unlinked
+        .iter()
+        .chain(fixture.fresh_unlinked.iter())
+        .filter(|path| path.exists())
+        .collect();
+    assert!(
+        unlinked_survivors.is_empty(),
+        "{} unlinked artifacts survived the pressure tick, e.g. {:?}; outcome={outcome:?}",
+        unlinked_survivors.len(),
+        unlinked_survivors.iter().take(5).collect::<Vec<_>>(),
+    );
+
+    let cold_linked_cache_survivors: Vec<&PathBuf> = fixture
+        .cold_linked
         .iter()
         .filter(|path| path.exists())
         .collect();
     assert!(
-        cold_survivors.is_empty(),
-        "{} of {} cold artifacts survived the pressure tick, e.g. {:?}; outcome={outcome:?}",
-        cold_survivors.len(),
-        fixture.cold_artifacts.len(),
-        cold_survivors.iter().take(5).collect::<Vec<_>>(),
+        cold_linked_cache_survivors.is_empty(),
+        "{} cold linked artifacts survived in the cache after the pressure tick (expected the \
+         cache's own link removed once older than the pressure gate): {:?}; outcome={outcome:?}",
+        cold_linked_cache_survivors.len(),
+        cold_linked_cache_survivors
+            .iter()
+            .take(5)
+            .collect::<Vec<_>>(),
     );
 
     for file in fixture
-        .warm_artifacts
+        .cold_linked_targets
         .iter()
+        .chain(fixture.warm_linked.iter())
+        .chain(fixture.warm_linked_targets.iter())
         .chain(fixture.current_files.iter())
     {
         assert!(
             file.exists(),
-            "must survive the pressure tick: {}",
+            "must survive the pressure tick: {}; outcome={outcome:?}",
             file.display()
         );
     }
