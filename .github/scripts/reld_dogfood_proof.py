@@ -103,6 +103,21 @@ def run_verbose_build(
     return combined
 
 
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def strip_ansi(text: str) -> str:
+    r"""Remove ANSI escape/color codes.
+
+    `CARGO_TERM_COLOR=always` is set in CI, so cargo bolds/colors the word
+    "Running" with escape sequences inserted *between* "Running" and the
+    backtick that starts the command -- e.g. `Running\x1b[0m \`rustc ...\``.
+    A literal substring check for "Running `" then never matches even though
+    the invocation is right there, so strip escapes before scanning.
+    """
+    return ANSI_ESCAPE_RE.sub("", text)
+
+
 def final_link_invocations(build_log: str, package_bin_crate: str) -> list[str]:
     """Every rustc invocation line that links a `bin` crate-type artifact."""
     # `str.splitlines()` also splits on bare `\r` (and other unicode line
@@ -112,7 +127,7 @@ def final_link_invocations(build_log: str, package_bin_crate: str) -> list[str]:
     # substring check against any one fragment misses it even though the
     # full text is present in `build_log`. Split on `\n` only.
     lines = []
-    for line in build_log.split("\n"):
+    for line in strip_ansi(build_log).split("\n"):
         if "Running `" not in line:
             continue
         if "--crate-type bin" not in line:
