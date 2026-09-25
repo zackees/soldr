@@ -56,10 +56,9 @@
 //!   other host rather than failing to compile there.
 
 use serde::{Deserialize, Serialize};
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 /// Wall-clock bound applied to every shelled-out `perf` invocation. Chosen
 /// to comfortably exceed the `sleep 1` sampling window `perf record` itself
@@ -67,8 +66,8 @@ use std::time::{Duration, Instant};
 /// permission prompt that will never come).
 const PERF_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Poll interval used while waiting out [`PERF_TIMEOUT`].
-const PERF_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Capture ceiling for each `perf` invocation's stdout/stderr.
+const PERF_OUTPUT_LIMIT: usize = 64 * 1024 * 1024;
 
 /// Window over which the off-CPU schedstat approximation is measured. Long
 /// enough that a live thread accumulates a measurable delta, short enough
@@ -125,7 +124,8 @@ fn capture_on_cpu_profile_with(dir: &Path, perf_bin: Option<PathBuf>) -> Artifac
 
     let paranoid = read_perf_event_paranoid();
     let data_path = dir.join("on-cpu.perf.data");
-    let record = Command::new(&perf_bin)
+    let mut record = Command::new(&perf_bin);
+    record
         .arg("record")
         .arg("-F")
         .arg("99")
@@ -136,49 +136,27 @@ fn capture_on_cpu_profile_with(dir: &Path, perf_bin: Option<PathBuf>) -> Artifac
         .arg(&data_path)
         .arg("--")
         .arg("sleep")
-        .arg("1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
+        .arg("1");
 
-    let mut child = match record {
-        Ok(child) => child,
-        Err(error) => {
-            return ArtifactOutcome::unavailable(format!("failed to spawn perf record: {error}"));
-        }
-    };
-
-    let (status, stderr) = match wait_with_timeout(&mut child, PERF_TIMEOUT) {
-        WaitOutcome::Exited(status) => {
-            let stderr = read_stderr(&mut child);
-            (Some(status), stderr)
-        }
-        WaitOutcome::TimedOut => {
-            let _ = child.kill();
-            let _ = child.wait();
+    let output = match run_bounded(record) {
+        Ok(output) => output,
+        Err(running_process::ProcessError::Timeout) => {
             return ArtifactOutcome::unavailable("perf record timed out");
         }
-        WaitOutcome::WaitError(error) => {
-            return ArtifactOutcome::unavailable(format!("perf record wait failed: {error}"));
+        Err(error) => {
+            return ArtifactOutcome::unavailable(format!("failed to run perf record: {error}"));
         }
     };
 
-    let status = match status {
-        Some(status) => status,
-        None => return ArtifactOutcome::unavailable("perf record produced no exit status"),
-    };
-
-    if !status.success() {
+    if output.exit_code != 0 {
         let paranoid_display = paranoid
             .map(|value| value.to_string())
             .unwrap_or_else(|| "unreadable".to_string());
+        let stderr = String::from_utf8_lossy(&output.stderr);
         let truncated = truncate_bytes(&stderr, 512);
         return ArtifactOutcome::unavailable(format!(
             "perf record failed (exit {code}, perf_event_paranoid={paranoid}): {stderr}",
-            code = status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "signal".to_string()),
+            code = output.exit_code,
             paranoid = paranoid_display,
             stderr = truncated,
         ));
@@ -198,64 +176,34 @@ fn capture_on_cpu_profile_with(dir: &Path, perf_bin: Option<PathBuf>) -> Artifac
 /// Run `perf script -i <data_path>`, writing stdout to `dest`. Returns
 /// whether it succeeded within [`PERF_TIMEOUT`].
 fn run_perf_script(perf_bin: &Path, data_path: &Path, dest: &Path) -> bool {
-    let spawn = Command::new(perf_bin)
-        .arg("script")
-        .arg("-i")
-        .arg(data_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-    let mut child = match spawn {
-        Ok(child) => child,
-        Err(_) => return false,
-    };
-    match wait_with_timeout(&mut child, PERF_TIMEOUT) {
-        WaitOutcome::Exited(status) if status.success() => {
-            let mut stdout_buf = Vec::new();
-            if let Some(mut stdout) = child.stdout.take() {
-                let _ = stdout.read_to_end(&mut stdout_buf);
-            }
-            std::fs::write(dest, stdout_buf).is_ok()
-        }
-        WaitOutcome::Exited(_) => false,
-        WaitOutcome::TimedOut => {
-            let _ = child.kill();
-            let _ = child.wait();
-            false
-        }
-        WaitOutcome::WaitError(_) => false,
+    let mut script = Command::new(perf_bin);
+    script.arg("script").arg("-i").arg(data_path);
+    match run_bounded(script) {
+        Ok(output) if output.exit_code == 0 => std::fs::write(dest, output.stdout).is_ok(),
+        _ => false,
     }
 }
 
-enum WaitOutcome {
-    Exited(std::process::ExitStatus),
-    TimedOut,
-    WaitError(std::io::Error),
-}
-
-/// Poll `child` with `try_wait` until it exits or `timeout` elapses.
-fn wait_with_timeout(child: &mut Child, timeout: Duration) -> WaitOutcome {
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return WaitOutcome::Exited(status),
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    return WaitOutcome::TimedOut;
-                }
-                std::thread::sleep(PERF_POLL_INTERVAL);
-            }
-            Err(error) => return WaitOutcome::WaitError(error),
-        }
-    }
-}
-
-fn read_stderr(child: &mut Child) -> String {
-    let mut buf = Vec::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_end(&mut buf);
-    }
-    String::from_utf8_lossy(&buf).into_owned()
+/// Run `command` through `running_process`'s bounded launcher, the daemon's
+/// sanctioned spawn path (soldr#2442), with [`PERF_TIMEOUT`] and
+/// [`PERF_OUTPUT_LIMIT`]. The breach watchdog runs inside the Tokio runtime,
+/// where the blocking adapter refuses to run, so the call is made from a
+/// plain scoped thread with no runtime context.
+fn run_bounded(
+    command: Command,
+) -> Result<running_process::RunOutput, running_process::ProcessError> {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                running_process::run_std_command_bounded(
+                    command,
+                    Some(PERF_TIMEOUT),
+                    PERF_OUTPUT_LIMIT,
+                )
+            })
+            .join()
+            .unwrap_or(Err(running_process::ProcessError::NotRunning))
+    })
 }
 
 fn truncate_bytes(s: &str, max: usize) -> String {
@@ -287,21 +235,10 @@ fn find_perf_on_path() -> Option<PathBuf> {
 }
 
 fn is_executable_file(path: &Path) -> bool {
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
+    // A regular file is enough: a non-runnable `perf` fails to launch and
+    // that failure is already recorded as an `unavailable` outcome, so no
+    // host-specific permission probe is needed here.
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
 }
 
 /// One thread's schedstat delta over the sampling window.
