@@ -27,6 +27,18 @@ scope: nested Actions/container cgroups have their own limits and OOM events.
 ``memory.peak`` is retained as before/after context because a read-only cgroup
 may not allow it to be reset.
 
+A job count of ``auto`` is also accepted (``--jobs 1,2,auto``). That row
+removes ``CARGO_BUILD_JOBS``/``SOLDR_JOBS`` from the child environment instead
+of stamping a count, so Soldr's own automatic decision is what gets measured;
+every other row keeps today's explicit-preserved contract. Each row also
+records the first sample that observed a compiler process
+(``first_compiler_offset_ms``) and classifies any failure as
+``pre_compiler`` or ``compiler`` (``failure_phase``), plus whether the
+command's log mentions an ENOMEM-shaped failure (``enomem_in_log``). This is
+the evidence needed for the still-unreproduced pre-compiler ENOMEM RED: a
+failure with no compiler ever observed is a Cargo-orchestration-phase defect,
+not a compiler-admission one.
+
 The measured command must start with prepared Cargo/rustup. The runner refuses
 to bootstrap a toolchain under a per-case cache root, because bootstrap fan-out
 would make the job-count rows incomparable. Each case retains a ``command.log``
@@ -303,8 +315,40 @@ def prepared_cargo_or_rustup_available(
     return shutil.which("rustup", path=resolved_environment.get("PATH")) is not None
 
 
+def classify_failure_phase(
+    returncode: int, timed_out: bool, first_compiler_offset_ms: int | None
+) -> str:
+    """Classify a case outcome as pre-compiler, compiler, or no failure at all.
+
+    A failure (or timeout) with no compiler process ever observed happened
+    entirely in Cargo's orchestration phase, before compiler admission could
+    even matter -- that is the still-unreproduced soldr#2878 RED.
+    """
+    if returncode == 0 and not timed_out:
+        return "none"
+    if first_compiler_offset_ms is None:
+        return "pre_compiler"
+    return "compiler"
+
+
+ENOMEM_MARKERS: tuple[bytes, ...] = (
+    b"ENOMEM",
+    b"Cannot allocate memory",
+    b"os error 12",
+)
+
+
+def log_reports_enomem(path: Path) -> bool:
+    """Whether ``path`` (a command.log) contains an ENOMEM-shaped failure."""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return False
+    return any(marker in raw for marker in ENOMEM_MARKERS)
+
+
 def run_case(
-    jobs: int,
+    jobs: int | str,
     command: list[str],
     *,
     case_root: Path,
@@ -317,7 +361,10 @@ def run_case(
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
     """Run one explicit fan-out value and collect samples through process exit."""
-    if jobs < 1:
+    if isinstance(jobs, str):
+        if jobs != "auto":
+            raise ValueError("string jobs value must be 'auto'")
+    elif jobs < 1:
         raise ValueError("jobs must be positive")
     cgroup_root = cgroup_root or controlling_cgroup_v2_dir()
     if cgroup_root is None:
@@ -334,8 +381,12 @@ def run_case(
     target_dir.mkdir(parents=True)
     cache_dir.mkdir()
     environment = os.environ.copy()
-    environment["CARGO_BUILD_JOBS"] = str(jobs)
-    environment["SOLDR_JOBS"] = str(jobs)
+    if jobs == "auto":
+        environment.pop("CARGO_BUILD_JOBS", None)
+        environment.pop("SOLDR_JOBS", None)
+    else:
+        environment["CARGO_BUILD_JOBS"] = str(jobs)
+        environment["SOLDR_JOBS"] = str(jobs)
     environment["SOLDR_CI_ORCHESTRATION_TELEMETRY_JOBS"] = str(jobs)
     # The Cargo registry remains shared, but every measured graph must start
     # from no target artifacts, no Soldr compiler-cache entries, and no
@@ -350,6 +401,7 @@ def run_case(
     environment["SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS"] = "30"
     started = snapshot(cgroup_root, proc_root, clock)
     samples = [started]
+    first_compiler_offset_ms: int | None = None
     began = clock()
     with command_log.open("wb") as log_file:
         process = run(
@@ -367,11 +419,22 @@ def run_case(
                     process.wait()
                 break
             sleep(interval_seconds)
-            samples.append(snapshot(cgroup_root, proc_root, clock))
+            sample = snapshot(cgroup_root, proc_root, clock)
+            samples.append(sample)
+            if first_compiler_offset_ms is None and sample.processes.compiler > 0:
+                first_compiler_offset_ms = round(
+                    (sample.monotonic_seconds - began) * 1000
+                )
         if not timed_out:
             process.wait()
     finished = snapshot(cgroup_root, proc_root, clock)
     samples.append(finished)
+    if first_compiler_offset_ms is None and finished.processes.compiler > 0:
+        first_compiler_offset_ms = round((finished.monotonic_seconds - began) * 1000)
+    failure_phase = classify_failure_phase(
+        process.returncode, timed_out, first_compiler_offset_ms
+    )
+    enomem_in_log = log_reports_enomem(command_log)
     return {
         "requested_jobs": jobs,
         "case_root": str(case_root),
@@ -388,18 +451,27 @@ def run_case(
         ),
         "maxima": summarize_samples(samples),
         "samples": len(samples),
+        "first_compiler_offset_ms": first_compiler_offset_ms,
+        "failure_phase": failure_phase,
+        "enomem_in_log": enomem_in_log,
     }
 
 
-def parse_jobs(raw: str) -> list[int]:
-    values: list[int] = []
+def parse_jobs(raw: str) -> list[int | str]:
+    values: list[int | str] = []
     for item in raw.split(","):
-        try:
-            value = int(item.strip())
-        except ValueError as error:
-            raise argparse.ArgumentTypeError(f"invalid job count: {item!r}") from error
-        if value < 1:
-            raise argparse.ArgumentTypeError("job counts must be positive")
+        stripped = item.strip()
+        if stripped == "auto":
+            value: int | str = "auto"
+        else:
+            try:
+                value = int(stripped)
+            except ValueError as error:
+                raise argparse.ArgumentTypeError(
+                    f"invalid job count: {item!r}"
+                ) from error
+            if value < 1:
+                raise argparse.ArgumentTypeError("job counts must be positive")
         if value not in values:
             values.append(value)
     if not values:
@@ -410,8 +482,8 @@ def parse_jobs(raw: str) -> list[int]:
 def format_markdown(results: list[dict[str, object]]) -> str:
     """Compact human rendering; JSON remains the authoritative evidence."""
     lines = [
-        "| jobs | result | wall | max current | max PIDs | max Cargo/compiler/tools | OOM delta |",
-        "| ---: | :--- | ---: | ---: | ---: | ---: | ---: |",
+        "| jobs | result | phase | ENOMEM | wall | max current | max PIDs | max Cargo/compiler/tools | OOM delta |",
+        "| ---: | :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for result in results:
         maxima = result["maxima"]
@@ -419,8 +491,11 @@ def format_markdown(results: list[dict[str, object]]) -> str:
         events = result["memory_events_delta"]
         assert isinstance(events, dict)
         outcome = "timeout" if result["timed_out"] else str(result["returncode"])
+        phase = str(result.get("failure_phase", "?"))
+        enomem = "yes" if result.get("enomem_in_log", False) else "no"
         lines.append(
-            f"| {result['requested_jobs']} | {outcome} | {result['wall_time_ms']} ms | "
+            f"| {result['requested_jobs']} | {outcome} | {phase} | {enomem} | "
+            f"{result['wall_time_ms']} ms | "
             f"{maxima['max_memory_current_bytes']} | {maxima['max_pids_current']} | "
             f"{maxima['max_cargo_processes']}/{maxima['max_compiler_processes']}/"
             f"{maxima['max_toolchain_processes']} | "
@@ -519,7 +594,7 @@ def main(argv: list[str] | None = None) -> int:
         for jobs in args.jobs
     ]
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "purpose": "soldr#2878 Cargo pre-compiler orchestration telemetry",
         "cgroup_root": str(cgroup_root),
         "command": args.command,
@@ -529,6 +604,7 @@ def main(argv: list[str] | None = None) -> int:
             "max_memory_current_bytes is sampled for this invocation.",
             "memory.peak is a cgroup lifetime high-water mark unless the host reset it.",
             "Raised counts are explicit reproduction inputs; Soldr intentionally preserves explicit CARGO_BUILD_JOBS.",
+            "auto rows leave CARGO_BUILD_JOBS/SOLDR_JOBS unset so Soldr's automatic decision is recorded.",
         ],
     }
     rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
