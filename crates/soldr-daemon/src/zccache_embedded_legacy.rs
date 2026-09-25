@@ -310,7 +310,7 @@ pub fn measure_retired_stores(
                 }
                 if metadata.is_dir() {
                     pending.push(child.path());
-                } else if metadata.is_file() && first_link_seen(&mut seen, &metadata) {
+                } else if metadata.is_file() && first_link_seen(&mut seen, &child.path()) {
                     usage.bytes = usage.bytes.saturating_add(metadata.len());
                 }
             }
@@ -319,21 +319,19 @@ pub fn measure_retired_stores(
     usage
 }
 
-#[cfg(unix)]
+/// True the first time a file's identity is seen, so a hardlinked file is
+/// counted once. Files without a stable identity are always counted.
 fn first_link_seen(
     seen: &mut std::collections::HashSet<(u64, u64)>,
-    m: &std::fs::Metadata,
+    path: &std::path::Path,
 ) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    m.nlink() <= 1 || seen.insert((m.dev(), m.ino()))
-}
-
-#[cfg(not(unix))]
-fn first_link_seen(
-    _seen: &mut std::collections::HashSet<(u64, u64)>,
-    _m: &std::fs::Metadata,
-) -> bool {
-    true
+    let Some(id) = crate::platform::fs::identity::file_identity(path) else {
+        return true;
+    };
+    match (id.dev.or(id.volume_serial_number), id.ino.or(id.file_index)) {
+        (Some(volume), Some(index)) => seen.insert((volume, index)),
+        _ => true,
+    }
 }
 
 enum RetiredStoreRemoval {
