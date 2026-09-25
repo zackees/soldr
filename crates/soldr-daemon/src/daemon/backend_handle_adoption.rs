@@ -431,17 +431,68 @@ pub fn wait_for_broker_backend_handle_while(
     }
 }
 
+/// Per-generation subdirectory name under `soldr-daemon/`, one per distinct
+/// daemon image (broker route `service_name`, itself keyed by canonical
+/// root + package version + image digest). soldr#3374: two soldr versions
+/// used on one machine each get their own route-claim slot here, so a
+/// preflight resolving `SOLDR_BROKER_SERVICE` to its own generation never
+/// even sees the other generation's claim file, let alone treats it as
+/// something to displace.
+const GENERATIONS_SUBDIR: &str = "generations";
+
+/// The generation key this process resolves to, when known.
+///
+/// Reads only `SOLDR_BROKER_SERVICE` (never recomputes it from the daemon
+/// image) to avoid recursing back into [`broker_route_claim_path`] through
+/// [`resolve_daemon_image_for_route`]'s claim-file fallback. Every caller
+/// that has a resolved route service name sets this env var before touching
+/// route-claim state (soldr#2634's forwarding + the front door's preflight
+/// setup), so this covers the normal path. Its absence falls back to the
+/// legacy version-independent slot, which keeps old-version daemons (that
+/// never learned to key by generation) discoverable there without a new
+/// generation reusing that slot as its own.
+fn resolved_generation_key() -> Option<String> {
+    // Tests pick a generation per thread instead of mutating the process
+    // environment, which every other claim test in this binary reads.
+    #[cfg(test)]
+    let key = TEST_GENERATION_KEY.with(|key| key.borrow().clone());
+    #[cfg(not(test))]
+    let key = std::env::var(SOLDR_BROKER_SERVICE_ENV_VAR).ok();
+    key.filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_GENERATION_KEY: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn generation_state_dir(paths: &SoldrPaths) -> PathBuf {
+    let dir = soldr_daemon_dir(paths);
+    match resolved_generation_key() {
+        Some(key) => dir.join(GENERATIONS_SUBDIR).join(key),
+        None => dir,
+    }
+}
+
 /// Deterministic, root-local protobuf claim used only for broker restart
 /// re-adoption. It is disposable discovery state, not authoritative routing
 /// state; every reader must verify it with an exact `BackendHandle` probe.
+///
+/// Keyed per daemon generation (soldr#3374) when this process has a
+/// resolved broker service name, so two soldr versions running on the same
+/// root each publish and read their own claim rather than overwriting a
+/// shared slot. Falls back to the pre-#3374 version-independent path when
+/// no service name is resolved yet (e.g. while computing the service name
+/// itself) or for legacy compatibility reads.
 pub fn broker_route_claim_path(paths: &SoldrPaths) -> PathBuf {
-    soldr_daemon_dir(paths).join(BROKER_ROUTE_CLAIM_FILE)
+    generation_state_dir(paths).join(BROKER_ROUTE_CLAIM_FILE)
 }
 
 pub fn publish_broker_route_claim(paths: &SoldrPaths, daemon: &DaemonProcess) -> io::Result<()> {
     use std::io::Write as _;
 
-    let directory = soldr_daemon_dir(paths);
+    let directory = generation_state_dir(paths);
     std::fs::create_dir_all(&directory)?;
     let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
     let mut encoded = Vec::new();
