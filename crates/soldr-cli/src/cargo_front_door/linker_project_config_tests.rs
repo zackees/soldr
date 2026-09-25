@@ -221,12 +221,7 @@ fn cargo_toml_metadata_linker_reld_resolves_absolute_path_end_to_end() {
         crate::platform::executable::name::script_suffix()
     ));
     std::fs::write(&reld_bin, "#!/bin/sh\nexit 0\n").expect("write fake reld");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&reld_bin, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod +x");
-    }
+    crate::platform::fs::permissions::make_executable(&reld_bin).expect("chmod +x");
 
     let command = apply_from_project_with_cargo_toml_metadata_linker(&reld_bin);
 

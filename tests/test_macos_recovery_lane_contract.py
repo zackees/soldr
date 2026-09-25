@@ -38,6 +38,12 @@ def test_hosted_macos_runner_labels_are_confined_to_opt_in_and_release() -> None
     assert offenders == [
         "ci.yml: runs_on: macos-15-intel",
         "ci.yml: runs_on: macos-15",
+        # soldr#3276 §6: reld live-fetch evidence job. Uses the same hosted
+        # macos-15 runner the existing full-mode macOS e2e lanes already use
+        # (this job depends on e2e-macos-arm64-build and only runs when that
+        # succeeded), so it adds no new runner exposure beyond what full CI
+        # already provisions.
+        "ci.yml: runs-on: macos-15",
         "release-auto.yml: runs-on: macos-15-intel",
         "release-auto.yml: runs-on: macos-15",
     ]
