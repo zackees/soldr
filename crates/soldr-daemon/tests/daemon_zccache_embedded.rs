@@ -1,5 +1,5 @@
-//! Embedded zccache tests: the broken-symlink legacy-sweep
-//! retention check and the executable fake-compiler probe. Moved out of
+//! Embedded zccache tests: the dangling-symlink legacy-sweep
+//! purge check and the executable fake-compiler probe. Moved out of
 //! `zccache_embedded.rs` when that file became host-neutral (#2493);
 //! both depend on Unix link/permission semantics.
 
@@ -9,7 +9,7 @@ use soldr_daemon::core::SoldrPaths;
 use soldr_daemon::zccache_embedded::sweep_legacy_cache_roots;
 
 #[test]
-fn legacy_sweep_retains_version_with_unreadable_linked_tree() {
+fn legacy_sweep_purges_a_dangling_link_instead_of_pinning_the_store() {
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -22,9 +22,11 @@ fn legacy_sweep_retains_version_with_unreadable_linked_tree() {
     std::fs::create_dir_all(&candidate).unwrap();
     soldr_platform::fs::links::create("missing", &candidate.join("broken"), false).unwrap();
     let report = sweep_legacy_cache_roots(&paths, std::time::SystemTime::now(), Duration::ZERO);
-    assert_eq!(report.removed, 0);
-    assert_eq!(report.failed, 1);
-    assert!(candidate.is_dir());
+    // soldr#3365: zccache sweeps retired stores per file; a dangling link
+    // is a last link, so it is purged eagerly and cannot pin the store.
+    assert_eq!(report.removed, 1);
+    assert_eq!(report.failed, 0);
+    assert!(!candidate.exists());
 }
 
 #[test]

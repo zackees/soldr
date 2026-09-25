@@ -187,21 +187,30 @@ pub fn sweep_legacy_cache_roots(
             Err(_) => report.failed += 1,
         }
     }
-    for (root, protect_current) in [(&zccache_root, false), (&embedded_root, true)] {
-        if !root.exists() {
-            continue;
-        }
-        match std::fs::read_dir(root) {
+    // Retired `v<VERSION>` stores are swept by zccache itself (soldr#3365):
+    // per-file expiry, eager purge of files no build tree links any more, and
+    // `.writer.lock` liveness. Directory mtimes never gate these stores. The
+    // top-level layout belongs to the removed standalone service, so every
+    // version there is retired; the embedded root protects the current one.
+    let mut retired = zccache::core::config::RetiredStoreSweepReport::default();
+    if zccache_root.exists() {
+        match std::fs::read_dir(&zccache_root) {
             Ok(entries) => {
                 for entry in entries {
                     match entry {
                         Ok(entry) => {
-                            let name = entry.file_name();
-                            if name.to_str().is_some_and(|name| {
-                                zccache::core::config::is_version_dir_name(name)
-                                    && (!protect_current || name != current_version)
-                            }) {
-                                candidates.push(entry.path());
+                            let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+                            if is_dir
+                                && entry
+                                    .file_name()
+                                    .to_str()
+                                    .is_some_and(zccache::core::config::is_version_dir_name)
+                            {
+                                retired.merge(&zccache::core::config::sweep_retired_version_store(
+                                    &entry.path(),
+                                    max_age,
+                                    now,
+                                ));
                             }
                         }
                         Err(_) => report.failed += 1,
@@ -211,7 +220,22 @@ pub fn sweep_legacy_cache_roots(
             Err(_) => report.failed += 1,
         }
     }
+    if embedded_root.exists() {
+        retired.merge(&zccache::core::config::sweep_retired_version_stores_in(
+            &embedded_root,
+            &current_version,
+            max_age,
+            now,
+        ));
+    }
+    report.removed += retired.stores_removed;
+    report.failed += retired.failed;
+    report.live_retained += retired.stores_live;
+    report.bytes_reclaimed = report
+        .bytes_reclaimed
+        .saturating_add(retired.bytes_reclaimed);
 
+    // Pre-#1651 32-hex identity roots keep the whole-store age gate.
     for path in candidates {
         let Ok(metadata) = std::fs::symlink_metadata(&path) else {
             report.failed += 1;

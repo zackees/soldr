@@ -36,7 +36,7 @@ console-subscriber = { workspace = true, optional = true }
 # entry point. `mimalloc-allocator` is enabled so the RSS-ceiling watchdog
 # (`daemon::rss_ceiling`) reads the allocator counters via
 # `zccache::mimalloc_pprof::prof::stats()` (soldr#3053).
-zccache = { version = "=1.14.12", default-features = false, features = ["mimalloc-allocator"] }
+zccache = { version = "=1.14.13", default-features = false, features = ["mimalloc-allocator"] }
 
 [dev-dependencies]
 filetime = { workspace = true }
