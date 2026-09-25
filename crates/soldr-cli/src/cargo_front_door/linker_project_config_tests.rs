@@ -10,6 +10,7 @@ use crate::core::SoldrPaths;
 use crate::EnvVarGuard;
 use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
 use std::ffi::{OsStr, OsString};
+use std::path::Path;
 
 /// The cross target every case below uses. Deliberate: `resolve_for_target`
 /// returns a non-empty injection for every Linux target regardless of the
@@ -157,4 +158,108 @@ fn explicit_linker_request_still_overrides_project_target_config() {
         &command,
         "an explicit SOLDR_LINKER request outranks the project's config",
     );
+}
+
+/// Build a project root whose `Cargo.toml` declares
+/// `[workspace.metadata.soldr] linker = "reld"` (soldr#3276 §6 dogfooding),
+/// then run `apply_linker_override` from inside it.
+fn apply_from_project_with_cargo_toml_metadata_linker(reld_bin: &Path) -> std::process::Command {
+    // `.keep()` rather than a `TempDir` guard: the linker shim is materialized
+    // under `paths.bin` and read back by the caller after this function
+    // returns, so the directory must outlive the local `TempDir` drop.
+    let root = tempfile::tempdir().expect("tempdir").keep();
+    let paths = SoldrPaths::with_root(root.join("soldr"));
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).expect("mkdir project");
+    std::fs::write(
+        project.join("Cargo.toml"),
+        "[workspace]\nmembers = []\n\n[workspace.metadata.soldr]\nlinker = \"reld\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let _reld_bin = EnvVarGuard::set(
+        crate::fetch::RELD_BIN_ENV_VAR,
+        reld_bin.to_str().expect("utf8 reld path"),
+    );
+
+    let mut command = std::process::Command::new("cargo");
+    let _cwd = crate::CwdGuard::enter(&project);
+    tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(target::apply_linker_override(
+            &mut command,
+            &argvec(&format!("build --target {TARGET}")),
+            None,
+            &paths,
+        ))
+        .expect("apply_linker_override");
+    command
+}
+
+/// soldr#3276 §6: the dogfooding gap. A project that declares
+/// `linker = "reld"` in its own `Cargo.toml` `[workspace.metadata.soldr]`
+/// table must never hand clang a *bare* `reld` name in `--ld-path=reld` —
+/// clang requires `--ld-path=` to be an absolute path
+/// (`clang: error: invalid linker name in argument '--ld-path=reld'`).
+/// The resolved managed/fetched reld's absolute path must be substituted in
+/// before the linker shim is materialized. This exercises the
+/// `LinkerSource::CargoTomlMetadata` branch end to end through
+/// `apply_linker_override`, which no other test in this file or
+/// `cli_cargo_linker.rs` covers (those cover env, `.cargo/config.toml`, and
+/// `~/.soldr/config.toml`, not `Cargo.toml` metadata).
+#[test]
+fn cargo_toml_metadata_linker_reld_resolves_absolute_path_end_to_end() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _soldr_linker = EnvVarGuard::remove("SOLDR_LINKER");
+    let _build_target = EnvVarGuard::remove("CARGO_BUILD_TARGET");
+    let _parent_linker = EnvVarGuard::remove(LINKER_KEY);
+    let _parent_rustflags = EnvVarGuard::remove(RUSTFLAGS_KEY);
+
+    let reld_dir = tempfile::tempdir().expect("reld tempdir");
+    let reld_bin = reld_dir.path().join(format!(
+        "reld{}",
+        crate::platform::executable::name::script_suffix()
+    ));
+    std::fs::write(&reld_bin, "#!/bin/sh\nexit 0\n").expect("write fake reld");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&reld_bin, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x");
+    }
+
+    let command = apply_from_project_with_cargo_toml_metadata_linker(&reld_bin);
+
+    let linker = command_env_override(&command, LINKER_KEY)
+        .flatten()
+        .expect("CARGO_TARGET_<TRIPLE>_LINKER must be injected for a declared reld linker");
+    let linker = linker.to_string_lossy();
+
+    // The bug this guards against: a bare `--ld-path=reld` (or a bare
+    // `reld` CARGO_TARGET_*_LINKER value) reaching clang/cargo unresolved.
+    assert!(
+        !linker.ends_with("reld") && linker != "reld",
+        "linker injection must not be a bare `reld` name, got: {linker}"
+    );
+
+    // On Linux the value is a generated content-addressed clang driver shim
+    // (materialize_linker_driver_shim); everywhere else it is the direct
+    // absolute reld path. Either way it must never be the literal `reld`.
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux {
+        assert!(
+            linker.contains("linker-shims"),
+            "linux reld uses a generated clang driver shim: {linker}"
+        );
+        let shim_body = std::fs::read_to_string(linker.as_ref()).expect("read shim");
+        assert!(
+            shim_body.contains(&format!("--ld-path={}", reld_bin.display())),
+            "shim must embed the resolved absolute reld path, not a bare name: {shim_body}"
+        );
+        assert!(
+            !shim_body.contains("--ld-path=reld\n") && !shim_body.contains("--ld-path=reld "),
+            "shim must not contain the unresolved bare `--ld-path=reld`: {shim_body}"
+        );
+    } else {
+        assert_eq!(linker, reld_bin.to_string_lossy());
+    }
 }

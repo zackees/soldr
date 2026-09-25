@@ -1256,6 +1256,95 @@ jobs:
         if: success()
         run: bash .github/scripts/cache_path_inventory.sh "${{ matrix.target }}"
 
+  # soldr#3276 §6: dogfooding proof. `build-linux-x64` already builds this
+  # repo with `[workspace.metadata.soldr] linker = "reld"` declared in its
+  # own Cargo.toml (soldr's own build is the dogfood), but that alone proves
+  # only that the build succeeded -- not that reld was actually fetched and
+  # linked with an absolute path, nor that `--cfg tokio_unstable` (this
+  # repo's own `[build] rustflags`) survived being combined with the reld
+  # linker injection. This job re-links soldr-cli under `-v` and inspects
+  # the rustc invocation directly. Informational only (not in
+  # `full-coverage`'s `needs:`): a transient failure here must not block
+  # merges on top of the real build-linux-x64 signal.
+  reld-dogfood-proof-linux:
+    name: reld dogfood proof (linux x64)
+    needs: [ci-mode, build-linux-x64]
+    if: ${{ needs.ci-mode.outputs.mode != 'minimal' && needs.build-linux-x64.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.ci-mode.outputs.checkout_sha }}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - name: Install rustup 1.98.1
+        run: rustup toolchain install 1.98.1 --profile minimal --no-self-update
+      - name: Build local soldr driver
+        run: cargo build -p soldr-cli
+      - name: Prove reld resolves to an absolute path and tokio_unstable survives
+        run: |
+          uv run --no-project --python 3.13 python \
+            .github/scripts/reld_dogfood_proof.py --soldr-bin target/debug/soldr
+
+  # soldr#3276 §6 live-acceptance gap: prior evidence (soldr#3356) covered
+  # only Linux x64. reld bridges to lld-link on Windows MSVC and ld64.lld on
+  # macOS (`crates/soldr-cli/src/linker.rs` `LinkerChoice::Reld` /
+  # `apple_fast_linker`), so it is meant to support these hosts -- this
+  # exercises a real, network-touching `SOLDR_LINKER=reld` fetch + link on
+  # each native runner, using the already cross-built soldr binary from the
+  # matching e2e lane rather than paying for a second native build.
+  # Informational only, same reasoning as reld-dogfood-proof-linux above.
+  reld-live-fetch-windows-x64:
+    name: reld live fetch (windows x64)
+    needs: [ci-mode, e2e-windows-x64-build]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' && needs.e2e-windows-x64-build.result == 'success' }}
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.ci-mode.outputs.checkout_sha }}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: soldr-ci-e2e-windows-x64
+          path: dist
+      - name: Live SOLDR_LINKER=reld fetch + link probe
+        shell: bash
+        run: |
+          uv run --no-project --python 3.13 python \
+            ci/reld_live_fetch_probe.py --soldr-bin dist/package/soldr.exe
+
+  reld-live-fetch-macos-arm64:
+    name: reld live fetch (macos arm64)
+    needs: [ci-mode, e2e-macos-arm64-build]
+    if: ${{ needs.ci-mode.outputs.mode != 'minimal' && needs.e2e-macos-arm64-build.result == 'success' }}
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.ci-mode.outputs.checkout_sha }}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: soldr-ci-e2e-macos-arm64
+          path: dist
+      - name: Live SOLDR_LINKER=reld fetch + link probe
+        run: |
+          chmod +x dist/package/soldr
+          uv run --no-project --python 3.13 python \
+            ci/reld_live_fetch_probe.py --soldr-bin dist/package/soldr
+
   # Former standalone PR signals. The reusable workflows retain their
   # push/main, schedule, and manual operational surfaces; canonical CI owns
   # their PR selection so no second PR workflow can become a required check.

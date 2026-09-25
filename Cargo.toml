@@ -46,6 +46,12 @@ homepage = "https://github.com/zackees/soldr"
 # When this checkout is run with a locally-built soldr, hand off to the
 # globally-installed `soldr` on PATH when it has a newer SemVer version.
 prefer_newer_global = true
+# soldr#3276 §6: dogfood the reld linker on soldr's own build. `.github/
+# scripts/reld_dogfood_proof.py` (run in CI) proves the resolved linker is
+# an absolute path derived from a fetched reld, never the bare `reld` name
+# clang's `--ld-path=` rejects, and that this repo's own `.cargo/config.toml`
+# `[build] rustflags` (`--cfg tokio_unstable`) survives the injection.
+linker = "reld"
 targets = [
     "x86_64-pc-windows-msvc",
     "x86_64-pc-windows-gnu",
