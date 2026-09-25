@@ -442,23 +442,41 @@ const GENERATIONS_SUBDIR: &str = "generations";
 
 /// The generation key this process resolves to, when known.
 ///
-/// Reads only `SOLDR_BROKER_SERVICE` (never recomputes it from the daemon
-/// image) to avoid recursing back into [`broker_route_claim_path`] through
-/// [`resolve_daemon_image_for_route`]'s claim-file fallback. Every caller
-/// that has a resolved route service name sets this env var before touching
-/// route-claim state (soldr#2634's forwarding + the front door's preflight
-/// setup), so this covers the normal path. Its absence falls back to the
-/// legacy version-independent slot, which keeps old-version daemons (that
-/// never learned to key by generation) discoverable there without a new
-/// generation reusing that slot as its own.
+/// `SOLDR_BROKER_SERVICE` first: the front door exports it before preflight
+/// and the route registration pins it into the daemon's own environment.
+/// Without it, the name is derived from this binary's daemon image (see
+/// [`derive_generation_key`]); only when that fails too does the legacy
+/// version-independent slot apply. A new generation never adopts that slot
+/// as its own, so an older daemon living there is neither overwritten nor
+/// seen as this generation's daemon.
 fn resolved_generation_key() -> Option<String> {
     // Tests pick a generation per thread instead of mutating the process
     // environment, which every other claim test in this binary reads.
     #[cfg(test)]
     let key = TEST_GENERATION_KEY.with(|key| key.borrow().clone());
     #[cfg(not(test))]
-    let key = std::env::var(SOLDR_BROKER_SERVICE_ENV_VAR).ok();
+    let key = std::env::var(SOLDR_BROKER_SERVICE_ENV_VAR)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(derive_generation_key);
     key.filter(|value| !value.is_empty())
+}
+
+/// Derive this binary's own generation when `SOLDR_BROKER_SERVICE` is not
+/// exported (a plain `soldr status` / `soldr daemon stop`). Guarded against
+/// re-entry: deriving the service name may consult the route claim, which
+/// resolves its path through here; the inner lookup takes the legacy slot.
+#[cfg(not(test))]
+fn derive_generation_key() -> Option<String> {
+    thread_local! {
+        static DERIVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if DERIVING.with(|flag| flag.replace(true)) {
+        return None;
+    }
+    let key = broker_service_name().ok();
+    DERIVING.with(|flag| flag.set(false));
+    key
 }
 
 #[cfg(test)]
