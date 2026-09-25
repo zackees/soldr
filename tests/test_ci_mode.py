@@ -110,6 +110,11 @@ def test_minimal_jobs_and_full_jobs_have_explicit_dependencies() -> None:
         "setup-soldr-action",
         "cook-size-gate",
         "macos-recovery-replay",
+        # soldr#3276 §6: reld dogfooding evidence jobs. Informational only
+        # (not in `full-coverage`'s `needs:`), so they carry their own gate.
+        "reld-dogfood-proof-linux",
+        "reld-live-fetch-windows-x64",
+        "reld-live-fetch-macos-arm64",
     }
 
 
