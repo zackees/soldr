@@ -20,6 +20,8 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod backend_handle_adoption;
+/// soldr#3053 — best-effort on-CPU / off-CPU / task-inventory breach artifacts.
+pub(crate) mod breach_forensics;
 pub mod bringup;
 /// soldr#2224 — the three IPC handlers that touch `state.sqlite3`, split
 /// out of the oversized `server.rs`.
@@ -55,12 +57,10 @@ pub mod image_hash;
 /// the embedded zccache service, so `rss_ceiling`'s breach dump can name
 /// the units the daemon was holding and not just how much it held.
 pub(crate) mod inflight_compiles;
-/// soldr#3053 — best-effort on-CPU / off-CPU / task-inventory breach artifacts.
-pub(crate) mod breach_forensics;
-/// soldr#3053 — registry of pending/recent terminate and cancel decisions.
-pub(crate) mod kill_decisions;
 pub mod ipc;
 pub mod ipc_peer;
+/// soldr#3053 — registry of pending/recent terminate and cancel decisions.
+pub(crate) mod kill_decisions;
 pub mod lifecycle;
 pub mod maintenance;
 pub mod protocol;
