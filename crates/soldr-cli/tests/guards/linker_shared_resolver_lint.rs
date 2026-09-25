@@ -17,6 +17,8 @@
 use std::fs;
 use std::path::Path;
 
+use crate::common;
+
 /// `resolve_project_choice` itself may be defined exactly once.
 const RESOLVER_DEFINITION: &str = "pub fn resolve_project_choice(";
 
@@ -41,12 +43,7 @@ const REQUIRED_CALLER_FILES: &[&str] = &[
 ];
 
 fn repo_root() -> std::path::PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .ancestors()
-        .nth(2)
-        .expect("crates/soldr-cli -> workspace root")
-        .to_path_buf()
+    common::workspace_root()
 }
 
 #[test]
