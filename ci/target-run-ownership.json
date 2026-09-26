@@ -184,6 +184,7 @@
       "package": "soldr-cli",
       "binary": "guards",
       "modules": [
+        "alias_error_surface_guard",
         "canonical_targets_parity",
         "cli_ci_test",
         "cli_lint",
