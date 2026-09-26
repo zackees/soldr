@@ -95,6 +95,7 @@ pub(crate) fn soldr_daemon_service_definition_for_paths(
             "Soldr root is not valid Unicode and cannot be routed by the broker",
         )
     })?;
+    let service_name = route.service_name.clone();
     let mut definition =
         ServiceDefinitionBuilder::shared_broker(route.service_name, binary.display().to_string())
             .per_version_binary_dir(binary_dir.display().to_string())
@@ -109,6 +110,17 @@ pub(crate) fn soldr_daemon_service_definition_for_paths(
     add_daemon_env_labels(
         &mut definition,
         crate::daemon::lifecycle::forwarded_soldr_env(),
+    )?;
+    // soldr#3374: the daemon keys its per-generation route claim by this
+    // name, and so does every front door reading it. Pin the route's own
+    // name rather than whatever the registering process happened to export
+    // (often nothing yet, or a different generation's route).
+    add_daemon_env_labels(
+        &mut definition,
+        [(
+            crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR.into(),
+            service_name.into(),
+        )],
     )?;
 
     debug_assert_eq!(definition.isolation, BrokerIsolation::SharedBroker as i32);

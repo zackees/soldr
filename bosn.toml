@@ -147,3 +147,11 @@ cmd = "bash /repo/ci/cook_rematerialization/seed.sh"
 [task.verify-rematerialization]
 stack = "warm"
 cmd = "bash /repo/ci/cook_rematerialization/verify_warm.sh"
+
+[task.daemon-generations]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-daemon --lib -- daemon::lifecycle::tests::generations:: daemon::lifecycle::tests::root_acquire:: daemon::backend_handle_adoption::tests:: daemon::service_definition:: && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --lib -- broker_launcher::"
+
+[task.daemon-generations-e2e]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --test daemon -- cli_daemon_lifecycle:: daemon_fast_sigterm::"

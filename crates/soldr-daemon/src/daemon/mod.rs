@@ -51,6 +51,7 @@ pub mod disconnect;
 /// L4 (issue soldr#980) — background batcher that coalesces
 /// per-compile redb event writes into one fsync per 64 rows / 100 ms.
 pub mod event_batcher;
+pub(crate) mod generation_key;
 pub mod history_gc;
 pub mod image_hash;
 /// soldr#3053 — process-global list of compiles currently executing inside

@@ -431,17 +431,29 @@ pub fn wait_for_broker_backend_handle_while(
     }
 }
 
+use super::generation_key::generation_state_dir;
+#[cfg(test)]
+pub(crate) use super::generation_key::set_generation_override;
+pub use super::generation_key::with_generation_key;
+
 /// Deterministic, root-local protobuf claim used only for broker restart
 /// re-adoption. It is disposable discovery state, not authoritative routing
 /// state; every reader must verify it with an exact `BackendHandle` probe.
+///
+/// Keyed per daemon generation (soldr#3374) when this process has a
+/// resolved broker service name, so two soldr versions running on the same
+/// root each publish and read their own claim rather than overwriting a
+/// shared slot. Falls back to the pre-#3374 version-independent path when
+/// no service name is resolved yet (e.g. while computing the service name
+/// itself) or for legacy compatibility reads.
 pub fn broker_route_claim_path(paths: &SoldrPaths) -> PathBuf {
-    soldr_daemon_dir(paths).join(BROKER_ROUTE_CLAIM_FILE)
+    generation_state_dir(paths).join(BROKER_ROUTE_CLAIM_FILE)
 }
 
 pub fn publish_broker_route_claim(paths: &SoldrPaths, daemon: &DaemonProcess) -> io::Result<()> {
     use std::io::Write as _;
 
-    let directory = soldr_daemon_dir(paths);
+    let directory = generation_state_dir(paths);
     std::fs::create_dir_all(&directory)?;
     let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
     let mut encoded = Vec::new();
@@ -457,7 +469,42 @@ pub fn publish_broker_route_claim(paths: &SoldrPaths, daemon: &DaemonProcess) ->
     let target = broker_route_claim_path(paths);
     replace_route_claim(&temporary, &target).inspect_err(|_| {
         let _ = std::fs::remove_file(&temporary);
-    })
+    })?;
+    mirror_to_legacy_slot(paths, &target, daemon.pid);
+    Ok(())
+}
+
+/// Brokers and tools from before soldr#3374 read only the version-independent
+/// slot, and the broker is a stable singleton that is never replaced
+/// automatically (soldr#2549). Keep that slot populated for them, but only
+/// when no *other* live daemon owns it: a live older generation's claim is
+/// never overwritten. Current readers use the keyed slot exclusively, so the
+/// mirror can never make one generation see another. Best effort.
+fn mirror_to_legacy_slot(paths: &SoldrPaths, keyed: &Path, own_pid: u32) {
+    let legacy = soldr_daemon_dir(paths).join(BROKER_ROUTE_CLAIM_FILE);
+    if legacy == keyed {
+        return;
+    }
+    if let Ok(Some((pid, _))) = read_claim_owner_identity_at(&legacy) {
+        if pid != own_pid
+            && pid_is_alive(pid)
+            && (pid_exe_stem_matches(pid, SOLDR_DAEMON_SERVICE_NAME)
+                || pid_exe_stem_matches(pid, "soldr"))
+        {
+            return;
+        }
+    }
+    let Ok(temporary) = tempfile::NamedTempFile::new_in(soldr_daemon_dir(paths)) else {
+        return;
+    };
+    let Ok(temporary) = temporary.into_temp_path().keep() else {
+        return;
+    };
+    if std::fs::copy(keyed, &temporary).is_err()
+        || replace_route_claim(&temporary, &legacy).is_err()
+    {
+        let _ = std::fs::remove_file(&temporary);
+    }
 }
 
 fn replace_route_claim(source: &Path, target: &Path) -> io::Result<()> {
@@ -489,9 +536,13 @@ pub fn read_broker_route_claim(paths: &SoldrPaths) -> io::Result<Option<DaemonPr
 pub(crate) fn read_broker_route_claim_owner_identity(
     paths: &SoldrPaths,
 ) -> io::Result<Option<(u32, PathBuf)>> {
+    read_claim_owner_identity_at(&broker_route_claim_path(paths))
+}
+
+fn read_claim_owner_identity_at(path: &Path) -> io::Result<Option<(u32, PathBuf)>> {
     use prost::Message as _;
 
-    let bytes = match std::fs::read(broker_route_claim_path(paths)) {
+    let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
