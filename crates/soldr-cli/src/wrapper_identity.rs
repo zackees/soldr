@@ -16,6 +16,7 @@
 //! deliberately not mirrored: Soldr asserts only what Soldr owns.
 
 use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::core::SoldrError;
@@ -121,6 +122,24 @@ fn drift_error(
     ))
 }
 
+/// Resolve a caller-owned `RUSTC_WRAPPER` spelled as the bare name `soldr`
+/// to this process's own image.
+///
+/// The PEP 517 backend presets `RUSTC_WRAPPER=soldr`, meaning "soldr
+/// itself". Left bare, cargo resolves it through `PATH`, which in a pip
+/// build env finds the backend's pinned wheel binary — not necessarily the
+/// newer global soldr that the backend delegated to. That process registers
+/// the broker route under its own version (`min_version`) and exports it via
+/// `SOLDR_BROKER_SERVICE`, so an older wrapper asking for its own lower
+/// `wanted_version` is refused on every compile ("wanted_version is below
+/// min_version"). Pinning the wrapper to the registering image keeps route
+/// owner and route client the same binary. Any other wrapper is left alone.
+pub fn pin_bare_soldr_wrapper(inherited: &OsStr, current_exe: &Path) -> Option<PathBuf> {
+    let bare = inherited == OsStr::new("soldr")
+        || (cfg!(windows) && inherited.eq_ignore_ascii_case("soldr.exe"));
+    bare.then(|| current_exe.to_path_buf())
+}
+
 /// Owned-state view for callers that only need to report identity.
 pub fn inherited_identity() -> Option<(OsString, String)> {
     let mirror = std::env::var_os(EFFECTIVE_WRAPPER_ENV)?;
@@ -180,6 +199,27 @@ mod tests {
             get(EFFECTIVE_WRAPPER_ORIGIN_ENV).flatten(),
             Some(OsString::from("disabled"))
         );
+    }
+
+    #[test]
+    fn bare_soldr_wrapper_pins_to_current_image() {
+        let exe = Path::new("/home/u/.venv/bin/soldr");
+        assert_eq!(
+            pin_bare_soldr_wrapper(OsStr::new("soldr"), exe),
+            Some(exe.to_path_buf())
+        );
+    }
+
+    #[test]
+    fn other_wrappers_are_left_to_the_caller() {
+        let exe = Path::new("/home/u/.venv/bin/soldr");
+        for wrapper in ["/opt/build-env/bin/soldr", "sccache", "soldr-ci", ""] {
+            assert_eq!(
+                pin_bare_soldr_wrapper(OsStr::new(wrapper), exe),
+                None,
+                "{wrapper:?} must not be rewritten"
+            );
+        }
     }
 
     // The process-env assertion is covered by the integration test
