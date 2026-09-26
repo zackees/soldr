@@ -1,0 +1,180 @@
+{
+ "captured": "soldr#3347 fixture modeled on the 2026-09-23 20:26 UTC listing (main cook lock e8c3... current, 9506... prior; residual at current producer sizes)",
+ "usage_bytes": null,
+ "entries": [
+  {
+   "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-f8a8107f7-le8c3129b32c03b91-soldr0.9.22",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 464048227,
+   "createdAt": "2026-09-23T19:16:00Z"
+  },
+  {
+   "key": "cook-delta-v2-linux-x64-glibc-rustc1.98.1-f8a8107f7-le8c3129b32c03b91-soldr0.9.22-s00a1b2c3d4e5-ga6cad17e8a643fbb",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 110770,
+   "createdAt": "2026-09-23T19:30:00Z"
+  },
+  {
+   "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-f8a8107f7-l9506e5de4a14312c-soldr0.9.21",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 167772160,
+   "createdAt": "2026-09-22T14:00:00Z"
+  },
+  {
+   "key": "cook-delta-v2-linux-x64-glibc-rustc1.98.1-f8a8107f7-l9506e5de4a14312c-soldr0.9.21-s01a1b2c3d4e5-g1415998a4019694e",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 110000,
+   "createdAt": "2026-09-22T14:30:00Z"
+  },
+  {
+   "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-faaa264c8-le8c3129b32c03b91-soldr0.9.22",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 369969744,
+   "createdAt": "2026-09-23T19:16:00Z"
+  },
+  {
+   "key": "cook-delta-v2-linux-x64-glibc-rustc1.98.1-faaa264c8-le8c3129b32c03b91-soldr0.9.22-s10a1b2c3d4e5-ga6cad17e8a643fbb",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 110770,
+   "createdAt": "2026-09-23T19:30:00Z"
+  },
+  {
+   "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-faaa264c8-l9506e5de4a14312c-soldr0.9.21",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 167772160,
+   "createdAt": "2026-09-22T14:00:00Z"
+  },
+  {
+   "key": "cook-delta-v2-linux-x64-glibc-rustc1.98.1-faaa264c8-l9506e5de4a14312c-soldr0.9.21-s11a1b2c3d4e5-g1415998a4019694e",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 110000,
+   "createdAt": "2026-09-22T14:30:00Z"
+  },
+  {
+   "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-fbaf623ad-le8c3129b32c03b91-soldr0.9.22",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 484200387,
+   "createdAt": "2026-09-23T19:16:00Z"
+  },
+  {
+   "key": "cook-delta-v2-linux-x64-glibc-rustc1.98.1-fbaf623ad-le8c3129b32c03b91-soldr0.9.22-s20a1b2c3d4e5-ga6cad17e8a643fbb",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 110770,
+   "createdAt": "2026-09-23T19:30:00Z"
+  },
+  {
+   "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-fbaf623ad-l9506e5de4a14312c-soldr0.9.21",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 167772160,
+   "createdAt": "2026-09-22T14:00:00Z"
+  },
+  {
+   "key": "cook-delta-v2-linux-x64-glibc-rustc1.98.1-fbaf623ad-l9506e5de4a14312c-soldr0.9.21-s21a1b2c3d4e5-g1415998a4019694e",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 110000,
+   "createdAt": "2026-09-22T14:30:00Z"
+  },
+  {
+   "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-fbf1bfb42-le8c3129b32c03b91-soldr0.9.22",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 364314910,
+   "createdAt": "2026-09-23T19:16:00Z"
+  },
+  {
+   "key": "cook-delta-v2-linux-x64-glibc-rustc1.98.1-fbf1bfb42-le8c3129b32c03b91-soldr0.9.22-s30a1b2c3d4e5-ga6cad17e8a643fbb",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 110770,
+   "createdAt": "2026-09-23T19:30:00Z"
+  },
+  {
+   "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-fbf1bfb42-l9506e5de4a14312c-soldr0.9.21",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 167772160,
+   "createdAt": "2026-09-22T14:00:00Z"
+  },
+  {
+   "key": "cook-delta-v2-linux-x64-glibc-rustc1.98.1-fbf1bfb42-l9506e5de4a14312c-soldr0.9.21-s31a1b2c3d4e5-g1415998a4019694e",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 110000,
+   "createdAt": "2026-09-22T14:30:00Z"
+  },
+  {
+   "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-fc0f411d4-le8c3129b32c03b91-soldr0.9.22",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 486143437,
+   "createdAt": "2026-09-23T19:16:00Z"
+  },
+  {
+   "key": "cook-delta-v2-linux-x64-glibc-rustc1.98.1-fc0f411d4-le8c3129b32c03b91-soldr0.9.22-s40a1b2c3d4e5-ga6cad17e8a643fbb",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 110770,
+   "createdAt": "2026-09-23T19:30:00Z"
+  },
+  {
+   "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-fc0f411d4-l9506e5de4a14312c-soldr0.9.21",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 167772160,
+   "createdAt": "2026-09-22T14:00:00Z"
+  },
+  {
+   "key": "cook-delta-v2-linux-x64-glibc-rustc1.98.1-fc0f411d4-l9506e5de4a14312c-soldr0.9.21-s41a1b2c3d4e5-g1415998a4019694e",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 110000,
+   "createdAt": "2026-09-22T14:30:00Z"
+  },
+  {
+   "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-f8a8107f7-l9506e5de4a14312c-soldr0.9.21",
+   "ref": "refs/pull/3346/merge",
+   "sizeInBytes": 433061888,
+   "createdAt": "2026-09-23T18:00:00Z"
+  },
+  {
+   "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-faaa264c8-l9506e5de4a14312c-soldr0.9.21",
+   "ref": "refs/pull/3346/merge",
+   "sizeInBytes": 433061888,
+   "createdAt": "2026-09-23T18:00:00Z"
+  },
+  {
+   "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-fbaf623ad-l9506e5de4a14312c-soldr0.9.21",
+   "ref": "refs/pull/3346/merge",
+   "sizeInBytes": 433061888,
+   "createdAt": "2026-09-23T18:00:00Z"
+  },
+  {
+   "key": "zccache-unit-v1-x86_64-unknown-linux-gnu-84579bf8c3b386088e57e76a2b78d3df9cefb6bcd44a04894e5a229773ba93e4-35900000001",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 1426063360,
+   "createdAt": "2026-09-23T10:00:00Z"
+  },
+  {
+   "key": "zccache-unit-v1-x86_64-unknown-linux-gnu-84579bf8c3b386088e57e76a2b78d3df9cefb6bcd44a04894e5a229773ba93e4-35915930962",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 1426063360,
+   "createdAt": "2026-09-23T20:00:00Z"
+  },
+  {
+   "key": "stable-cook-v2-x86_64-unknown-linux-gnu-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 262144000,
+   "createdAt": "2026-09-22T10:00:00Z"
+  },
+  {
+   "key": "stable-cook-v2-x86_64-unknown-linux-gnu-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 650117120,
+   "createdAt": "2026-09-23T10:00:00Z"
+  },
+  {
+   "key": "v0-rust-bootstrap-soldr-linux-gnu-dev-v1-Linux-x64-1897f1b2-12b97604",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 394034342,
+   "createdAt": "2026-09-23T20:00:00Z"
+  },
+  {
+   "key": "v0-rust-wheel-cross-aarch64-unknown-linux-gnu-release-v1-Linux-x64-4e81cb3b-12b97604",
+   "ref": "refs/heads/main",
+   "sizeInBytes": 589803439,
+   "createdAt": "2026-09-23T20:00:00Z"
+  }
+ ]
+}

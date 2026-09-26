@@ -549,3 +549,148 @@ def test_stable_cook_source_hash_matches_producer_expression() -> None:
     assert expression in producer
     assert expression in sweep
     assert "if: github.ref == 'refs/heads/main'" in sweep
+
+
+# --------------------------------------------------------------------------
+# soldr#3347: main cook lock-generation lineage, RED -> GREEN
+# --------------------------------------------------------------------------
+
+LINEAGE_FIXTURE = (
+    REPO_ROOT
+    / "tests"
+    / "fixtures"
+    / "actions-cache"
+    / "listing-3347-cook-lineage.json"
+)
+CURRENT_LOCK = "e8c3129b32c03b91"
+PRIOR_LOCK = "9506e5de4a14312c"
+CURRENT_STABLE = "b" * 64
+
+
+def lineage_entries() -> list:
+    raw, _ = guard.load_from_json(LINEAGE_FIXTURE)
+    return guard.normalize_entries(raw)
+
+
+def legacy_cook_candidates(on_main: list, lock: str) -> list:
+    """The pre-#3347 rule: a shape matched only at the SAME soldr version."""
+    bases = set()
+    for e in on_main:
+        m = guard.COOK_KEY.fullmatch(e.key)
+        if m and m.group(1) == "base" and m.group(3) == lock:
+            bases.add((m.group(2), m.group(4)))
+    return [
+        e
+        for e in on_main
+        if (m := guard.COOK_KEY.fullmatch(e.key))
+        and (m.group(2), m.group(4)) in bases
+        and m.group(3) != lock
+    ]
+
+
+def without(entries: list, dropped: list) -> list:
+    ids = {id(e) for e in dropped}
+    return [e for e in entries if id(e) not in ids]
+
+
+def test_3347_fixture_is_red_raw() -> None:
+    entries = lineage_entries()
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    problems = guard.budget_problems(MANIFEST, manifest, entries)
+    assert any("'cook-layer'" in p for p in problems)
+    assert any("'zccache-unit'" in p for p in problems)
+
+
+def test_3347_legacy_policy_still_fails_after_its_reclaim() -> None:
+    entries = lineage_entries()
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    everything = guard.prune_candidates(entries, CURRENT_LOCK, CURRENT_STABLE)
+    new_cook = guard.cook_lineage_candidates(
+        [e for e in entries if e.ref == "refs/heads/main"], CURRENT_LOCK
+    )
+    legacy = without(everything, new_cook) + legacy_cook_candidates(
+        [e for e in entries if e.ref == "refs/heads/main"], CURRENT_LOCK
+    )
+    problems = guard.budget_problems(MANIFEST, manifest, without(entries, legacy))
+    assert any("'cook-layer'" in p for p in problems)
+    assert guard.effective_verdict(problems).startswith(
+        "effective after safe prune: STILL OVER BUDGET"
+    )
+
+
+def test_3347_lineage_policy_fits_every_family_and_total() -> None:
+    entries = lineage_entries()
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    candidates = guard.prune_candidates(entries, CURRENT_LOCK, CURRENT_STABLE)
+    effective = without(entries, candidates)
+    assert guard.budget_problems(MANIFEST, manifest, effective) == []
+    assert guard.effective_verdict([]).endswith("every family and the total fit")
+    kept_cook = {e.key for e in effective if e.key.startswith("cook-")}
+    # Exactly the current lock generation for every one of the five shapes.
+    assert len(kept_cook) == 10
+    assert all(f"-l{CURRENT_LOCK}-" in k for k in kept_cook)
+    assert len({id(e) for e in candidates}) == len(candidates)  # no double count
+
+
+def test_3347_policy_is_not_green_when_a_family_truly_does_not_fit() -> None:
+    # The residual producer sizes from the 2026-09-23 20:26 listing were
+    # 36,875,420 B over; no safe candidate touches them, so it must stay red.
+    entries = [
+        (
+            guard.CacheEntry(e.key, e.ref, 635_272_319, e.id, e.created_at)
+            if e.key.startswith("v0-rust-wheel-cross-")
+            else e
+        )
+        for e in lineage_entries()
+    ]
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    effective = without(
+        entries, guard.prune_candidates(entries, CURRENT_LOCK, CURRENT_STABLE)
+    )
+    problems = guard.budget_problems(MANIFEST, manifest, effective)
+    assert any("'rust-cache-residual'" in p for p in problems)
+    assert "STILL OVER BUDGET" in guard.effective_verdict(problems)
+
+
+def _cook(kind: str, shape: str, lock: str, soldr: str, suffix: str = "") -> dict:
+    return entry(
+        f"cook-{kind}-v2-linux-x64-glibc-rustc1.98.1-f{shape}-l{lock}-soldr{soldr}{suffix}",
+        100,
+    )
+
+
+def test_3347_never_retires_a_unique_active_shape() -> None:
+    raw = [
+        _cook("base", "aaa264c8", CURRENT_LOCK, "0.9.22"),
+        _cook("base", "c0f411d4", PRIOR_LOCK, "0.9.21"),  # no current base
+        _cook("delta", "c0f411d4", PRIOR_LOCK, "0.9.21", "-s1-g2"),
+    ]
+    assert guard.prune_candidates(guard.normalize_entries(raw), CURRENT_LOCK) == []
+
+
+def test_3347_never_retires_an_unknown_prefix() -> None:
+    raw = [
+        _cook("base", "aaa264c8", CURRENT_LOCK, "0.9.22"),
+        entry(
+            f"cook-base-v3-linux-x64-glibc-rustc1.98.1-faaa264c8-l{PRIOR_LOCK}-soldr0.9.21",
+            100,
+        ),
+        entry("mystery-cache-faaa264c8-l" + PRIOR_LOCK, 100),
+    ]
+    assert guard.prune_candidates(guard.normalize_entries(raw), CURRENT_LOCK) == []
+
+
+def test_3347_keeps_every_required_current_lock_generation() -> None:
+    raw = [
+        _cook("base", "aaa264c8", CURRENT_LOCK, "0.9.22"),
+        _cook("delta", "aaa264c8", CURRENT_LOCK, "0.9.22", "-s1-g2"),
+        # Same lock, older soldr: still required for a soldr rollback.
+        _cook("base", "aaa264c8", CURRENT_LOCK, "0.9.21"),
+        _cook("base", "aaa264c8", PRIOR_LOCK, "0.9.21"),
+    ]
+    entries = guard.normalize_entries(raw)
+    assert [e.key for e in guard.prune_candidates(entries, CURRENT_LOCK)] == [
+        raw[3]["key"]
+    ]
+    # Unknown current lock: the required generation cannot be identified.
+    assert guard.prune_candidates(entries, None) == []

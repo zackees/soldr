@@ -260,7 +260,7 @@ def test_ensure_tag_failure_prints_gh_stderr(tmp_path, monkeypatch, capsys):
     run, _ = failing_gh("MARKER_TAG_3385", fail_from=2)
     assert MODULE.ensure_tag(REPO, TAG, SHA, run) == 1
     out = capsys.readouterr()
-    error_line = next(l for l in out.out.splitlines() if l.startswith("::error::"))
+    error_line = next(ln for ln in out.out.splitlines() if ln.startswith("::error::"))
     assert "MARKER_TAG_3385" in error_line
     assert "MARKER_TAG_3385" in summary.read_text(encoding="utf-8")
     assert "MARKER_TAG_3385" in out.err
@@ -277,7 +277,7 @@ def test_create_draft_release_failure_prints_gh_stderr(tmp_path, monkeypatch, ca
     )
     assert rc == 1
     out = capsys.readouterr()
-    error_line = next(l for l in out.out.splitlines() if l.startswith("::error::"))
+    error_line = next(ln for ln in out.out.splitlines() if ln.startswith("::error::"))
     assert "MARKER_RELEASE_3385" in error_line
     assert "MARKER_RELEASE_3385" in summary.read_text(encoding="utf-8")
 
