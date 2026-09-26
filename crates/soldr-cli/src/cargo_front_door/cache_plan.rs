@@ -297,6 +297,7 @@ mod tests {
             child_env: ZccacheChildEnv {
                 path_remap: Some("auto"),
                 worktree_root: Some(std::path::PathBuf::from("/tmp/worktree")),
+                materialization_mode: None,
             },
             wrapper_path: std::path::PathBuf::from("/tmp/soldr-shims/rustc"),
             daemon_path: std::path::PathBuf::from("/tmp/soldr-daemon"),

@@ -15,6 +15,7 @@ would otherwise import each other, it belongs here.
 | `target_triple.rs` | `TargetTriple` and its `Arch` / `Os` / `Env` components |
 | `canonical_targets.rs` | The canonical target list and `is_canonical` |
 | `git.rs` | Git metadata helpers |
+| `materialization_mode.rs` | zccache cache-hit delivery mode (`ZCCACHE_MODE`, soldr#3407): `ZccacheMode`, the `[zccache] mode` config section, and the pure precedence resolver (`SOLDR_ZCCACHE_MODE` > config > user `ZCCACHE_MODE`); tests in `materialization_mode_tests.rs` |
 | `wire.rs`, `wire_proto.rs`, `wire.proto` | Shared wire types. `wire_proto.rs` is **hand-written** prost; `wire.proto` is the schema of record and is kept in sync manually |
 
 ## Conventions

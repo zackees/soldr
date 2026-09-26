@@ -15,6 +15,7 @@ mod cli_cargo_run_trampoline;
 mod cli_cargo_strip_failure;
 mod cli_cargo_trampoline_workspace;
 mod cli_cargo_wrappers;
+mod cli_cargo_zccache_mode;
 mod cli_dispatch;
 mod cli_dylint_wrapper;
 mod cli_exec;

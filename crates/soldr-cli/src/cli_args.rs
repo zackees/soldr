@@ -177,6 +177,20 @@ To set cargo's job count explicitly, any of these reach it: `soldr build -j N` (
 Applies to a daemon this invocation starts. A daemon already running keeps the limit it started with, so run `soldr daemon stop` first to change it."
     )]
     pub(crate) jobs: Option<usize>,
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        value_name = "MODE",
+        hide_possible_values = true,
+        help = "How cache hits are delivered: auto|link|copy|reflink",
+        long_help = "How the embedded zccache delivers a cache hit to its output path (ZCCACHE_MODE, zccache#1683).
+
+`auto` (zccache's default) clones with reflink where the volume supports it, else hardlinks outputs that may share an inode, else copies. `link` hardlinks eligible outputs. `copy` always writes an independent, writable copy. `reflink` writes an independent copy-on-write clone, falling back to a copy where the volume cannot clone.
+
+Equivalent to SOLDR_ZCCACHE_MODE=MODE and takes the same top precedence: above `[zccache] mode` in config.toml, and above your own ZCCACHE_MODE, which soldr otherwise passes through untouched. Soldr sets ZCCACHE_MODE on the cargo child; the embedded service reads it per compile, so it applies without restarting the daemon. An unknown value in any tier fails the build."
+    )]
+    pub(crate) zccache_mode: Option<ZccacheModeArg>,
     #[command(subcommand)]
     pub(crate) command: Commands,
 }
@@ -201,6 +215,14 @@ impl Cli {
         // soldr#1761.
         if let Some(jobs) = self.jobs {
             std::env::set_var(soldr_core::core::jobs::SOLDR_JOBS_ENV_VAR, jobs.to_string());
+        }
+        // soldr#3407. Populate the top tier `core::materialization_mode`
+        // resolves, like --jobs, rather than a second decision point.
+        if let Some(mode) = self.zccache_mode {
+            std::env::set_var(
+                soldr_core::core::materialization_mode::SOLDR_ZCCACHE_MODE_ENV_VAR,
+                mode.into_mode().as_str(),
+            );
         }
         // soldr#1802. Publishing the variable rather than threading a bool
         // keeps `should_timestamp` the single decision point, so the flag
@@ -228,6 +250,27 @@ impl Cli {
                 crate::cargo_front_door::debug_trace::DEBUG_TRACE_ENV_VAR,
                 "1",
             );
+        }
+    }
+}
+
+/// `--zccache-mode` values (soldr#3407).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum ZccacheModeArg {
+    Auto,
+    Link,
+    Copy,
+    Reflink,
+}
+
+impl ZccacheModeArg {
+    pub(crate) fn into_mode(self) -> soldr_core::core::materialization_mode::ZccacheMode {
+        use soldr_core::core::materialization_mode::ZccacheMode;
+        match self {
+            Self::Auto => ZccacheMode::Auto,
+            Self::Link => ZccacheMode::Link,
+            Self::Copy => ZccacheMode::Copy,
+            Self::Reflink => ZccacheMode::Reflink,
         }
     }
 }

@@ -213,6 +213,10 @@ pub struct SoldrConfig {
     /// [`crate::core::jobs`] for the full precedence chain.
     #[serde(default)]
     pub jobs: crate::core::jobs::JobsConfig,
+    /// zccache cache-hit delivery mode (soldr#3407). See
+    /// [`crate::core::materialization_mode`] for the precedence chain.
+    #[serde(default)]
+    pub zccache: crate::core::materialization_mode::ZccacheModeConfig,
     /// `soldr install` source-cache retention knobs (soldr#2310).
     #[serde(default)]
     pub install: InstallConfig,

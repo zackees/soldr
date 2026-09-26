@@ -253,3 +253,49 @@ fn debug_flag_must_precede_the_cargo_passthrough() {
         _ => panic!("expected the cargo passthrough"),
     }
 }
+
+// soldr#3407. Same contract as --jobs: publish SOLDR_ZCCACHE_MODE, the top
+// tier `core::materialization_mode` reads, in the canonical spelling
+// zccache documents, rather than becoming a second decision point.
+#[test]
+fn zccache_mode_flag_publishes_the_env_var_the_resolver_reads() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let name = soldr_core::core::materialization_mode::SOLDR_ZCCACHE_MODE_ENV_VAR;
+    let previous = std::env::var(name).ok();
+
+    let mut published = Vec::new();
+    for (flag, canonical) in [
+        ("auto", "AUTO"),
+        ("link", "LINK"),
+        ("copy", "COPY"),
+        ("reflink", "REFLINK"),
+    ] {
+        std::env::remove_var(name);
+        Cli::parse_from(["soldr", "--zccache-mode", flag, "status"]).export_global_env();
+        published.push((canonical, std::env::var(name).ok()));
+    }
+
+    std::env::set_var(name, "COPY");
+    Cli::parse_from(["soldr", "status"]).export_global_env();
+    let untouched = std::env::var(name).ok();
+
+    restore(name, previous);
+    for (canonical, value) in published {
+        assert_eq!(value.as_deref(), Some(canonical));
+    }
+    assert_eq!(
+        untouched.as_deref(),
+        Some("COPY"),
+        "an absent flag must not overwrite an existing SOLDR_ZCCACHE_MODE"
+    );
+}
+
+#[test]
+fn zccache_mode_flag_is_global_and_rejects_unknown_modes() {
+    let cli = Cli::parse_from(["soldr", "status", "--zccache-mode", "reflink"]);
+    assert_eq!(cli.zccache_mode, Some(ZccacheModeArg::Reflink));
+    assert!(
+        Cli::try_parse_from(["soldr", "--zccache-mode", "hardlink", "status"]).is_err(),
+        "an unknown mode is a usage error"
+    );
+}
