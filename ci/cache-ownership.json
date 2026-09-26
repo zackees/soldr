@@ -530,6 +530,30 @@
       "mechanism": "actions/upload-artifact",
       "tier": "none",
       "rationale": "One-off measurements and logs retained for human review; no guest disk or linked test product is cached across runs."
+    },
+    {
+      "id": "windows-guest-probe-disk-upload",
+      "workflow": "windows-guest-probe.yml",
+      "step": "Upload installed guest disk for the restore job",
+      "mechanism": "actions/upload-artifact",
+      "tier": "same-run-transport",
+      "rationale": "soldr#3295 cache-feasibility measurement: hands the installed evaluation disk to this run's restore job only, with 1-day retention, and the run's delete-disk job removes it. It deliberately never enters the Actions cache, whose budget it could not fit."
+    },
+    {
+      "id": "windows-guest-probe-restore-archive-download",
+      "workflow": "windows-guest-probe.yml",
+      "step": "Download Linux MSVC cross-build artifact for the restored guest",
+      "mechanism": "actions/download-artifact",
+      "tier": "same-run-transport",
+      "rationale": "Gives the restored-image job the same verified test archive and native Nextest executable as the cold guest in this one dispatch run; never restored by a later build."
+    },
+    {
+      "id": "windows-guest-probe-restore-measurements-upload",
+      "workflow": "windows-guest-probe.yml",
+      "step": "Upload restored-image measurements and guest log",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "One-off restored-image measurements and logs retained for human review."
     }
   ]
 }
