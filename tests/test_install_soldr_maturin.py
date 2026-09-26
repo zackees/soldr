@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tomllib
 from pathlib import Path
 
 from conftest import load_script_module
@@ -61,3 +62,21 @@ def test_ci_invokes_the_tested_installer() -> None:
     )
     assert "python .github/scripts/install_soldr_maturin.py" in workflow
     assert "pip install --no-cache-dir --no-binary soldr-maturin" not in workflow
+
+
+def test_uv_sdist_build_toolchain_matches_repo_pin() -> None:
+    # pyproject's [tool.uv.extra-build-variables] names the toolchain for the
+    # soldr-maturin sdist build, which runs outside this checkout. It must
+    # track rust-toolchain.toml or dev installs compile with a stale compiler.
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    toolchain = tomllib.loads(
+        (REPO_ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")
+    )
+    uv = pyproject["tool"]["uv"]
+    assert uv["extra-build-dependencies"]["soldr-maturin"] == ["wheel"]
+    assert (
+        uv["extra-build-variables"]["soldr-maturin"]["RUSTUP_TOOLCHAIN"]
+        == toolchain["toolchain"]["channel"]
+    )

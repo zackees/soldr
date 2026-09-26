@@ -52,6 +52,22 @@ dev = [
     "ruff>=0.12,<0.13",
 ]
 
+[tool.uv.extra-build-dependencies]
+# soldr-maturin ships only a Windows wheel, so Linux/macOS build its sdist.
+# Its setup.py imports `wheel.bdist_wheel` and falls back to None, which
+# setuptools-rust then dereferences. setuptools >= 84 stopped vendoring
+# `wheel`, so the import fails and `uv sync --group dev` dies with
+# "'NoneType' object has no attribute 'user_options'". Provide `wheel`
+# to that one build.
+soldr-maturin = ["wheel"]
+
+[tool.uv.extra-build-variables]
+# The sdist compiles in uv's cache dir, outside this checkout, so a soldr
+# `cargo` shim on PATH finds no rust-toolchain.toml and refuses to pick a
+# toolchain. Name this repo's pin explicitly; a guard in
+# tests/test_install_soldr_maturin.py keeps it equal to rust-toolchain.toml.
+soldr-maturin = { RUSTUP_TOOLCHAIN = "1.98.1" }
+
 [tool.maturin]
 manifest-path = "crates/soldr-cli/Cargo.toml"
 module-name = "soldr._native"

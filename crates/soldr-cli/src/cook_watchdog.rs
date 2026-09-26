@@ -21,7 +21,11 @@
 
 use crate::core::{SoldrError, SoldrPaths};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+// The loop sleeps on tokio's clock, so it must measure elapsed time on the
+// same clock. With `std::time::Instant`, a paused-time test advances the
+// sleeps but never the elapsed time, and the no-progress timeout never fires.
+use tokio::time::Instant;
 
 /// Env var controlling the no-progress deadline. `0` disables the watchdog.
 pub const NO_PROGRESS_ENV_VAR: &str = "SOLDR_COOK_NO_PROGRESS_SECS";

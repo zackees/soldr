@@ -15,6 +15,7 @@ pub(crate) mod catalogue_env;
 /// tree and whose output collection is bounded on every OS.
 pub(crate) mod fixture_command;
 pub(crate) mod isolated_daemon;
+pub(crate) mod route_claim;
 pub(crate) mod tracked_child;
 
 pub(crate) use fixture_command::{isolated_soldr_command_in, isolated_soldr_command_with_target};

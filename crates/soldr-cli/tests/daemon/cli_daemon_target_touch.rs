@@ -233,17 +233,20 @@ fn daemon_path_writes_via_ipc_when_available() {
     ]);
     let paths = soldr_cli::core::SoldrPaths::new().expect("paths");
 
+    // soldr#3374: the claim lives under the daemon's generation key, which
+    // this test process cannot derive from its own executable.
+    let live = || {
+        common::route_claim::with_published_generation(&cache_root, || lifecycle::is_live(&paths))
+            .is_some()
+    };
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if lifecycle::is_live(&paths).is_some() {
+        if live() {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(
-        lifecycle::is_live(&paths).is_some(),
-        "daemon never published a live route claim"
-    );
+    assert!(live(), "daemon never published a live route claim");
 
     let mut submitted = false;
     let deadline = Instant::now() + Duration::from_secs(5);

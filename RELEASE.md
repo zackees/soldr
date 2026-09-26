@@ -11,11 +11,14 @@ It is written for two audiences:
 
 The release model satisfies these properties:
 
-- a release is triggered by bumping `workspace.package.version` in `Cargo.toml` on `main`
-- CI must pass on the bumping commit before any release artifacts are published
+- the version to release is `workspace.package.version` in `Cargo.toml` on `main`
+- a release is an explicit `workflow_dispatch` of `release-auto.yml` naming one
+  exact merged commit (`candidate_sha`)
+- a successful **full** CI run on that exact SHA (`full_ci_run_id`) is required
+  before any release artifact is built
 - the matching `vX.Y.Z` tag and GitHub Release are minted by the workflow itself
 - wheels are published to PyPI through OIDC Trusted Publishing
-- no human approval and no GitHub App credentials are required at release time
+- no environment approval and no GitHub App credentials are required at release time
 - published release assets are immutable, attestable, and verifiable
 
 ## Current State
@@ -34,39 +37,73 @@ crates.io publication is not part of the current release direction. `soldr` is b
 
 ## Current Release Model
 
-The release flow is unattended and PyPI-centric:
+Since soldr#3346 (2026-09-24) a release is a deliberate two-dispatch act on
+one exact commit. Merging a version bump no longer releases anything by
+itself: `release-auto.yml` has only a `workflow_dispatch` trigger.
 
-1. A reviewed PR bumps the workspace version in `Cargo.toml`.
-2. That PR is merged to `main` (not currently branch-protected — see
-   Current State above).
-3. `.github/workflows/release-auto.yml` triggers from that push. It is
-   filtered to `paths: [Cargo.toml, package.json]`, so a change touching
-   neither — including a change to the release workflow itself — does not
-   start a release, and has to be dispatched by hand.
-4. The `prepare` job derives `vX.Y.Z` from `Cargo.toml`, looks up the latest version on PyPI, and sets `should_release=true` only when the Cargo version is strictly greater. It also records `tag_exists` for the catch-up case.
-5. The release workflow does **not** re-run lint/test/e2e gates on the
-   merged commit today; the only validation before publication is what
-   ran on the PR itself. Restoring release-time gates is soldr#2469's
-   target state.
-6. The `build` matrix produces the platform archives and the hardened wheel
-   set. `smoke_macos_arm64` and `smoke_windows` then exercise those exact
+1. A reviewed PR bumps the version in lockstep: `[workspace.package].version`
+   in `Cargo.toml`, `"version"` in `package.json`, and the workspace crates in
+   `Cargo.lock` (see CLAUDE.md "Bumping soldr's own version"). The PR is
+   merged to `main` (not branch-protected — see Current State above).
+2. **Full CI on the exact SHA.** Dispatch the `CI` workflow on `main` with
+   `candidate_sha=<full 40-char merged SHA>`. Its run-name becomes
+   `CI full <sha>`, the `CI mode` job checks out and verifies that SHA, and
+   every target in `ci/canonical-targets.json` plus the platform smokes run.
+   It must finish with `CI mode` and `Full coverage` both successful. See
+   [docs/CI_MODES.md](./docs/CI_MODES.md).
+3. **Release dispatch.** Dispatch `Autonomous Release` (`release-auto.yml`)
+   with `candidate_sha=<same SHA>` and `full_ci_run_id=<that CI run's ID>`.
+4. `prepare` (`Detect explicit release candidate`) checks out the candidate
+   and runs `release_full_ci_gate.py --verify-candidate`, which requires HEAD to
+   equal `candidate_sha` and the SHA to be an ancestor of `origin/main`. Then
+   `release_detect.py` derives `vX.Y.Z` from `Cargo.toml` (and requires
+   `package.json` to agree) and computes one flag per public surface:
+   - `should_publish_github_release`: the release is missing or incomplete
+     *and* not immutable (an immutable release is never touched again);
+   - `should_publish_pypi`: PyPI has no files for the version, or
+     `force_pypi_publish` is set;
+   - `should_publish_npm`: npm does not have the version;
+   - `should_release`: any of the three.
+5. `full_ci_gate` (`Verify exact-SHA full CI`) runs
+   `release_full_ci_gate.py` against `full_ci_run_id`. The run must be a
+   `workflow_dispatch` of `.github/workflows/ci.yml` from `main` in this
+   repository, titled exactly `CI full <candidate_sha>`, completed
+   successfully, with `CI mode` and `Full coverage` jobs both successful.
+   Nothing is built otherwise.
+6. The `build` matrix (generated from `ci/canonical-targets.json` by
+   `release_completeness.py --build-matrix`) produces the platform archives
+   and the hardened wheel set. The macOS Intel/ARM64 and Windows smokes, the
+   darwin replay, and `release_execution_contract` exercise those exact
    artifacts before anything is published.
-7. The `publish` job — gated on `tag_exists == 'false'` — uses the workflow's built-in `GITHUB_TOKEN` to create the `vX.Y.Z` GitHub Release with `SHA256SUMS.txt` and a build provenance attestation.
+7. `publish` uses the built-in `GITHUB_TOKEN` to create the `vX.Y.Z` tag and
+   GitHub Release with `SHA256SUMS.txt` and a build provenance attestation.
 8. `verify_github_release` checks the published asset set against the target
    contract before any other registry is touched.
-9. `publish-pypi` uploads the wheel set through `pypa/gh-action-pypi-publish`
-   using OIDC, then `publish-npm` publishes the npm package.
+9. `publish-pypi` uploads the wheel set through OIDC Trusted Publishing;
+   `smoke-published-dylint` installs the published wheel on Windows x64;
+   `publish-npm` publishes `@zackees/soldr`.
 10. `release-completeness` fails the run if any public surface ended up
     incomplete, so a partial release cannot report green (soldr#2469 step 1.1).
 
-Those are `needs:` edges, not conventions, and the ordering they impose is
-worth stating plainly: **GitHub Release → verification → PyPI → npm →
-completeness gate.** No registry is written until the GitHub assets exist and
-have been verified, and the run is not green until every surface is complete.
-The v0.9.3 release exercised all of it: 8 build lanes, 3 smokes, and the five
-publication/verification jobs, ending with 17 assets and 8 wheels.
+The ordering is `needs:` edges, not convention: **exact-SHA full CI → build →
+smokes → GitHub Release → verification → PyPI → npm → completeness gate.**
 
-The intentional authorization step is the reviewed version-bump merge. PyPI is the source of truth for "have we already shipped this," which means a Cargo bump that is ahead of PyPI but behind the latest GitHub tag still publishes to PyPI without re-creating the GitHub Release.
+Re-dispatching is safe and is the recovery path. Every surface flag is
+recomputed from live state, so a second dispatch for the same SHA only does
+what is still missing. v0.9.22 needed exactly this: the second dispatch
+published everything and then failed only in the post-publish Dylint smoke;
+the third went green without republishing anything.
+
+Recovery inputs on the release dispatch:
+
+- `force_pypi_publish` — rebuild and upload wheels for the current version
+  even if PyPI lists files (only useful after a PyPI-side deletion/yank).
+- `npm_release_ref` — publish only the npm package from a given ref; the
+  `prepare` job and every other surface are skipped.
+
+The intentional authorization steps are the reviewed version-bump merge and
+the two dispatches. PyPI remains the source of truth for "have we already
+shipped this".
 
 ## Owner Setup
 
@@ -88,9 +125,10 @@ The target branch policy:
 - required checks enabled
 
 Until that is configured, nothing mechanically prevents a version bump from
-reaching `main` without passing CI. The release workflow does not re-run the
-validation gates itself, so a bump merged past red checks is releasable. The
-reviewed merge is the only authorization step, and it is a human one.
+reaching `main` without passing its PR checks. The release itself is gated:
+`full_ci_gate` refuses to build unless an explicit full CI run on the exact
+candidate SHA succeeded, so a bump merged past red checks still cannot ship
+until full CI on the merged commit is green.
 
 ### 2. Register PyPI Trusted Publisher
 
@@ -122,25 +160,41 @@ Before changing the release workflow:
    means §1 above and the claims in SECURITY.md and
    docs/RELEASE_VERIFICATION.md all need updating together.
 5. Confirm tag protection (if any) still permits `github-actions` to mint `v*.*.*` tags.
-6. Confirm that `Cargo.toml` workspace version is still the trigger surface — do not reintroduce `workflow_dispatch` or environment approval boundaries without explicit owner instruction.
+6. Confirm the release is still dispatch-only with the exact-SHA full-CI
+   gate (`release-auto.yml` `on:` and `full_ci_gate`). Do not reintroduce a
+   push trigger, remove the full-CI gate, or add environment approval
+   boundaries without explicit owner instruction.
 
 If the live GitHub-side or PyPI-side controls drift from the documented flow, stop and report the drift instead of assuming the release posture is intact.
 
 When preparing a normal release:
 
-1. Bump `[workspace.package].version` in `Cargo.toml`.
-2. Bump `package.json` to the exact same version.
-3. Confirm the candidate is not already published on PyPI as `soldr` and not already published on npm as `@zackees/soldr`.
-4. Confirm `git ls-remote --tags origin vX.Y.Z` does not find the candidate tag.
-5. Open and merge the version-bump PR to `main`; the release workflow creates the `vX.Y.Z` tag and GitHub Release from that merge commit.
+1. Pick `X.Y.Z` strictly greater than the latest PyPI `soldr` version, and
+   confirm it is absent from PyPI, from npm `@zackees/soldr`, and from
+   `git ls-remote --tags origin vX.Y.Z`.
+2. Bump `Cargo.toml`, `package.json`, and refresh `Cargo.lock` (a no-op
+   `soldr cargo build -p soldr-cli`); `version_lockstep` guards the trio.
+3. Merge the bump PR to `main` with its normal CI green. Take the resulting
+   merge commit's full SHA.
+4. `gh workflow run ci.yml --repo zackees/soldr --ref main -f candidate_sha=<SHA>`
+   and wait for it to succeed (it runs the whole target matrix; plan on
+   roughly an hour).
+5. `gh workflow run release-auto.yml --repo zackees/soldr --ref main
+   -f candidate_sha=<SHA> -f full_ci_run_id=<CI run ID>`.
+6. If a lane fails after publication started, fix the cause and re-dispatch
+   step 5 for the same SHA; completed surfaces are skipped.
 
-If `Autonomous Release` is run manually without an unpublished package version, the prepare job will set `should_release=false` and all build/publish jobs will be skipped. That is expected behavior, not a release failure. For a new release, prepare a new version-bump PR instead of manually rerunning the workflow.
+A release dispatch whose version is already fully published sets
+`should_release=false` and skips every job. That is expected, not a failure;
+a new release needs a new version bump.
 
 ## Verification Checklist
 
 After an autonomous release:
 
-- the `Autonomous Release` run on `main` reports `should_release=true` and the expected `version=vX.Y.Z`
+- the `CI full <sha>` run for the candidate is green with `Full coverage` successful
+- the `Autonomous Release` dispatch reports `should_release=true`, the expected `version=vX.Y.Z`, and a green `Release surface completeness gate`
+- npm `@zackees/soldr` reports `X.Y.Z`
 - a non-draft GitHub Release exists at `vX.Y.Z` with the platform archives and `SHA256SUMS.txt`
 - `https://pypi.org/project/soldr/X.Y.Z/` shows `Uploaded using Trusted Publishing? Yes`
 - `gh attestation verify dist/soldr-vX.Y.Z-*-SHA256SUMS.txt --repo zackees/soldr` succeeds against a downloaded archive

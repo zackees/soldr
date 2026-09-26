@@ -24,7 +24,6 @@
 
 use crate::common;
 
-use soldr_cli::core::SoldrPaths;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -95,10 +94,7 @@ fn status_reports_running(cache_root: &Path, home_root: &Path) -> bool {
 }
 
 fn daemon_pid(cache_root: &Path) -> Option<u32> {
-    soldr_cli::daemon::lifecycle::read_route_claim_identity(&SoldrPaths::with_root(
-        cache_root.to_path_buf(),
-    ))
-    .map(|(pid, _)| pid)
+    common::route_claim::route_claim_pid(cache_root)
 }
 
 fn wait_for_running(cache_root: &Path, home_root: &Path) -> bool {
