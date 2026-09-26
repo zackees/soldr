@@ -94,10 +94,23 @@ fn status_reports_running(cache_root: &Path, home_root: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// soldr#3374 keys route claims per daemon generation. This test process has
+/// no `SOLDR_BROKER_SERVICE`, and deriving the key from `current_exe()` names
+/// the test binary's generation rather than the fixture's, so read the claim
+/// under the route the front door registered for the isolated daemon image.
 fn daemon_pid(cache_root: &Path) -> Option<u32> {
-    soldr_cli::daemon::lifecycle::read_route_claim_identity(&SoldrPaths::with_root(
-        cache_root.to_path_buf(),
-    ))
+    use soldr_cli::daemon::backend_handle_adoption::{
+        broker_service_name_for, with_generation_key,
+    };
+    let paths = SoldrPaths::with_root(cache_root.to_path_buf());
+    let daemon = common::isolated_daemon::isolated_daemon_executable(
+        &common::soldr_daemon_bin(),
+        cache_root,
+    );
+    let service = broker_service_name_for(&paths, &daemon).ok()?;
+    with_generation_key(&service, || {
+        soldr_cli::daemon::lifecycle::read_route_claim_identity(&paths)
+    })
     .map(|(pid, _)| pid)
 }
 
