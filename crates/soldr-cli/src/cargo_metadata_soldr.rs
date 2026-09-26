@@ -90,17 +90,14 @@ pub struct SoldrMetadata {
 /// directive error; that keeps this reader reusable for any future
 /// soldr-metadata field that's genuinely optional.
 pub fn read_soldr_metadata(cargo_toml_path: &Path) -> Result<SoldrMetadata, SoldrError> {
+    // soldr#3378: this reader is now shared by `soldr prepare --target all`
+    // and `soldr lint`'s declared-target resolution, so the error text no
+    // longer names one specific caller.
     let body = std::fs::read_to_string(cargo_toml_path).map_err(|e| {
-        SoldrError::Other(format!(
-            "soldr prepare: read {}: {e}",
-            cargo_toml_path.display()
-        ))
+        SoldrError::Other(format!("soldr: read {}: {e}", cargo_toml_path.display()))
     })?;
     let parsed: CargoToml = toml::from_str(&body).map_err(|e| {
-        SoldrError::Other(format!(
-            "soldr prepare: parse {}: {e}",
-            cargo_toml_path.display()
-        ))
+        SoldrError::Other(format!("soldr: parse {}: {e}", cargo_toml_path.display()))
     })?;
     // Workspace takes precedence; package-scoped metadata is fallback
     // for single-crate repos that don't declare a workspace table.
@@ -131,6 +128,31 @@ pub fn find_cargo_toml(start_dir: &Path) -> Option<PathBuf> {
         }
         cur = cur.parent()?;
     }
+}
+
+/// Read the declared cross-target marker list for `soldr lint` (soldr#3378):
+/// `[workspace.metadata.soldr].targets` (package fallback), starting from
+/// `start` — either a `Cargo.toml` file directly (so a caller can honor an
+/// explicit `--manifest-path`) or a directory to walk up from via
+/// [`find_cargo_toml`].
+///
+/// Unlike [`resolve_all_targets`], this returns an **empty** list — never
+/// soldr's compiled-in canonical target list — when nothing is declared or no
+/// manifest is found. `soldr prepare --target all` needs *something* to
+/// build for and falls back to the canonical list; `soldr lint` reads
+/// "nothing declared" as "keep today's host-only behaviour", so a silent
+/// canonical-list fallback here would turn on cross-target Clippy for every
+/// workspace, declared or not.
+pub fn declared_targets_from(start: &Path) -> Result<Vec<String>, SoldrError> {
+    let manifest = if start.is_file() {
+        start.to_path_buf()
+    } else {
+        match find_cargo_toml(start) {
+            Some(path) => path,
+            None => return Ok(Vec::new()),
+        }
+    };
+    Ok(read_soldr_metadata(&manifest)?.targets)
 }
 
 /// Whether any Cargo manifest from `start_dir` through its ancestor chain
@@ -302,6 +324,64 @@ version = "0.1.0"
         );
         let meta = read_soldr_metadata(&p).expect("parse");
         assert!(meta.targets.is_empty());
+    }
+
+    #[test]
+    fn declared_targets_from_reads_the_workspace_list_given_the_manifest_file() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let p = write_fixture(
+            tmp.path(),
+            r#"
+[workspace]
+
+[workspace.metadata.soldr]
+targets = ["x86_64-pc-windows-msvc", "aarch64-apple-darwin"]
+"#,
+        );
+        let targets = declared_targets_from(&p).expect("declared targets");
+        assert_eq!(
+            targets,
+            vec![
+                "x86_64-pc-windows-msvc".to_string(),
+                "aarch64-apple-darwin".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn declared_targets_from_walks_up_from_a_directory() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        write_fixture(
+            tmp.path(),
+            "[workspace]\n\n[workspace.metadata.soldr]\ntargets = [\"x86_64-unknown-linux-musl\"]\n",
+        );
+        let nested = tmp.path().join("a").join("b");
+        std::fs::create_dir_all(&nested).expect("mkdir");
+        let targets = declared_targets_from(&nested).expect("declared targets");
+        assert_eq!(targets, vec!["x86_64-unknown-linux-musl".to_string()]);
+    }
+
+    #[test]
+    fn declared_targets_from_is_empty_when_the_section_is_absent() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let p = write_fixture(
+            tmp.path(),
+            "[package]\nname = \"thing\"\nversion = \"0.1.0\"\n",
+        );
+        let targets = declared_targets_from(&p).expect("declared targets");
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn declared_targets_from_is_empty_when_no_manifest_is_found() {
+        // A directory with no Cargo.toml ancestor within the tempdir: unlike
+        // `find_cargo_toml_returns_none_when_missing`, this only needs to
+        // observe "no panic and no error", since a real Cargo.toml might
+        // exist above the OS temp directory on some hosts.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let nested = tmp.path().join("nothing-here");
+        std::fs::create_dir_all(&nested).expect("mkdir");
+        let _ = declared_targets_from(&nested);
     }
 
     #[test]
