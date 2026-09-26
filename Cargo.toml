@@ -105,7 +105,7 @@ tar = "0.4"
 # falls through to the "raw binary" branch in fetch::archive and writes
 # the compressed tarball bytes to disk as the binary (#809).
 # `static` links liblzma into the binary instead of letting lzma-sys's
-# build.rs dynamically link whatever libliblzma pkg-config finds on the
+# build.rs dynamically link whatever liblzma pkg-config finds on the
 # build host. A host-linked liblzma gets vendored into `soldr.libs/` by
 # auditwheel with an `$ORIGIN/../soldr.libs` RPATH, but soldr materializes
 # copies of its own binary as relocated shim images elsewhere on disk
