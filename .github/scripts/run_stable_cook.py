@@ -160,45 +160,49 @@ def stream_and_capture(
     stdout_sink = stdout_sink if stdout_sink is not None else sys.stdout
     stderr_sink = stderr_sink if stderr_sink is not None else sys.stderr
 
-    proc = subprocess.Popen(
+    with subprocess.Popen(
         command,
         cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
-    )
-    out_chunks: list[str] = []
-    err_chunks: list[str] = []
-    out_thread = threading.Thread(
-        target=_pump_stream, args=(proc.stdout, stdout_sink, out_chunks), daemon=True
-    )
-    err_thread = threading.Thread(
-        target=_pump_stream, args=(proc.stderr, stderr_sink, err_chunks), daemon=True
-    )
-    out_thread.start()
-    err_thread.start()
-
-    timed_out = False
-    try:
-        proc.wait(timeout=timeout_secs)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _terminate_with_grace(proc, TIMEOUT_GRACE_SECS)
-
-    out_thread.join(timeout=TIMEOUT_GRACE_SECS)
-    err_thread.join(timeout=TIMEOUT_GRACE_SECS)
-
-    if timed_out:
-        message = (
-            f"::error title=soldr cook::cook exceeded its {timeout_secs:.0f}s "
-            "wall-clock timeout; sent SIGQUIT then SIGTERM to the process tree"
+    ) as proc:
+        out_chunks: list[str] = []
+        err_chunks: list[str] = []
+        out_thread = threading.Thread(
+            target=_pump_stream,
+            args=(proc.stdout, stdout_sink, out_chunks),
+            daemon=True,
         )
-        stderr_sink.write(message + "\n")
-        stderr_sink.flush()
-        returncode = TIMEOUT_EXIT_CODE
-    else:
-        returncode = proc.returncode if proc.returncode is not None else -1
+        err_thread = threading.Thread(
+            target=_pump_stream,
+            args=(proc.stderr, stderr_sink, err_chunks),
+            daemon=True,
+        )
+        out_thread.start()
+        err_thread.start()
+
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout_secs)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _terminate_with_grace(proc, TIMEOUT_GRACE_SECS)
+
+        out_thread.join(timeout=TIMEOUT_GRACE_SECS)
+        err_thread.join(timeout=TIMEOUT_GRACE_SECS)
+
+        if timed_out:
+            message = (
+                f"::error title=soldr cook::cook exceeded its {timeout_secs:.0f}s "
+                "wall-clock timeout; sent SIGQUIT then SIGTERM to the process tree"
+            )
+            stderr_sink.write(message + "\n")
+            stderr_sink.flush()
+            returncode = TIMEOUT_EXIT_CODE
+        else:
+            returncode = proc.returncode if proc.returncode is not None else -1
 
     return subprocess.CompletedProcess(
         args=command,
