@@ -18,12 +18,13 @@ use crate::cache_lib::cook_archive::{
     verify_sha256,
 };
 use crate::core::git::{branch_lineage, origin_url};
+use crate::core::tool_output;
 use crate::core::{
     read_rust_toolchain_manifest, CookConfig, SoldrConfig, SoldrPaths, TargetTriple,
 };
 use crate::daemon::client::{self, CookLookupOutcome};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Instant;
 
 /// Env var that overrides both file-level settings. `0`/`false`/`no`/
@@ -233,7 +234,7 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> 
         .ok()
         .and_then(|m| m.channel)
         .unwrap_or_default();
-    let rustc_version = rustc_version_string(rustc)?;
+    let rustc_version = rustc_version_for_hydrate(rustc)?;
     let origin = origin_url(&manifest_dir);
 
     let lineage = branch_lineage(&manifest_dir);
@@ -525,13 +526,32 @@ fn explicit_target_scope(args: &[String]) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn rustc_version_string(rustc: &Path) -> Option<String> {
-    let out = Command::new(rustc).arg("-V").output().ok()?;
-    if !out.status.success() {
-        return None;
+/// `rustc -V` for the cook-index key. A failure is not silent: the hydrate
+/// lookup degrades to a miss, but only after saying why (soldr#3381).
+pub(crate) fn rustc_version_for_hydrate(rustc: &Path) -> Option<String> {
+    let mut stderr = std::io::stderr();
+    rustc_version_for_hydrate_with(rustc, &mut stderr, tool_output::default_log_path())
+}
+
+pub(crate) fn rustc_version_for_hydrate_with(
+    rustc: &Path,
+    warn: &mut dyn std::io::Write,
+    log_path: Option<PathBuf>,
+) -> Option<String> {
+    let sinks = tool_output::ToolSinks {
+        stderr: &mut *warn,
+        log_path,
+    };
+    match tool_output::rustc_version_line_with_sinks(rustc, sinks) {
+        Ok(version) => Some(version),
+        Err(error) => {
+            let _ = writeln!(
+                warn,
+                "soldr: warning: cook hydrate skipped; could not resolve rustc version: {error}"
+            );
+            None
+        }
     }
-    let s = String::from_utf8(out.stdout).ok()?;
-    Some(s.lines().next()?.trim().to_string())
 }
 
 fn extract_arg_value(args: &[String], flag: &str) -> Option<String> {
@@ -561,6 +581,45 @@ mod tests {
     // Env-mutating tests are serialized — `auto_hydrate_enabled`
     // reads `SOLDR_COOK_AUTO_HYDRATE` from the process environment.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// soldr#3381: a failing `rustc -V` must not silently turn a cook hit
+    /// into a miss — the warning carries the fake rustc's stderr.
+    #[test]
+    fn hydrate_rustc_version_failure_warns_with_stderr() {
+        let temp = TempDir::new().unwrap();
+        let rustc =
+            tool_output::write_fake_tool(temp.path(), "rustc", "", "MARKER_HYDRATE_3381", 1);
+        let log = temp.path().join("small-tools.jsonl");
+        let mut warn = Vec::new();
+        let version = rustc_version_for_hydrate_with(&rustc, &mut warn, Some(log.clone()));
+        assert!(version.is_none());
+        let warn = String::from_utf8(warn).unwrap();
+        assert!(warn.contains("cook hydrate skipped"), "{warn}");
+        assert!(warn.contains("MARKER_HYDRATE_3381"), "{warn}");
+        let logged = std::fs::read_to_string(&log).unwrap();
+        assert!(logged.contains("MARKER_HYDRATE_3381"), "{logged}");
+    }
+
+    /// soldr#3389 contract: a successful probe still forwards and logs stderr.
+    #[test]
+    fn hydrate_rustc_version_success_forwards_and_logs_stderr() {
+        let temp = TempDir::new().unwrap();
+        let rustc = tool_output::write_fake_tool(
+            temp.path(),
+            "rustc",
+            "rustc 9.9.9",
+            "MARKER_HYDRATE_OK",
+            0,
+        );
+        let log = temp.path().join("small-tools.jsonl");
+        let mut warn = Vec::new();
+        let version = rustc_version_for_hydrate_with(&rustc, &mut warn, Some(log.clone()));
+        assert_eq!(version.as_deref(), Some("rustc 9.9.9"));
+        let warn = String::from_utf8(warn).unwrap();
+        assert!(warn.contains("-V: MARKER_HYDRATE_OK"), "{warn}");
+        let logged = std::fs::read_to_string(&log).unwrap();
+        assert!(logged.contains("MARKER_HYDRATE_OK"), "{logged}");
+    }
 
     fn clear_env() {
         std::env::remove_var(SOLDR_COOK_AUTO_HYDRATE_ENV);

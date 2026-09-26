@@ -203,6 +203,12 @@ fn is_nightly_channel(channel: Option<&str>) -> bool {
     matches!(channel, Some(c) if c.starts_with("nightly"))
 }
 
+// reason: `rustup which` is an existence probe; a miss prints "not found" on
+// stderr, which is the expected `false` answer that triggers the install below.
+#[cfg_attr(
+    dylint_lib = "ban_swallowed_child_stdio",
+    allow(ban_swallowed_child_stdio)
+)]
 fn probe_component_installed(probe_binary: &str, channel: Option<&str>) -> bool {
     // Invocation shape: `rustup +<channel> which <probe_binary>` when a
     // channel is resolved, else `rustup which <probe_binary>` so rustup

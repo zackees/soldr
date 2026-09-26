@@ -103,6 +103,12 @@ impl DepPrefetch {
 /// it overlaps blessed SDK preparation. Returns `None` (with a log
 /// line where useful) whenever the overlap does not apply or the spawn
 /// fails — the caller proceeds identically either way.
+// reason: background `cargo fetch` prefetch; the main build reruns the same
+// fetch with full output, so any error it could print is reproduced there.
+#[cfg_attr(
+    dylint_lib = "ban_swallowed_child_stdio",
+    allow(ban_swallowed_child_stdio)
+)]
 pub(crate) fn spawn_for_blessed_build(build_args: &[String], target: &str) -> Option<DepPrefetch> {
     let cwd = std::env::current_dir().ok()?;
     let fetch_args = plan_prefetch(

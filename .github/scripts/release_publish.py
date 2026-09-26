@@ -40,6 +40,54 @@ def default_runner(args: Sequence[str]) -> subprocess.CompletedProcess:
     return subprocess.run(list(args), capture_output=True, text=True, check=False)
 
 
+EXCERPT_CHARS = 500
+
+
+def gh_output_excerpt(completed: subprocess.CompletedProcess) -> str:
+    """One-line excerpt of a gh call's stderr (else stdout) for `::error::`.
+
+    soldr#3385: the canned annotation used to drop gh's real reason
+    (permission / rate limit / API error). Mirrors
+    `stage_release_binaries.run_tool`, which folds output into its error.
+    """
+    text = (completed.stderr or "").strip() or (completed.stdout or "").strip()
+    flat = " ".join(text.split())
+    return flat[:EXCERPT_CHARS] if flat else "<no output>"
+
+
+def gh_output_block(completed: subprocess.CompletedProcess) -> str:
+    """Markdown block with gh's full captured output for the step summary."""
+    return "\n".join(
+        [
+            f"gh exited with {completed.returncode}:",
+            "```",
+            (completed.stdout or "").rstrip(),
+            (completed.stderr or "").rstrip(),
+            "```",
+            "",
+        ]
+    )
+
+
+def forward_stderr(args: Sequence[str], completed: subprocess.CompletedProcess) -> None:
+    """Always forward gh's stderr, prefixed, on success too (soldr#3389)."""
+    prefix = " ".join(list(args)[:3])
+    for line in (completed.stderr or "").splitlines():
+        if line.strip():
+            print(f"{prefix}: {line}", file=sys.stderr)
+
+
+def logged(run: Runner) -> Runner:
+    """Wrap a runner so every call's stderr is forwarded to our stderr."""
+
+    def wrapper(args: Sequence[str]) -> subprocess.CompletedProcess:
+        completed = run(args)
+        forward_stderr(args, completed)
+        return completed
+
+    return wrapper
+
+
 def release_assets(dist: Path) -> list[str]:
     """Files to upload, sorted for a deterministic command line.
 
@@ -103,6 +151,7 @@ def write_output(name: str, value: str) -> None:
 
 def ensure_tag(repo: str, tag: str, sha: str, run: Runner) -> int:
     """Create `tag` at `sha` unless it already exists."""
+    run = logged(run)
     if run(["gh", "api", f"repos/{repo}/git/refs/tags/{tag}"]).returncode == 0:
         print(f"tag {tag} already exists - skipping create")
         return 0
@@ -123,9 +172,9 @@ def ensure_tag(repo: str, tag: str, sha: str, run: Runner) -> int:
         return 0
     print(
         f"::error::GITHUB_TOKEN could not create tag {tag} via /git/refs. "
-        f"{BLOCKED_NOTE}"
+        f"{BLOCKED_NOTE} gh output: {gh_output_excerpt(created)}"
     )
-    append_summary(tag_recovery_summary(repo, tag, sha))
+    append_summary(tag_recovery_summary(repo, tag, sha) + gh_output_block(created))
     return 1
 
 
@@ -134,6 +183,7 @@ def create_draft_release(
 ) -> int:
     """Create the draft release, or re-upload assets if it already exists."""
     assets = release_assets(dist)
+    run = logged(run)
     if run(["gh", "release", "view", tag, "--repo", repo]).returncode == 0:
         print(f"release {tag} already exists; uploading/replacing assets")
         uploaded = run(
@@ -147,10 +197,13 @@ def create_draft_release(
             # guidance the create path already emitted, for the same reason.
             print(
                 f"::error::GITHUB_TOKEN could not re-upload assets for {tag}. "
-                f"{BLOCKED_NOTE}"
+                f"{BLOCKED_NOTE} gh output: {gh_output_excerpt(uploaded)}"
             )
             write_output("created", "false")
-            append_summary(release_recovery_summary(repo, tag, sha, run_id))
+            append_summary(
+                release_recovery_summary(repo, tag, sha, run_id)
+                + gh_output_block(uploaded)
+            )
             return 1
         write_output("created", "true")
         return 0
@@ -179,9 +232,12 @@ def create_draft_release(
     print(
         f"::error::GITHUB_TOKEN could not create the GitHub release for {tag}. "
         "Registry publishes are blocked until the GitHub release exists with "
-        "the expected assets. See soldr#1252."
+        "the expected assets. See soldr#1252. "
+        f"gh output: {gh_output_excerpt(created)}"
     )
-    append_summary(release_recovery_summary(repo, tag, sha, run_id))
+    append_summary(
+        release_recovery_summary(repo, tag, sha, run_id) + gh_output_block(created)
+    )
     return 1
 
 

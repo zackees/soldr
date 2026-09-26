@@ -289,6 +289,7 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
             "dylint-library-ban_raw_ipc_transport",
             "dylint-library-ban_platform_cfg_outside_boundary",
             "dylint-library-ban_raw_env_flag",
+            "dylint-library-ban_swallowed_child_stdio",
             "dylint-workspace",
             "dylint-test-ban_raw_process_creation",
             "dylint-test-ban_raw_network_access",
@@ -296,6 +297,7 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
             "dylint-test-ban_raw_ipc_transport",
             "dylint-test-ban_platform_cfg_outside_boundary",
             "dylint-test-ban_raw_env_flag",
+            "dylint-test-ban_swallowed_child_stdio",
             "nextest-compile",
             "nextest",
             "doctests",
@@ -404,6 +406,7 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
         "dylint-library-ban_raw_ipc_transport",
         "dylint-library-ban_platform_cfg_outside_boundary",
         "dylint-library-ban_raw_env_flag",
+        "dylint-library-ban_swallowed_child_stdio",
     ];
     for (index, stage_name) in libraries.iter().enumerate() {
         let expected = if index == 0 {
@@ -428,6 +431,7 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
         "dylint-test-ban_raw_ipc_transport",
         "dylint-test-ban_platform_cfg_outside_boundary",
         "dylint-test-ban_raw_env_flag",
+        "dylint-test-ban_swallowed_child_stdio",
     ];
     for (index, stage_name) in ui_tests.iter().enumerate() {
         let expected = if index == 0 {

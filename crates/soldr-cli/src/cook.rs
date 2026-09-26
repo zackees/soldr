@@ -35,7 +35,6 @@ use std::path::{Path, PathBuf};
 pub(crate) use crate::cook_source_snapshot::{
     restore_project_source, snapshot_project_source, ProjectSourceSnapshot,
 };
-use std::process::Command;
 use std::time::Instant;
 
 /// Parsed `soldr cook` invocation surface. Mirrors the relevant subset of
@@ -681,7 +680,13 @@ fn compute_cook_marker(ctx: &CookContext, parsed: &CookArgs) -> Option<CookMarke
     h.update(&recipe_bytes);
     let recipe_sha256 = hex_lower(&h.finalize());
     let selection_sha256 = cook_selection_sha256(parsed);
-    let rustc_version = rustc_version_string(&ctx.manifest_dir).unwrap_or_default();
+    let rustc_version = match rustc_version_string(&ctx.manifest_dir) {
+        Ok(version) => version,
+        Err(error) => {
+            eprintln!("soldr cook: warning: warm-cook marker has no rustc version: {error}");
+            String::new()
+        }
+    };
     Some(CookMarker {
         version: COOK_MARKER_VERSION,
         recipe_sha256,
@@ -710,15 +715,12 @@ fn hex_lower(bytes: &[u8]) -> String {
     s
 }
 
-fn rustc_version_string(manifest_dir: &Path) -> Option<String> {
+/// `rustc -V` for the toolchain `manifest_dir` resolves to. Failures carry
+/// the spawn error / exit status / stderr excerpt (soldr#3381).
+fn rustc_version_string(manifest_dir: &Path) -> Result<String, SoldrError> {
     let rustc = probe_toolchain_binary("rustc", Some(manifest_dir))
         .unwrap_or_else(|| PathBuf::from("rustc"));
-    let out = Command::new(rustc).arg("-V").output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8(out.stdout).ok()?;
-    Some(s.lines().next()?.trim().to_string())
+    crate::core::tool_output::rustc_version_line(&rustc)
 }
 
 fn resolve_channel(manifest_dir: &Path) -> Option<String> {
@@ -817,8 +819,10 @@ where
         SoldrError::Other("soldr cook: could not resolve target triple for cook-index key".into())
     })?;
     let channel = resolve_channel(&ctx.manifest_dir).unwrap_or_default();
-    let rustc_version = rustc_version_string(&ctx.manifest_dir).ok_or_else(|| {
-        SoldrError::Other("soldr cook: could not resolve rustc version for cook-index key".into())
+    let rustc_version = rustc_version_string(&ctx.manifest_dir).map_err(|error| {
+        SoldrError::Other(format!(
+            "soldr cook: could not resolve rustc version for cook-index key: {error}"
+        ))
     })?;
     // PR 3 (#578): the cook-index recipe hash is the workspace
     // content-fingerprint computed by

@@ -55,6 +55,12 @@ const SCRATCH_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 /// The 5-minute throttle marker still bounds the spawn frequency, so
 /// steady-state builds pay one `stat` here and at most one process
 /// spawn per throttle window.
+// reason: detached sweeper outlives this process; it writes its own
+// diagnostics to `auto-gc.log`, so the inherited streams carry nothing.
+#[cfg_attr(
+    dylint_lib = "ban_swallowed_child_stdio",
+    allow(ban_swallowed_child_stdio)
+)]
 pub(crate) fn maybe_spawn_auto_gc_sweeper(paths: &SoldrPaths) {
     if auto_gc_env_disabled() {
         return;

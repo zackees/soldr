@@ -50,7 +50,7 @@ dylint_linting::impl_pre_expansion_lint! {
     /// to live.
     ///
     /// Verified empirically (soldr#2758/#2761 made the toolchain installable on
-    /// Windows): building all six lints for `x86_64-pc-windows-msvc` and running
+    /// Windows): building all seven lints for `x86_64-pc-windows-msvc` and running
     /// `cargo dylint --all -- --workspace --all-targets` on a Windows host
     /// reports **zero** findings, and `crates/` outside `soldr-platform`
     /// contains zero real `#[cfg(windows)]` attributes.

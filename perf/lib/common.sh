@@ -149,11 +149,39 @@ measure::session_end_json() {
     if [[ -n "${id}" ]]; then
         cmd+=("--id" "${id}")
     fi
-    if out="$("${cmd[@]}" 2>/dev/null)"; then
+    # soldr#3386: keep stderr instead of discarding it; forward it and, on
+    # the {} fallback, say why.
+    local err_file
+    err_file="$(mktemp)"
+    local out
+    if out="$("${cmd[@]}" 2>"${err_file}")"; then
+        measure::forward_stderr "soldr session-end" "${err_file}"
         echo "${out}"
     else
+        local rc=$?
+        measure::forward_stderr "soldr session-end" "${err_file}"
+        echo "warning: soldr session-end --json failed (exit ${rc}); using {}: $(measure::excerpt "${err_file}")" >&2
         echo "{}"
     fi
+    rm -f "${err_file}"
+}
+
+# measure::excerpt <file> — first 500 bytes of <file>, one line.
+measure::excerpt() {
+    local text
+    text="$(head -c 500 "$1" 2>&1 | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')"
+    printf '%s' "${text:-<empty>}"
+}
+
+# measure::forward_stderr <prefix> <file> — echo each non-empty line of
+# <file> to stderr, prefixed (soldr#3389 always-forward contract).
+measure::forward_stderr() {
+    local prefix="$1" file="$2" line
+    [[ -s "${file}" ]] || return 0
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        [[ -n "${line}" ]] && printf '%s: %s\n' "${prefix}" "${line}" >&2
+    done < "${file}"
+    return 0
 }
 
 # measure::write_cache_report <cache-root> <json-path>
@@ -164,7 +192,13 @@ measure::session_end_json() {
 measure::write_cache_report() {
     local cache_root="$1"
     local out="$2"
-    if ! SOLDR_CACHE_DIR="${cache_root}" soldr cache report --json > "${out}" 2>/dev/null; then
+    # soldr#3386: stderr is kept in the scenario log beside the report.
+    if SOLDR_CACHE_DIR="${cache_root}" soldr cache report --json > "${out}" 2>"${out}.stderr"; then
+        measure::forward_stderr "soldr cache report" "${out}.stderr"
+    else
+        local rc=$?
+        measure::forward_stderr "soldr cache report" "${out}.stderr"
+        echo "warning: soldr cache report --json failed (exit ${rc}); wrote {} to ${out}: $(measure::excerpt "${out}.stderr")" >&2
         printf '{}\n' > "${out}"
     fi
 }

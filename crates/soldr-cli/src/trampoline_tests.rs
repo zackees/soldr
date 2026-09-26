@@ -372,3 +372,43 @@ fn self_heal_updates_only_drifted_mtime_size_not_hashes() {
         "content_hash must NOT change during self-heal"
     );
 }
+
+fn probe_rustc_identity(
+    stdout: &str,
+    stderr: &str,
+    code: i32,
+) -> (Result<String, SoldrError>, String, String) {
+    let temp = tempfile::tempdir().unwrap();
+    let rustc =
+        crate::core::tool_output::write_fake_tool(temp.path(), "rustc", stdout, stderr, code);
+    let log = temp.path().join("small-tools.jsonl");
+    let mut forwarded = Vec::new();
+    let result = rustc_identity_with_sinks(
+        &rustc,
+        crate::core::tool_output::ToolSinks {
+            stderr: &mut forwarded,
+            log_path: Some(log.clone()),
+        },
+    );
+    let logged = std::fs::read_to_string(&log).unwrap_or_default();
+    (result, String::from_utf8(forwarded).unwrap(), logged)
+}
+
+/// soldr#3383: a failing `rustc -vV` names rustc's own stderr.
+#[test]
+fn rustc_identity_failure_carries_stderr() {
+    let (result, _, logged) = probe_rustc_identity("", "MARKER_VV_3383", 1);
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("rustc -vV"), "{err}");
+    assert!(err.contains("MARKER_VV_3383"), "{err}");
+    assert!(logged.contains("MARKER_VV_3383"), "{logged}");
+}
+
+/// soldr#3389 contract: success still forwards and logs stderr.
+#[test]
+fn rustc_identity_success_forwards_and_logs_stderr() {
+    let (result, forwarded, logged) = probe_rustc_identity("rustc 9.9.9", "MARKER_VV_OK", 0);
+    assert_eq!(result.unwrap(), "rustc 9.9.9");
+    assert!(forwarded.contains("rustc -vV: MARKER_VV_OK"), "{forwarded}");
+    assert!(logged.contains("MARKER_VV_OK"), "{logged}");
+}

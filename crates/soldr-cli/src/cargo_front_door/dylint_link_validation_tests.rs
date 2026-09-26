@@ -113,3 +113,23 @@ fn a_healthy_unix_style_dylint_link_still_passes_on_version() {
     validate_dylint_path_binary(&path, "dylint-link", "6.0.3")
         .expect("a dylint-link that exits 0 on --version must be accepted");
 }
+
+/// soldr#3382: a broken PATH `cargo-dylint` used to be probed with both
+/// streams nulled, so the error could only say "exited with 1". The error
+/// now carries the component's own stderr.
+#[test]
+fn cargo_dylint_probe_failure_names_its_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let shim = crate::core::tool_output::write_fake_tool(
+        dir.path(),
+        "cargo-dylint",
+        "",
+        "MARKER_DYLINT_3382",
+        1,
+    );
+    let error = validate_dylint_path_binary(&shim, "cargo-dylint", "6.0.3")
+        .expect_err("a component exiting 1 must be rejected")
+        .to_string();
+    assert!(error.contains("MARKER_DYLINT_3382"), "{error}");
+    assert!(error.contains("--version exited with"), "{error}");
+}

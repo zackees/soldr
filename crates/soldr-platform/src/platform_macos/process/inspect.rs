@@ -81,6 +81,9 @@ pub fn is_zombie(pid: u32) -> bool {
 }
 
 /// Read the running process's executable path via `ps`.
+// reason: liveness/identity probe; `ps -p` for an exited PID is the expected
+// "absent" answer (`None`), and callers treat absence as a mismatch by design.
+#[cfg_attr(dylint_lib = "ban_swallowed_child_stdio", allow(ban_swallowed_child_stdio))]
 pub fn executable_path(pid: u32) -> Option<PathBuf> {
     use std::io::Read;
 
