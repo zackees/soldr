@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from conftest import load_script_module
+from test_check_linked_libs import build_elf64
 
 REPO_ROOT = Path(__file__).parents[1]
 SCRIPTS = REPO_ROOT / ".github" / "scripts"
@@ -83,6 +84,33 @@ def test_linux_release_without_split_dwarf_still_stages_binary(tmp_path: Path) -
     staged = stage.stage_release_binaries("x86_64-unknown-linux-musl", release, package)
 
     assert [path.name for path in staged] == ["soldr", "soldr-daemon"]
+
+
+def test_linux_release_stages_a_compliant_elf(tmp_path: Path) -> None:
+    """A binary whose NEEDED entries are all system libraries stages fine."""
+    release = tmp_path / "release"
+    package = tmp_path / "package"
+    release.mkdir()
+    write_file(release, "soldr", build_elf64(["libc.so.6", "libm.so.6"]))
+
+    staged = stage.stage_release_binaries("x86_64-unknown-linux-gnu", release, package)
+
+    assert [path.name for path in staged] == ["soldr", "soldr-daemon"]
+
+
+def test_linux_release_refuses_a_vendored_dynamic_dependency(tmp_path: Path) -> None:
+    """soldr's static-liblzma follow-up: a release binary that dynamically
+    links a non-system shared library (the exact liblzma bug this guards
+    against) must fail staging instead of shipping the risk to every
+    installer's build host.
+    """
+    release = tmp_path / "release"
+    package = tmp_path / "package"
+    release.mkdir()
+    write_file(release, "soldr", build_elf64(["libc.so.6", "liblzma.so.5"]))
+
+    with pytest.raises(stage.StagingError, match="liblzma.so.5"):
+        stage.stage_release_binaries("x86_64-unknown-linux-gnu", release, package)
 
 
 def test_macos_release_with_dsym_never_stages_it_into_package_dir(

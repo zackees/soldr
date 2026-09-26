@@ -476,6 +476,17 @@ jobs:
         shell: bash
         run: python3 ci/check_zccache_feature_graph.py
 
+      # Static-liblzma follow-up: a linked non-system shared library (like
+      # the dynamically-linked liblzma this replaces) gets vendored by
+      # auditwheel into soldr.libs/ with an RPATH soldr's relocated shim
+      # images cannot resolve. Check the driver built above -- no separate
+      # build needed.
+      - name: Verify no non-system dynamic library dependencies
+        shell: bash
+        run: |
+          python3 ci/check_linked_libs.py \
+            "${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
+
       # The broker is intentionally a stable singleton and never replaces
       # itself across Soldr images. The setup action started the released
       # bootstrap generation; retire it explicitly before the source wrapper

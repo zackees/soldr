@@ -13,11 +13,10 @@
 [build-system]
 requires = [
     "soldr>=0.9.22",
-    # Maturin repairs Linux bin-binding wheels with patchelf when a linked
-    # shared library (liblzma for soldr) must be bundled. The managed maturin
-    # executable does not carry its Python `patchelf` extra, so provision the
-    # helper in pip's isolated build environment.
-    "patchelf; platform_system == 'Linux'",
+    # No patchelf requirement here: liblzma is statically linked into soldr
+    # (see Cargo.toml's xz2 comment) and `[tool.maturin] auditwheel = "check"`
+    # below means the build fails loudly if a future dependency reintroduces
+    # a linked shared library instead of maturin silently vendoring it.
 ]
 build-backend = "soldr"
 
@@ -72,6 +71,14 @@ soldr-maturin = { RUSTUP_TOOLCHAIN = "1.98.1" }
 manifest-path = "crates/soldr-cli/Cargo.toml"
 module-name = "soldr._native"
 python-source = "src"
+# Fail the build instead of bundling: with liblzma statically linked (see
+# Cargo.toml's xz2 comment), the wheel should never need an external shared
+# library vendored into soldr.libs/. "check" audits for manylinux compliance
+# but refuses to repair, so any future dynamic dependency on a non-system
+# library is a build failure, not a silently-materialized soldr.libs/ that
+# breaks soldr's relocated shim images (see
+# crates/soldr-cli/tests/guards/static_liblzma.rs).
+auditwheel = "check"
 # tokio-console is compiled into every published wheel so it is always
 # available on demand. The subscriber only starts when the daemon sees
 # `SOLDR_DAEMON_TOKIO_CONSOLE=1`, so this adds no runtime cost to normal

@@ -52,6 +52,7 @@ Usage (CI):
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import platform
 import shutil
@@ -60,6 +61,25 @@ import sys
 from pathlib import Path
 
 from release_artifacts import binary_suffix
+
+# Loaded with importlib.util.spec_from_file_location rather than a package
+# import: this script lives in `.github/scripts/` and `check_linked_libs.py`
+# lives in `ci/`, and both are executed as standalone files by CI, not
+# imported as a package (see check_third_party_compiles.py for the same
+# pattern, adopted here for the same flake8 E402 reason).
+_CHECK_LINKED_LIBS_PATH = (
+    Path(__file__).resolve().parents[2] / "ci" / "check_linked_libs.py"
+)
+_CHECK_LINKED_LIBS_SPEC = importlib.util.spec_from_file_location(
+    "check_linked_libs", _CHECK_LINKED_LIBS_PATH
+)
+if (
+    _CHECK_LINKED_LIBS_SPEC is None or _CHECK_LINKED_LIBS_SPEC.loader is None
+):  # pragma: no cover - packaging accident
+    raise ImportError(f"cannot load {_CHECK_LINKED_LIBS_PATH}")
+check_linked_libs = importlib.util.module_from_spec(_CHECK_LINKED_LIBS_SPEC)
+sys.modules[_CHECK_LINKED_LIBS_SPEC.name] = check_linked_libs
+_CHECK_LINKED_LIBS_SPEC.loader.exec_module(check_linked_libs)
 
 
 class StagingError(RuntimeError):
@@ -351,6 +371,31 @@ def strip_elf_binary_with_debuglink(
     run_tool([objcopy, f"--add-gnu-debuglink={debug_dest}", str(binary)])
 
 
+def verify_no_disallowed_dynamic_libs(paths: list[Path]) -> None:
+    """Refuse to release a binary that links a non-system shared library.
+
+    The static-liblzma bug (a dynamically-linked liblzma that auditwheel
+    vendored into ``soldr.libs/`` with an RPATH soldr's relocated shim images
+    cannot resolve) was host-luck: it only reproduced on a machine with a
+    system liblzma for pkg-config to find. A release binary must never carry
+    that risk regardless of which host built it. Non-ELF/non-Mach-O files in
+    ``paths`` (a Windows PDB) are silently skipped by
+    :func:`check_linked_libs.check_binary`.
+    """
+    for path in paths:
+        result = check_linked_libs.check_binary(path)
+        if result is None:
+            continue
+        kind, _needed, offenders = result
+        if offenders:
+            raise StagingError(
+                f"{path} ({kind}) links disallowed shared librar{'y' if len(offenders) == 1 else 'ies'} "
+                f"{offenders}: enable the offending dependency's static/bundled feature "
+                '(e.g. xz2\'s "static" feature for liblzma) instead of letting it '
+                "link a non-system shared library found on the build host."
+            )
+
+
 def stage_release_binaries(
     target: str, release_dir: Path, package_dir: Path
 ) -> list[Path]:
@@ -390,6 +435,8 @@ def stage_release_binaries(
         destination = package_dir / pdb.name
         shutil.copy2(pdb, destination)
         staged.append(destination)
+
+    verify_no_disallowed_dynamic_libs(staged)
 
     print("--- staged release package ---")
     print(release_contents(package_dir))
