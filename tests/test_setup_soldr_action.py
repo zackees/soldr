@@ -243,7 +243,13 @@ def test_cache_delta_experiment_quiesces_before_packaging() -> None:
     )
 
     assert "Flush + shutdown baseline cache" in workflow
-    assert shutdown_command in workflow
+    # soldr#3386: the workflow no longer hides both failures behind
+    # `|| true`; it tries shutdown, warns, then falls back to zccache stop.
+    assert (
+        "if ! soldr cache shutdown --shutdown-timeout-seconds 60 --json; then"
+        in workflow
+    )
+    assert "soldr zccache stop ||" in workflow
     assert 'rm -f "${ZCCACHE_CACHE_DIR}/daemon.sock"' in workflow
     assert 'find . -type f -print0 > "$list"' in workflow
     assert 'tar --null -T "$list"' in workflow
