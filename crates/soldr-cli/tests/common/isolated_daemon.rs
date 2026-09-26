@@ -20,6 +20,30 @@ pub(crate) fn configure_isolated_daemon_client(command: &mut Command, source: &P
     configure_direct_daemon_endpoints(command, &executable);
 }
 
+/// Bound on how much of a daemon log file a failure message quotes.
+///
+/// Large enough to carry a real panic backtrace or a handful of IPC error
+/// lines, small enough that a runaway daemon that logs continuously can't
+/// blow up a panic message or a nextest report.
+const LOG_TAIL_BYTES: usize = 64 * 1024;
+
+/// Read the last [`LOG_TAIL_BYTES`] of `path` for a diagnostic message.
+///
+/// Never panics: this runs from inside failure paths (a panic message, a
+/// `Drop` during unwind), and a log read failing there must not shadow the
+/// real failure. A missing or unreadable file renders as a placeholder
+/// instead. Shared by every isolated-daemon failure site so there is exactly
+/// one bounded-tail implementation to keep correct (soldr#3380).
+pub(crate) fn read_log_tail(path: &Path) -> String {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let start = bytes.len().saturating_sub(LOG_TAIL_BYTES);
+            String::from_utf8_lossy(&bytes[start..]).into_owned()
+        }
+        Err(error) => format!("<unreadable: {} ({error})>", path.display()),
+    }
+}
+
 /// A foreground daemon configured for one integration-test cache root.
 ///
 /// Tests that exercise cacheable compiler traffic need a real embedded service;
@@ -29,25 +53,51 @@ pub(crate) struct IsolatedDaemon {
     source: PathBuf,
     root: PathBuf,
     home: PathBuf,
+    stdout_log: PathBuf,
+    stderr_log: PathBuf,
 }
 
 impl IsolatedDaemon {
     pub(crate) fn spawn(source: &Path, root: &Path, home: &Path) -> Self {
-        let mut command = isolated_daemon_command(source, root);
+        let command = isolated_daemon_command(source, root);
+        Self::spawn_with_command(command, source, root, home)
+    }
+
+    /// [`Self::spawn`], but driven by an already-constructed `command` rather
+    /// than resolving one from `source` via [`isolated_daemon_command`].
+    ///
+    /// Split out so the readiness/failure-reporting logic below is testable
+    /// against a fake, fast-failing daemon without a real `soldr-daemon`
+    /// binary (soldr#3380's RED/GREEN test drives this directly).
+    pub(crate) fn spawn_with_command(
+        mut command: Command,
+        source: &Path,
+        root: &Path,
+        home: &Path,
+    ) -> Self {
+        std::fs::create_dir_all(root).expect("create isolated daemon root");
+        let stdout_log = root.join("daemon-stdout.log");
+        let stderr_log = root.join("daemon-stderr.log");
+        let stdout_file =
+            std::fs::File::create(&stdout_log).expect("create isolated daemon stdout log");
+        let stderr_file =
+            std::fs::File::create(&stderr_log).expect("create isolated daemon stderr log");
         command
             .args(["--foreground", "--idle-timeout-secs", "60"])
             .env("SOLDR_CACHE_DIR", root)
             .env("HOME", home)
             .env("USERPROFILE", home)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdout(Stdio::from(stdout_file))
+            .stderr(Stdio::from(stderr_file));
         let child = command.spawn().expect("spawn isolated soldr-daemon");
-        let daemon = Self {
+        let mut daemon = Self {
             child: Some(child),
             source: source.to_path_buf(),
             root: root.to_path_buf(),
             home: home.to_path_buf(),
+            stdout_log,
+            stderr_log,
         };
         daemon.wait_until_ready();
         daemon
@@ -61,36 +111,86 @@ impl IsolatedDaemon {
             .env("USERPROFILE", &self.home);
     }
 
-    fn wait_until_ready(&self) {
+    /// Both daemon logs' tails, formatted for a failure message.
+    fn log_tails(&self) -> String {
+        format!(
+            "daemon stdout ({} tail):\n{}\ndaemon stderr ({} tail):\n{}",
+            self.stdout_log.display(),
+            read_log_tail(&self.stdout_log),
+            self.stderr_log.display(),
+            read_log_tail(&self.stderr_log),
+        )
+    }
+
+    fn wait_until_ready(&mut self) {
         let deadline = Instant::now() + Duration::from_secs(90);
+        let mut last_probe: Option<std::process::Output> = None;
         while Instant::now() < deadline {
+            // Check first: a daemon that died on startup or mid-poll should
+            // fail immediately with its own diagnostics, not after the full
+            // 90s deadline with nothing but "never became ready" (soldr#3380).
+            if let Some(status) = self
+                .child
+                .as_mut()
+                .and_then(|child| child.try_wait().ok().flatten())
+            {
+                panic!(
+                    "isolated daemon exited before becoming ready (status: {status}) under {}\n{}",
+                    self.root.display(),
+                    self.log_tails(),
+                );
+            }
             let mut status = Command::new(super::soldr_bin());
             self.configure_client(&mut status);
             let output = status.args(["daemon", "status", "--json"]).output();
-            if output.is_ok_and(|output| {
+            let ready = output.as_ref().is_ok_and(|output| {
                 output.status.success()
                     && serde_json::from_slice::<Value>(&output.stdout)
                         .ok()
                         .and_then(|body| body["running"].as_bool())
                         .unwrap_or(false)
-            }) {
+            });
+            if ready {
                 return;
             }
+            last_probe = output.ok();
             std::thread::sleep(Duration::from_millis(50));
         }
+        let probe_summary = match &last_probe {
+            Some(output) => format!(
+                "last status probe exited {}\nprobe stdout:\n{}\nprobe stderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            ),
+            None => "no status probe ever ran".to_string(),
+        };
         panic!(
-            "isolated daemon never became ready under {}",
-            self.root.display()
+            "isolated daemon never became ready under {}\n{probe_summary}\n{}",
+            self.root.display(),
+            self.log_tails(),
         );
     }
 }
 
 impl Drop for IsolatedDaemon {
     fn drop(&mut self) {
+        let panicking = std::thread::panicking();
         if let Some(mut child) = self.child.take() {
             let mut stop = Command::new(super::soldr_bin());
             self.configure_client(&mut stop);
-            let _ = stop.args(["daemon", "stop"]).output();
+            match stop.args(["daemon", "stop"]).output() {
+                Ok(output) if !output.status.success() => {
+                    eprintln!(
+                        "soldr daemon stop: exited {}\nstdout:\n{}\nstderr:\n{}",
+                        output.status,
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr),
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => eprintln!("soldr daemon stop: failed to run: {error}"),
+            }
             let deadline = Instant::now() + Duration::from_secs(2);
             let mut exited = false;
             while Instant::now() < deadline {
@@ -104,6 +204,16 @@ impl Drop for IsolatedDaemon {
                 let _ = child.kill();
                 let _ = child.wait();
             }
+        }
+        if panicking {
+            // The test that owns this fixture is already failing; carry the
+            // daemon's own diagnostics into that failure's output instead of
+            // discarding them here (soldr#3380).
+            eprintln!(
+                "isolated daemon logs (test panicking) under {}:\n{}",
+                self.root.display(),
+                self.log_tails(),
+            );
         }
         // soldr#3136: every client call above (`daemon status`, `daemon
         // stop`) enters the front door under `home`, which starts a stable
