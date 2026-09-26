@@ -135,6 +135,18 @@ pub fn executable_stem_matches(pid: u32, expected_stem: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Reading another process's working directory needs its PEB on Windows,
+/// which soldr does not do; callers get `None` and must treat the directory
+/// as unknown.
+pub fn working_directory(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
+/// Direct child enumeration is not wired on Windows; callers get `None`.
+pub fn child_pids(_pid: u32) -> Option<Vec<u32>> {
+    None
+}
+
 /// True when the running image resolves to `expected_path`
 /// (case-insensitive, as Windows paths are).
 pub fn executable_path_matches(pid: u32, expected_path: &Path) -> bool {

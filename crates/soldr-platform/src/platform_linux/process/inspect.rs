@@ -76,6 +76,38 @@ pub fn executable_stem_matches(pid: u32, expected_stem: &str) -> bool {
         .is_some_and(|stem| stem == expected_stem)
 }
 
+/// The live process's current working directory, read through procfs.
+///
+/// `None` when the process is gone or the caller may not inspect it.
+pub fn working_directory(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
+/// The live children of `pid`, whichever of its threads spawned them.
+///
+/// procfs lists a child under the *thread* that forked it
+/// (`/proc/<pid>/task/<tid>/children`), so a multi-threaded parent such as
+/// Cargo, which launches build scripts and compilers from job threads, hides
+/// most of its children from a reader of the main task's file alone. Every
+/// task is read here. `None` when the process is gone or unreadable.
+pub fn child_pids(pid: u32) -> Option<Vec<u32>> {
+    let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
+    let mut children = Vec::new();
+    for task in tasks.flatten() {
+        let Ok(listing) = std::fs::read_to_string(task.path().join("children")) else {
+            continue;
+        };
+        children.extend(
+            listing
+                .split_ascii_whitespace()
+                .filter_map(|child| child.parse::<u32>().ok()),
+        );
+    }
+    children.sort_unstable();
+    children.dedup();
+    Some(children)
+}
+
 /// True when the running image resolves to `expected_path`.
 pub fn executable_path_matches(pid: u32, expected_path: &Path) -> bool {
     let Some(actual) = executable_path(pid) else {

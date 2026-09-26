@@ -11,6 +11,7 @@ mod cli_cargo_basic;
 mod cli_cargo_doc_routes;
 mod cli_cargo_linker;
 mod cli_cargo_native_cc;
+mod cli_cargo_nested_cargo_guard;
 mod cli_cargo_run_trampoline;
 mod cli_cargo_strip_failure;
 mod cli_cargo_trampoline_workspace;

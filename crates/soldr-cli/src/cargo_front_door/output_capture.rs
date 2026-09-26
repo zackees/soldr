@@ -38,6 +38,7 @@ fn retry_zthreads_without_flag(
     // re-entrancy guard needs the edge marker to tell it apart from an
     // unsanctioned nested entry. Bounded by ATTEMPTED_ENV above.
     command.env(soldr_core::self_relocate::SELF_SPAWN_EDGE_ENV_VAR, "1");
+    nested_cargo_guard::forward_mode_to_front_door_retry(&mut command);
     if let Some(toolchain) = explicit_toolchain {
         command.env("RUSTUP_TOOLCHAIN", toolchain);
     }
@@ -91,6 +92,7 @@ fn run_command_capturing_cargo_json(
     command: &mut std::process::Command,
     target_dir: &Path,
     timeout: Option<Duration>,
+    guard: Option<&Arc<NestedCargoGuard>>,
 ) -> Result<(std::process::ExitStatus, String, Vec<String>), SoldrError> {
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -99,14 +101,19 @@ fn run_command_capturing_cargo_json(
         .map_err(|err| SoldrError::Other(format!("spawn cargo for JSON capture failed: {err}")))?;
     // soldr#2546 slice 3: capture modes own their pipes, so descendant
     // observation attaches to the spawned pid post-hoc.
-    let observation = debug_trace::DescendantObservation::attach(child.id(), "cargo JSON capture");
+    let observation =
+        debug_trace::DescendantObservation::attach(child.id(), "cargo JSON capture", guard.cloned());
     let stamp = line_stamp_anchor(std::io::IsTerminal::is_terminal(&std::io::stdout()));
     let stdout_rx = spawn_capture_pipe_reader_to_stdout(child.stdout.take().expect("piped"), stamp);
     let stderr_rx = spawn_capture_pipe_reader(child.stderr.take().expect("piped"), stamp);
-    let status = wait_for_cargo_child(&mut child, "cargo JSON capture", timeout)?;
-    if let Some(observation) = observation {
-        observation.finish();
-    }
+    let status = wait_for_cargo_child_guarded(
+        &mut child,
+        "cargo JSON capture",
+        timeout,
+        Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS),
+        guard.map(Arc::as_ref),
+    );
+    let status = finish_observation_after_wait(observation, status)?;
     let stdout = drain_capture_pipe_after_child_exit(&stdout_rx, "cargo JSON stdout");
     let stderr = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo JSON stderr");
     let paths = parse_cargo_artifact_closure(&stdout, target_dir);
@@ -265,6 +272,7 @@ where
 fn run_command_inheriting_stdio(
     command: &mut std::process::Command,
     timeout: Option<Duration>,
+    guard: Option<&Arc<NestedCargoGuard>>,
 ) -> Result<std::process::ExitStatus, SoldrError> {
     if debug_trace::enabled() {
         // soldr#2546 slice 2: under --debug the inherited-stdio mode runs
@@ -276,12 +284,35 @@ fn run_command_inheriting_stdio(
             "cargo",
             timeout,
             Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS),
+            guard.cloned(),
         );
     }
     configure_cargo_child_for_timeout(command);
     let mut child = debug_trace::spawn_traced(command, "cargo")
         .map_err(|err| SoldrError::Other(format!("spawn cargo failed: {err}")))?;
-    wait_for_cargo_child(&mut child, "cargo", timeout)
+    // soldr#2924: the nested-Cargo guard observes the inherited-stdio tree
+    // through the same post-hoc attach as the capture modes.
+    let observation = debug_trace::DescendantObservation::attach(child.id(), "cargo", guard.cloned());
+    let status = wait_for_cargo_child_guarded(
+        &mut child,
+        "cargo",
+        timeout,
+        Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS),
+        guard.map(Arc::as_ref),
+    );
+    finish_observation_after_wait(observation, status)
+}
+
+/// Stop a descendant observation once its Cargo child has been reaped or torn
+/// down, on the success and error paths alike, and pass the wait result on.
+fn finish_observation_after_wait<T>(
+    observation: Option<debug_trace::DescendantObservation>,
+    result: Result<T, SoldrError>,
+) -> Result<T, SoldrError> {
+    if let Some(observation) = observation {
+        observation.finish();
+    }
+    result
 }
 
 /// Run cargo with both streams tee'd to the user's stdout/stderr AND
@@ -297,6 +328,7 @@ fn run_command_inheriting_stdio(
 fn run_command_capturing_diagnostic_tail(
     command: &mut std::process::Command,
     timeout: Option<Duration>,
+    guard: Option<&Arc<NestedCargoGuard>>,
 ) -> Result<(std::process::ExitStatus, String), SoldrError> {
     command.stderr(std::process::Stdio::piped());
     // stdout stays inherited — we don't need its bytes.
@@ -305,8 +337,11 @@ fn run_command_capturing_diagnostic_tail(
         SoldrError::Other(format!("spawn cargo for diagnostic capture failed: {err}"))
     })?;
     // soldr#2546 slice 3: same post-hoc descendant attach as JSON capture.
-    let observation =
-        debug_trace::DescendantObservation::attach(child.id(), "cargo diagnostic capture");
+    let observation = debug_trace::DescendantObservation::attach(
+        child.id(),
+        "cargo diagnostic capture",
+        guard.cloned(),
+    );
     let child_stderr = child.stderr.take().expect("piped");
 
     let stderr_rx = spawn_capture_pipe_reader(
@@ -314,10 +349,14 @@ fn run_command_capturing_diagnostic_tail(
         line_stamp_anchor(std::io::IsTerminal::is_terminal(&std::io::stderr())),
     );
 
-    let status = wait_for_cargo_child(&mut child, "cargo diagnostic capture", timeout)?;
-    if let Some(observation) = observation {
-        observation.finish();
-    }
+    let status = wait_for_cargo_child_guarded(
+        &mut child,
+        "cargo diagnostic capture",
+        timeout,
+        Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS),
+        guard.map(Arc::as_ref),
+    );
+    let status = finish_observation_after_wait(observation, status)?;
     let bytes = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo diagnostic stderr");
     let captured = String::from_utf8_lossy(&bytes).into_owned();
     Ok((status, captured))

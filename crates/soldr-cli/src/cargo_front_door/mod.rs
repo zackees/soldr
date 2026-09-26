@@ -30,6 +30,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wait_timeout::ChildExt;
 
@@ -51,6 +52,8 @@ mod job_budget;
 mod line_endings;
 mod log_summary;
 mod nested_cargo;
+/// soldr#2924 — direct nested-Cargo self-lock guard.
+mod nested_cargo_guard;
 pub(crate) mod no_cache_detach;
 mod orphan_rmeta;
 mod profile_debug;
@@ -64,6 +67,7 @@ mod zthreads_fallback;
 
 pub(crate) use cache_plan::CargoCachePlan;
 use config_args::insert_cargo_global_args;
+use nested_cargo_guard::NestedCargoGuard;
 
 const CARGO_WAIT_TIMEOUT_ENV_VAR: &str = "SOLDR_CARGO_WAIT_TIMEOUT_SECS";
 /// Internal one-hop marker for commands that must share their Soldr parent's

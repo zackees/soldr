@@ -119,6 +119,19 @@ pub fn executable_stem_matches(pid: u32, expected_stem: &str) -> bool {
         .is_some_and(|stem| stem == expected_stem)
 }
 
+/// Another process's current working directory is not wired on macOS yet
+/// (`proc_pidinfo(PROC_PIDVNODEPATHINFO)` would answer it), so callers get
+/// `None` and must treat the directory as unknown.
+pub fn working_directory(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
+/// Direct child enumeration is not wired on macOS; callers get `None` and
+/// fall back to a whole-snapshot observer.
+pub fn child_pids(_pid: u32) -> Option<Vec<u32>> {
+    None
+}
+
 /// True when the running image resolves to `expected_path`.
 pub fn executable_path_matches(pid: u32, expected_path: &Path) -> bool {
     let Some(actual) = executable_path(pid) else {
