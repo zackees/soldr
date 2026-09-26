@@ -57,7 +57,10 @@ longer runs, entries on a ref other than `refs/heads/main` (a PR's caches are
 never restored by another PR), and `v0-rust-*` entries on `refs/heads/main`
 that have been superseded by a newer generation of the same shared-key
 lineage. It also retires old cook locks within the same target/feature shape
-only when that shape has a base under the exact current main Cargo.lock hash.
+(across soldr versions) only when that shape has a base under the exact
+current main Cargo.lock hash; see `cook_lineage_candidates`. The report
+prints raw usage and the projected effective-after-safe-prune usage
+separately, and the exit code always follows raw usage.
 Stable-cook hashes are retired within the same target only when a current
 archive matches GitHub Actions' exact `hashFiles(...)` result from a main
 checkout. A stale checkout or missing current archive retains every version.
@@ -481,6 +484,51 @@ def strip_shared_key_hash(key: str) -> str:
     return key[:index] if index != -1 else key
 
 
+def cook_shape(match: re.Match[str]) -> str:
+    """The target/toolchain/feature shape of a cook key, without lock or soldr."""
+    return match.group(2)
+
+
+def cook_lineage_candidates(
+    on_main: list[CacheEntry], current_main_lock: str | None
+) -> list[CacheEntry]:
+    """Superseded main `cook-base-v2` / `cook-delta-v2` lock generations.
+
+    The explicit retention policy (soldr#3347):
+
+    * The current generation of a shape is its base(s) and delta(s) under the
+      live main Cargo.lock hash. Every such entry is kept, at every soldr
+      version, so a soldr rollback still finds its archive.
+    * An entry under any other lock hash is retired only when its own
+      target/feature shape has a base under the current lock. The soldr
+      version is deliberately NOT part of that match: a lockfile bump and a
+      soldr bump usually land together, and keying the match on the version
+      kept every prior-lock base alive forever (five prior shapes, ~0.8 GiB
+      of a 2.33 GiB family on 2026-09-23).
+    * A shape with no current-lock base is unique and active: none of its
+      entries is retired merely because another shape is newer.
+    * Without a known current lock (the main Cargo.lock fetch failed) nothing
+      is retired, and keys this regex does not recognize are never touched.
+    """
+    if not current_main_lock:
+        return []
+    current_shapes: set[str] = set()
+    for entry in on_main:
+        match = COOK_KEY.fullmatch(entry.key)
+        if match and match.group(1) == "base" and match.group(3) == current_main_lock:
+            current_shapes.add(cook_shape(match))
+    retired: list[CacheEntry] = []
+    for entry in on_main:
+        match = COOK_KEY.fullmatch(entry.key)
+        if (
+            match
+            and match.group(3) != current_main_lock
+            and cook_shape(match) in current_shapes
+        ):
+            retired.append(entry)
+    return retired
+
+
 def prune_candidates(
     entries: list[CacheEntry],
     current_main_lock: str | None = None,
@@ -520,23 +568,7 @@ def prune_candidates(
             if entry is not newest:
                 candidates.append(entry)
 
-    # A cook lock generation is superseded only within the same target,
-    # toolchain, feature shape, and Soldr version. A unique shape remains
-    # restorable even if another shape was written later. The main source's
-    # lock is authoritative even if a rollback makes an older cache current.
-    cook_bases: set[tuple[str, str]] = set()
-    for entry in on_main:
-        match = COOK_KEY.fullmatch(entry.key)
-        if match and match.group(1) == "base" and match.group(3) == current_main_lock:
-            cook_bases.add((match.group(2), match.group(4)))
-    for entry in on_main:
-        match = COOK_KEY.fullmatch(entry.key)
-        if (
-            match
-            and (match.group(2), match.group(4)) in cook_bases
-            and match.group(3) != current_main_lock
-        ):
-            candidates.append(entry)
+    candidates.extend(cook_lineage_candidates(on_main, current_main_lock))
 
     # The host lane's exact hashFiles result identifies the current archive.
     # Keep all versions if the source hash is unavailable or if no current
@@ -560,6 +592,21 @@ def prune_candidates(
                 candidates.append(entry)
 
     return candidates
+
+
+def effective_verdict(effective_problems: list[str]) -> str:
+    """One line for the projected post-prune state, never green while red.
+
+    Raw usage decides the exit code; this line only says whether the safe
+    candidate set would be enough. A family still over its cap after every
+    safe deletion is a producer or retention defect, not a pruning backlog.
+    """
+    if effective_problems:
+        return (
+            f"effective after safe prune: STILL OVER BUDGET "
+            f"({len(effective_problems)} problem(s)); pruning alone cannot fix this"
+        )
+    return "effective after safe prune: every family and the total fit"
 
 
 def apply_prune(candidates: list[CacheEntry], repo: str) -> list[str]:
@@ -696,11 +743,14 @@ def main(argv: list[str] | None = None) -> int:
         candidate_ids = {id(entry) for entry in candidates}
         effective_entries = [e for e in entries if id(e) not in candidate_ids]
         if isinstance(budget, dict) and isinstance(budget.get("families"), dict):
-            print("effective after safe prune (projected):")
+            print(
+                "raw usage is the table above; effective after safe prune (projected):"
+            )
             print(build_table(budget, effective_entries, None))
             effective_problems = budget_problems(
                 args.manifest, manifest, effective_entries
             )
+            print(effective_verdict(effective_problems))
             for problem in effective_problems:
                 print(f"  still over budget: {problem}")
         if args.apply:
