@@ -43,16 +43,19 @@ from __future__ import annotations
 
 import errno
 import fcntl
-import hashlib
 import os
 import signal
 import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Mapping, NamedTuple
+
+# Imported by the wrapper around EVERY Unix test, so keep it cheap to load:
+# NamedTuple rather than dataclasses (whose `inspect` import alone costs ~8 ms
+# per test), and rarely used modules are imported where they are needed.
+
 
 ADMISSION_DIR_ENV = "SOLDR_NEXTEST_ADMISSION_DIR"
 MAX_WAIT_ENV = "SOLDR_NEXTEST_ADMISSION_MAX_WAIT_SECS"
@@ -124,8 +127,7 @@ def _positive_number(raw: str | None) -> float | None:
     return value if value > 0 else None
 
 
-@dataclass(frozen=True)
-class GuardConfig:
+class GuardConfig(NamedTuple):
     """The ci-test controls this wrapper was launched with."""
 
     admission_dir: Path | None
@@ -168,12 +170,16 @@ def identity_of(command: list[str], env: Mapping[str, str]) -> str:
 def infra_record_name(identity: str) -> str:
     """A file name that round-trips the identity through percent-encoding."""
 
+    # Every byte outside printable ASCII is escaped too, so the Rust decoder
+    # reassembles multi-byte UTF-8 exactly.
     encoded = "".join(
-        f"%{byte:02X}" if byte in b"%/" or byte < 0x20 or byte == 0x7F else chr(byte)
+        f"%{byte:02X}" if byte in b"%/" or not 0x20 <= byte < 0x7F else chr(byte)
         for byte in identity.encode("utf-8", errors="replace")
     )
     if len(encoded.encode("utf-8")) <= 200:
         return encoded
+    import hashlib  # pylint: disable=import-outside-toplevel  # rare; keep startup lean
+
     digest = hashlib.sha256(identity.encode("utf-8", errors="replace")).hexdigest()[:16]
     return encoded[:160] + "~" + digest
 
@@ -183,8 +189,7 @@ def infra_record_name(identity: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class MemoryObservation:
+class MemoryObservation(NamedTuple):
     available_bytes: int | None
     source: str
     cgroup_current_bytes: int | None = None
@@ -418,8 +423,7 @@ class ActiveSlot:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class TreeSample:
+class TreeSample(NamedTuple):
     rss_bytes: int
     process_count: int
     pids: tuple[int, ...] = ()
@@ -555,19 +559,18 @@ class TreeMonitor(threading.Thread):
         self.join(timeout=5)
 
 
-@dataclass(frozen=True)
-class CgroupOutcome:
+class CgroupOutcome(NamedTuple):
     peak_bytes: int | None
     oom_kills: int
 
 
-@dataclass
 class CgroupCeiling:
     """A kernel-enforced per-test ceiling below a delegated cgroup v2 root."""
 
-    path: Path
-    ceiling_bytes: int
-    joined: bool = field(default=False)
+    def __init__(self, path: Path, ceiling_bytes: int) -> None:
+        self.path = path
+        self.ceiling_bytes = ceiling_bytes
+        self.joined = False
 
     @classmethod
     def create(

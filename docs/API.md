@@ -743,8 +743,9 @@ never fewer than one. Available memory is the *tighter* of host
 `GlobalMemoryStatusEx` available physical memory and macOS `vm_stat`
 reclaimable pages. When no reading is possible the historical one-test
 fallback applies. `SOLDR_CI_TEST_MEMORY_AVAILABLE_MIB` and
-`SOLDR_CI_TEST_LOGICAL_CPUS` replace the probed values -- for a container
-that cannot see VM-wide pressure, and for reproducible plans.
+`SOLDR_CI_TEST_LOGICAL_CPUS` replace the probed values at plan time -- for a
+container that cannot see VM-wide pressure, and for reproducible plans. The
+run-time monitor below always reads live memory.
 
 An explicit `NEXTEST_TEST_THREADS` is authoritative and frozen verbatim
 (including Nextest's `num-cpus` and `-N` spellings). When the measurement says

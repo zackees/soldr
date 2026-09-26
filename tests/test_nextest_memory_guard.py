@@ -465,7 +465,12 @@ def test_cgroup_ceiling_declines_a_root_without_the_memory_controller(
 def test_infra_record_names_are_safe_file_names() -> None:
     name = guard.infra_record_name("soldr-cli::guards cli/ci::test name")
     assert "/" not in name
-    assert name == guard.infra_record_name("soldr-cli::guards cli/ci::test name")
+    assert name == "soldr-cli::guards cli%2Fci::test name"
+    # Non-ASCII is escaped byte-by-byte, so ci-test's percent decoder
+    # (`test_pressure::percent_decode`) reassembles the exact UTF-8.
+    assert guard.infra_record_name("tests::ü%") == "tests::%C3%BC%25"
+    long_name = guard.infra_record_name("x" * 400)
+    assert len(long_name) <= 200 and "~" in long_name
 
 
 # The wrapper below runs inside a transient systemd scope that delegates the
