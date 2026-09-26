@@ -281,43 +281,58 @@ def buildkit_prune_command() -> list[str]:
     ]
 
 
+def output_excerpt(result: subprocess.CompletedProcess, limit: int = 500) -> str:
+    """One-line excerpt of a finished command's stderr (else stdout)."""
+    text = (result.stderr or "").strip() or (result.stdout or "").strip()
+    flat = " ".join(text.split())
+    return flat[:limit] if flat else "<no output>"
+
+
+def _run_small(args: list[str]) -> subprocess.CompletedProcess:
+    """Run a small docker probe; always forward its stderr, prefixed (soldr#3386)."""
+    result = subprocess.run(args, capture_output=True, text=True, check=False)
+    prefix = " ".join(args[:3])
+    for line in (result.stderr or "").splitlines():
+        if line.strip():
+            print(f"{prefix}: {line}", file=sys.stderr)
+    return result
+
+
 def _builder_exists() -> bool:
-    return (
-        subprocess.run(
-            ["docker", "buildx", "inspect", BUILDER_NAME],
-            capture_output=True,
-            check=False,
-        ).returncode
-        == 0
-    )
+    return _run_small(["docker", "buildx", "inspect", BUILDER_NAME]).returncode == 0
 
 
 def _ensure_builder() -> bool:
-    version = subprocess.run(
-        ["docker", "buildx", "version"], capture_output=True, check=False
-    )
+    version = _run_small(["docker", "buildx", "version"])
     if version.returncode != 0:
+        print(
+            "warning: docker buildx unavailable; falling back to docker build: "
+            f"{output_excerpt(version)}",
+            file=sys.stderr,
+        )
         return False
     if _builder_exists():
         return True
-    return (
-        subprocess.run(
-            ["docker", "buildx", "create", "--name", BUILDER_NAME],
-            capture_output=True,
-            check=False,
-        ).returncode
-        == 0
-    )
+    created = _run_small(["docker", "buildx", "create", "--name", BUILDER_NAME])
+    if created.returncode != 0:
+        print(
+            f"warning: could not create BuildKit builder {BUILDER_NAME}; "
+            f"falling back to docker build: {output_excerpt(created)}",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def incremental_buildkit_gc() -> None:
     """Prune only soldr's BuildKit records; never touch Docker's default builder."""
     if _builder_exists():
-        result = subprocess.run(
-            buildkit_prune_command(), capture_output=True, check=False
-        )
+        result = _run_small(buildkit_prune_command())
         if result.returncode != 0:
-            print("warning: soldr BuildKit GC failed", file=sys.stderr)
+            print(
+                f"warning: soldr BuildKit GC failed: {output_excerpt(result)}",
+                file=sys.stderr,
+            )
 
 
 def runner_over_budget(usage_bytes: int) -> bool:

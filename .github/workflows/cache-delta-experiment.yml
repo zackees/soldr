@@ -266,7 +266,12 @@ jobs:
         run: |
           set +e
           soldr cache flush --json || true
-          soldr cache shutdown --shutdown-timeout-seconds 60 --json || soldr zccache stop || true
+          # soldr#3386: both attempts print their own stderr; say so when
+          # both fail. Still non-fatal (exit 0 below).
+          if ! soldr cache shutdown --shutdown-timeout-seconds 60 --json; then
+            echo "::warning::soldr cache shutdown failed (exit $?); trying soldr zccache stop"
+            soldr zccache stop || echo "::warning::soldr zccache stop also failed (exit $?); see the stderr above"
+          fi
           rm -f "${ZCCACHE_CACHE_DIR}/daemon.sock"
           exit 0
 

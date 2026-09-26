@@ -237,3 +237,58 @@ def test_the_workflow_invokes_the_script_for_both_mutations() -> None:
     assert "already exists; uploading/replacing assets" not in workflow
     assert 'echo "created=true" >> "$GITHUB_OUTPUT"' not in workflow
     assert "Manual release recovery needed" not in workflow
+
+
+def failing_gh(marker: str, fail_from: int):
+    """Fake gh: calls before `fail_from` exit 1 quietly (the "exists?" probe
+    misses); the mutating call exits 1 writing `marker` to stderr."""
+    calls: list[list[str]] = []
+
+    def run(args: Sequence[str]) -> subprocess.CompletedProcess:
+        calls.append(list(args))
+        if len(calls) < fail_from:
+            return subprocess.CompletedProcess(list(args), 1, "", "")
+        return subprocess.CompletedProcess(list(args), 1, "", f"HTTP 403: {marker}\n")
+
+    return run, calls
+
+
+def test_ensure_tag_failure_prints_gh_stderr(tmp_path, monkeypatch, capsys):
+    """soldr#3385: the ::error:: line and summary carry gh's own stderr."""
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    run, _ = failing_gh("MARKER_TAG_3385", fail_from=2)
+    assert MODULE.ensure_tag(REPO, TAG, SHA, run) == 1
+    out = capsys.readouterr()
+    error_line = next(l for l in out.out.splitlines() if l.startswith("::error::"))
+    assert "MARKER_TAG_3385" in error_line
+    assert "MARKER_TAG_3385" in summary.read_text(encoding="utf-8")
+    assert "MARKER_TAG_3385" in out.err
+
+
+def test_create_draft_release_failure_prints_gh_stderr(tmp_path, monkeypatch, capsys):
+    """soldr#3385: release create failure surfaces gh's stderr."""
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    run, _ = failing_gh("MARKER_RELEASE_3385", fail_from=2)
+    rc = MODULE.create_draft_release(
+        REPO, TAG, SHA, run_id=RUN_ID, dist=make_dist(tmp_path), run=run
+    )
+    assert rc == 1
+    out = capsys.readouterr()
+    error_line = next(l for l in out.out.splitlines() if l.startswith("::error::"))
+    assert "MARKER_RELEASE_3385" in error_line
+    assert "MARKER_RELEASE_3385" in summary.read_text(encoding="utf-8")
+
+
+def test_gh_stderr_forwarded_on_success(capsys):
+    """soldr#3389 contract: gh stderr is forwarded even when gh succeeds."""
+
+    def run(args: Sequence[str]) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(list(args), 0, "", "MARKER_OK_3389\n")
+
+    assert MODULE.ensure_tag(REPO, TAG, SHA, run) == 0
+    assert "gh api repos/zackees/soldr/git/refs/tags/v1.2.3: MARKER_OK_3389" in (
+        capsys.readouterr().err
+    )

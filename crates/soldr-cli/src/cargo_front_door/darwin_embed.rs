@@ -101,25 +101,13 @@ fn embed_one(artifact: &Path, bundle: &Path) -> Result<(), SoldrError> {
         SoldrError::Other(format!("unable to create dSYM embedding temp dir: {error}"))
     })?;
     let probe = temp.path().join("probe");
-    if dump_section(artifact, "__debug_info", &probe).is_ok() {
+    if dump_section(Path::new("llvm-objcopy"), artifact, "__debug_info", &probe).is_ok() {
         // Cache restores and repeated builds can revisit an already embedded
         // artifact.  Treat the existing section as an idempotent success.
         return Ok(());
     }
 
-    let mut sections = Vec::new();
-    for section in DWARF_SECTIONS {
-        let output = temp.path().join(section.trim_start_matches('_'));
-        if dump_section(&dwarf_file, section, &output).is_ok() && output.is_file() {
-            sections.push((*section, output));
-        }
-    }
-    if sections.is_empty() {
-        return Err(SoldrError::Other(format!(
-            "dSYM payload {} contains no supported DWARF sections",
-            dwarf_file.display()
-        )));
-    }
+    let sections = collect_dwarf_sections(Path::new("llvm-objcopy"), &dwarf_file, temp.path())?;
 
     let staged = temp.path().join("artifact");
     std::fs::copy(artifact, &staged).map_err(|error| {
@@ -130,20 +118,15 @@ fn embed_one(artifact: &Path, bundle: &Path) -> Result<(), SoldrError> {
     })?;
     for (section, payload) in &sections {
         let spec = format!("__DWARF,{section}={}", payload.display());
-        let output = Command::new("llvm-objcopy")
-            .args(["--add-section", &spec])
-            .arg(&staged)
-            .output()
+        let mut command = Command::new("llvm-objcopy");
+        command.args(["--add-section", &spec]).arg(&staged);
+        crate::core::tool_output::run_small_tool(&mut command, "llvm-objcopy --add-section")
             .map_err(|error| {
-                SoldrError::Other(format!("unable to invoke llvm-objcopy: {error}"))
+                SoldrError::Other(format!(
+                    "llvm-objcopy failed embedding {section} into {}: {error}",
+                    artifact.display()
+                ))
             })?;
-        if !output.status.success() {
-            return Err(SoldrError::Other(format!(
-                "llvm-objcopy failed embedding {section} into {}: {}",
-                artifact.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
     }
 
     let backup = artifact.with_extension(format!("soldr-embed-{}", std::process::id()));
@@ -164,25 +147,69 @@ fn embed_one(artifact: &Path, bundle: &Path) -> Result<(), SoldrError> {
     Ok(())
 }
 
-fn dump_section(input: &Path, section: &str, output: &Path) -> Result<(), SoldrError> {
-    let spec = format!("__DWARF,{section}={}", output.display());
-    let result = Command::new("llvm-objcopy")
-        .args(["--dump-section", &spec])
-        .arg(input)
-        .output()
-        .map_err(|error| SoldrError::Other(format!("unable to invoke llvm-objcopy: {error}")))?;
-    if result.status.success() {
-        Ok(())
-    } else {
-        Err(SoldrError::Other(
-            String::from_utf8_lossy(&result.stderr).trim().to_string(),
-        ))
+/// Dump every supported DWARF section of `dwarf_file` into `dir`. When none
+/// can be dumped, the error lists each section's own llvm-objcopy failure
+/// instead of a bare "no supported sections" (soldr#3384).
+fn collect_dwarf_sections(
+    objcopy: &Path,
+    dwarf_file: &Path,
+    dir: &Path,
+) -> Result<Vec<(&'static str, PathBuf)>, SoldrError> {
+    let mut sections = Vec::new();
+    let mut failures = Vec::new();
+    for section in DWARF_SECTIONS {
+        let output = dir.join(section.trim_start_matches('_'));
+        match dump_section(objcopy, dwarf_file, section, &output) {
+            Ok(()) if output.is_file() => sections.push((*section, output)),
+            Ok(()) => failures.push(format!("{section}: llvm-objcopy wrote no output file")),
+            Err(error) => failures.push(format!("{section}: {error}")),
+        }
     }
+    if sections.is_empty() {
+        return Err(SoldrError::Other(format!(
+            "dSYM payload {} contains no supported DWARF sections; per-section failures: {}",
+            dwarf_file.display(),
+            failures.join("; ")
+        )));
+    }
+    Ok(sections)
+}
+
+fn dump_section(objcopy: &Path, input: &Path, section: &str, output: &Path) -> Result<(), SoldrError> {
+    let spec = format!("__DWARF,{section}={}", output.display());
+    let mut command = Command::new(objcopy);
+    command.args(["--dump-section", &spec]).arg(input);
+    crate::core::tool_output::run_small_tool(&mut command, "llvm-objcopy --dump-section")
+        .map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// soldr#3384: when every section dump fails, the error names each
+    /// section's own llvm-objcopy stderr.
+    #[test]
+    fn all_section_dumps_failing_lists_each_stderr() {
+        let tmp = tempfile::tempdir().expect("temp");
+        let objcopy = crate::core::tool_output::write_fake_tool(
+            tmp.path(),
+            "llvm-objcopy",
+            "",
+            "MARKER_OBJCOPY_3384",
+            1,
+        );
+        let dwarf = tmp.path().join("payload");
+        std::fs::write(&dwarf, b"x").expect("payload");
+        let err = collect_dwarf_sections(&objcopy, &dwarf, tmp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no supported DWARF sections"), "{err}");
+        for section in DWARF_SECTIONS {
+            assert!(err.contains(&format!("{section}: ")), "{section} missing: {err}");
+        }
+        assert!(err.matches("MARKER_OBJCOPY_3384").count() >= DWARF_SECTIONS.len(), "{err}");
+    }
 
     #[test]
     fn artifact_without_dsym_is_unchanged() {
