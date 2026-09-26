@@ -776,19 +776,25 @@ fn rustc_identity_cached() -> Result<String, SoldrError> {
         return Ok(cached.clone());
     }
     let rustc = resolve_toolchain_binary("rustc")?;
-    let output = std::process::Command::new(&rustc)
-        .arg("-vV")
-        .output()
-        .map_err(|err| SoldrError::Other(format!("rustc -vV: {err}")))?;
-    if !output.status.success() {
-        return Err(SoldrError::Other(format!(
-            "rustc -vV exited with {}",
-            output.status
-        )));
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let mut stderr = std::io::stderr();
+    let text = rustc_identity_with_sinks(
+        &rustc,
+        crate::core::tool_output::ToolSinks::process(&mut stderr),
+    )?;
     let _ = RUSTC_IDENTITY_CACHE.set(text.clone());
     Ok(text)
+}
+
+/// `rustc -vV`, with the failure carrying rustc's stderr (soldr#3383).
+pub(crate) fn rustc_identity_with_sinks(
+    rustc: &std::path::Path,
+    sinks: crate::core::tool_output::ToolSinks<'_>,
+) -> Result<String, SoldrError> {
+    let mut command = std::process::Command::new(rustc);
+    command.arg("-vV");
+    let output =
+        crate::core::tool_output::run_small_tool_with_sinks(&mut command, "rustc -vV", None, sinks)?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 // ---------------------------------------------------------------------------

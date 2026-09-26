@@ -12,6 +12,8 @@ use super::{SoldrError, CARGO_HOME_ENV_VAR, RUSTUP_HOME_ENV_VAR};
 
 pub const SOLDR_CACHE_DIR_ENV_VAR: &str = "SOLDR_CACHE_DIR";
 const CARGO_ABORT_LOG_FILE: &str = "cargo-aborts.jsonl";
+/// Persistent record of every small-tool probe (soldr#3389).
+pub const SMALL_TOOL_LOG_FILE: &str = "small-tools.jsonl";
 
 /// soldr#1597 Phase 1: the home-anchored default root name, split by
 /// build provenance. Official (`release-auto.yml`-published) builds keep
@@ -126,6 +128,11 @@ impl SoldrPaths {
         std::fs::create_dir_all(&self.pinned_bin)?;
         std::fs::create_dir_all(&self.cache)?;
         Ok(())
+    }
+
+    /// `<root>/logs/small-tools.jsonl` (soldr#3389).
+    pub fn small_tool_log(&self) -> PathBuf {
+        self.root.join("logs").join(SMALL_TOOL_LOG_FILE)
     }
 
     pub fn cargo_abort_log(&self) -> PathBuf {

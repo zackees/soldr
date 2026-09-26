@@ -39,6 +39,7 @@ pub mod spawn_exclusion;
 mod target_triple;
 mod temp;
 pub mod toolchain_install_tripwire;
+pub mod tool_output;
 mod toolchain_manifest;
 mod toolchain_resolve;
 pub mod wire;
@@ -53,7 +54,7 @@ pub use installer_watchdog::{
 };
 pub use paths::{
     resolve_cargo_home, resolve_rustup_home, AutoGcConfig, CookConfig, GcConfig, InstallConfig,
-    PinsConfig, SoldrConfig, SoldrConfigLoadError, SoldrPaths, MANAGED_SHIM_VERSION,
+    PinsConfig, SoldrConfig, SoldrConfigLoadError, SoldrPaths, MANAGED_SHIM_VERSION, SMALL_TOOL_LOG_FILE,
     SOLDR_CACHE_DIR_ENV_VAR,
 };
 pub use target_triple::{Arch, Env, Os, TargetTriple};

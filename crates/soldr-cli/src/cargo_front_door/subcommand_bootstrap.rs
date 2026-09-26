@@ -312,36 +312,23 @@ fn validate_dylint_path_binary(
     let mut failures = Vec::new();
     for argument in ["--version", "--help"] {
         let mut command = std::process::Command::new(binary);
-        command
-            .arg(argument)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+        command.arg(argument);
         suppress_windows_console_window(&mut command);
-        // soldr#3098: spawns share, staged writes exclude.
-        let spawned = {
-            let _spawn = crate::core::spawn_exclusion::spawn_shared();
-            command.spawn()
-        };
-        let mut child = match spawned {
-            Ok(child) => child,
-            Err(error) => {
-                failures.push(format!("{argument} could not start: {error}"));
-                continue;
-            }
-        };
-        match child.wait_timeout(Duration::from_secs(2)) {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(status)) => failures.push(format!("{argument} exited with {status}")),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                failures.push(format!("{argument} exceeded 2 seconds"));
-            }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                failures.push(format!("{argument} wait failed: {error}"));
-            }
+        // soldr#3382: bounded, output-capturing probe (same 2 s wall-clock
+        // bound as before). Output is forwarded + logged by the shared
+        // small-tool helper and the failure names the component's stderr.
+        match crate::core::tool_output::capture_small_tool(
+            &mut command,
+            &format!("{component} {argument}"),
+            Some(Duration::from_secs(2)),
+        ) {
+            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output) => failures.push(format!(
+                "{argument} exited with {} (stderr: {})",
+                output.status,
+                crate::core::tool_output::stderr_excerpt(&output)
+            )),
+            Err(error) => failures.push(format!("{argument} probe failed: {error}")),
         }
     }
     Err(dylint_unavailable_error(
@@ -389,10 +376,10 @@ fn validate_dylint_link_path_binary(
         // is soldr's sanctioned wall-clock containment for small host probes:
         // it pipes and drains both streams on reader threads (no pipe-buffer
         // deadlock) and kills + reaps the child at the deadline.
-        match crate::core::command_output_with_timeout_duration(
+        match crate::core::tool_output::capture_small_tool(
             &mut command,
             &format!("dylint-link {argument}"),
-            Duration::from_secs(2),
+            Some(Duration::from_secs(2)),
         ) {
             Ok(output) if output.status.success() => return Ok(()),
             Ok(output)
