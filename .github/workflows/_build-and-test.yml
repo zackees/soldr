@@ -676,7 +676,8 @@ jobs:
       # goes. `run_stable_cook.py` now runs a NON-FATAL `cook_inspect.py`
       # capture (on-CPU/off-CPU perf sampling, per-thread kernel stacks, gdb
       # backtraces, for the whole cook tree plus the soldr daemon/broker)
-      # every `--inspect-every-secs` (600s default) while cook is still
+      # every 600s (script default is 0 = off; enabled only for the
+      # zackees/soldr repository, never for forks or reuse) while cook is still
       # running -- this is expected to fire several times on every normal
       # run of this step BY DESIGN, until the 23-37 minute shape is
       # understood; it never kills or fails the step. The pre-existing
@@ -684,7 +685,7 @@ jobs:
       # applies verbatim, with one added final inspector capture
       # immediately before the SIGQUIT-then-SIGTERM shutdown.
       - name: Install cook inspector tools (soldr#3043, best-effort)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.repository == 'zackees/soldr'
         continue-on-error: true
         shell: bash
         run: python3 .github/scripts/install_cook_inspector_tools.py
@@ -699,11 +700,11 @@ jobs:
             --soldr "$source_soldr" \
             --target "${{ inputs.target }}" \
             --cache-dir "$SOLDR_CACHE_DIR" \
-            --inspect-every-secs 600 \
+            --inspect-every-secs "${{ github.repository == 'zackees/soldr' && '600' || '0' }}" \
             --inspect-dir "$RUNNER_TEMP/cook-inspect"
 
       - name: Upload cook inspector captures (soldr#3043, best-effort)
-        if: always()
+        if: always() && github.repository == 'zackees/soldr'
         continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

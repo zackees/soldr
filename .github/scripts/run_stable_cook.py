@@ -107,10 +107,11 @@ TIMEOUT_EXIT_CODE = 124
 # cook process tree while `soldr cook` is still running, so a healthy-but-
 # slow run (measured 23-37 minutes on main) leaves a trail of periodic
 # on-CPU/off-CPU snapshots instead of CI staying silent until the outer
-# `--timeout-secs` ceiling trips. `0` disables periodic inspection entirely;
-# the final capture at the hard `--timeout-secs` ceiling (below) is
-# unconditional and does not depend on this value.
-DEFAULT_INSPECT_EVERY_SECS = 600.0
+# `--timeout-secs` ceiling trips. Default OFF (`0`): inspection is a
+# soldr-repo diagnostic, enabled only by soldr's own workflow passing
+# `--inspect-every-secs 600`. When it is `0`, no capture runs at all --
+# neither periodic nor the final one before the hard `--timeout-secs` kill.
+DEFAULT_INSPECT_EVERY_SECS = 0.0
 
 Runner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
 # `(root_pid, capture_dir) -> report_dir`. Defaults to `cook_inspect.run_inspection`;
@@ -588,9 +589,8 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
         default=DEFAULT_INSPECT_EVERY_SECS,
         help=(
             "run a non-fatal cook_inspect capture on this cadence while cook "
-            f"is still running (default {DEFAULT_INSPECT_EVERY_SECS:.0f}s); "
-            "0 disables periodic inspection (the final capture immediately "
-            "before the hard --timeout-secs kill is unaffected). Only used "
+            "is still running; default 0 = off (no periodic capture and no "
+            "final capture before the hard --timeout-secs kill). Only used "
             "for the default streaming runner, ignored when --runner is "
             "injected (tests)"
         ),
@@ -610,7 +610,13 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     chef_args = args.chef_args if args.chef_args else list(DEFAULT_CHEF_ARGS)
     command = build_argv(args.soldr, args.target, chef_args)
     repo_root = Path(__file__).resolve().parents[2]
-    inspect_dir = Path(args.inspect_dir) if args.inspect_dir else default_inspect_dir()
+    # Inspection is off unless a positive cadence is requested; `None` also
+    # disables the final pre-kill capture in `stream_and_capture`.
+    inspect_dir = None
+    if args.inspect_every_secs > 0:
+        inspect_dir = (
+            Path(args.inspect_dir) if args.inspect_dir else default_inspect_dir()
+        )
 
     # The default (production) path streams live and already wrote every
     # byte to the real stdout/stderr as it arrived, so it must not be

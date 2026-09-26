@@ -604,7 +604,7 @@ def test_main_forwards_inspect_every_secs_and_dir(mod, tmp_path, monkeypatch):
     assert calls["inspect_dir"] == tmp_path / "custom-inspect"
 
 
-def test_main_default_inspect_every_secs_is_600(mod, monkeypatch):
+def test_main_inspection_is_off_by_default(mod, monkeypatch):
     calls = {}
 
     def fake_stream_and_capture(command, cwd, timeout_secs, **kwargs):
@@ -618,7 +618,8 @@ def test_main_default_inspect_every_secs_is_600(mod, monkeypatch):
 
     monkeypatch.setattr(mod, "stream_and_capture", fake_stream_and_capture)
     mod.main(["--soldr", "/opt/soldr", "--target", "T"])
-    assert calls["inspect_every_secs"] == mod.DEFAULT_INSPECT_EVERY_SECS == 600.0
+    assert calls["inspect_every_secs"] == mod.DEFAULT_INSPECT_EVERY_SECS == 0.0
+    assert calls["inspect_dir"] is None
 
 
 # --- stream_and_capture: periodic non-fatal inspection -----------------------
