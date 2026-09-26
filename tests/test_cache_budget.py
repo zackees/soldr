@@ -215,6 +215,19 @@ def test_live_mode_skips_when_gh_is_unavailable(
     assert "skipped" in capsys.readouterr().out
 
 
+def test_required_live_mode_fails_when_gh_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom(_args: list[str]) -> str:
+        raise FileNotFoundError("gh")
+
+    monkeypatch.setattr(guard, "run_gh", boom)
+
+    code = guard.main(["--manifest", str(MANIFEST), "--require-live"])
+    assert code == 1
+    assert "required live cache listing unavailable" in capsys.readouterr().out
+
+
 def test_numeric_cache_ids_from_gh_survive_normalization() -> None:
     # `gh cache list --json id` returns numbers; a str-only check dropped
     # every id and made `--prune --apply` a no-op (2026-09-04).
@@ -277,6 +290,36 @@ def test_prune_supersedes_older_sha_keyed_bootstrap_drivers_on_main() -> None:
     assert sorted(c.key for c in candidates) == sorted(
         [f"{dev}-aaa1", f"{dev}-bbb2", f"{release}-ddd4"]
     )
+
+
+def test_prune_keeps_only_newest_identical_solo_toolchain_version() -> None:
+    # The action version is not part of the toolchain identity: all three
+    # entries have the same Rust release and target set. Retain the latest
+    # archive, not one ~180 MiB copy for every setup-soldr release.
+    base = "solo-toolchain-v3-linux-x64-glibc-rustc1.98.1-cb6b9e404-tnone"
+    raw = [
+        {
+            **entry(f"{base}-soldrv0.7.28", 100),
+            "id": 1,
+            "createdAt": "2026-09-20T01:00:00Z",
+        },
+        {
+            **entry(f"{base}-soldrv0.9.22", 100),
+            "id": 2,
+            "createdAt": "2026-09-25T01:00:00Z",
+        },
+        {
+            **entry(f"{base}-soldrv0.9.23", 100),
+            "id": 3,
+            "createdAt": "2026-09-26T01:00:00Z",
+        },
+    ]
+    entries = guard.normalize_entries(raw)
+    assert guard.strip_shared_key_hash(entries[0].key) == base
+    assert [entry.key for entry in guard.prune_candidates(entries)] == [
+        f"{base}-soldrv0.7.28",
+        f"{base}-soldrv0.9.22",
+    ]
 
 
 def test_retired_dylint_nightly_entries_are_prune_candidates() -> None:
@@ -587,8 +630,10 @@ def test_3347_lineage_policy_fits_every_family_and_total() -> None:
     assert guard.budget_problems(MANIFEST, manifest, effective) == []
     assert guard.effective_verdict([]).endswith("every family and the total fit")
     kept_cook = {e.key for e in effective if e.key.startswith("cook-")}
-    # Exactly the current lock generation for every one of the five shapes.
-    assert len(kept_cook) == 10
+    # Keep one current-lock base for each shape; deltas are disabled by every
+    # setup-soldr call and are safely reclaimed as unreachable state.
+    assert len(kept_cook) == 5
+    assert all(k.startswith("cook-base-") for k in kept_cook)
     assert all(f"-l{CURRENT_LOCK}-" in k for k in kept_cook)
     assert len({id(e) for e in candidates}) == len(candidates)  # no double count
 
@@ -626,7 +671,9 @@ def test_3347_never_retires_a_unique_active_shape() -> None:
         _cook("base", "c0f411d4", PRIOR_LOCK, "0.9.21"),  # no current base
         _cook("delta", "c0f411d4", PRIOR_LOCK, "0.9.21", "-s1-g2"),
     ]
-    assert guard.prune_candidates(guard.normalize_entries(raw), CURRENT_LOCK) == []
+    assert [entry.key for entry in guard.prune_candidates(guard.normalize_entries(raw), CURRENT_LOCK)] == [
+        raw[2]["key"]
+    ]
 
 
 def test_3347_never_retires_an_unknown_prefix() -> None:
@@ -641,7 +688,7 @@ def test_3347_never_retires_an_unknown_prefix() -> None:
     assert guard.prune_candidates(guard.normalize_entries(raw), CURRENT_LOCK) == []
 
 
-def test_3347_keeps_every_required_current_lock_generation() -> None:
+def test_3347_keeps_every_current_lock_base_generation() -> None:
     raw = [
         _cook("base", "aaa264c8", CURRENT_LOCK, "0.9.22"),
         _cook("delta", "aaa264c8", CURRENT_LOCK, "0.9.22", "-s1-g2"),
@@ -651,10 +698,11 @@ def test_3347_keeps_every_required_current_lock_generation() -> None:
     ]
     entries = guard.normalize_entries(raw)
     assert [e.key for e in guard.prune_candidates(entries, CURRENT_LOCK)] == [
-        raw[3]["key"]
+        raw[1]["key"],
+        raw[3]["key"],
     ]
     # Unknown current lock: the required generation cannot be identified.
-    assert guard.prune_candidates(entries, None) == []
+    assert [e.key for e in guard.prune_candidates(entries, None)] == [raw[1]["key"]]
 
 
 # --------------------------------------------------------------------------

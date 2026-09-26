@@ -18,12 +18,12 @@ def executable_yaml(text: str) -> str:
     )
 
 
-# NOTE (soldr#2013): the live "workflows pin whatever setup-soldr@v0 resolves
-# to" test was removed. It resolved the tag over the network with
-# `git ls-remote`, so every PR turned red whenever upstream moved `v0` -- a
+# NOTE (soldr#2013): the live "workflows pin whatever setup-soldr release
+# resolves to" test was removed. It resolved the tag over the network with
+# `git ls-remote`, so every PR turned red whenever upstream moved a release -- a
 # failure with no relationship to the change under review. The pin-drift check
 # still exists, but only where it belongs: the `Verify setup-soldr pin matches
-# v0` step in .github/workflows/setup-soldr-action.yml, which runs the same
+# v0.9.80` step in .github/workflows/setup-soldr-action.yml, which runs the same
 # script as `continue-on-error: true` (warns yellow, never blocks). Pin bumps
 # are handled out-of-band. The hermetic tests below still cover the verifier's
 # parsing/autofix logic without touching the network.
@@ -52,7 +52,7 @@ def test_yaml_workflow_is_verified(tmp_path: Path, monkeypatch) -> None:
         "name: check\nsteps:\n  - uses: zackees/setup-soldr@not-a-sha\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(module, "resolve_setup_soldr_v0_sha", lambda: "a" * 40)
+    monkeypatch.setattr(module, "resolve_setup_soldr_release_sha", lambda: "a" * 40)
 
     try:
         module.verify_setup_soldr_pins(tmp_path)

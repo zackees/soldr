@@ -41,13 +41,14 @@ Three things fail the gate:
 
 ## Network policy
 
-SKIP, DO NOT FAIL, when the live source is unavailable: `gh` missing, a
-non-zero exit, or a response that does not parse as JSON. This mirrors
-`check_dylint_driver_assets.py` -- a guard that goes red because a fork PR has
-no `gh` token or GitHub Actions cache API rate limit teaches people to ignore
-it. `--from-json` bypasses the network entirely (used for the acceptance
-fixture) and its own read failures are real failures, not skips, because the
-caller chose that exact path.
+By default, SKIP, DO NOT FAIL, when the live source is unavailable: `gh`
+missing, a non-zero exit, or a response that does not parse as JSON. This
+keeps fork PRs with read-only/no tokens from going red for lack of API access.
+The same-repository PR budget gate and main operational sweep pass
+`--require-live`, so those required paths fail closed instead of showing a
+false green. `--from-json` bypasses the network entirely (used for the
+acceptance fixture) and its own read failures are real failures, not skips,
+because the caller chose that exact path.
 
 ## Pruning
 
@@ -70,6 +71,7 @@ Options:
     --manifest PATH   budget manifest (default: ci/cache-ownership.json)
     --from-json PATH  read a cache listing from this file instead of `gh`
     --repo OWNER/NAME repository to query (default: zackees/soldr)
+    --require-live    fail rather than skip when the live cache listing is unavailable
     --prune           report deletion candidates (dry run)
     --apply           with --prune, actually delete the candidates
 """
@@ -456,7 +458,13 @@ GENERATION_KEY_PREFIXES = (
     "bootstrap-soldr-blessed-",
     "dylint-foundation-",
     "setup-soldr-dogfood-zccache-",
+    # The toolchain archive is identified by toolchain + target set. The
+    # setup-soldr version suffix is only the producer version, and otherwise
+    # leaves one identical ~180 MiB toolchain per action release forever.
+    "solo-toolchain-v3-",
 )
+
+SOLO_TOOLCHAIN_KEY = re.compile(r"^(solo-toolchain-v3-.+)-soldrv[0-9.]+$")
 
 COOK_KEY = re.compile(
     r"^cook-(base|delta)-v2-(.+-f[0-9a-f]+)-l([0-9a-f]+)-soldr([0-9.]+)(?:-s[0-9a-f]+-g[0-9a-f]+)?$"
@@ -476,6 +484,9 @@ def fetch_main_lock_hash(repo: str) -> str:
 
 def strip_shared_key_hash(key: str) -> str:
     """Drop a generation key's trailing `-<hash|run id>` segment."""
+    solo_toolchain = SOLO_TOOLCHAIN_KEY.fullmatch(key)
+    if solo_toolchain:
+        return solo_toolchain.group(1)
     if not key.startswith(GENERATION_KEY_PREFIXES):
         return key
     index = key.rfind("-")
@@ -494,32 +505,44 @@ def cook_lineage_candidates(
 
     The explicit retention policy (soldr#3347):
 
-    * The current generation of a shape is its base(s) and delta(s) under the
-      live main Cargo.lock hash. Every such entry is kept, at every soldr
-      version, so a soldr rollback still finds its archive.
+    * Soldr's workflows explicitly disable the optional cook delta layer, so
+      every `cook-delta-v2-*` entry is dead state and is always retired. The
+      base layer remains the reusable dependency cache. Re-enabling deltas
+      requires changing this policy and its workflow guard together.
+    * The current generation of a shape is its base(s) under the live main
+      Cargo.lock hash. Every such base is kept, at every soldr version, so a
+      soldr rollback still finds its archive.
     * An entry under any other lock hash is retired only when its own
       target/feature shape has a base under the current lock. The soldr
       version is deliberately NOT part of that match: a lockfile bump and a
       soldr bump usually land together, and keying the match on the version
       kept every prior-lock base alive forever (five prior shapes, ~0.8 GiB
       of a 2.33 GiB family on 2026-09-23).
-    * A shape with no current-lock base is unique and active: none of its
-      entries is retired merely because another shape is newer.
-    * Without a known current lock (the main Cargo.lock fetch failed) nothing
-      is retired, and keys this regex does not recognize are never touched.
+    * A base with no current-lock base for its shape is unique and active: it
+      is not retired merely because another shape is newer.
+    * Without a known current lock (the main Cargo.lock fetch failed), no base
+      is retired; keys this regex does not recognize are never touched.
     """
+    # The workflows' explicit `cook-delta: false` contract makes these entries
+    # unrestorable. Retire them even if the live main lock lookup is
+    # unavailable; base lineage pruning below still fails closed without it.
+    retired = [
+        entry
+        for entry in on_main
+        if (match := COOK_KEY.fullmatch(entry.key)) and match.group(1) == "delta"
+    ]
     if not current_main_lock:
-        return []
+        return retired
     current_shapes: set[str] = set()
     for entry in on_main:
         match = COOK_KEY.fullmatch(entry.key)
         if match and match.group(1) == "base" and match.group(3) == current_main_lock:
             current_shapes.add(cook_shape(match))
-    retired: list[CacheEntry] = []
     for entry in on_main:
         match = COOK_KEY.fullmatch(entry.key)
         if (
             match
+            and match.group(1) == "base"
             and match.group(3) != current_main_lock
             and cook_shape(match) in current_shapes
         ):
@@ -622,6 +645,11 @@ def main(argv: list[str] | None = None) -> int:
         help=f"repository to query (default: {DEFAULT_REPO})",
     )
     parser.add_argument(
+        "--require-live",
+        action="store_true",
+        help="fail rather than skip when the live cache listing is unavailable",
+    )
+    parser.add_argument(
         "--prune",
         action="store_true",
         help="report deletion candidates (dry run unless --apply is also given)",
@@ -657,6 +685,9 @@ def main(argv: list[str] | None = None) -> int:
             json.JSONDecodeError,
             ValueError,
         ) as error:
+            if args.require_live:
+                print(f"error: required live cache listing unavailable ({error})")
+                return 1
             print(f"check_cache_budget: skipped ({error})")
             return 0
         entries = normalize_entries(raw_entries)

@@ -104,15 +104,16 @@ jobs:
             .github/scripts/verify_setup_soldr_pin.py
           status=$?
           if [[ $status -ne 0 ]]; then
-            echo "::warning title=setup-soldr pin stale::Pin in .github/workflows/setup-soldr-action.yml does not match @v0 — non-blocking; bump out-of-band."
+            echo "::warning title=setup-soldr pin stale::Pin in .github/workflows/setup-soldr-action.yml does not match v0.9.80 — non-blocking; bump out-of-band."
             exit $status
           fi
 
       - id: setup
-        # This is zackees/setup-soldr@v0 pinned to a full SHA
+        # This is zackees/setup-soldr@v0.9.80 pinned to a full SHA
         # because this repository's ruleset requires SHA-pinned actions.
-        uses: zackees/setup-soldr@d6a0844c40b94f62cf104377b4cc90403c96f6ce
+        uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362
         with:
+          cook-delta: false
           cache: true
           zccache-seed-strict: true
           linker: platform-default
@@ -188,7 +189,7 @@ jobs:
         run: date +%s > "${{ runner.temp }}/dogfood-zccache-restored-at"
 
       - name: Stop setup-soldr builder cache before dogfood build
-        uses: zackees/setup-soldr/cleanup@d6a0844c40b94f62cf104377b4cc90403c96f6ce
+        uses: zackees/setup-soldr/cleanup@4df8db93438594f50505574d9dc8117505d33362
 
       - name: Build through soldr
         shell: pwsh
