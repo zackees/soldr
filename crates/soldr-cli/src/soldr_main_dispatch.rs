@@ -855,6 +855,18 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     // wrapper) — the "cannot resolve the broker daemon route
                     // (os error 2)" pep517-daemon-smoke failure. Register the
                     // daemon image and pass the service name down explicitly.
+                    // The route is registered for *this* image's version, so
+                    // a bare `soldr` wrapper must also resolve to this image
+                    // rather than whichever soldr PATH finds first.
+                    if let (Some(inherited), Ok(exe)) =
+                        (std::env::var_os("RUSTC_WRAPPER"), std::env::current_exe())
+                    {
+                        if let Some(pinned) =
+                            crate::wrapper_identity::pin_bare_soldr_wrapper(&inherited, &exe)
+                        {
+                            command.env("RUSTC_WRAPPER", pinned);
+                        }
+                    }
                     match crate::zccache::register_broker_daemon_service() {
                         Ok((_daemon, service_name)) => {
                             command.env(

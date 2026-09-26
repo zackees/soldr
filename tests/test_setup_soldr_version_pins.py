@@ -123,9 +123,6 @@ def test_the_pin_is_new_enough_for_catalogue_v2() -> None:
 def test_non_action_bootstraps_are_catalogue_v2_capable() -> None:
     root = Path(__file__).resolve().parents[1]
     expected = "0.9.6"
-    assert f'"soldr=={expected}"' in (root / "pyproject.toml").read_text(
-        encoding="utf-8"
-    )
     assert f'SOLDR_VERSION = "{expected}"' in (
         root / "ci/win_wheel_local.py"
     ).read_text(encoding="utf-8")
@@ -140,6 +137,21 @@ def test_non_action_bootstraps_are_catalogue_v2_capable() -> None:
     )
     assert f'default: "{expected}"' in build_all
     assert f"inputs.soldr_version || '{expected}'" in build_all
+
+
+def test_pep517_backend_requirement_is_a_floor_not_a_pin() -> None:
+    # The backend delegates to any strictly newer global soldr, so an exact
+    # pin that lags the global install splits one build across two versions:
+    # the pinned binary becomes the per-crate RUSTC_WRAPPER and the broker
+    # refuses it ("wanted_version is below min_version"). Float to latest.
+    text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+    requires = text.split("[build-system]", 1)[1].split("]", 1)[0]
+    assert '"soldr==' not in requires, "pin the PEP 517 backend with >=, not =="
+    match = re.search(r'"soldr>=(\d+)\.(\d+)\.(\d+)"', requires)
+    assert match, "the PEP 517 backend needs a catalogue-v2-capable soldr floor"
+    assert tuple(int(p) for p in match.groups()) >= (0, 9, 6)
 
 
 def test_the_scan_finds_the_call_sites() -> None:
