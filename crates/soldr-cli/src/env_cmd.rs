@@ -19,7 +19,7 @@
 //! ```
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::target_alias::{resolve_soldr_target, AliasError};
+use crate::target_alias::{resolve_soldr_target, ResolvedTarget, TargetSurface};
 
 /// Run the `env` subcommand. Three output forms:
 ///
@@ -33,7 +33,7 @@ pub async fn run_env_command(
     json: bool,
     plan_only: bool,
 ) -> Result<i32, SoldrError> {
-    let resolved = resolve_soldr_target(target_input).map_err(map_alias_err)?;
+    let resolved = resolve_env_target(target_input)?;
 
     // `--plan-only` (requires --json): resolution/introspection without
     // materializing anything — the alias-parity tests and IDE tooling
@@ -94,8 +94,12 @@ pub async fn run_env_command(
     Ok(0)
 }
 
-fn map_alias_err(err: AliasError) -> SoldrError {
-    SoldrError::Other(err.to_string())
+/// Resolve `soldr env`'s `--target` value, naming the `env` surface
+/// (soldr#3390) if resolution fails — the resolver's bare `Display` carries
+/// no verb, so an unmapped error used to fall back to naming `soldr build`,
+/// a command this caller never ran.
+fn resolve_env_target(input: &str) -> Result<ResolvedTarget, SoldrError> {
+    resolve_soldr_target(input).map_err(|err| err.into_soldr_error(TargetSurface::Env))
 }
 
 /// Quote a value for safe `eval` consumption — wrap in single
@@ -133,5 +137,19 @@ mod tests {
         // Anything with a space or special character gets wrapped.
         assert_eq!(shell_quote("with space"), "'with space'");
         assert_eq!(shell_quote("don't"), "'don'\\''t'");
+    }
+
+    // soldr#3390: `resolve_env_target` used to fall through to `AliasError`'s
+    // unrendered `Display`, which named `soldr build` -- a command `soldr env`
+    // never ran. RED on `main`.
+    #[test]
+    fn an_unknown_target_names_the_env_surface() {
+        let error = resolve_env_target("win-armm").unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.starts_with("soldr env --target `win-armm`"),
+            "{message}"
+        );
+        assert!(!message.contains("soldr build"), "{message}");
     }
 }

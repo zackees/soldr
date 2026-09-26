@@ -304,13 +304,8 @@ fn resolve_target_triples(raw: &[String]) -> Result<Vec<String>, SoldrError> {
     let host = crate::pyo3_detect::host_triple();
     let mut resolved = Vec::with_capacity(raw.len());
     for value in raw {
-        let target = crate::target_alias::resolve_soldr_target(value).map_err(|err| {
-            SoldrError::Other(format!(
-                "lint: --target `{value}`: {}",
-                err.to_string()
-                    .replace("soldr build --target", "soldr lint --target")
-            ))
-        })?;
+        let target = crate::target_alias::resolve_soldr_target(value)
+            .map_err(|err| err.into_soldr_error(crate::target_alias::TargetSurface::Lint))?;
         if target.rust_triple == host {
             continue;
         }
@@ -814,5 +809,21 @@ mod tests {
         let error =
             LintPlan::parse(&strings(&["rust", "--host-only", "--target", "win-x64"])).unwrap_err();
         assert!(error.to_string().contains("cannot be combined"));
+    }
+
+    // soldr#3390: `resolve_target_triples` used to prepend a hand-rolled
+    // `"lint: --target `{value}`: "` prefix on top of the resolver's own
+    // `"soldr build --target ..."`-worded message, doubling the input and
+    // naming the wrong command. RED on `main`.
+    #[test]
+    fn an_unknown_target_names_the_lint_surface_exactly_once() {
+        let error = resolve_target_triples(&strings(&["win-armm"])).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.starts_with("soldr lint --target `win-armm`"),
+            "{message}"
+        );
+        assert_eq!(message.matches("win-armm").count(), 1, "{message}");
+        assert!(!message.contains("soldr build"), "{message}");
     }
 }

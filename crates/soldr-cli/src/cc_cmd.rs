@@ -62,12 +62,8 @@ pub(crate) async fn run(args: CcArgs, language: Language) -> Result<i32, SoldrEr
     }
 
     let target = normalize_driver_target(&args.target);
-    let resolved = crate::target_alias::resolve_soldr_target(&target).map_err(|error| {
-        SoldrError::Other(reword_alias_error(
-            error.to_string(),
-            language.command_name(),
-        ))
-    })?;
+    let resolved = crate::target_alias::resolve_soldr_target(&target)
+        .map_err(|error| error.into_soldr_error(language.target_surface()))?;
     let paths = SoldrPaths::new()?;
     let tools = prepare_native_toolchain(&paths, &resolved.rust_triple).await?;
 
@@ -106,6 +102,16 @@ impl Language {
         match self {
             Self::C => "cc",
             Self::Cxx => "c++",
+        }
+    }
+
+    /// soldr#3390: the [`crate::target_alias::TargetSurface`] this language's
+    /// standalone compiler driver is invoked as, so an `AliasError` renders
+    /// with the verb the user actually typed.
+    fn target_surface(self) -> crate::target_alias::TargetSurface {
+        match self {
+            Self::C => crate::target_alias::TargetSurface::Cc,
+            Self::Cxx => crate::target_alias::TargetSurface::Cxx,
         }
     }
 }
@@ -207,14 +213,6 @@ fn path_with_prepend(dir: &Path) -> Result<std::ffi::OsString, SoldrError> {
         .map_err(|error| SoldrError::Other(format!("soldr C/C++: failed to prepare PATH: {error}")))
 }
 
-fn reword_alias_error(message: String, command_name: &str) -> String {
-    message.replacen(
-        "soldr build --target",
-        &format!("soldr {command_name} --target"),
-        1,
-    )
-}
-
 /// Accept the concise compiler-driver spellings used by GCC/Zig in addition
 /// to Soldr's Rust triples. The target lifecycle remains keyed by canonical
 /// Rust triples after this boundary.
@@ -267,12 +265,22 @@ mod tests {
 
     #[test]
     fn alias_errors_name_the_cc_surface() {
-        let error = crate::target_alias::resolve_soldr_target("not-target")
+        let message = crate::target_alias::resolve_soldr_target("not-target")
             .unwrap_err()
+            .into_soldr_error(Language::C.target_surface())
             .to_string();
-        let message = reword_alias_error(error, "cc");
         assert!(message.starts_with("soldr cc --target"));
-        assert!(!message.starts_with("soldr build --target"));
+        assert!(!message.contains("soldr build"));
+    }
+
+    #[test]
+    fn alias_errors_name_the_cxx_surface() {
+        let message = crate::target_alias::resolve_soldr_target("not-target")
+            .unwrap_err()
+            .into_soldr_error(Language::Cxx.target_surface())
+            .to_string();
+        assert!(message.starts_with("soldr c++ --target"));
+        assert!(!message.contains("soldr build"));
     }
 
     #[test]
@@ -287,10 +295,6 @@ mod tests {
         };
         assert!(requests_print(&args));
         assert!(!args.args.is_empty());
-        assert!(
-            reword_alias_error("soldr build --target: bad target".to_string(), "c++")
-                .starts_with("soldr c++ --target")
-        );
     }
 
     #[test]

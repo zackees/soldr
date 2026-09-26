@@ -188,15 +188,21 @@ pub struct ResolvedTarget {
 }
 
 /// Errors raised when resolution fails.
+///
+/// soldr#3390: `Display` deliberately carries NO command verb. `resolve_soldr_target`
+/// is shared by every `--target`-accepting surface (`build`, `prepare`, `env`,
+/// `cc`/`c++`, `wheel`, `lint`), and a hard-coded `soldr build --target` prefix
+/// baked into the message was wrong for every surface except `build` itself.
+/// Render an `AliasError` for display via [`AliasError::render`] or
+/// [`AliasError::into_soldr_error`], naming the [`TargetSurface`] the caller
+/// actually is. An unrendered `to_string()` is incomplete-but-true rather than
+/// naming a command the user never ran.
 #[derive(Debug, thiserror::Error)]
 pub enum AliasError {
-    #[error(
-        "soldr build --target `{input}`: not a known alias or Rust triple. \
-         Did you mean `{suggestion}`?"
-    )]
+    #[error("`{input}`: not a known alias or Rust triple. Did you mean `{suggestion}`?")]
     Unknown { input: String, suggestion: String },
     #[error(
-        "soldr build --target `{input}`: ambiguous — could mean ARM32 \
+        "`{input}`: ambiguous — could mean ARM32 \
          (not supported) or ARM64. Use `{disambiguated}` explicitly."
     )]
     Ambiguous {
@@ -204,12 +210,12 @@ pub enum AliasError {
         disambiguated: String,
     },
     #[error(
-        "soldr build --target `{input}`: 32-bit targets are not in soldr's \
+        "`{input}`: 32-bit targets are not in soldr's \
          supported set. Did you mean `{suggestion}`?"
     )]
     Thirty2Bit { input: String, suggestion: String },
     #[error(
-        "soldr build --target `{input}`: a glibc floor cannot be honoured for \
+        "`{input}`: a glibc floor cannot be honoured for \
          `{base}`. soldr has no catalogue-backed GNU/Linux sysroot for that \
          target, so accepting the `.{version}` suffix would drop the requested \
          ABI floor. The current catalogue baseline is 2.17 for x86_64-unknown-linux-gnu \
@@ -222,10 +228,67 @@ pub enum AliasError {
         version: String,
     },
     #[error(
-        "soldr build --target `all` is only valid for `soldr prepare --target all`; \
-         expand explicitly for `soldr build`."
+        "`all` is only accepted as the whole value of `soldr prepare --target all`; \
+         name the targets explicitly."
     )]
     AllNotBuildable,
+}
+
+/// The command whose `--target` the user typed.
+///
+/// Every [`AliasError`] is rendered against exactly one of these (soldr#3390)
+/// — there is no default surface, which is what keeps `AliasError`'s bare
+/// `Display` verb-less: a caller that forgets to pick one gets an incomplete
+/// message rather than a wrong command name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetSurface {
+    Build,
+    Prepare,
+    Env,
+    Cc,
+    Cxx,
+    Wheel,
+    Lint,
+}
+
+impl TargetSurface {
+    /// Every surface, for table-driven tests. Order matches the enum.
+    pub const ALL: &'static [TargetSurface] = &[
+        TargetSurface::Build,
+        TargetSurface::Prepare,
+        TargetSurface::Env,
+        TargetSurface::Cc,
+        TargetSurface::Cxx,
+        TargetSurface::Wheel,
+        TargetSurface::Lint,
+    ];
+
+    /// The verb as it appears on the command line, e.g. `soldr {verb} --target`.
+    pub fn verb(self) -> &'static str {
+        match self {
+            TargetSurface::Build => "build",
+            TargetSurface::Prepare => "prepare",
+            TargetSurface::Env => "env",
+            TargetSurface::Cc => "cc",
+            TargetSurface::Cxx => "c++",
+            TargetSurface::Wheel => "wheel",
+            TargetSurface::Lint => "lint",
+        }
+    }
+}
+
+impl AliasError {
+    /// Canonical shape: `soldr <verb> --target <reason>`. No extra prefix —
+    /// `main` already prepends `soldr: ` when it prints the top-level error.
+    pub fn render(&self, surface: TargetSurface) -> String {
+        format!("soldr {} --target {self}", surface.verb())
+    }
+
+    /// [`AliasError::render`], wrapped as the [`crate::core::SoldrError`]
+    /// every call site actually needs to return.
+    pub fn into_soldr_error(self, surface: TargetSurface) -> crate::core::SoldrError {
+        crate::core::SoldrError::Other(self.render(surface))
+    }
 }
 
 /// One-shot resolver — primary entry point. Pass whatever the user
@@ -795,5 +858,76 @@ mod tests {
                 "equals --target form drifted for {alias}"
             );
         }
+    }
+
+    // soldr#3390: every AliasError variant, rendered against every surface.
+    // RED on `main` for `AllNotBuildable` (its body named `soldr build`
+    // unconditionally) and for any call site that kept its own prefix.
+    #[test]
+    fn every_alias_error_renders_cleanly_for_every_surface() {
+        let errors: Vec<(&str, AliasError)> = vec![
+            ("Unknown", resolve_soldr_target("win-armm").unwrap_err()),
+            ("Ambiguous", resolve_soldr_target("mac-arm").unwrap_err()),
+            ("Thirty2Bit", resolve_soldr_target("win-x86").unwrap_err()),
+            (
+                "GlibcVersioned",
+                resolve_soldr_target("i686-unknown-linux-gnu.2.17").unwrap_err(),
+            ),
+            ("AllNotBuildable", resolve_soldr_target("all").unwrap_err()),
+        ];
+
+        for (name, error) in &errors {
+            // The bare, unrendered Display never names the wrong command --
+            // an incomplete message beats a false one.
+            let bare = error.to_string();
+            assert!(
+                !bare.contains("soldr build"),
+                "{name}: bare Display must not name a command: {bare:?}"
+            );
+
+            for &surface in TargetSurface::ALL {
+                let verb = surface.verb();
+                let rendered = error.render(surface);
+                let expected_prefix = format!("soldr {verb} --target");
+                assert!(
+                    rendered.starts_with(&expected_prefix),
+                    "{name}/{verb}: expected prefix {expected_prefix:?}, got {rendered:?}"
+                );
+                // `AllNotBuildable`'s own body legitimately names
+                // `soldr prepare --target all` -- that is the one command
+                // `all` IS valid for, not an accidental doubling -- so
+                // rendering it for the `Prepare` surface is the one case
+                // where the prefix and the body both contain the same
+                // substring. Every other combination must see it exactly
+                // once; a second occurrence anywhere else is exactly the
+                // wheel/lint verb-doubling this test exists to catch.
+                let allowed_occurrences =
+                    if *name == "AllNotBuildable" && surface == TargetSurface::Prepare {
+                        2
+                    } else {
+                        1
+                    };
+                let occurrences = rendered.matches(&expected_prefix).count();
+                assert_eq!(
+                    occurrences, allowed_occurrences,
+                    "{name}/{verb}: expected {allowed_occurrences} occurrence(s) of \
+                     {expected_prefix:?} in {rendered:?}"
+                );
+                if surface != TargetSurface::Build {
+                    assert!(
+                        !rendered.contains("soldr build"),
+                        "{name}/{verb}: a non-build surface must never name build: {rendered:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn target_surface_all_has_seven_distinct_verbs() {
+        assert_eq!(TargetSurface::ALL.len(), 7);
+        let verbs: std::collections::HashSet<&str> =
+            TargetSurface::ALL.iter().map(|s| s.verb()).collect();
+        assert_eq!(verbs.len(), 7, "verbs must be pairwise distinct");
     }
 }
