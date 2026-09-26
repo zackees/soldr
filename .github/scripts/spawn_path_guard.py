@@ -49,10 +49,6 @@ ALLOWLIST: dict[str, tuple[int, str]] = {
         "spawn_traced, enabled + disabled arms): every cargo child in "
         "output_capture / history_and_timeout routes through it",
     ),
-    "crates/soldr-cli/src/cargo_front_door/subcommand_bootstrap.rs": (
-        1,
-        "bootstrap re-exec of the resolved cargo subcommand binary",
-    ),
     "crates/soldr-cli/src/fetch_overlap.rs": (
         1,
         "soldr#1543 dependency prefetch (cargo fetch), sequenced after "
