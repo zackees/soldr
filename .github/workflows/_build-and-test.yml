@@ -670,6 +670,26 @@ jobs:
       # non-zero, read the echoed cook stderr before assuming a workspace
       # problem. The one softness knob is `--require-warm`, left off for the
       # reason given in the paragraph above.
+      #
+      # OWNER REQUEST (cook-timeout inspector): healthy cooks on `main` have
+      # measured 23-37 minutes with zero visibility into where the time
+      # goes. `run_stable_cook.py` now runs a NON-FATAL `cook_inspect.py`
+      # capture (on-CPU/off-CPU perf sampling, per-thread kernel stacks, gdb
+      # backtraces, for the whole cook tree plus the soldr daemon/broker)
+      # every 600s (script default is 0 = off; enabled only for the
+      # zackees/soldr repository, never for forks or reuse) while cook is still
+      # running -- this is expected to fire several times on every normal
+      # run of this step BY DESIGN, until the 23-37 minute shape is
+      # understood; it never kills or fails the step. The pre-existing
+      # `--timeout-secs` hard ceiling (5400s default, unchanged here) still
+      # applies verbatim, with one added final inspector capture
+      # immediately before the SIGQUIT-then-SIGTERM shutdown.
+      - name: Install cook inspector tools (soldr#3043, best-effort)
+        if: runner.os == 'Linux' && github.repository == 'zackees/soldr'
+        continue-on-error: true
+        shell: bash
+        run: python3 .github/scripts/install_cook_inspector_tools.py
+
       - name: Cook stable dependency tree (soldr#3043)
         shell: bash
         run: |
@@ -679,7 +699,18 @@ jobs:
           SOLDR_RUSTC_WRAPPER="$source_soldr" python3 .github/scripts/run_stable_cook.py \
             --soldr "$source_soldr" \
             --target "${{ inputs.target }}" \
-            --cache-dir "$SOLDR_CACHE_DIR"
+            --cache-dir "$SOLDR_CACHE_DIR" \
+            --inspect-every-secs "${{ github.repository == 'zackees/soldr' && '600' || '0' }}" \
+            --inspect-dir "$RUNNER_TEMP/cook-inspect"
+
+      - name: Upload cook inspector captures (soldr#3043, best-effort)
+        if: always() && github.repository == 'zackees/soldr'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cook-inspect-${{ inputs.target }}
+          path: ${{ runner.temp }}/cook-inspect
+          if-no-files-found: ignore
 
       # soldr#2868: one source-owned verb now covers rustfmt, lint-ci, Clippy,
       # all Dylint domains, one Nextest test-profile compilation plus its
