@@ -80,7 +80,7 @@ mod generation_tests {
     fn spawn_fake_daemon(
         dir: &std::path::Path,
         name: &str,
-    ) -> (std::process::Child, std::path::PathBuf) {
+    ) -> (running_process::SpawnedChild, std::path::PathBuf) {
         let source = if crate::platform::host::facts::os()
             == crate::platform::host::facts::HostOs::Windows
         {
@@ -100,13 +100,16 @@ mod generation_tests {
         // Another test thread forking while our copy's write fd was open
         // yields ETXTBSY; that fd closes as soon as the fork execs.
         for _ in 0..50 {
-            match std::process::Command::new(&target)
-                .arg("30")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            {
+            let mut command = std::process::Command::new(&target);
+            command.arg("30");
+            let stdio = running_process::SpawnStdio {
+                stdin: running_process::StdioSource::Null,
+                stdout: running_process::StdioSource::Null,
+                stderr: running_process::StdioSource::Null,
+                drain_timeout: None,
+                show_console: false,
+            };
+            match running_process::spawn(&mut command, stdio) {
                 Ok(child) => return (child, target),
                 Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                     std::thread::sleep(std::time::Duration::from_millis(20));
