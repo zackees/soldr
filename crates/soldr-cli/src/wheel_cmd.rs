@@ -189,16 +189,8 @@ pub fn maturin_build_argv_for_host(
         )));
     }
 
-    let resolved = crate::target_alias::resolve_soldr_target(requested).map_err(|err| {
-        // `AliasError` renders itself for the `soldr build` surface. Re-point
-        // it at the verb the user actually typed rather than telling them to
-        // fix a command they did not run.
-        SoldrError::Other(format!(
-            "soldr wheel: {}",
-            err.to_string()
-                .replace("soldr build --target", "soldr wheel --target")
-        ))
-    })?;
+    let resolved = crate::target_alias::resolve_soldr_target(requested)
+        .map_err(|err| err.into_soldr_error(crate::target_alias::TargetSurface::Wheel))?;
     let triple = resolved.rust_triple;
 
     // `--debug` is maturin's spelling for "not --release". A caller who wrote
@@ -560,6 +552,10 @@ mod tests {
         // AliasError carries a Jaro-Winkler suggestion; it must survive the
         // wrap so the user is not left guessing.
         assert!(message.contains("linux-arm64"), "{message}");
+        // soldr#3390: the old `"soldr wheel: " + reworded-body` shape doubled
+        // the verb (`soldr wheel: soldr wheel --target ...`). Exactly one.
+        assert_eq!(message.matches("soldr wheel").count(), 1, "{message}");
+        assert!(message.contains("soldr wheel --target"), "{message}");
     }
 
     #[test]

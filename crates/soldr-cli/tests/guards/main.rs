@@ -8,6 +8,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod alias_error_surface_guard;
 mod build_session_order_lint;
 mod canonical_targets_parity;
 mod cli_ci_test;

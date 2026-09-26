@@ -106,10 +106,14 @@ pub(crate) async fn prepare_target(
     let glibc_floor = crate::target_alias::split_glibc_floor(target);
     if let Some((base, floor)) = glibc_floor {
         if !crate::target_alias::glibc_floor_is_supported(base, floor) {
+            // soldr#3390: defensive backstop -- no surface reaches this gate
+            // first (build's own `prepare_for_invocation` gate above already
+            // runs the same check), so `TargetSurface::Build` is the only
+            // surface that could possibly still be attached here.
             return Err(SoldrError::Other(
                 crate::target_alias::reject_glibc_versioned(target)
                     .expect_err("unsupported glibc floor must be rejected")
-                    .to_string(),
+                    .render(crate::target_alias::TargetSurface::Build),
             ));
         }
     }
@@ -524,10 +528,11 @@ pub(crate) async fn prepare_for_invocation(
     // untouched -- so a glibc-versioned triple used to walk straight into the
     // sysroot table and emit "no <lib> sysroot recipe for target …" per
     // library before continuing anyway. `soldr prepare` already rejected it,
-    // via the resolver, with an error that names `soldr build`. Reject it on
-    // every prep entry so the blessed surface says the same thing.
+    // via the resolver. Reject it on every prep entry so the blessed surface
+    // says the same thing, named as `build` (soldr#3390): this entry is the
+    // one `soldr build` itself calls.
     crate::target_alias::reject_glibc_versioned(target)
-        .map_err(|error| SoldrError::Other(error.to_string()))?;
+        .map_err(|error| error.into_soldr_error(crate::target_alias::TargetSurface::Build))?;
     match prep_route(target) {
         // Pass the target through unsplit: `prepare_target` owns the floor.
         PrepRoute::Lifecycle => prepare_target(paths, target, feature_args).await,
@@ -674,7 +679,9 @@ pub(crate) fn resolve_prepare_targets(
             .map(|input| {
                 crate::target_alias::resolve_soldr_target(&input)
                     .map(|resolved| resolved.rust_triple)
-                    .map_err(|error| SoldrError::Other(error.to_string()))
+                    .map_err(|error| {
+                        error.into_soldr_error(crate::target_alias::TargetSurface::Prepare)
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?,
     };

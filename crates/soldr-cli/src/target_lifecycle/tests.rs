@@ -605,3 +605,24 @@ fn cargo_feature_flags_extracts_only_feature_selection() {
         Vec::<String>::new()
     );
 }
+
+// soldr#3390: `resolve_prepare_targets` used to fall through to
+// `AliasError`'s unrendered `Display`, which named `soldr build` -- a command
+// `soldr prepare` never ran. RED on `main`.
+#[test]
+fn resolve_prepare_targets_names_the_prepare_surface() {
+    let error = resolve_prepare_targets("win-x86", false).unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.starts_with("soldr prepare --target `win-x86`"),
+        "{message}"
+    );
+}
+
+#[test]
+fn resolve_prepare_targets_all_error_does_not_name_build() {
+    // `all` is only accepted as the whole value; mixing it into a
+    // comma-separated list must reject without ever saying `soldr build`.
+    let error = resolve_prepare_targets("linux-x64,all", false).unwrap_err();
+    assert!(!error.to_string().contains("soldr build"), "{error}");
+}
