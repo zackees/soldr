@@ -10,6 +10,8 @@ mod nextest_resident_lease;
 mod parse;
 pub(crate) mod plan;
 mod policy_prefetch;
+mod test_admission;
+mod test_pressure;
 mod test_targets;
 
 use crate::core::SoldrError;
@@ -58,6 +60,10 @@ fn render(plan: &model::CiTestPlan, format: OutputFormat) -> Result<(), SoldrErr
                 "  integration-test link targets: {} (warn above {})",
                 plan.test_target_count, plan.test_target_warn_threshold
             );
+            println!("  nextest admission: {}", plan.test_admission.summary());
+            if let Some(warning) = &plan.test_admission.warning {
+                println!("  nextest admission warning: {warning}");
+            }
             println!("  domains:");
             for domain in &plan.domains {
                 println!(

@@ -283,9 +283,15 @@ fn run_parallel_nextest_and_dylint(
     let lease_controller = nextest_resident_lease::DaemonResidentLeaseController {
         permits: nextest_resident_lease::NEXTEST_RESIDENT_LEASE_PERMITS,
     };
-    nextest_resident_lease::run_nextest_execution(&lease_controller, &nextest.name, || {
-        supervise_parallel_stage_and_dylint(factory, nextest, dylint, &PlanDylintVerifier(plan))
-    })
+    // soldr#2885: watch memory for exactly the life of Nextest execution; the
+    // wrapper around each Unix test obeys the pause flag this maintains.
+    let pressure = factory.nextest_admission.start()?;
+    let result =
+        nextest_resident_lease::run_nextest_execution(&lease_controller, &nextest.name, || {
+            supervise_parallel_stage_and_dylint(factory, nextest, dylint, &PlanDylintVerifier(plan))
+        });
+    pressure.finish();
+    result
 }
 
 fn run_parallel_nextest_compile_and_dylint_compile(
@@ -684,6 +690,7 @@ struct StageCommandFactory {
     dylint_bin_dirs: Vec<PathBuf>,
     dylint_env: Vec<(String, String)>,
     ci_test_report_path: PathBuf,
+    nextest_admission: super::test_pressure::NextestAdmission,
 }
 
 impl StageCommandFactory {
@@ -742,6 +749,10 @@ impl StageCommandFactory {
             dylint_bin_dirs: Vec::new(),
             dylint_env: Vec::new(),
             ci_test_report_path,
+            nextest_admission: super::test_pressure::NextestAdmission::new(
+                &report_dir,
+                plan.test_admission.clone(),
+            ),
         })
     }
 
@@ -789,6 +800,7 @@ impl StageCommandFactory {
             &self.host_triple,
             self.nextest_test_cargo_runner.as_deref(),
         )?;
+        configure_nextest_admission(&mut command, stage, &self.nextest_admission);
         if stage.domain.starts_with("dylint-") {
             for (key, value) in &self.dylint_env {
                 command.env(key, value);
@@ -859,6 +871,21 @@ fn configure_nextest_test_cargo_runner(
     let target = host_triple.to_ascii_uppercase().replace('-', "_");
     command.env(format!("CARGO_TARGET_{target}_RUNNER"), runner);
     Ok(())
+}
+
+/// soldr#2885: only Nextest *execution* runs tests, so only it receives the
+/// admission directory, the per-test ceiling, and the admission summary.
+fn configure_nextest_admission(
+    command: &mut Command,
+    stage: &Stage,
+    admission: &super::test_pressure::NextestAdmission,
+) {
+    if stage.name != "nextest" {
+        return;
+    }
+    for (key, value) in admission.stage_env() {
+        command.env(key, value);
+    }
 }
 
 fn apply_stage_resource_limits(

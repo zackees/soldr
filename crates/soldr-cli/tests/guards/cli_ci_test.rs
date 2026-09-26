@@ -47,6 +47,11 @@ fn explain_plan_with_limits(
         .args(["ci-test", "--explain-plan", "--format", "json"])
         .args(extra)
         .env_remove("NEXTEST_TEST_THREADS");
+    // soldr#2885: an unset NEXTEST_TEST_THREADS is now measured from the
+    // host's CPUs and memory. Pin a one-CPU, 16 GiB envelope so the frozen
+    // argv below stays byte-for-byte deterministic on every machine; the
+    // measured and explicit paths have their own tests further down.
+    pin_admission_envelope(&mut command, Some("1"), Some("16384"));
     match cargo_build_jobs {
         Some(value) => command.env("CARGO_BUILD_JOBS", value),
         None => command.env_remove("CARGO_BUILD_JOBS"),
@@ -57,6 +62,26 @@ fn explain_plan_with_limits(
     };
     configure_dylint_identity(&mut command);
     command.output().expect("run soldr ci-test --explain-plan")
+}
+
+const ADMISSION_KNOBS: &[&str] = &[
+    "SOLDR_CI_TEST_LOGICAL_CPUS",
+    "SOLDR_CI_TEST_MEMORY_AVAILABLE_MIB",
+    "SOLDR_CI_TEST_PER_TEST_MEMORY_MIB",
+    "SOLDR_CI_TEST_MEMORY_RESERVE_MIB",
+    "SOLDR_CI_TEST_TEST_MEMORY_CEILING_MIB",
+];
+
+fn pin_admission_envelope(command: &mut Command, cpus: Option<&str>, available_mib: Option<&str>) {
+    for knob in ADMISSION_KNOBS {
+        command.env_remove(knob);
+    }
+    if let Some(cpus) = cpus {
+        command.env("SOLDR_CI_TEST_LOGICAL_CPUS", cpus);
+    }
+    if let Some(available_mib) = available_mib {
+        command.env("SOLDR_CI_TEST_MEMORY_AVAILABLE_MIB", available_mib);
+    }
 }
 
 fn explain_plan(extra: &[&str]) -> Output {
@@ -118,7 +143,7 @@ fn ci_test_is_a_native_builtin_with_a_versioned_complete_plan_schema() {
     let plan = plan_json(&[]);
 
     assert_eq!(
-        plan["schema_version"], 4,
+        plan["schema_version"], 5,
         "the explain-plan schema is a public contract"
     );
     assert_eq!(plan["command"], "ci-test");
@@ -621,7 +646,8 @@ fn ci_test_human_explain_plan_renders_the_same_named_domains_and_stages() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     for required in [
-        "soldr ci-test plan v4",
+        "soldr ci-test plan v5",
+        "nextest admission: requested NEXTEST_TEST_THREADS=",
         "stable",
         "dylint-libraries",
         "dylint-analysis",
@@ -680,4 +706,148 @@ fn typo_of_cargo_test_suggests_test_not_the_new_ci_test_verb() {
         !stderr.contains("ci-test"),
         "adding ci-test must not steal fuzzy suggestions for cargo test: {stderr}"
     );
+}
+
+// soldr#2885: memory-aware Nextest admission. `--explain-plan` must show both
+// the value Nextest will run with and the measurements it was derived from.
+
+const MIB: u64 = 1024 * 1024;
+
+fn admission_plan(
+    cpus: &str,
+    available_mib: &str,
+    explicit_threads: Option<&str>,
+    extra_env: &[(&str, &str)],
+) -> (Value, String) {
+    let mut command = isolated_soldr_command();
+    command
+        .current_dir(workspace_root())
+        .args(["ci-test", "--explain-plan", "--format", "json"])
+        .env_remove("CARGO_BUILD_JOBS")
+        .env_remove("SOLDR_JOBS");
+    pin_admission_envelope(&mut command, Some(cpus), Some(available_mib));
+    match explicit_threads {
+        Some(value) => command.env("NEXTEST_TEST_THREADS", value),
+        None => command.env_remove("NEXTEST_TEST_THREADS"),
+    };
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    configure_dylint_identity(&mut command);
+    let output = command.output().expect("run soldr ci-test --explain-plan");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "ci-test explain-plan failed\nstdout:\n{}\nstderr:\n{stderr}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    let plan = serde_json::from_slice(&output.stdout).expect("JSON plan");
+    (plan, stderr)
+}
+
+fn nextest_test_threads_argument(plan: &Value) -> String {
+    let argv = find_stage(plan, "nextest")["command"]
+        .as_array()
+        .expect("Nextest argv")
+        .clone();
+    let position = argv
+        .iter()
+        .position(|arg| arg.as_str() == Some("--test-threads"))
+        .expect("the Nextest stage always names its test concurrency");
+    argv[position + 1]
+        .as_str()
+        .expect("string argument")
+        .to_owned()
+}
+
+#[test]
+fn unset_test_threads_are_measured_from_cpus_and_available_memory() {
+    // The idle Docker Desktop envelope from the soldr#2885 report: 4 CPUs and
+    // 7.756 GiB visible. The old fixed floor ran one test at a time here.
+    let (plan, _) = admission_plan("4", "7942", None, &[]);
+    assert_eq!(nextest_test_threads_argument(&plan), "4");
+    assert_eq!(
+        object(&plan, "resource_limits")["nextest_test_threads"],
+        "4"
+    );
+    let admission = object(&plan, "test_admission");
+    assert_eq!(admission["source"], "measured");
+    assert_eq!(admission["requested_test_threads"], Value::Null);
+    assert_eq!(admission["effective_test_threads"], "4");
+    assert_eq!(admission["logical_cpus"], 4);
+    assert_eq!(
+        admission["memory_source"],
+        "SOLDR_CI_TEST_MEMORY_AVAILABLE_MIB"
+    );
+    assert_eq!(admission["memory_available_bytes"], 7942 * MIB);
+    assert_eq!(admission["per_test_budget_bytes"], 1024 * MIB);
+    assert_eq!(admission["reserve_bytes"], 2048 * MIB);
+    assert_eq!(admission["memory_capacity_tests"], 5);
+    assert_eq!(admission["warning"], Value::Null);
+}
+
+#[test]
+fn constrained_memory_lowers_the_measured_admission_below_the_cpu_count() {
+    for (available_mib, expected) in [("6200", "4"), ("3500", "1"), ("1000", "1")] {
+        let (plan, _) = admission_plan("8", available_mib, None, &[]);
+        assert_eq!(
+            nextest_test_threads_argument(&plan),
+            expected,
+            "{available_mib} MiB available on 8 CPUs"
+        );
+        assert_eq!(object(&plan, "test_admission")["source"], "measured");
+    }
+}
+
+#[test]
+fn explicit_test_threads_stay_authoritative_and_warn_when_memory_cannot_hold_them() {
+    let (plan, stderr) = admission_plan("8", "4096", Some("8"), &[]);
+    assert_eq!(
+        nextest_test_threads_argument(&plan),
+        "8",
+        "an explicit NEXTEST_TEST_THREADS is never silently rewritten"
+    );
+    let admission = object(&plan, "test_admission");
+    assert_eq!(admission["source"], "explicit");
+    assert_eq!(admission["requested_test_threads"], "8");
+    assert_eq!(admission["effective_test_threads"], "8");
+    assert_eq!(admission["memory_capacity_tests"], 2);
+    let warning = admission["warning"]
+        .as_str()
+        .expect("an unsafe explicit value carries an actionable warning");
+    assert!(warning.contains("NEXTEST_TEST_THREADS=8"), "{warning}");
+    assert!(warning.contains("at most 2"), "{warning}");
+    assert!(
+        stderr.contains(warning),
+        "the warning must also reach the operator on stderr:\n{stderr}"
+    );
+
+    let (plan, stderr) = admission_plan("8", "4096", Some("2"), &[]);
+    assert_eq!(nextest_test_threads_argument(&plan), "2");
+    assert_eq!(object(&plan, "test_admission")["warning"], Value::Null);
+    assert!(!stderr.contains("NEXTEST_TEST_THREADS="), "{stderr}");
+}
+
+#[test]
+fn runtime_pressure_marks_and_the_per_test_ceiling_are_frozen_into_the_plan() {
+    let (plan, _) = admission_plan("4", "7942", None, &[]);
+    let admission = object(&plan, "test_admission");
+    assert_eq!(admission["pause_below_available_bytes"], 1024 * MIB);
+    assert_eq!(admission["resume_at_available_bytes"], 2048 * MIB);
+    assert_eq!(admission["per_test_ceiling_bytes"], 4096 * MIB);
+
+    let (plan, _) = admission_plan(
+        "4",
+        "7942",
+        None,
+        &[
+            ("SOLDR_CI_TEST_TEST_MEMORY_CEILING_MIB", "0"),
+            ("SOLDR_CI_TEST_PER_TEST_MEMORY_MIB", "512"),
+        ],
+    );
+    let admission = object(&plan, "test_admission");
+    assert_eq!(admission["per_test_ceiling_bytes"], Value::Null);
+    assert_eq!(admission["per_test_budget_bytes"], 512 * MIB);
+    assert_eq!(admission["pause_below_available_bytes"], 512 * MIB);
+    assert_eq!(admission["resume_at_available_bytes"], 1024 * MIB);
 }

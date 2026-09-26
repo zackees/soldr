@@ -10,8 +10,14 @@ use std::path::Path;
 /// process, so `cgroup_current_bytes` cannot answer "how much does *this*
 /// daemon actually hold". `None` on a platform/host combination that cannot
 /// answer (process gone, unreadable procfs, `ps`/API call failed).
+///
+/// `available_physical_memory_bytes()` is the OS-API counterpart of
+/// `/proc/meminfo`'s `MemAvailable` on hosts that have no procfs: Windows
+/// `ullAvailPhys`, macOS `vm_stat` reclaimable pages, and `None` on Linux,
+/// whose answer is [`HostResourceSnapshot::system_available_bytes`].
 pub use crate::platform_imp::host::resources::{
-    cgroup_v2_dir, commit_charge_mb, physical_cores, process_rss_bytes, process_table,
+    available_physical_memory_bytes, cgroup_v2_dir, commit_charge_mb, physical_cores,
+    process_rss_bytes, process_table,
 };
 
 const PROC_MEMINFO: &str = "/proc/meminfo";

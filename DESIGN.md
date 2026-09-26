@@ -43,8 +43,11 @@ execution then overlaps the serial Dylint libraries -> workspace analysis ->
 UI-test branch; doctests are the explicit join and dependency policy follows
 them. Unset `CARGO_BUILD_JOBS` and `SOLDR_JOBS` remain unset so Cargo and the
 canonical Soldr compiler admission gate retain their normal parallelism.
-Explicit values are preserved byte-for-byte. Only `NEXTEST_TEST_THREADS`
-defaults to one test process. Nextest compilation completes before the fork,
+Explicit values are preserved byte-for-byte. Only `NEXTEST_TEST_THREADS` is
+chosen by ci-test when unset: the smaller of the CPU count and the per-test
+memory budgets that fit in measured available memory (soldr#2885), with a
+run-time pressure gate and per-test memory ceiling around each test.
+Nextest compilation completes before the fork,
 but individual tests intentionally launch nested Cargo/compiler fixtures.
 Those compiles and Dylint share the daemon's canonical shared/exclusive
 admission; their dynamic child-jobserver count is not converted into a global

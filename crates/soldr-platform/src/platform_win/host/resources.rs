@@ -145,6 +145,20 @@ pub fn commit_charge_mb() -> Option<(u64, u64)> {
     Some((used, limit))
 }
 
+/// Available physical memory in bytes (`ullAvailPhys` from
+/// `GlobalMemoryStatusEx`) -- Windows' counterpart of Linux's `MemAvailable`
+/// (soldr#2885). `None` if the call failed.
+pub fn available_physical_memory_bytes() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    // SAFETY: `status` is a correctly-sized, dwLength-initialized MEMORYSTATUSEX
+    // that the API fills in-place; no handles or allocations are involved.
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+    (ok != 0).then_some(status.ullAvailPhys)
+}
+
 /// Resident set size for `pid`, in bytes (`WorkingSetSize` from
 /// `K32GetProcessMemoryInfo` — the kernel32-linked variant, so this needs
 /// no separate `psapi.lib` import).
@@ -186,4 +200,15 @@ pub fn process_rss_bytes(pid: u32) -> Option<u64> {
         return None;
     }
     Some(counters.WorkingSetSize as u64)
+}
+
+#[cfg(test)]
+mod available_memory_tests {
+    #[test]
+    fn available_physical_memory_is_nonzero_and_below_the_commit_limit() {
+        let available = super::available_physical_memory_bytes().expect("GlobalMemoryStatusEx");
+        assert!(available > 0);
+        let (_, limit_mb) = super::commit_charge_mb().expect("commit charge");
+        assert!(available / (1024 * 1024) <= limit_mb);
+    }
 }
