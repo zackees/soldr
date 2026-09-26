@@ -175,7 +175,12 @@ fn collect_dwarf_sections(
     Ok(sections)
 }
 
-fn dump_section(objcopy: &Path, input: &Path, section: &str, output: &Path) -> Result<(), SoldrError> {
+fn dump_section(
+    objcopy: &Path,
+    input: &Path,
+    section: &str,
+    output: &Path,
+) -> Result<(), SoldrError> {
     let spec = format!("__DWARF,{section}={}", output.display());
     let mut command = Command::new(objcopy);
     command.args(["--dump-section", &spec]).arg(input);
@@ -206,9 +211,15 @@ mod tests {
             .to_string();
         assert!(err.contains("no supported DWARF sections"), "{err}");
         for section in DWARF_SECTIONS {
-            assert!(err.contains(&format!("{section}: ")), "{section} missing: {err}");
+            assert!(
+                err.contains(&format!("{section}: ")),
+                "{section} missing: {err}"
+            );
         }
-        assert!(err.matches("MARKER_OBJCOPY_3384").count() >= DWARF_SECTIONS.len(), "{err}");
+        assert!(
+            err.matches("MARKER_OBJCOPY_3384").count() >= DWARF_SECTIONS.len(),
+            "{err}"
+        );
     }
 
     #[test]

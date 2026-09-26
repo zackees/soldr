@@ -19,8 +19,8 @@
 //! Route new small-tool call sites through this module rather than
 //! hand-rolling forwarding or logging beside them.
 
-use super::{command_output_with_timeout, command_output_with_timeout_duration, SoldrError};
 use super::SoldrPaths;
+use super::{command_output_with_timeout, command_output_with_timeout_duration, SoldrError};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

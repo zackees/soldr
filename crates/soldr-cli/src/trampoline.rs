@@ -792,8 +792,12 @@ pub(crate) fn rustc_identity_with_sinks(
 ) -> Result<String, SoldrError> {
     let mut command = std::process::Command::new(rustc);
     command.arg("-vV");
-    let output =
-        crate::core::tool_output::run_small_tool_with_sinks(&mut command, "rustc -vV", None, sinks)?;
+    let output = crate::core::tool_output::run_small_tool_with_sinks(
+        &mut command,
+        "rustc -vV",
+        None,
+        sinks,
+    )?;
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 

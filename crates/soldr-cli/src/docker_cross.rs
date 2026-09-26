@@ -233,6 +233,12 @@ async fn pypi_has_version(pkg: &str, version: &str) -> bool {
 
 /// Probe `docker version`. Returns an actionable error (item C2) when Docker is
 /// absent or the engine is not running, replacing the late `os error 193`.
+// reason: `docker version` is an availability probe; any failure maps to the
+// actionable `docker_missing_message` (soldr#3389 excluded probes).
+#[cfg_attr(
+    dylint_lib = "ban_swallowed_child_stdio",
+    allow(ban_swallowed_child_stdio)
+)]
 async fn ensure_docker_available() -> Result<(), SoldrError> {
     let probe = tokio::process::Command::new("docker")
         .arg("version")

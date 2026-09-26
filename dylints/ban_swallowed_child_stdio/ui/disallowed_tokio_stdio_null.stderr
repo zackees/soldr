@@ -1,0 +1,10 @@
+error: `Command::stderr(Stdio::null())` swallows the child's stderr; capture it and forward + log it through `soldr_core::core::tool_output`, or add `#[cfg_attr(dylint_lib = "ban_swallowed_child_stdio", allow(ban_swallowed_child_stdio))]` with a `// reason:` comment
+  --> $DIR/disallowed_tokio_stdio_null.rs:15:5
+   |
+LL |     command.stderr(std::process::Stdio::null());
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(ban_swallowed_child_stdio)]` on by default
+
+error: aborting due to 1 previous error
+

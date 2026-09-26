@@ -18,13 +18,13 @@ use crate::cache_lib::cook_archive::{
     verify_sha256,
 };
 use crate::core::git::{branch_lineage, origin_url};
+use crate::core::tool_output;
 use crate::core::{
     read_rust_toolchain_manifest, CookConfig, SoldrConfig, SoldrPaths, TargetTriple,
 };
 use crate::daemon::client::{self, CookLookupOutcome};
-use std::path::{Path, PathBuf};
-use crate::core::tool_output;
 use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// Env var that overrides both file-level settings. `0`/`false`/`no`/
@@ -587,7 +587,8 @@ mod tests {
     #[test]
     fn hydrate_rustc_version_failure_warns_with_stderr() {
         let temp = TempDir::new().unwrap();
-        let rustc = tool_output::write_fake_tool(temp.path(), "rustc", "", "MARKER_HYDRATE_3381", 1);
+        let rustc =
+            tool_output::write_fake_tool(temp.path(), "rustc", "", "MARKER_HYDRATE_3381", 1);
         let log = temp.path().join("small-tools.jsonl");
         let mut warn = Vec::new();
         let version = rustc_version_for_hydrate_with(&rustc, &mut warn, Some(log.clone()));
@@ -603,8 +604,13 @@ mod tests {
     #[test]
     fn hydrate_rustc_version_success_forwards_and_logs_stderr() {
         let temp = TempDir::new().unwrap();
-        let rustc =
-            tool_output::write_fake_tool(temp.path(), "rustc", "rustc 9.9.9", "MARKER_HYDRATE_OK", 0);
+        let rustc = tool_output::write_fake_tool(
+            temp.path(),
+            "rustc",
+            "rustc 9.9.9",
+            "MARKER_HYDRATE_OK",
+            0,
+        );
         let log = temp.path().join("small-tools.jsonl");
         let mut warn = Vec::new();
         let version = rustc_version_for_hydrate_with(&rustc, &mut warn, Some(log.clone()));

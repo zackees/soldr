@@ -463,6 +463,12 @@ fn ensure_dsymutil_on_path(prep: &mut BlessedPrep) -> Result<(), SoldrError> {
         command.args(["--toolchain", channel]);
     }
     crate::core::apply_implicit_toolchain_homes(&mut command, None);
+    // reason: only stdout is discarded; rustup reports progress and every error on
+    // stderr, which stays attached to the terminal, and the exit status is checked.
+    #[cfg_attr(
+        dylint_lib = "ban_swallowed_child_stdio",
+        allow(ban_swallowed_child_stdio)
+    )]
     command.stdout(Stdio::null());
     let status = command.status().map_err(|error| {
         SoldrError::Other(format!(

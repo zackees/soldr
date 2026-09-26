@@ -159,3 +159,29 @@ cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo
 [task.cook-watchdog-test]
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --lib cook_watchdog"
+
+# soldr#3389: small-tool stderr fixes (#3381-#3386) — unit tests for the shared
+# helper and every Rust call site, plus the ci-test plan guard.
+[task.small-tool-stderr]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-core --lib tool_output && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --lib -- hydrate_rustc_version rustc_identity_ all_section_dumps_failing dylint_link_validation_tests:: && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test guards -E 'test(/^cli_ci_test::/)'"
+
+[task.small-tool-stderr-lint]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo fmt --all -- --check && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo clippy -p soldr-core -p soldr-cli --all-targets -- -D warnings"
+
+# soldr#3387: the new Dylint's UI fixtures (RED -> GREEN evidence), run the
+# prescribed way: `soldr ci-test` provisions Dylint's tools and driver itself.
+[task.small-tool-stderr-dylint-ui]
+stack = "cook"
+cmd = "cd /repo/dylints/ban_swallowed_child_stdio && CARGO_TARGET_DIR=/target/dylint-ui /opt/soldr-bootstrap/bin/soldr cargo test"
+
+# soldr#3387: run the new Dylint over the whole workspace (must be clean).
+[task.small-tool-stderr-dylint-workspace]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target/dylint-ws /opt/soldr-bootstrap/bin/soldr cargo dylint --path dylints/ban_swallowed_child_stdio -- --workspace --all-targets"
+
+# soldr#3389: the soldr-cli call-site tests alone (used for RED runs).
+[task.small-tool-stderr-cli]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --lib -- hydrate_rustc_version rustc_identity_ all_section_dumps_failing dylint_link_validation_tests::"

@@ -373,9 +373,14 @@ fn self_heal_updates_only_drifted_mtime_size_not_hashes() {
     );
 }
 
-fn probe_rustc_identity(stdout: &str, stderr: &str, code: i32) -> (Result<String, SoldrError>, String, String) {
+fn probe_rustc_identity(
+    stdout: &str,
+    stderr: &str,
+    code: i32,
+) -> (Result<String, SoldrError>, String, String) {
     let temp = tempfile::tempdir().unwrap();
-    let rustc = crate::core::tool_output::write_fake_tool(temp.path(), "rustc", stdout, stderr, code);
+    let rustc =
+        crate::core::tool_output::write_fake_tool(temp.path(), "rustc", stdout, stderr, code);
     let log = temp.path().join("small-tools.jsonl");
     let mut forwarded = Vec::new();
     let result = rustc_identity_with_sinks(

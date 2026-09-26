@@ -24,7 +24,7 @@ pub(super) use super::executor_contract::{require_dependencies, validate_tail_de
 /// compiler admission) begin. Fresh execution then overlaps only Dylint UI
 /// tests. Individual tests may launch nested compiler fixtures; those and
 /// Dylint still share the daemon's canonical admission gate.
-/// Dylint manifests remain sequential because all six intentionally share one
+/// Dylint manifests remain sequential because all seven intentionally share one
 /// target tree per domain. After both branches join, doctests and the three
 /// non-compiling policy consumers run together from that completed join.
 ///
@@ -663,7 +663,7 @@ fn verify_dylint_test_targets(plan: &CiTestPlan) -> Result<(), SoldrError> {
                 String::new()
             };
             return Err(SoldrError::Other(format!(
-                "soldr ci-test: Dylint UI tests created compiler artifacts in {}; all six tests must share {}. Found:{listing}{more}",
+                "soldr ci-test: Dylint UI tests created compiler artifacts in {}; all seven tests must share {}. Found:{listing}{more}",
                 local_target.display(),
                 shared.display()
             )));

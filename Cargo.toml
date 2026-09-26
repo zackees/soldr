@@ -443,6 +443,9 @@ codegen-units = 1
 
 [workspace.lints.rust]
 unused_mut = "deny"
+# `#[cfg_attr(dylint_lib = "...", allow(...))]` is how a site opts out of a
+# repo Dylint (soldr#3387); declare the cfg so rustc does not warn on it.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(dylint_lib, values(any()))'] }
 
 # Enforce the "no new bincode" rule from CLAUDE.md's
 # "Serialization (issues #580 / #603)" section. The actual disallowed-methods

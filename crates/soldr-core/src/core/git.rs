@@ -213,6 +213,13 @@ fn normalize_via_url(input: &str) -> Option<String> {
 /// True when `Cargo.lock` exists at the workspace root and is tracked
 /// by git. Returns `false` when there is no `.git/`, no
 /// `Cargo.lock`, or `git ls-files --error-unmatch` exits non-zero.
+// reason: exit status is the whole answer; `--error-unmatch` prints
+// "did not match" on stderr for every untracked lockfile, which is the
+// expected `false` case, not a diagnostic (soldr#3389 excluded).
+#[cfg_attr(
+    dylint_lib = "ban_swallowed_child_stdio",
+    allow(ban_swallowed_child_stdio)
+)]
 pub fn cargo_lock_is_tracked(workspace_root: &Path) -> bool {
     let lockfile = workspace_root.join("Cargo.lock");
     if !lockfile.is_file() {
@@ -237,6 +244,12 @@ pub fn cargo_lock_is_tracked(workspace_root: &Path) -> bool {
 /// tracked files as un-ignorable — so the combination
 /// `tracked + ignored` is impossible by definition). Returns `false`
 /// when git is unavailable or there is no `.git/`.
+// reason: `check-ignore -q` communicates only through its exit status;
+// a missing git degrades to `false` by design (soldr#3389 excluded).
+#[cfg_attr(
+    dylint_lib = "ban_swallowed_child_stdio",
+    allow(ban_swallowed_child_stdio)
+)]
 pub fn cargo_lock_is_gitignored(workspace_root: &Path) -> bool {
     if find_git_worktree_root(workspace_root).is_none() {
         return false;

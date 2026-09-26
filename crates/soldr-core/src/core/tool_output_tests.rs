@@ -71,7 +71,10 @@ fn success_forwards_stderr_and_logs_both_streams() {
     .expect("exit 0 succeeds");
     assert!(String::from_utf8_lossy(&output.stdout).contains("OUT_OK"));
     let forwarded = String::from_utf8(forwarded).unwrap();
-    assert!(forwarded.contains("faketool: MARKER_OK_3389"), "{forwarded}");
+    assert!(
+        forwarded.contains("faketool: MARKER_OK_3389"),
+        "{forwarded}"
+    );
     let records = read_records(&log);
     assert_eq!(records[0]["exit_code"], 0);
     assert!(records[0]["stdout"].as_str().unwrap().contains("OUT_OK"));
@@ -79,10 +82,7 @@ fn success_forwards_stderr_and_logs_both_streams() {
         .as_str()
         .unwrap()
         .contains("MARKER_OK_3389"));
-    assert!(records[0]["argv"][0]
-        .as_str()
-        .unwrap()
-        .contains("faketool"));
+    assert!(records[0]["argv"][0].as_str().unwrap().contains("faketool"));
     assert!(records[0]["duration_ms"].is_u64());
 }
 

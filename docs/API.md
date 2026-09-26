@@ -699,7 +699,7 @@ binary bypasses this name-based diagnostic; this guard is not an OS sandbox.
 
 All six repository Dylints are retained. They intentionally use their exact
 pinned nightly rather than the stable project toolchain. The command reads all
-six lint manifests, requires their pins to agree, and rejects an environment
+seven lint manifests, requires their pins to agree, and rejects an environment
 override that selects another nightly. Before entering the Dylint domain it
 self-provisions the catalogue-pinned `cargo-dylint`, `dylint-link`, and matching
 prebuilt driver, so a caller does not need to install Dylint tooling separately.

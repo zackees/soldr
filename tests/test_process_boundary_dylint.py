@@ -33,6 +33,7 @@ def test_required_ci_runs_root_dylint_policy() -> None:
         "ban_raw_ipc_transport",
         "ban_platform_cfg_outside_boundary",
         "ban_raw_env_flag",
+        "ban_swallowed_child_stdio",
     ):
         assert f'"{name}"' in plan
 
