@@ -389,7 +389,10 @@ impl ProcessTree {
     /// Rebuild the tree from a direct child enumeration of the root's
     /// descendants (the Linux feed, see [`NestedCargoGuard::walks_tree`]).
     /// Compiler subtrees are not descended into: a compiler's children are
-    /// linkers, and only an exotic proc macro would launch Cargo there.
+    /// linkers, and only an exotic proc macro would launch Cargo there. Soldr
+    /// subtrees are not either: [`Self::assess`] stops at a Soldr boundary,
+    /// and that Soldr's own front door guards what is below it — which keeps
+    /// the walk small under suites that spawn many nested Soldr commands.
     fn walk(
         &mut self,
         children_of: &dyn Fn(u32) -> Option<Vec<u32>>,
@@ -398,11 +401,11 @@ impl ProcessTree {
         let mut current: HashMap<u32, u32> = HashMap::new();
         let mut stack = vec![self.root_pid];
         while let Some(pid) = stack.pop() {
-            let is_compiler = self
+            let opaque = self
                 .nodes
                 .get(&pid)
-                .is_some_and(|node| matches!(node.role, Role::Compiler { .. }));
-            if is_compiler {
+                .is_some_and(|node| matches!(node.role, Role::Compiler { .. } | Role::Soldr));
+            if opaque {
                 continue;
             }
             for child in children_of(pid).unwrap_or_default() {

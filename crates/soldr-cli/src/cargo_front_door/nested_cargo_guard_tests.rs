@@ -423,11 +423,12 @@ fn the_permit_records_the_hazard_without_tripping() {
 }
 
 #[test]
-fn the_child_walk_tracks_starts_exits_and_skips_compiler_subtrees() {
+fn the_child_walk_tracks_starts_exits_and_skips_compiler_and_soldr_subtrees() {
     let children = std::cell::RefCell::new(HashMap::<u32, Vec<u32>>::from([
-        (ROOT, vec![200, 210]),
+        (ROOT, vec![200, 210, 220]),
         (200, vec![300]),
         (210, vec![999]),
+        (220, vec![998]),
     ]));
     let argvs: HashMap<u32, Vec<String>> = HashMap::from([
         (200, vec![build_script()]),
@@ -439,6 +440,8 @@ fn the_child_walk_tracks_starts_exits_and_skips_compiler_subtrees() {
                 .to_vec(),
         ),
         (999, vec!["cc".to_string()]),
+        (220, vec!["/ci/bin/soldr".to_string(), "cargo".to_string()]),
+        (998, vec!["cargo".to_string(), "build".to_string()]),
     ]);
     let children_of = |pid: u32| children.borrow().get(&pid).cloned();
     let read = |pid: u32| argvs.get(&pid).cloned();
@@ -449,9 +452,11 @@ fn the_child_walk_tracks_starts_exits_and_skips_compiler_subtrees() {
         200,
         "a build script found by the walk anchors the hazard"
     );
-    // The compiler was discovered; on the next walk its subtree is skipped.
+    // The compiler and the nested Soldr were discovered; on the next walk
+    // their subtrees are skipped.
     tree.walk(&children_of, &read);
     assert!(!tree.nodes.contains_key(&999));
+    assert!(!tree.nodes.contains_key(&998));
     // An exit disappears from the next walk.
     children.borrow_mut().insert(200, Vec::new());
     tree.walk(&children_of, &read);
