@@ -198,6 +198,11 @@ pub(crate) fn find_git_worktree_root(cwd: &std::path::Path) -> Option<std::path:
 pub(crate) struct ZccacheChildEnv {
     pub(crate) path_remap: Option<&'static str>,
     pub(crate) worktree_root: Option<std::path::PathBuf>,
+    /// Canonical `ZCCACHE_MODE` soldr sets on the child (soldr#3407): only
+    /// for a soldr-owned source (`--zccache-mode`, `SOLDR_ZCCACHE_MODE`,
+    /// `[zccache] mode`). The user's own `ZCCACHE_MODE` reaches the
+    /// embedded service unaided and is never rewritten.
+    pub(crate) materialization_mode: Option<&'static str>,
 }
 
 impl ZccacheChildEnv {
@@ -206,11 +211,22 @@ impl ZccacheChildEnv {
         let soldr_override = std::env::var(crate::cache_lib::SOLDR_PATH_REMAP_ENV_VAR).ok();
         let user_worktree_root = std::env::var_os(crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR);
         let cwd = std::env::current_dir()?;
+        // A missing config file is the default config; an unreadable one is
+        // ignored here like the other build-time tiers, but an invalid mode
+        // value in it — or in either environment tier — fails the build
+        // rather than silently delivering the wrong way.
+        let config_mode = crate::core::SoldrPaths::new()
+            .ok()
+            .and_then(|paths| paths.load_config().ok())
+            .and_then(|config| config.zccache.mode);
+        let mode = crate::core::materialization_mode::resolve_zccache_mode(config_mode.as_deref())
+            .map_err(|error| SoldrError::Other(error.to_string()))?;
         Ok(Self::from_inputs(
             user_zccache.as_deref(),
             soldr_override.as_deref(),
             user_worktree_root.as_deref(),
             &cwd,
+            mode,
         ))
     }
 
@@ -219,6 +235,7 @@ impl ZccacheChildEnv {
         soldr_override: Option<&str>,
         user_worktree_root: Option<&std::ffi::OsStr>,
         cwd: &std::path::Path,
+        mode: Option<crate::core::materialization_mode::ResolvedZccacheMode>,
     ) -> Self {
         let path_remap = resolve_path_remap_env(user_zccache, soldr_override);
         let worktree_root = if path_remap_auto_active(user_zccache, soldr_override) {
@@ -229,6 +246,7 @@ impl ZccacheChildEnv {
         Self {
             path_remap,
             worktree_root,
+            materialization_mode: mode.and_then(|mode| mode.child_env_value()),
         }
     }
 
@@ -238,6 +256,12 @@ impl ZccacheChildEnv {
         }
         if let Some(root) = self.worktree_root.as_ref() {
             cargo.env(crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR, root);
+        }
+        if let Some(mode) = self.materialization_mode {
+            cargo.env(
+                crate::core::materialization_mode::ZCCACHE_MODE_ENV_VAR,
+                mode,
+            );
         }
     }
 }
@@ -655,6 +679,64 @@ mod tests {
 
         assert_eq!(find_git_worktree_root(&cwd), None);
         assert_eq!(resolve_worktree_root_env(None, &cwd), Some(cwd));
+    }
+
+    // ---------------------------------------------------------------
+    // zccache cache-hit delivery mode (soldr#3407, zccache#1683).
+    // ---------------------------------------------------------------
+
+    fn child_env_with_mode(
+        mode: Option<crate::core::materialization_mode::ResolvedZccacheMode>,
+    ) -> ZccacheChildEnv {
+        ZccacheChildEnv::from_inputs(Some("off"), None, None, std::path::Path::new("/repo"), mode)
+    }
+
+    fn injected_mode(env: &ZccacheChildEnv) -> Option<Option<String>> {
+        let mut command = std::process::Command::new("cargo");
+        env.apply_to_command(&mut command);
+        command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("ZCCACHE_MODE"))
+            .map(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn soldr_owned_mode_is_injected_in_canonical_spelling() {
+        use crate::core::materialization_mode::{
+            ResolvedZccacheMode, ZccacheMode, ZccacheModeSource,
+        };
+        for (mode, source) in [
+            (ZccacheMode::Copy, ZccacheModeSource::SoldrEnv),
+            (ZccacheMode::Reflink, ZccacheModeSource::Config),
+        ] {
+            let env = child_env_with_mode(Some(ResolvedZccacheMode { mode, source }));
+            assert_eq!(env.materialization_mode, Some(mode.as_str()));
+            assert_eq!(
+                injected_mode(&env),
+                Some(Some(mode.as_str().to_string())),
+                "{source:?} must reach the cargo child as ZCCACHE_MODE"
+            );
+        }
+    }
+
+    #[test]
+    fn the_users_own_zccache_mode_is_left_alone() {
+        use crate::core::materialization_mode::{
+            ResolvedZccacheMode, ZccacheMode, ZccacheModeSource,
+        };
+        let env = child_env_with_mode(Some(ResolvedZccacheMode {
+            mode: ZccacheMode::Link,
+            source: ZccacheModeSource::ZccacheEnv,
+        }));
+        assert_eq!(env.materialization_mode, None);
+        assert_eq!(injected_mode(&env), None, "never rewrite the user's value");
+    }
+
+    #[test]
+    fn no_mode_configured_injects_nothing() {
+        let env = child_env_with_mode(None);
+        assert_eq!(env.materialization_mode, None);
+        assert_eq!(injected_mode(&env), None);
     }
 
     #[test]
