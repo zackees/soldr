@@ -58,9 +58,10 @@ import time
 
 GIB = 1024**3
 FAMILY = "zccache-unit"
-# `stable-cook-*` shares the zccache-unit family (ci/cache-ownership.json);
-# soldr#3120 sized its share at about 0.3 GiB, leaving about 1.7 GiB for the store.
-DEFAULT_RESERVE_BYTES = 322_122_547
+# soldr#3396 retired the `stable-cook-*` entry that shared the zccache-unit
+# family (ci/cache-ownership.json), so the store owns the whole allocation.
+# `--reserve-bytes` stays for a future co-tenant of the family.
+DEFAULT_RESERVE_BYTES = 0
 COPY_HEADROOM_BYTES = GIB // 2
 TRIAL_TIMEOUT_SECONDS = 900
 

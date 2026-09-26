@@ -89,6 +89,9 @@ def test_the_default_cap_is_the_family_allocation_minus_the_cook_reserve() -> No
         measure.default_cap_bytes(REPO_ROOT / "ci" / "cache-ownership.json", 7)
         == family_max - 7
     )
+    # soldr#3396: the stable-cook co-tenant is retired, so by default the
+    # Tier-2 store is trimmed to the whole family allocation.
+    assert measure.DEFAULT_RESERVE_BYTES == 0
 
 
 def _fake_soldr(tmp_path: Path, source_file: Path) -> Path:

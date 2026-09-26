@@ -19,8 +19,9 @@ are pinned here rather than left to review:
    never hit: the key's environment hash covered every installed toolchain,
    so it flipped with the Dylint nightly and missed 100% of the time.
    soldr#3047 deleted the step outright rather than re-key it; the Tier-2
-   object store (soldr#3041) and the workflow-level `soldr cook` step
-   (soldr#3043) are the replacement, not another shared-key namespace.
+   object store (soldr#3041) is the replacement (soldr#3043's workflow-level
+   `soldr cook` step was retired by soldr#3396), not another shared-key
+   namespace.
 """
 
 from __future__ import annotations
@@ -103,7 +104,7 @@ def test_native_lane_owns_the_shared_dev_namespace_and_target_dir() -> None:
     toolchain into its environment hash, so it flipped with the Dylint
     nightly and missed 100% of the time. There is no replacement shared-key
     namespace to re-check here -- the successor is the Tier-2 object store
-    (soldr#3041) plus the workflow-level `soldr cook` step (soldr#3043) -- so
+    (soldr#3041); soldr#3396 retired soldr#3043's workflow-level cook -- so
     this guard now pins the namespace's absence instead of its presence.
     """
     ci = read("ci.yml")
@@ -119,8 +120,7 @@ def test_native_lane_owns_the_shared_dev_namespace_and_target_dir() -> None:
     assert "uses: Swatinem/rust-cache" not in build_and_test, (
         "soldr#3047 removed the Swatinem/rust-cache step from "
         "_build-and-test.yml (0% hit rate under the ws-dev-* key); its "
-        "replacement is the Tier-2 object store (soldr#3041) plus the "
-        "workflow-level soldr cook step (soldr#3043), not another "
+        "replacement is the Tier-2 object store (soldr#3041), not another "
         "Swatinem/rust-cache restore"
     )
     assert "--target ${{ inputs.target }}" in build_and_test, (

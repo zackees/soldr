@@ -3,8 +3,8 @@
 //! `soldr cook` drives cargo-chef's `prepare`/`cook`/exact-package compile
 //! phases through the cargo front door. Those phases can legitimately run
 //! for many minutes with no terminal output, and CI's own wrapper
-//! (`.github/scripts/run_stable_cook.py`) used to capture output silently
-//! until the process exited -- so a genuine hang produced only a timeout
+//! (`.github/scripts/run_stable_cook.py`, retired by soldr#3396) used to
+//! capture output silently until the process exited -- so a genuine hang produced only a timeout
 //! from the *outer* CI job, with nothing logged about where soldr was
 //! stuck.
 //!
