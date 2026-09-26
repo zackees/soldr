@@ -104,8 +104,8 @@ mod generation_tests {
             command.arg("30");
             let stdio = running_process::SpawnStdio {
                 stdin: running_process::StdioSource::Null,
-                stdout: running_process::StdioSource::Null,
-                stderr: running_process::StdioSource::Null,
+                stdout: running_process::StdioSource::Parent,
+                stderr: running_process::StdioSource::Parent,
                 drain_timeout: None,
                 show_console: false,
             };
