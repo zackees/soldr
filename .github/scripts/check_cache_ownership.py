@@ -145,14 +145,16 @@ PRUNED_PREFIX_CACHES: dict[tuple[str, str], str] = {
         "_build-and-test.yml",
         "Restore Tier-2 zccache object store (soldr#3039)",
     ): "Measure, prune and trim the Tier-2 zccache store (soldr#3120, soldr#3252)",
+    (
+        "setup-soldr-action.yml",
+        "Restore dogfood build cache",
+    ): "Measure, prune and trim the dogfood zccache store (soldr#3398)",
 }
 
 # R8 ratchet: appending prefix-fallback caches that predate the rule and have
 # no prune step yet, each with the issue that adds one. Entries may only be
 # removed; one whose restore step no longer exists is itself a failure.
-UNPRUNED_PREFIX_CACHES_RATCHET: dict[tuple[str, str], str] = {
-    ("setup-soldr-action.yml", "Restore dogfood build cache"): "soldr#3398",
-}
+UNPRUNED_PREFIX_CACHES_RATCHET: dict[tuple[str, str], str] = {}
 
 PREFIX_CACHE_ACTIONS: frozenset[str] = frozenset(
     {"actions/cache", "actions/cache/restore"}

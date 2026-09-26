@@ -444,11 +444,18 @@ def build_table(
 # `dylint-foundation-` (soldr#3216): the tree is keyed on a hash of the lint
 # sources and saved only on main, so each lint change leaves the previous
 # ~413 MiB generation behind; two of them alone exceed the family allocation.
+# `setup-soldr-dogfood-zccache-` (soldr#3398): setup-soldr-action.yml keys the
+# dogfood store `...-<os>-<arch>-<lockfile hash>-<github.sha>` and saves one
+# per main commit, restoring the newest through the lockfile-hash prefix, so
+# stripping the trailing sha leaves the lockfile prefix and only its newest
+# generation is kept. A generation that is alone under its lockfile prefix is
+# never touched (three generations were ~1.05 GiB of a 1.30 GiB family).
 GENERATION_KEY_PREFIXES = (
     "v0-rust-",
     "zccache-unit-",
     "bootstrap-soldr-blessed-",
     "dylint-foundation-",
+    "setup-soldr-dogfood-zccache-",
 )
 
 COOK_KEY = re.compile(

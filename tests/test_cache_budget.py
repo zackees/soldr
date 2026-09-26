@@ -655,3 +655,55 @@ def test_3347_keeps_every_required_current_lock_generation() -> None:
     ]
     # Unknown current lock: the required generation cannot be identified.
     assert guard.prune_candidates(entries, None) == []
+
+
+# --------------------------------------------------------------------------
+# soldr#3398: dogfood zccache generations per lockfile prefix, RED -> GREEN
+# --------------------------------------------------------------------------
+
+DOGFOOD_FIXTURE = (
+    REPO_ROOT
+    / "tests"
+    / "fixtures"
+    / "actions-cache"
+    / "listing-3398-dogfood-generations.json"
+)
+DOGFOOD = "setup-soldr-dogfood-zccache-v1-Linux-X64-"
+DOGFOOD_LOCK = "55449f335975c067e53a168bab22ae9b63036849458d34b93c50638df7addd13"
+
+
+def dogfood_entries() -> list:
+    raw, _ = guard.load_from_json(DOGFOOD_FIXTURE)
+    return guard.normalize_entries(raw)
+
+
+def test_3398_live_listing_is_red_raw() -> None:
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    problems = guard.budget_problems(MANIFEST, manifest, dogfood_entries())
+    assert any("'setup-soldr-action-stores'" in p for p in problems)
+
+
+def test_3398_prune_fits_setup_soldr_action_stores() -> None:
+    entries = dogfood_entries()
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    effective = without(entries, guard.prune_candidates(entries))
+    problems = guard.budget_problems(MANIFEST, manifest, effective)
+    assert not any("'setup-soldr-action-stores'" in p for p in problems)
+    kept = [e for e in effective if e.key.startswith(DOGFOOD)]
+    by_lock: dict[str, list] = {}
+    for e in kept:
+        by_lock.setdefault(guard.strip_shared_key_hash(e.key), []).append(e)
+    assert all(len(group) == 1 for group in by_lock.values())
+    # The unique older-lockfile generation stays live.
+    assert len(by_lock) == 2
+
+
+def test_3398_prune_never_deletes_the_newest_or_a_unique_generation() -> None:
+    main = "refs/heads/main"
+    newest = guard.CacheEntry(f"{DOGFOOD}{DOGFOOD_LOCK}-bbb", main, 1, "1", "2026-09-26T06:00:00Z")
+    older = guard.CacheEntry(f"{DOGFOOD}{DOGFOOD_LOCK}-aaa", main, 1, "2", "2026-09-26T04:00:00Z")
+    unique = guard.CacheEntry(f"{DOGFOOD}otherlock-ccc", main, 1, "3", "2026-09-25T00:00:00Z")
+    unknown = guard.CacheEntry("setup-soldr-dogfood-other-v9-x-1", main, 1, "4", "2026-09-20T00:00:00Z")
+    unknown2 = guard.CacheEntry("setup-soldr-dogfood-other-v9-x-2", main, 1, "5", "2026-09-21T00:00:00Z")
+    candidates = guard.prune_candidates([older, newest, unique, unknown, unknown2])
+    assert [c.key for c in candidates] == [older.key]

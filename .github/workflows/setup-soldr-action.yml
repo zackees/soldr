@@ -181,6 +181,12 @@ jobs:
             setup-soldr-dogfood-zccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
             setup-soldr-dogfood-zccache-v1-${{ runner.os }}-${{ runner.arch }}-
 
+      # soldr#3398: the prune step below counts entries touched after this
+      # stamp as this run's working set; everything older is prunable.
+      - name: Mark dogfood zccache store restore time
+        shell: bash
+        run: date +%s > "${{ runner.temp }}/dogfood-zccache-restored-at"
+
       - name: Stop setup-soldr builder cache before dogfood build
         uses: zackees/setup-soldr/cleanup@d6a0844c40b94f62cf104377b4cc90403c96f6ce
 
@@ -285,6 +291,32 @@ jobs:
             exit 0
           }
           & $soldr.Source zccache stop
+
+      # soldr#3398 (R8 in check_cache_ownership.py): the restore above falls
+      # back through a lockfile-hash prefix and the build appends to the
+      # store, so without this the saved generation grows forever. Drop the
+      # version trees this run never touched and trim the store to its share
+      # of the `setup-soldr-action-stores` family (512 MiB of 1.30 GiB) before
+      # the save. `check_cache_budget.py --prune` keeps only the newest saved
+      # generation per lockfile prefix.
+      - name: Measure, prune and trim the dogfood zccache store (soldr#3398)
+        if: ${{ always() && github.ref == 'refs/heads/main' && steps.dogfood-build-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          store="${{ runner.temp }}/soldr-build-under-test/cache/zccache/daemon-state"
+          if [[ ! -d "$store" ]]; then
+            echo "no dogfood zccache store at $store; nothing to trim"
+            exit 0
+          fi
+          uv run --no-project --python 3.13 python .github/scripts/measure_zccache_working_set.py \
+            --store "$store" \
+            --since-file "${{ runner.temp }}/dogfood-zccache-restored-at" \
+            --prune-dead-version-dirs \
+            --trim \
+            --cap-bytes 536870912 \
+            --reserve-bytes 0 \
+            --soldr "$(command -v soldr)"
 
       # actions/cache@v4 has no `save-if` input, so main-only saving requires
       # the restore/save split (soldr#3047). This save must stay after the

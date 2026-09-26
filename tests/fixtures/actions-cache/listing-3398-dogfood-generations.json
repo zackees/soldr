@@ -1,0 +1,258 @@
+{
+  "captured": "soldr#3398 live main listing 2026-09-26 (two dogfood zccache generations under one lockfile prefix)",
+  "usage_bytes": null,
+  "entries": [
+    {
+      "createdAt": "2026-09-13T04:41:42.385153Z",
+      "id": 7632030503,
+      "key": "setup-uv-1-x86_64-unknown-linux-gnu-3.12.3-no-dependency-glob",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 1325
+    },
+    {
+      "createdAt": "2026-09-26T16:35:44.041244Z",
+      "id": 8155126827,
+      "key": "zccache-unit-v1-x86_64-unknown-linux-gnu-4914880848301d4df15c966c53732808ee1e1bc3f11c0393b441647811c99c6d-36255163972",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 404468089
+    },
+    {
+      "createdAt": "2026-09-25T18:29:51.347316Z",
+      "id": 8128401155,
+      "key": "dylint-driver-v1-x86_64-unknown-linux-gnu-nightly-2026-05-28-6.0.3",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 751373
+    },
+    {
+      "createdAt": "2026-09-26T04:57:54.826172Z",
+      "id": 8142816806,
+      "key": "dylint-foundation-v2-x86_64-unknown-linux-gnu-7c95b6f5ce1c94a8ebfe679375aac37c8ce5cf03de0601e4120f09ce105164dc",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 418571916
+    },
+    {
+      "createdAt": "2026-09-19T22:10:49.371391Z",
+      "id": 7888055330,
+      "key": "rustup-1.98.1-linux-x64-v1",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 190636928
+    },
+    {
+      "createdAt": "2026-09-26T05:59:32.151668Z",
+      "id": 8143709663,
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-fc0f411d4-lf8df89ca66523fa3-soldr0.9.23",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 525917765
+    },
+    {
+      "createdAt": "2026-09-25T17:16:57.72093Z",
+      "id": 8125949580,
+      "key": "soldr-xwin-cache-x86_64-pc-windows-msvc-v2026-06-22",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 137082106
+    },
+    {
+      "createdAt": "2026-09-25T17:18:22.347419Z",
+      "id": 8126002639,
+      "key": "setup-uv-1-x86_64-pc-windows-msvc-3.13.15-no-dependency-glob",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 991
+    },
+    {
+      "createdAt": "2026-09-25T17:10:14.174972Z",
+      "id": 8125715049,
+      "key": "setup-uv-1-aarch64-apple-darwin-3.13.15-no-dependency-glob",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 1393
+    },
+    {
+      "createdAt": "2026-09-26T06:11:47.765559Z",
+      "id": 8143888530,
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-fbf1bfb42-lf8df89ca66523fa3-soldr0.9.23",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 430542682
+    },
+    {
+      "createdAt": "2026-09-26T06:13:35.066045Z",
+      "id": 8143905380,
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-fbaf623ad-lf8df89ca66523fa3-soldr0.9.23",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 556685836
+    },
+    {
+      "createdAt": "2026-09-26T06:04:48.916163Z",
+      "id": 8143778432,
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-f8a8107f7-lf8df89ca66523fa3-soldr0.9.23",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 523347514
+    },
+    {
+      "createdAt": "2026-09-26T06:06:27.132833Z",
+      "id": 8143797829,
+      "key": "cook-base-v2-linux-x64-glibc-rustc1.98.1-faaa264c8-lf8df89ca66523fa3-soldr0.9.23",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 435178080
+    },
+    {
+      "createdAt": "2026-09-26T05:54:49.889106Z",
+      "id": 8143654445,
+      "key": "v0-rust-wheel-cross-aarch64-unknown-linux-gnu-release-v1-Linux-x64-4e81cb3b-1a449117",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 589794390
+    },
+    {
+      "createdAt": "2026-09-25T17:13:58.779974Z",
+      "id": 8125844448,
+      "key": "soldr-xwin-cache-aarch64-pc-windows-msvc-v2026-06-22",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 100405367
+    },
+    {
+      "createdAt": "2026-09-25T17:09:11.291714Z",
+      "id": 8125677084,
+      "key": "soldr-apple-sdk-14.5-darwin-aarch64-v1",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 57429669
+    },
+    {
+      "createdAt": "2026-09-25T17:07:00.819378Z",
+      "id": 8125598641,
+      "key": "soldr-apple-sdk-14.5-darwin-x86_64-v1",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 56717615
+    },
+    {
+      "createdAt": "2026-09-25T17:04:51.015409Z",
+      "id": 8125522477,
+      "key": "setup-uv-1-x86_64-unknown-linux-gnu-3.13.15-no-dependency-glob",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 1194
+    },
+    {
+      "createdAt": "2026-09-26T05:44:38.263115Z",
+      "id": 8143514516,
+      "key": "v0-rust-bootstrap-soldr-linux-gnu-dev-v1-Linux-x64-1897f1b2-1a449117",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 394014695
+    },
+    {
+      "createdAt": "2026-09-26T09:31:38.921176Z",
+      "id": 8147345662,
+      "key": "v0-rust-perf-build-soldr-linux-Linux-x64-079eeefc-1a449117",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 508702303
+    },
+    {
+      "createdAt": "2026-09-26T08:53:52.691277Z",
+      "id": 8146655984,
+      "key": "bootstrap-soldr-blessed-linux-gnu-b3dd293eb4f5cca80382f9a7b7e2403d06076581",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 23026067
+    },
+    {
+      "createdAt": "2026-09-26T08:49:19.30458Z",
+      "id": 8146573621,
+      "key": "soldr-mini-v2-linux-x64-glibc-v0.9.16",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 10725250
+    },
+    {
+      "createdAt": "2026-09-26T08:49:02.888813Z",
+      "id": 8146567613,
+      "key": "solo-toolchain-v3-linux-x64-glibc-rustc1.98.1-cb6b9e404-tnone-soldrv0.9.16",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 179873265
+    },
+    {
+      "createdAt": "2026-09-26T08:48:52.589077Z",
+      "id": 8146564846,
+      "key": "setup-soldr-cargoregistry-v1-linux-x64-f8df89ca66523fa3-e949e5894772d418",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 135472336
+    },
+    {
+      "createdAt": "2026-09-26T08:48:46.618924Z",
+      "id": 8146563463,
+      "key": "setup-soldr-buildcache-v2-linux-x64-e949e5894772d418-f8df89ca66523fa3",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 448157606
+    },
+    {
+      "createdAt": "2026-09-26T02:18:53.798712Z",
+      "id": 8140248411,
+      "key": "solo-toolchain-v3-linux-x64-glibc-rustc1.98.1-cb6b9e404-tnone-soldrv0.9.22",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 179886866
+    },
+    {
+      "createdAt": "2026-09-26T06:26:45.513171Z",
+      "id": 8144129810,
+      "key": "setup-soldr-dogfood-zccache-v1-Linux-X64-55449f335975c067e53a168bab22ae9b63036849458d34b93c50638df7addd13-57d18321f86e206d3342625af2bfb4fa545f95d6",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 402287399
+    },
+    {
+      "createdAt": "2026-09-26T04:33:10.452398Z",
+      "id": 8142438665,
+      "key": "setup-soldr-dogfood-zccache-v1-Linux-X64-55449f335975c067e53a168bab22ae9b63036849458d34b93c50638df7addd13-df447a17c364625d33a346d905b52f8d5a5253a1",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 356208381
+    },
+    {
+      "createdAt": "2026-09-26T02:19:06.745502Z",
+      "id": 8140252475,
+      "key": "soldr-mini-v2-linux-x64-glibc-v0.9.22",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 10703890
+    },
+    {
+      "createdAt": "2026-09-26T05:44:39.323247Z",
+      "id": 8143514895,
+      "key": "bootstrap-soldr-blessed-linux-gnu-dev-v1-a4542c9f88f19b49bb203a8de1a6da8c6b5a84d6",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 25574330
+    },
+    {
+      "createdAt": "2026-09-25T20:50:26.626652Z",
+      "id": 8132958573,
+      "key": "zccache-unit-v1-x86_64-unknown-linux-gnu-84579bf8c3b386088e57e76a2b78d3df9cefb6bcd44a04894e5a229773ba93e4-36182984467",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 329489927
+    },
+    {
+      "createdAt": "2026-09-26T02:18:44.541167Z",
+      "id": 8140245967,
+      "key": "setup-soldr-dogfood-zccache-v1-Linux-X64-7d394d7ec7ad55de8672ef18346686265386687a7694e7f4108f6e29d2e7ad0a-dd0503cdc60acd575993ac98d2a74bdd5d6d7d70",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 292027031
+    },
+    {
+      "createdAt": "2026-09-26T02:16:10.657542Z",
+      "id": 8140204940,
+      "key": "soldr-mini-v2-linux-x64-glibc-v0.7.28",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 3513404
+    },
+    {
+      "createdAt": "2026-09-26T02:16:00.429587Z",
+      "id": 8140200957,
+      "key": "solo-toolchain-v3-linux-x64-glibc-rustc1.98.1-cb6b9e404-tnone-soldrv0.7.28",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 179883885
+    },
+    {
+      "createdAt": "2026-09-26T02:16:04.968675Z",
+      "id": 8140202813,
+      "key": "soldr-mini-v2-linux-x64-glibc-v0.7.28",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 3513404
+    },
+    {
+      "createdAt": "2026-09-26T02:15:59.25548Z",
+      "id": 8140201067,
+      "key": "soldr-delta-Linux-X64-cache-delta-exp-x86_64-unknown-linux-gnu-913fa806c8b127fc-9d3557b43c274665",
+      "ref": "refs/heads/main",
+      "sizeInBytes": 450423
+    }
+  ]
+}
