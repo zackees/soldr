@@ -78,6 +78,7 @@
       "modules": [
         "cli_cargo_strip_failure",
         "cli_cargo_trampoline_workspace",
+        "cli_cargo_zccache_mode",
         "cli_dispatch",
         "cli_dylint_wrapper",
         "cli_reentrancy_guard",
