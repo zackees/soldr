@@ -10,6 +10,7 @@ use crate::core::SoldrError;
 use crate::current_soldr_binary;
 use crate::lint_ci;
 use crate::lint_ci::model::OutputFormat;
+use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::Duration;
 
@@ -28,6 +29,13 @@ struct LintPlan {
     scope: Vec<String>,
     /// Output format for the `ci` suite; ignored by other suites.
     ci_format: OutputFormat,
+    /// `--target <triple>` values (repeatable), in the order given. Overrides
+    /// the workspace's declared `[workspace.metadata.soldr].targets` list.
+    /// Only meaningful for the `rust`/`all` suites (soldr#3378).
+    explicit_targets: Vec<String>,
+    /// `--host-only`: skip cross-target Clippy entirely, even when the
+    /// workspace declares targets. Only meaningful for `rust`/`all`.
+    host_only: bool,
 }
 
 impl LintPlan {
@@ -39,7 +47,7 @@ impl LintPlan {
             return Self::parse_ci(&args[1..]);
         }
 
-        let (mode, scope) = match args.first().map(String::as_str) {
+        let (mode, mut scope) = match args.first().map(String::as_str) {
             None => (LintMode::Rust, Vec::new()),
             Some("rust") => (LintMode::Rust, args[1..].to_vec()),
             Some("deps") => (LintMode::Deps, args[1..].to_vec()),
@@ -57,10 +65,25 @@ impl LintPlan {
                 "lint: compiler arguments after -- are not supported; pass cargo scope flags before the suite".into(),
             ));
         }
+
+        // soldr#3378: `--target`/`--host-only` are Soldr-level cross-compile
+        // selectors, not cargo scope flags -- strip them before the remaining
+        // scope reaches fmt/Clippy/Dylint verbatim.
+        let (explicit_targets, host_only) = extract_target_flags(&mut scope)?;
+        if !matches!(mode, LintMode::Rust | LintMode::All)
+            && (host_only || !explicit_targets.is_empty())
+        {
+            return Err(SoldrError::Other(
+                "lint: --target and --host-only are only valid for the rust or all suites".into(),
+            ));
+        }
+
         Ok(Self {
             mode,
             scope,
             ci_format: OutputFormat::Human,
+            explicit_targets,
+            host_only,
         })
     }
 
@@ -94,10 +117,59 @@ impl LintPlan {
             mode: LintMode::Ci,
             scope: Vec::new(),
             ci_format,
+            explicit_targets: Vec::new(),
+            host_only: false,
         })
     }
 
-    fn rust_steps(&self, all_features: bool) -> Result<Vec<Vec<String>>, SoldrError> {
+    /// Resolve the additional cross-compile target triples this plan's
+    /// Clippy pass runs beyond the host (soldr#3378 — "declaring a target is
+    /// the marker").
+    ///
+    /// Resolution order: `--host-only` -> none; `--target` (repeatable) ->
+    /// overrides any declared list; otherwise the workspace's declared
+    /// `[workspace.metadata.soldr].targets` (package-metadata fallback),
+    /// honoring `--manifest-path` from the lint scope when present and
+    /// defaulting to the current directory otherwise. Every value — declared
+    /// or explicit — is resolved through the alias table, so a friendly
+    /// spelling (`win-x64`) is accepted and an unknown triple is a clear
+    /// error raised here, before any compile starts. The host's own triple
+    /// is dropped so Clippy never gets a redundant `--target <host>` pass.
+    fn resolve_cross_targets(&self) -> Result<Vec<String>, SoldrError> {
+        if self.host_only {
+            return Ok(Vec::new());
+        }
+        let raw = if !self.explicit_targets.is_empty() {
+            self.explicit_targets.clone()
+        } else {
+            crate::cargo_metadata_soldr::declared_targets_from(&self.manifest_scope_dir()?)?
+        };
+        resolve_target_triples(&raw)
+    }
+
+    /// The manifest path/dir declared-target resolution should start from:
+    /// `--manifest-path` out of the lint scope when present, else `cwd`.
+    fn manifest_scope_dir(&self) -> Result<PathBuf, SoldrError> {
+        let mut index = 0;
+        while index < self.scope.len() {
+            let arg = &self.scope[index];
+            if arg == "--manifest-path" {
+                if let Some(value) = self.scope.get(index + 1) {
+                    return Ok(PathBuf::from(value));
+                }
+            } else if let Some(value) = arg.strip_prefix("--manifest-path=") {
+                return Ok(PathBuf::from(value));
+            }
+            index += 1;
+        }
+        std::env::current_dir().map_err(|e| SoldrError::Other(format!("lint: cwd: {e}")))
+    }
+
+    fn rust_steps(
+        &self,
+        all_features: bool,
+        cross_targets: &[String],
+    ) -> Result<Vec<Vec<String>>, SoldrError> {
         let mut compiler_scope = self.scope.clone();
         if all_features {
             add_all_features(&mut compiler_scope)?;
@@ -115,11 +187,32 @@ impl LintPlan {
         clippy.extend(compiler_scope.iter().cloned());
         clippy.extend(["--".into(), "-D".into(), "warnings".into()]);
 
+        let mut steps = vec![fmt, clippy];
+
+        // soldr#3378: one additional Clippy pass per declared/explicit cross
+        // target, each landing under cargo's own `target/<triple>/`
+        // subdirectory so the host tree's fingerprints stay untouched.
+        // Dylint stays host-only below -- its driver is pinned to one dated
+        // nightly and is out of scope for the cross-target contract here.
+        for target in cross_targets {
+            let mut cross_clippy = vec![
+                "clippy".into(),
+                "--workspace".into(),
+                "--all-targets".into(),
+                "--target".into(),
+                target.clone(),
+            ];
+            cross_clippy.extend(compiler_scope.iter().cloned());
+            cross_clippy.extend(["--".into(), "-D".into(), "warnings".into()]);
+            steps.push(cross_clippy);
+        }
+
         let mut dylint = vec!["dylint".into(), "--all".into(), "--".into()];
         dylint.extend(["--workspace".into(), "--all-targets".into()]);
         dylint.extend(compiler_scope);
+        steps.push(dylint);
 
-        Ok(vec![fmt, clippy, dylint])
+        Ok(steps)
     }
 
     fn dependency_steps(&self) -> Result<Vec<Vec<String>>, SoldrError> {
@@ -157,6 +250,75 @@ impl LintPlan {
         udeps.extend(scope);
         Ok(vec![udeps, vec!["semver-checks".into()]])
     }
+}
+
+/// Extract Soldr's `--target <value>` (repeatable, both `--target` /
+/// `--target=` spellings) and `--host-only` flags out of a cargo scope,
+/// leaving everything else in place and order-preserved. Values are returned
+/// raw (alias or triple, not yet resolved) so the caller can decide how to
+/// treat parse failures independently of resolution failures.
+fn extract_target_flags(scope: &mut Vec<String>) -> Result<(Vec<String>, bool), SoldrError> {
+    let mut explicit = Vec::new();
+    let mut host_only = false;
+    let mut out = Vec::with_capacity(scope.len());
+    let mut index = 0;
+    while index < scope.len() {
+        let arg = scope[index].clone();
+        if arg == "--host-only" {
+            host_only = true;
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--target=") {
+            explicit.push(value.to_string());
+            index += 1;
+            continue;
+        }
+        if arg == "--target" {
+            let value = scope
+                .get(index + 1)
+                .cloned()
+                .ok_or_else(|| SoldrError::Other("lint: --target requires a value".into()))?;
+            explicit.push(value);
+            index += 2;
+            continue;
+        }
+        out.push(arg);
+        index += 1;
+    }
+    *scope = out;
+    if host_only && !explicit.is_empty() {
+        return Err(SoldrError::Other(
+            "lint: --host-only cannot be combined with --target".into(),
+        ));
+    }
+    Ok((explicit, host_only))
+}
+
+/// Resolve raw `--target` values (soldr aliases or bare Rust triples) to Rust
+/// triples, dropping the host's own triple (Clippy already type-checks the
+/// host natively) and de-duplicating while preserving order. An alias/triple
+/// that the resolver does not recognize is a hard error naming the bad value
+/// — soldr#3378 requires this to surface before any compile starts.
+fn resolve_target_triples(raw: &[String]) -> Result<Vec<String>, SoldrError> {
+    let host = crate::pyo3_detect::host_triple();
+    let mut resolved = Vec::with_capacity(raw.len());
+    for value in raw {
+        let target = crate::target_alias::resolve_soldr_target(value).map_err(|err| {
+            SoldrError::Other(format!(
+                "lint: --target `{value}`: {}",
+                err.to_string()
+                    .replace("soldr build --target", "soldr lint --target")
+            ))
+        })?;
+        if target.rust_triple == host {
+            continue;
+        }
+        if !resolved.contains(&target.rust_triple) {
+            resolved.push(target.rust_triple);
+        }
+    }
+    Ok(resolved)
 }
 
 fn prepend(subcommand: &str, fixed: &[&str], scope: &[String]) -> Vec<String> {
@@ -206,8 +368,10 @@ pub(crate) async fn run_lint(
     let plan = LintPlan::parse(args)?;
     match plan.mode {
         LintMode::Rust => {
+            // soldr#3378: resolved (and validated) before any compile starts.
+            let cross_targets = plan.resolve_cross_targets()?;
             run_compile_steps(
-                plan.rust_steps(false)?,
+                plan.rust_steps(false, &cross_targets)?,
                 cache_enabled,
                 trust_inherited_soldr_env,
             )
@@ -222,8 +386,10 @@ pub(crate) async fn run_lint(
             if code != 0 {
                 return Ok(code);
             }
+            // soldr#3378: resolved (and validated) before any compile starts.
+            let cross_targets = plan.resolve_cross_targets()?;
             let code = run_compile_steps(
-                plan.rust_steps(true)?,
+                plan.rust_steps(true, &cross_targets)?,
                 cache_enabled,
                 trust_inherited_soldr_env,
             )
@@ -266,14 +432,44 @@ async fn run_compile_steps(
     trust_inherited_soldr_env: bool,
 ) -> Result<i32, SoldrError> {
     for args in steps {
+        // soldr#3378: a cross-target Clippy step is the only one that ever
+        // carries `--target` (the flag is stripped out of the ordinary cargo
+        // scope during parsing), so this doubles as "is this a cross step".
+        let cross_target = target_arg_value(&args);
+        if let Some(target) = &cross_target {
+            // Clippy only needs the target's std, not a full cross linker.
+            // `rustup_add_target` is idempotent, a no-op for the host triple,
+            // and routes through soldr's managed rustup/cargo homes rather
+            // than a bare `rustup` on PATH.
+            crate::prepare_cmd::rustup_add_target(target)?;
+        }
         let code =
             cargo_front_door::run_cargo_front_door(&args, cache_enabled, trust_inherited_soldr_env)
                 .await?;
         if code != 0 {
+            if let Some(target) = &cross_target {
+                eprintln!("soldr lint: clippy failed for target {target}");
+            }
             return Ok(code);
         }
     }
     Ok(0)
+}
+
+/// Extract the `--target <value>` (either spelling) argument from a cargo
+/// invocation's argv, if present.
+fn target_arg_value(args: &[String]) -> Option<String> {
+    let mut index = 0;
+    while index < args.len() {
+        if let Some(value) = args[index].strip_prefix("--target=") {
+            return Some(value.to_string());
+        }
+        if args[index] == "--target" {
+            return args.get(index + 1).cloned();
+        }
+        index += 1;
+    }
+    None
 }
 
 fn run_dependency_steps(
@@ -394,7 +590,7 @@ mod tests {
         let plan = LintPlan::parse(&[]).unwrap();
         assert_eq!(plan.mode, LintMode::Rust);
         assert_eq!(
-            plan.rust_steps(false).unwrap(),
+            plan.rust_steps(false, &[]).unwrap(),
             vec![
                 strings(&["fmt", "--all", "--", "--check"]),
                 strings(&[
@@ -413,7 +609,7 @@ mod tests {
     #[test]
     fn all_suite_uses_all_features_for_compiler_steps() {
         let plan = LintPlan::parse(&strings(&["all", "--package", "soldr-cli"])).unwrap();
-        let rust = plan.rust_steps(true).unwrap();
+        let rust = plan.rust_steps(true, &[]).unwrap();
         assert!(rust[1].contains(&"--all-features".into()));
         assert!(rust[2].contains(&"--all-features".into()));
         let exhaustive = plan.exhaustive_steps().unwrap();
@@ -475,5 +671,148 @@ mod tests {
         // suite before the compile/dep steps.
         let plan = LintPlan::parse(&strings(&["all"])).unwrap();
         assert_eq!(plan.mode, LintMode::All);
+    }
+
+    /// Write a minimal `Cargo.toml` fixture declaring `targets` (or none,
+    /// when `targets` is `None`) and return its path.
+    fn write_manifest_fixture(dir: &std::path::Path, targets: Option<&[&str]>) -> String {
+        let body = match targets {
+            Some(list) => format!(
+                "[workspace]\n\n[workspace.metadata.soldr]\ntargets = [{}]\n",
+                list.iter()
+                    .map(|t| format!("{t:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            None => "[package]\nname = \"thing\"\nversion = \"0.1.0\"\n".to_string(),
+        };
+        let path = dir.join("Cargo.toml");
+        std::fs::write(&path, body).expect("write fixture");
+        path.to_str().expect("utf8 path").to_string()
+    }
+
+    #[test]
+    fn declared_targets_produce_one_clippy_per_target() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let manifest = write_manifest_fixture(
+            tmp.path(),
+            Some(&["x86_64-pc-windows-msvc", "aarch64-apple-darwin"]),
+        );
+        let plan = LintPlan::parse(&strings(&["rust", "--manifest-path", &manifest])).unwrap();
+        let cross = plan.resolve_cross_targets().unwrap();
+        assert_eq!(
+            cross,
+            vec![
+                "x86_64-pc-windows-msvc".to_string(),
+                "aarch64-apple-darwin".to_string(),
+            ]
+        );
+        let steps = plan.rust_steps(false, &cross).unwrap();
+        // fmt, host clippy, two cross clippy steps, dylint.
+        assert_eq!(steps.len(), 5);
+        assert!(steps[2].contains(&"--target".to_string()));
+        assert!(steps[2].contains(&"x86_64-pc-windows-msvc".to_string()));
+        assert!(steps[3].contains(&"--target".to_string()));
+        assert!(steps[3].contains(&"aarch64-apple-darwin".to_string()));
+        assert_eq!(steps[4][0], "dylint", "Dylint stays host-only, last");
+    }
+
+    #[test]
+    fn no_declared_targets_behaves_exactly_like_today() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let manifest = write_manifest_fixture(tmp.path(), None);
+        let plan = LintPlan::parse(&strings(&["rust", "--manifest-path", &manifest])).unwrap();
+        let cross = plan.resolve_cross_targets().unwrap();
+        assert!(cross.is_empty());
+        let steps = plan.rust_steps(false, &cross).unwrap();
+        assert_eq!(steps.len(), 3, "fmt, clippy, dylint only");
+    }
+
+    #[test]
+    fn host_only_flag_gives_todays_steps_exactly() {
+        let plan = LintPlan::parse(&strings(&["rust", "--host-only"])).unwrap();
+        assert!(plan.host_only);
+        assert!(plan.scope.is_empty(), "--host-only must be stripped");
+        // No filesystem access even though no --manifest-path was given: a
+        // declared workspace list must never be consulted under --host-only.
+        let cross = plan.resolve_cross_targets().unwrap();
+        assert!(cross.is_empty());
+        assert_eq!(
+            plan.rust_steps(false, &cross).unwrap(),
+            vec![
+                strings(&["fmt", "--all", "--", "--check"]),
+                strings(&[
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--",
+                    "-D",
+                    "warnings"
+                ]),
+                strings(&["dylint", "--all", "--", "--workspace", "--all-targets"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_target_overrides_the_declared_list() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let manifest = write_manifest_fixture(tmp.path(), Some(&["x86_64-unknown-linux-musl"]));
+        let plan = LintPlan::parse(&strings(&[
+            "rust",
+            "--manifest-path",
+            &manifest,
+            "--target",
+            "win-x64",
+        ]))
+        .unwrap();
+        assert_eq!(plan.explicit_targets, vec!["win-x64".to_string()]);
+        let cross = plan.resolve_cross_targets().unwrap();
+        // The declared musl target from the fixture must NOT appear -- only
+        // the explicit override, resolved through the alias table.
+        assert_eq!(cross, vec!["x86_64-pc-windows-msvc".to_string()]);
+    }
+
+    #[test]
+    fn unknown_target_triple_is_a_clear_error() {
+        // A single word (no hyphens) doesn't even look like a Rust triple, so
+        // it can't slip through as an unrecognized-but-plausible passthrough
+        // the way a triple-shaped typo would.
+        let plan = LintPlan::parse(&strings(&["rust", "--target", "bogus"])).unwrap();
+        let error = plan.resolve_cross_targets().unwrap_err();
+        assert!(
+            error.to_string().contains("bogus"),
+            "error must name the bad value: {error}"
+        );
+    }
+
+    #[test]
+    fn host_triple_is_not_duplicated_as_a_cross_target() {
+        let host = crate::pyo3_detect::host_triple().to_string();
+        let plan = LintPlan::parse(&strings(&[
+            "rust", "--target", &host, "--target", "win-x64",
+        ]))
+        .unwrap();
+        let cross = plan.resolve_cross_targets().unwrap();
+        assert_eq!(
+            cross,
+            vec!["x86_64-pc-windows-msvc".to_string()],
+            "the host's own triple must be filtered out, not compiled twice"
+        );
+    }
+
+    #[test]
+    fn target_and_host_only_flags_are_rejected_outside_rust_and_all() {
+        let error = LintPlan::parse(&strings(&["deps", "--target", "win-x64"])).unwrap_err();
+        assert!(error.to_string().contains("only valid for"));
+        let error = LintPlan::parse(&strings(&["deps", "--host-only"])).unwrap_err();
+        assert!(error.to_string().contains("only valid for"));
+    }
+
+    #[test]
+    fn host_only_cannot_combine_with_target() {
+        let error =
+            LintPlan::parse(&strings(&["rust", "--host-only", "--target", "win-x64"])).unwrap_err();
+        assert!(error.to_string().contains("cannot be combined"));
     }
 }

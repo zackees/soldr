@@ -306,9 +306,23 @@ pub(crate) enum Commands {
     /// manifest and starts no compiler cache; use `--format json` for a
     /// machine-readable report. `lint all` extends every suite (including
     /// `ci`) with udeps and semver-checks.
+    ///
+    /// soldr#3378: the `rust`/`all` suites also run Clippy once per target
+    /// declared in `[workspace.metadata.soldr].targets` (package-metadata
+    /// fallback) in addition to the host — a declared target is treated as a
+    /// claim of support, so `#[cfg(windows)]`/`#[cfg(target_os = "macos")]`
+    /// code gets type-checked on every `soldr lint`, not only in a platform CI
+    /// lane. A workspace with no declared targets keeps host-only behavior.
+    /// `--target <triple>` (repeatable, friendly aliases like `win-x64`
+    /// accepted) overrides the declared list; `--host-only` skips cross
+    /// targets entirely. Both flags are valid only for `rust`/`all`. Dylint
+    /// stays host-only regardless — its driver is pinned to one dated
+    /// nightly, outside this cross-target contract.
     Lint {
         /// Suite selector (`rust`, `deps`, `ci`, or `all`). Rust/deps/all
         /// accept cargo scope flags; `ci` accepts only `--format json|human`.
+        /// `rust`/`all` additionally accept `--target <triple>` (repeatable)
+        /// and `--host-only`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },

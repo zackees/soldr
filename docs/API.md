@@ -618,6 +618,9 @@ soldr lint deps
 soldr lint ci
 soldr lint ci --format json
 soldr lint all
+soldr lint --target x86_64-pc-windows-msvc
+soldr lint --target win-x64 --target mac-arm64
+soldr lint --host-only
 ```
 
 `deps` runs `deny check`, `audit`, and `machete` concurrently as cache-disabled
@@ -627,6 +630,30 @@ first, then adds `--all-features`, `udeps`, and `semver-checks` after the standa
 Rust and dependency suites. Compiler-bearing steps stay on the regular Soldr cache
 lifecycle; `cargo-dylint` is fetched from its Linux GNU release asset or
 source-built from the pinned registry version on Windows and macOS.
+
+**Cross-target Clippy (soldr#3378).** `lint rust` and `lint all` run Clippy once
+for the host, then once more per Rust target triple declared in
+`[workspace.metadata.soldr].targets` (`[package.metadata.soldr]` fallback for
+single-crate repos) — a declared target is treated as a claim that the workspace
+supports that platform, so `#[cfg(windows)]` / `#[cfg(target_os = "macos")]` code
+gets type-checked on every `soldr lint`, on any host, instead of only in a
+platform-specific CI lane. A workspace that declares no targets keeps today's
+host-only behavior unchanged. Each cross Clippy pass runs `cargo clippy --target
+<triple>`, so it lands under Cargo's own `target/<triple>/` and never touches the
+host tree's fingerprints; the target's standard library is installed on demand
+through Soldr's managed `rustup target add` (idempotent, never a bare `rustup`).
+Dylint stays host-only — its driver is pinned to one dated nightly and sits
+outside this cross-target contract. A cross Clippy failure prints `soldr lint:
+clippy failed for target <triple>` to stderr and the command exits with that
+step's code.
+
+`--target <triple>` (repeatable; friendly aliases such as `win-x64`/`mac-arm64`
+are accepted) overrides the declared list for that invocation. `--host-only`
+skips cross-target Clippy entirely, even when targets are declared. Both flags
+are valid only for the `rust`/`all` suites and are stripped from the cargo scope
+before it reaches fmt/Clippy/Dylint. An unknown or unsupported triple — declared
+or explicit — is a clear error raised before any compile starts, not a silent
+skip; the host's own triple is never run twice.
 
 ### `soldr ci-test`
 
