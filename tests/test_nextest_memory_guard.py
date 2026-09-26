@@ -453,6 +453,27 @@ def test_cgroup_ceiling_prepares_a_leaf_and_reports_peak_and_oom(
     ceiling.release()
 
 
+def test_cgroup_ceiling_pins_swap_to_zero_when_swap_is_accounted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hosted runners have swap: without this the overflow pages out unpunished."""
+
+    root = tmp_path / "delegated"
+    root.mkdir()
+    (root / "cgroup.subtree_control").write_text("memory pids\n")
+    real_mkdir = Path.mkdir
+
+    def kernel_mkdir(self: Path, *args, **kwargs) -> None:
+        real_mkdir(self, *args, **kwargs)
+        if self.parent == root:
+            (self / "memory.swap.max").write_text("max\n")
+
+    monkeypatch.setattr(Path, "mkdir", kernel_mkdir)
+    ceiling = guard.CgroupCeiling.create(root, 256 * MIB, owner_pid=7)
+    assert ceiling is not None
+    assert (ceiling.path / "memory.swap.max").read_text() == "0"
+
+
 def test_cgroup_ceiling_declines_a_root_without_the_memory_controller(
     tmp_path: Path,
 ) -> None:

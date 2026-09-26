@@ -591,6 +591,13 @@ class CgroupCeiling:
                 return None
             try:
                 (leaf / "memory.max").write_text(str(ceiling_bytes), encoding="ascii")
+                # With swap, `memory.max` only bounds the resident part: the
+                # overflow pages out and the tree never hits its ceiling (seen
+                # on hosted runners). Pin swap to zero, or decline the cgroup
+                # so the sampled ceiling applies instead.
+                swap_max = leaf / "memory.swap.max"
+                if swap_max.exists():
+                    swap_max.write_text("0", encoding="ascii")
             except OSError:
                 cls(leaf, ceiling_bytes).release()
                 return None
