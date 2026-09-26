@@ -104,7 +104,16 @@ tar = "0.4"
 # their per-triple binary tarballs in xz, not gzip. Without this, soldr
 # falls through to the "raw binary" branch in fetch::archive and writes
 # the compressed tarball bytes to disk as the binary (#809).
-xz2 = "0.1"
+# `static` links liblzma into the binary instead of letting lzma-sys's
+# build.rs dynamically link whatever liblzma pkg-config finds on the
+# build host. A host-linked liblzma gets vendored into `soldr.libs/` by
+# auditwheel with an `$ORIGIN/../soldr.libs` RPATH, but soldr materializes
+# copies of its own binary as relocated shim images elsewhere on disk
+# where that relative RPATH does not resolve — every wrapped compile then
+# fails with "error while loading shared libraries: liblzma...". Static
+# linking makes the binary host-independent, matching the released
+# PyPI artifacts.
+xz2 = { version = "0.1", features = ["static"] }
 toml = "0.8"
 rayon = "1"
 prost = "0.14"

@@ -192,7 +192,8 @@
         "no_panicking_argv_collection",
         "no_timed_test_guard",
         "piped_child_drain_lint",
-        "runtime_alias_identity"
+        "runtime_alias_identity",
+        "static_liblzma"
       ],
       "disposition": "native-linux-once",
       "reason": "Repository guards read source files or launch fixture commands to enforce platform-independent policy and should run once in canonical validation."
