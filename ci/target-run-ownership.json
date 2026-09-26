@@ -188,6 +188,7 @@
         "cli_lint",
         "cli_startup_smoke",
         "daemon_console_policy_guard",
+        "isolated_daemon_readiness_diagnostics",
         "msrv_doc_matches_manifest",
         "multicall_bin_layout",
         "no_panicking_argv_collection",
