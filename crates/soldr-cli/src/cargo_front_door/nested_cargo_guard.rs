@@ -700,7 +700,7 @@ impl NestedCargoGuard {
     /// bounded to the observed Cargo tree; elsewhere (macOS, whose monitor
     /// diffs whole-system snapshots) it consumes the observer's events. The
     /// walk should give way to the observer once the upstream monitor reads
-    /// every task.
+    /// every task (running-process#1221).
     pub(crate) fn walks_tree(&self) -> bool {
         self.walk
     }
