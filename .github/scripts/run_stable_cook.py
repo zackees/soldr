@@ -363,7 +363,7 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     # keeps the original capture-then-print behavior.
     already_streamed = runner is None
     started = time.monotonic()
-    if already_streamed:
+    if runner is None:
         result = stream_and_capture(command, repo_root, args.timeout_secs)
     else:
         result = runner(command, repo_root)
