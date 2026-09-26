@@ -281,11 +281,6 @@ fn run_main(raw_args: Vec<String>) -> i32 {
         return wrapper::run_rustc_wrapper(&raw_args, profile).unwrap_or_else(report_and_exit);
     }
 
-    crate::broker_spawn::maybe_spawn_broker_front_door(&raw_args);
-    startup_trace::phase(startup_trace::phase::BROKER_FRONT_DOOR);
-    // soldr#3193: after the spawn, never before it -- the notice must not
-    // delay the path that makes this invocation work.
-    crate::broker_inventory::maybe_toast(&raw_args);
     // `--as <version>` trampoline. Peeled off before clap so the fetched
     // older soldr parses its own argv on its own terms.
     let (pinned_version, trampoline_args) = match extract_as_pin(&raw_args[1..]) {
@@ -297,6 +292,26 @@ fn run_main(raw_args: Vec<String>) -> i32 {
     };
     let pinned_version = pinned_version.or_else(soldr_as_env_pin);
 
+    // Hand off to a newer global soldr BEFORE touching the broker. The broker
+    // is a stable singleton that is never replaced automatically (soldr#2549),
+    // so an older soldr that spawned it and then delegated would pin every
+    // later build on the machine to its older image. That is how a
+    // `pip install .` with a stale `soldr==0.9.6` build backend left a 0.9.6
+    // broker behind a 0.9.22 install. The newer soldr's front door spawns it.
+    // An `--as` pin never delegates, so it keeps spawning from this image.
+    if pinned_version.is_none() {
+        if let Some(code) = crate::global_upgrade::maybe_delegate(&raw_args) {
+            return code;
+        }
+        startup_trace::phase(startup_trace::phase::GLOBAL_UPGRADE);
+    }
+
+    crate::broker_spawn::maybe_spawn_broker_front_door(&raw_args);
+    startup_trace::phase(startup_trace::phase::BROKER_FRONT_DOOR);
+    // soldr#3193: after the spawn, never before it -- the notice must not
+    // delay the path that makes this invocation work.
+    crate::broker_inventory::maybe_toast(&raw_args);
+
     if let Some(version) = pinned_version {
         if should_trampoline(&version) {
             return block_on_exit_code(version_trampoline::run(&version, &trampoline_args));
@@ -306,11 +321,6 @@ fn run_main(raw_args: Vec<String>) -> i32 {
         return block_on_exit_code(run_with_args(&raw_args[0], &trampoline_args));
     }
     startup_trace::phase(startup_trace::phase::VERSION_PIN);
-
-    if let Some(code) = crate::global_upgrade::maybe_delegate(&raw_args) {
-        return code;
-    }
-    startup_trace::phase(startup_trace::phase::GLOBAL_UPGRADE);
 
     block_on_exit_code(run_with_args(&raw_args[0], &raw_args[1..]))
 }

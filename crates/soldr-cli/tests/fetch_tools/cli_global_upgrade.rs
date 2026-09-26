@@ -78,6 +78,61 @@ fn project_policy_delegates_to_newer_global_soldr() {
     );
 }
 
+/// A soldr that hands the whole invocation to a newer global soldr must not
+/// start the broker first. The broker is a stable singleton that is never
+/// replaced automatically (soldr#2549), so spawning it from the *older* image
+/// pins every later build on the machine to that image. Observed: `pip install .`
+/// with a backend pinned to soldr 0.9.6 started a 0.9.6 broker, then delegated
+/// to the global 0.9.22, and every later 0.9.22 build warned about the
+/// mismatched broker. The newer soldr's own front door owns the spawn.
+#[test]
+fn delegating_invocation_never_spawns_its_own_broker() {
+    let fixture = unique_temp_dir("delegate-no-broker-spawn");
+    std::fs::write(
+        fixture.join("Cargo.toml"),
+        "[workspace]\n\n[workspace.metadata.soldr]\nprefer_newer_global = true\n",
+    )
+    .expect("write opt-in manifest");
+
+    let global_bin_dir = fixture.join("global-bin");
+    std::fs::create_dir_all(&global_bin_dir).expect("create global bin dir");
+    let log = fixture.join("global-invocation.log");
+    let global_soldr = fake_script_path(&global_bin_dir, "soldr");
+    write_fake_script(&global_soldr, &fake_global_soldr(&log));
+
+    let home = fixture.join("isolated-home");
+    std::fs::create_dir_all(&home).expect("create isolated home");
+
+    let output = isolated_soldr_command()
+        // soldr#2785: opt back in to the delegation probe the harness disables.
+        .env_remove(soldr_cli::global_upgrade::GLOBAL_DELEGATION_DISABLE_ENV_VAR)
+        .arg("status")
+        .current_dir(&fixture)
+        .env("PATH", prepend_to_path(&global_bin_dir))
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("SOLDR_CACHE_DIR", fixture.join("cache"))
+        .output()
+        .expect("run local soldr");
+
+    assert_eq!(
+        output.status.code(),
+        Some(73),
+        "newer global soldr must own the invocation\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let staged_broker_dir = home.join(".soldr").join("broker");
+    let staged: Vec<_> = std::fs::read_dir(&staged_broker_dir)
+        .map(|entries| entries.flatten().map(|e| e.file_name()).collect())
+        .unwrap_or_default();
+    assert!(
+        staged.is_empty(),
+        "the delegating (older) soldr must not stage or spawn a broker before \
+         handing off; found in {}: {staged:?}",
+        staged_broker_dir.display()
+    );
+}
+
 /// #2521 D root cause: in a `prefer_newer_global` checkout the delegation
 /// probe ran `<global soldr> --version` as a child of EVERY invocation —
 /// including `soldr broker status` — and a released soldr's front door stages
