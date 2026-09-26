@@ -98,6 +98,7 @@
         "cli_cargo_doc_routes",
         "cli_cargo_linker",
         "cli_cargo_native_cc",
+        "cli_cargo_nested_cargo_guard",
         "cli_cargo_run_trampoline",
         "cli_cargo_wrappers",
         "cli_exec",
@@ -448,6 +449,19 @@
         "aarch64-pc-windows-msvc"
       ],
       "reason": "The compact module covers target-native CC/CXX injection and opt-outs. soldr#3136: not replayed on x86_64-apple-darwin, whose only execution lane is the macOS Recovery guest. That guest has no system C toolchain (no `cc`, no `xcrun`/SDK), so this test's real crate link fails with `linker `cc` not found` on every run."
+    },
+    {
+      "id": "cargo-nested-cargo-self-lock",
+      "source_id": "cargo-front-target-replay",
+      "test_name": "cli_cargo_nested_cargo_guard::build_script_nested_cargo_on_the_outer_target_fails_fast",
+      "reason": "soldr#2924: nested-Cargo detection and Cargo tree teardown depend on each host's descendant enumeration (Linux all-thread procfs walk, macOS running-process snapshots). Windows is not armed (no parent pids from the post-hoc observer). Not replayed on x86_64-apple-darwin, whose Recovery guest has no system C toolchain to link the fixture's build script (soldr#3136).",
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl"
+      ]
     },
     {
       "id": "cargo-run-trampoline-cold",

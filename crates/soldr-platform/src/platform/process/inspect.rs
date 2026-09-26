@@ -1,8 +1,9 @@
 //! PID liveness, zombie state, and running-process image lookup.
 
 pub use crate::platform_imp::process::inspect::{
-    console_attached, executable_path, executable_path_matches, executable_stem_matches,
-    holders_under, is_alive, is_zombie, process_start_token, ProcessHolder,
+    child_pids, console_attached, executable_path, executable_path_matches,
+    executable_stem_matches, holders_under, is_alive, is_zombie, process_start_token,
+    working_directory, ProcessHolder,
 };
 
 #[cfg(test)]
@@ -35,3 +36,7 @@ mod tests {
         assert_eq!(process_start_token(0), None);
     }
 }
+
+#[cfg(test)]
+#[path = "inspect_tests.rs"]
+mod probe_tests;

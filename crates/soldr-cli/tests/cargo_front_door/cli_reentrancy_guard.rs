@@ -236,3 +236,103 @@ fn strict_allows_a_sanctioned_internal_edge() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// soldr#2924: why a direct `$CARGO` child is outside this guard's boundary.
+///
+/// The entry guard runs at Soldr startup (`reentrancy_guard::enforce_and_mark`),
+/// so it can only judge a process that *is* Soldr. The front door does hand
+/// its marker to Cargo, and a nested Soldr entry below Cargo is rejected. But
+/// Cargo overwrites `CARGO` with its own real executable, and a build script
+/// or test that runs `$CARGO` starts that binary directly: no Soldr startup
+/// runs, so the same live marker stops nothing. That gap is what the front
+/// door's nested-Cargo self-lock guard (`cargo_front_door::nested_cargo_guard`)
+/// closes by observing Cargo's process tree instead of an entry point. The
+/// fake Cargo below plays both roles: it re-invokes itself the way a build
+/// script re-invokes `$CARGO`, then tries a nested `soldr`.
+#[test]
+fn a_direct_cargo_child_is_outside_the_entry_guard_boundary() {
+    let root = common::unique_temp_dir("reentrancy-direct-cargo-child");
+    let workspace = root.join("ws");
+    let tool_dir = root.join("tool");
+    std::fs::create_dir_all(workspace.join("src")).expect("workspace src");
+    std::fs::create_dir_all(&tool_dir).expect("tool dir");
+    std::fs::write(
+        workspace.join("Cargo.toml"),
+        "[package]\nname = \"direct_child\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("manifest");
+    std::fs::write(workspace.join("src/lib.rs"), "pub fn ok() {}\n").expect("source");
+    let log = root.join("cargo.log");
+    let cargo = common::fake_script_path(&tool_dir, "cargo");
+    let windows = matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    );
+    let script = if windows {
+        format!(
+            "@echo off\n\
+             >>\"{log}\" echo marker=%IN_SOLDR_PID%\n\
+             >>\"{log}\" echo permit=%SOLDR_NESTED_CARGO%\n\
+             if not \"%~1\"==\"build\" exit /b 0\n\
+             call \"%~f0\" nested-probe\n\
+             >>\"{log}\" echo nested=%ERRORLEVEL%\n\
+             \"%SOLDR_UNDER_TEST%\" --version >nul 2>&1\n\
+             >>\"{log}\" echo soldr=%ERRORLEVEL%\n\
+             exit /b 0\n",
+            log = log.display()
+        )
+    } else {
+        format!(
+            "#!/bin/sh\n\
+             echo \"marker=${{IN_SOLDR_PID:-}}\" >> '{log}'\n\
+             echo \"permit=${{SOLDR_NESTED_CARGO:-}}\" >> '{log}'\n\
+             [ \"${{1:-}}\" = build ] || exit 0\n\
+             \"$0\" nested-probe\n\
+             echo \"nested=$?\" >> '{log}'\n\
+             \"$SOLDR_UNDER_TEST\" --version >/dev/null 2>&1\n\
+             echo \"soldr=$?\" >> '{log}'\n\
+             exit 0\n",
+            log = log.display()
+        )
+    };
+    common::write_fake_script(&cargo, &script);
+
+    let output = common::isolated_soldr_command()
+        .args(["--no-cache", "cargo", "build"])
+        .current_dir(&workspace)
+        .env("SOLDR_CACHE_DIR", root.join("soldr-cache"))
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_UNDER_TEST", common::soldr_bin())
+        .env("SOLDR_NESTED_CARGO", "allow")
+        .output()
+        .expect("spawn soldr cargo build");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let log = std::fs::read_to_string(&log).expect("fake cargo log");
+    let lines: Vec<&str> = log.lines().map(str::trim).collect();
+    let marker = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("marker="))
+        .expect("marker line");
+    assert!(
+        marker.parse::<u32>().is_ok(),
+        "the front door hands its live marker to Cargo: {log}"
+    );
+    assert!(
+        lines.iter().all(|line| *line != "permit=allow"),
+        "the nested-Cargo permit is scoped to the outer run and never reaches \
+         Cargo's children: {log}"
+    );
+    assert!(
+        lines.contains(&"nested=0"),
+        "a direct Cargo re-invocation never runs Soldr startup, so the marker \
+         cannot stop it: {log}"
+    );
+    assert!(
+        lines.contains(&"soldr=1"),
+        "the same marker rejects a nested Soldr entry below Cargo: {log}"
+    );
+}

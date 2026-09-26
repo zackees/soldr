@@ -15,6 +15,8 @@
 
 use std::io::Write;
 use std::process::{Child, Command, ExitStatus};
+
+use super::nested_cargo_guard::{NestedCargoGuard, GUARD_TICK};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
@@ -190,6 +192,7 @@ pub(crate) fn run_observed_inheriting_stdio(
     context: &str,
     timeout: Option<std::time::Duration>,
     heartbeat: std::time::Duration,
+    guard: Option<std::sync::Arc<NestedCargoGuard>>,
 ) -> Result<ExitStatus, crate::core::SoldrError> {
     use running_process::{
         CommandSpec, EventCategory, NativeProcess, ObserverConfig, ProcessConfig, StderrMode,
@@ -223,6 +226,9 @@ pub(crate) fn run_observed_inheriting_stdio(
         })?;
     }
     let pid = process.pid().unwrap_or(0);
+    if let Some(guard) = guard.as_ref() {
+        guard.bind_root(pid);
+    }
     emit(
         context,
         &format!("spawned pid={pid} ({context}, observed): {argv}"),
@@ -244,14 +250,41 @@ pub(crate) fn run_observed_inheriting_stdio(
     let started_counter = std::sync::Arc::clone(&descendants_started);
     let exited_counter = std::sync::Arc::clone(&descendants_exited);
     let pump_context = context.to_string();
-    let pump = std::thread::spawn(move || {
-        while let Some(event) = subscriber.recv() {
-            handle_descendant_event(&pump_context, &event, &started_counter, &exited_counter);
+    let pump_guard = guard.clone();
+    let pump = std::thread::spawn(move || loop {
+        match subscriber.recv_timeout(GUARD_TICK) {
+            Ok(event) => {
+                handle_descendant_event(&pump_context, &event, &started_counter, &exited_counter);
+                if let Some(guard) = pump_guard.as_ref() {
+                    guard.observe(&event);
+                    guard.tick();
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if let Some(guard) = pump_guard.as_ref() {
+                    guard.tick();
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     });
 
     let started = Instant::now();
+    let mut next_heartbeat = heartbeat;
     let code = loop {
+        if let Some(violation) = guard.as_ref().and_then(|guard| guard.violation()) {
+            // soldr#2924: running-process containment owns this spawn, so its
+            // kill takes the observed tree down.
+            let _ = process.kill();
+            let _ = process.wait(Some(std::time::Duration::from_secs(5)));
+            let _ = process.close();
+            drop(pump);
+            NestedCargoGuard::kill_nested_if_alive(&violation);
+            return Err(crate::core::SoldrError::Other(format!(
+                "{}; the observed process tree was terminated",
+                violation.message
+            )));
+        }
         let elapsed = started.elapsed();
         if let Some(limit) = timeout {
             if elapsed >= limit {
@@ -266,16 +299,23 @@ pub(crate) fn run_observed_inheriting_stdio(
                 )));
             }
         }
-        let slice = timeout
-            .map(|limit| limit.saturating_sub(elapsed).min(heartbeat))
-            .unwrap_or(heartbeat);
+        let mut slice = next_heartbeat.saturating_sub(elapsed);
+        if let Some(limit) = timeout {
+            slice = slice.min(limit.saturating_sub(elapsed));
+        }
+        if guard.is_some() {
+            slice = slice.min(GUARD_TICK);
+        }
         match process.wait(Some(slice)) {
             Ok(code) => break code,
             Err(running_process::ProcessError::Timeout) => {
-                eprintln!(
-                    "soldr: {context} still running after {}s (--debug observed)",
-                    started.elapsed().as_secs()
-                );
+                if started.elapsed() >= next_heartbeat {
+                    eprintln!(
+                        "soldr: {context} still running after {}s (--debug observed)",
+                        started.elapsed().as_secs()
+                    );
+                    next_heartbeat += heartbeat;
+                }
             }
             Err(err) => {
                 let _ = process.close();
@@ -404,20 +444,36 @@ pub(crate) struct DescendantObservation {
     started: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     exited: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     context: String,
+    traced: bool,
 }
 
 impl DescendantObservation {
-    /// Attach to `pid` when tracing is enabled; `None` otherwise.
-    pub(crate) fn attach(pid: u32, context: &str) -> Option<Self> {
-        if !enabled() {
+    /// Attach to `pid` when tracing is enabled or a nested-Cargo `guard`
+    /// (soldr#2924) needs the tree; `None` when neither does. One observer
+    /// feeds both consumers.
+    pub(crate) fn attach(
+        pid: u32,
+        context: &str,
+        guard: Option<std::sync::Arc<NestedCargoGuard>>,
+    ) -> Option<Self> {
+        let traced = enabled();
+        if !traced && guard.is_none() {
             return None;
         }
-        let subscriber = running_process::observer::observe_launched_tree(
-            pid,
-            running_process::ObserverConfig::with_categories([
-                running_process::EventCategory::Process,
-            ]),
-        );
+        if let Some(guard) = guard.as_ref() {
+            guard.bind_root(pid);
+        }
+        // A guard that walks the tree itself (Linux) needs no observer; only
+        // the timeline does. Without either, the pump is a plain ticker.
+        let needs_observer = traced || !guard.as_ref().is_some_and(|guard| guard.walks_tree());
+        let subscriber = needs_observer.then(|| {
+            running_process::observer::observe_launched_tree(
+                pid,
+                running_process::ObserverConfig::with_categories([
+                    running_process::EventCategory::Process,
+                ]),
+            )
+        });
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let exited = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -430,16 +486,34 @@ impl DescendantObservation {
         // the stop flag between events; `finish` sets the flag, so the
         // join below is bounded by one poll interval.
         let pump = std::thread::spawn(move || loop {
-            match subscriber.recv_timeout(std::time::Duration::from_millis(200)) {
-                Ok(event) => handle_descendant_event(
-                    &pump_context,
-                    &event,
-                    &started_counter,
-                    &exited_counter,
-                ),
+            let next = match subscriber.as_ref() {
+                Some(subscriber) => subscriber.recv_timeout(GUARD_TICK),
+                None => {
+                    std::thread::sleep(GUARD_TICK);
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                }
+            };
+            match next {
+                Ok(event) => {
+                    if traced {
+                        handle_descendant_event(
+                            &pump_context,
+                            &event,
+                            &started_counter,
+                            &exited_counter,
+                        );
+                    }
+                    if let Some(guard) = guard.as_ref() {
+                        guard.observe(&event);
+                        guard.tick();
+                    }
+                }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     if pump_stop.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
+                    }
+                    if let Some(guard) = guard.as_ref() {
+                        guard.tick();
                     }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -451,12 +525,19 @@ impl DescendantObservation {
             started,
             exited,
             context: context.to_string(),
+            traced,
         })
     }
 
     /// Flush trailing exit events, stop the monitor, and emit the summary.
-    /// Call after the observed child has been reaped.
+    /// Call after the observed child has been reaped. Without tracing there
+    /// is no timeline to flush: the pump is told to stop and left to exit on
+    /// its own within one tick, so a guarded build pays no teardown wait.
     pub(crate) fn finish(self) {
+        if !self.traced {
+            self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
         std::thread::sleep(std::time::Duration::from_millis(150));
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = self.pump.join();

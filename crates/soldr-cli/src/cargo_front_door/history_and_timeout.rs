@@ -98,6 +98,7 @@ fn retry_timed_out_cargo_without_cache(
     // soldr#2739: same as the -Zthreads retry -- a fresh-pid soldr -> soldr
     // spawn needs the edge marker. Bounded by the disable flag above.
     command.env(soldr_core::self_relocate::SELF_SPAWN_EDGE_ENV_VAR, "1");
+    nested_cargo_guard::forward_mode_to_front_door_retry(&mut command);
     suppress_windows_console_window(&mut command);
     configure_cargo_child_for_timeout(&mut command);
     let mut child = debug_trace::spawn_traced(&mut command, "soldr no-cache cargo retry")
@@ -745,17 +746,42 @@ fn wait_for_cargo_child_with_heartbeat(
     timeout: Option<Duration>,
     heartbeat: Duration,
 ) -> Result<std::process::ExitStatus, SoldrError> {
+    wait_for_cargo_child_guarded(child, context, timeout, heartbeat, None)
+}
+
+/// Wait for a Cargo child, enforcing the optional wall-clock `timeout` and,
+/// when `guard` is present, the nested-Cargo self-lock guard (soldr#2924):
+/// the wait is sliced to [`nested_cargo_guard::GUARD_TICK`] so a tripped
+/// guard tears the tree down within one tick. Heartbeat lines keep their
+/// `heartbeat` cadence either way.
+fn wait_for_cargo_child_guarded(
+    child: &mut std::process::Child,
+    context: &str,
+    timeout: Option<Duration>,
+    heartbeat: Duration,
+    guard: Option<&nested_cargo_guard::NestedCargoGuard>,
+) -> Result<std::process::ExitStatus, SoldrError> {
     let start = Instant::now();
+    let mut next_heartbeat = heartbeat;
     loop {
+        if let Some(violation) = guard.and_then(nested_cargo_guard::NestedCargoGuard::violation) {
+            return Err(nested_cargo_guard::teardown_std_child(
+                child, context, &violation,
+            ));
+        }
         let elapsed = start.elapsed();
         if let Some(timeout) = timeout {
             if elapsed >= timeout {
                 return Err(cargo_timeout_error(child, context, timeout));
             }
         }
-        let wait_for = timeout
-            .map(|timeout| timeout.saturating_sub(elapsed).min(heartbeat))
-            .unwrap_or(heartbeat);
+        let mut wait_for = next_heartbeat.saturating_sub(elapsed);
+        if let Some(timeout) = timeout {
+            wait_for = wait_for.min(timeout.saturating_sub(elapsed));
+        }
+        if guard.is_some() {
+            wait_for = wait_for.min(nested_cargo_guard::GUARD_TICK);
+        }
         match child
             .wait_timeout(wait_for)
             .map_err(|err| SoldrError::Other(format!("wait on {context} failed: {err}")))?
@@ -771,10 +797,13 @@ fn wait_for_cargo_child_with_heartbeat(
                         return Err(cargo_timeout_error(child, context, timeout));
                     }
                 }
-                eprintln!(
-                    "{}",
-                    cargo_wait_heartbeat_message(context, start.elapsed(), timeout)
-                );
+                if start.elapsed() >= next_heartbeat {
+                    eprintln!(
+                        "{}",
+                        cargo_wait_heartbeat_message(context, start.elapsed(), timeout)
+                    );
+                    next_heartbeat += heartbeat;
+                }
             }
         }
     }
