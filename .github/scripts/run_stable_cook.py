@@ -36,8 +36,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -76,12 +78,134 @@ COOK_ARTIFACT_NOT_INDEXED = 5
 # pass.
 DEFAULT_CHEF_ARGS: tuple[str, ...] = ("--all-targets",)
 
+# Wall-clock ceiling for the whole `soldr cook` invocation. `soldr cook`'s own
+# in-process no-progress watchdog (`SOLDR_COOK_NO_PROGRESS_SECS`, default
+# 900s) fails fast on a genuine stall; this is the outer backstop for the
+# rarer case where soldr itself is wedged and never reaches its own
+# watchdog loop (e.g. blocked before the first cargo-chef phase starts).
+DEFAULT_TIMEOUT_SECS = 5400
+# Grace period between SIGQUIT and SIGTERM, and between SIGTERM and giving up
+# and reporting (the process may still be alive after this; we do not SIGKILL
+# by default so a genuine core dump from SIGQUIT has time to flush).
+TIMEOUT_GRACE_SECS = 30
+# Exit code this wrapper uses for its own outer timeout, distinct from any
+# `soldr cook` exit code and from `REQUIRE_WARM_FAILURE` / `COOK_ARTIFACT_NOT_INDEXED`.
+TIMEOUT_EXIT_CODE = 124
+
 Runner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
 
 
 def default_runner(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    """Run `command` from `cwd`, capturing both streams as text."""
+    """Run `command` from `cwd`, capturing both streams as text.
+
+    Kept for callers (and historical tests) that want simple capture with no
+    live streaming or timeout; `main()`'s own default path is
+    `stream_and_capture`, below, which is what CI actually exercises.
+    """
     return subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
+
+
+def _pump_stream(pipe, sink, chunks: list[str]) -> None:
+    """Copy `pipe` line-by-line into `sink` (live) and `chunks` (captured)."""
+    try:
+        for line in iter(pipe.readline, ""):
+            sink.write(line)
+            sink.flush()
+            chunks.append(line)
+    finally:
+        pipe.close()
+
+
+def _terminate_with_grace(proc: subprocess.Popen, grace_secs: float) -> None:
+    """SIGQUIT (so a stuck child can dump state), then SIGTERM, each with a
+    bounded grace period. Never SIGKILL here -- a hung `soldr` process may be
+    holding a lock or writing a dump the SIGQUIT itself triggered, and a
+    stray SIGKILL would truncate it."""
+    quit_signal = getattr(signal, "SIGQUIT", signal.SIGTERM)
+    try:
+        proc.send_signal(quit_signal)
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=grace_secs)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=grace_secs)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def stream_and_capture(
+    command: list[str],
+    cwd: Path,
+    timeout_secs: float = DEFAULT_TIMEOUT_SECS,
+    stdout_sink=None,
+    stderr_sink=None,
+) -> subprocess.CompletedProcess[str]:
+    """Run `command`, streaming both streams live to `stdout_sink`/
+    `stderr_sink` (defaulting to the real `sys.stdout`/`sys.stderr`) while
+    also capturing them as text, and enforcing `timeout_secs` as a
+    wall-clock ceiling with a SIGQUIT-then-SIGTERM shutdown.
+
+    Unlike `subprocess.run(..., capture_output=True)`, the job log shows
+    output as `soldr cook` produces it rather than only after the process
+    exits (issue: 23-36 minutes of total silence on a slow cook).
+    """
+    stdout_sink = stdout_sink if stdout_sink is not None else sys.stdout
+    stderr_sink = stderr_sink if stderr_sink is not None else sys.stderr
+
+    proc = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    out_chunks: list[str] = []
+    err_chunks: list[str] = []
+    out_thread = threading.Thread(
+        target=_pump_stream, args=(proc.stdout, stdout_sink, out_chunks), daemon=True
+    )
+    err_thread = threading.Thread(
+        target=_pump_stream, args=(proc.stderr, stderr_sink, err_chunks), daemon=True
+    )
+    out_thread.start()
+    err_thread.start()
+
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout_secs)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _terminate_with_grace(proc, TIMEOUT_GRACE_SECS)
+
+    out_thread.join(timeout=TIMEOUT_GRACE_SECS)
+    err_thread.join(timeout=TIMEOUT_GRACE_SECS)
+
+    if timed_out:
+        message = (
+            f"::error title=soldr cook::cook exceeded its {timeout_secs:.0f}s "
+            "wall-clock timeout; sent SIGQUIT then SIGTERM to the process tree"
+        )
+        stderr_sink.write(message + "\n")
+        stderr_sink.flush()
+        returncode = TIMEOUT_EXIT_CODE
+    else:
+        returncode = proc.returncode if proc.returncode is not None else -1
+
+    return subprocess.CompletedProcess(
+        args=command,
+        returncode=returncode,
+        stdout="".join(out_chunks),
+        stderr="".join(err_chunks),
+    )
 
 
 def build_argv(soldr: str, target: str, chef_args: Sequence[str]) -> list[str]:
@@ -182,7 +306,7 @@ def append_summary(lines: Sequence[str]) -> None:
         print(f"run_stable_cook: summary unwritable: {error}", file=sys.stderr)
 
 
-def main(argv: list[str] | None = None, runner: Runner = default_runner) -> int:
+def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--soldr", required=True, help="absolute path to the soldr binary to run"
@@ -212,20 +336,40 @@ def main(argv: list[str] | None = None, runner: Runner = default_runner) -> int:
         default=None,
         help="SOLDR_CACHE_DIR, used only to report the cook archive size",
     )
+    parser.add_argument(
+        "--timeout-secs",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECS,
+        help=(
+            "outer wall-clock ceiling for the whole `soldr cook` invocation "
+            f"(default {DEFAULT_TIMEOUT_SECS}s); only used for the default "
+            "streaming runner, ignored when --runner is injected (tests)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     chef_args = args.chef_args if args.chef_args else list(DEFAULT_CHEF_ARGS)
     command = build_argv(args.soldr, args.target, chef_args)
     repo_root = Path(__file__).resolve().parents[2]
 
+    # The default (production) path streams live and already wrote every
+    # byte to the real stdout/stderr as it arrived, so it must not be
+    # echoed again below. An injected `runner=` (always the case in tests)
+    # returns a fully-captured result with nothing yet printed, so that path
+    # keeps the original capture-then-print behavior.
+    already_streamed = runner is None
     started = time.monotonic()
-    result = runner(command, repo_root)
+    if already_streamed:
+        result = stream_and_capture(command, repo_root, args.timeout_secs)
+    else:
+        result = runner(command, repo_root)
     elapsed_seconds = time.monotonic() - started
 
-    # Capture-then-print (rather than inheriting the parent's streams) so the
-    # step log still holds cook's output in full, in order.
-    sys.stdout.write(result.stdout)
-    sys.stderr.write(result.stderr)
+    if not already_streamed:
+        # Capture-then-print (rather than inheriting the parent's streams) so
+        # the step log still holds cook's output in full, in order.
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
 
     if result.returncode == COOK_SKIPPED_UNCOOKABLE_WORKSPACE:
         print(

@@ -282,11 +282,21 @@ pub(crate) async fn run_cook(args: &[String], cache_enabled: bool) -> Result<i32
         );
     }
 
+    let watchdog_config = crate::cook_watchdog::WatchdogConfig::from_env();
+    let watchdog_paths = SoldrPaths::new()?;
+
     // Phase 1: prepare. Cheap, deterministic, reads only the manifest tree.
     if !parsed.cook_only {
         let prepare_args = build_chef_prepare_args(&ctx);
-        let code =
-            cargo_front_door::run_cargo_front_door(&prepare_args, cache_enabled, false).await?;
+        let prepare_target_dir = resolve_cook_target_dir(&ctx.manifest_dir, &parsed);
+        let code = crate::cook_watchdog::run_with_watchdog(
+            "prepare",
+            prepare_target_dir,
+            &watchdog_paths,
+            watchdog_config,
+            cargo_front_door::run_cargo_front_door(&prepare_args, cache_enabled, false),
+        )
+        .await?;
         if code != 0 {
             return Ok(code);
         }
@@ -422,8 +432,14 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
     // project. Output lands in `target/`.
     let compile_started = Instant::now();
     let cook_args = build_chef_cook_args(&ctx, &parsed);
-    let cook_result =
-        cargo_front_door::run_cargo_front_door(&cook_args, cache_enabled, false).await;
+    let cook_result = crate::cook_watchdog::run_with_watchdog(
+        "cook",
+        cook_target_dir.clone(),
+        &watchdog_paths,
+        watchdog_config,
+        cargo_front_door::run_cargo_front_door(&cook_args, cache_enabled, false),
+    )
+    .await;
 
     // Restore the project to its pre-cook state regardless of how cook exited,
     // so the tree is pristine for every subsequent build step (#566).
@@ -445,8 +461,14 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
             "soldr cook: supplementing portable dependency cook with the exact vendored dependency graph"
         );
         let exact_args = build_exact_cook_args(&parsed);
-        let exact_code =
-            cargo_front_door::run_cargo_front_door(&exact_args, cache_enabled, false).await?;
+        let exact_code = crate::cook_watchdog::run_with_watchdog(
+            "exact",
+            cook_target_dir.clone(),
+            &watchdog_paths,
+            watchdog_config,
+            cargo_front_door::run_cargo_front_door(&exact_args, cache_enabled, false),
+        )
+        .await?;
         if exact_code != 0 {
             return Ok(exact_code);
         }

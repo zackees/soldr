@@ -8,7 +8,10 @@ invoking a real `soldr` binary.
 
 from __future__ import annotations
 
+import io
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -360,6 +363,153 @@ def test_main_unindexed_exit_code_is_distinct_from_require_warm(mod):
     )
     assert status == mod.COOK_ARTIFACT_NOT_INDEXED
     assert mod.COOK_ARTIFACT_NOT_INDEXED != mod.REQUIRE_WARM_FAILURE
+
+
+# --- streaming + timeout (soldr#3043 CI-silence follow-up) --------------------
+
+
+def test_stream_and_capture_writes_output_before_process_exit(mod, tmp_path):
+    """Output must be visible as it arrives, not only after exit."""
+    script = tmp_path / "slow_child.py"
+    script.write_text(
+        "import sys, time\n"
+        "print('first line', flush=True)\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(60)\n"
+        "print('second line', flush=True)\n",
+        encoding="utf-8",
+    )
+
+    out_sink = io.StringIO()
+    err_sink = io.StringIO()
+    seen_before_exit = {}
+
+    def watcher():
+        # Poll the sink for up to a few seconds; the child sleeps 60s, so if
+        # the first line is visible here the process has clearly not exited.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if "first line" in out_sink.getvalue():
+                seen_before_exit["value"] = out_sink.getvalue()
+                return
+            time.sleep(0.05)
+
+    import threading
+
+    watcher_thread = threading.Thread(target=watcher)
+    watcher_thread.start()
+
+    # The child would sleep well past this timeout; use a small timeout so
+    # the test itself stays fast while stream_and_capture's own machinery
+    # (streaming + timeout enforcement) both get exercised.
+    result = mod.stream_and_capture(
+        [sys.executable, str(script)],
+        tmp_path,
+        timeout_secs=1.0,
+        stdout_sink=out_sink,
+        stderr_sink=err_sink,
+    )
+    watcher_thread.join(timeout=5)
+
+    assert "value" in seen_before_exit, "first line never became visible before exit"
+    assert "first line" in out_sink.getvalue()
+    assert result.returncode == mod.TIMEOUT_EXIT_CODE
+
+
+def test_stream_and_capture_returns_captured_text_for_classify(mod, tmp_path):
+    script = tmp_path / "quick_child.py"
+    script.write_text(
+        "print('stdout line')\n"
+        "import sys; print('soldr cook: auto-hydrate activated', file=sys.stderr)\n",
+        encoding="utf-8",
+    )
+    out_sink = io.StringIO()
+    err_sink = io.StringIO()
+    result = mod.stream_and_capture(
+        [sys.executable, str(script)],
+        tmp_path,
+        timeout_secs=30,
+        stdout_sink=out_sink,
+        stderr_sink=err_sink,
+    )
+    assert result.returncode == 0
+    assert "stdout line" in result.stdout
+    assert mod.classify(result.stderr) == ("hydrated", "")
+
+
+def test_stream_and_capture_kills_a_hung_process_on_timeout(mod, tmp_path):
+    script = tmp_path / "hang.py"
+    script.write_text("import time\ntime.sleep(600)\n", encoding="utf-8")
+    started = time.monotonic()
+    result = mod.stream_and_capture(
+        [sys.executable, str(script)],
+        tmp_path,
+        timeout_secs=1.0,
+        stdout_sink=io.StringIO(),
+        stderr_sink=io.StringIO(),
+    )
+    elapsed = time.monotonic() - started
+    assert result.returncode == mod.TIMEOUT_EXIT_CODE
+    # Bounded by the timeout plus grace periods, nowhere near the 600s sleep.
+    assert elapsed < 90
+
+
+def test_main_default_runner_is_stream_and_capture(mod, tmp_path, monkeypatch):
+    """`main()` with no injected `runner=` must go through the streaming
+    default path (production behavior), not the old capture-only default."""
+    calls = {}
+
+    def fake_stream_and_capture(command, cwd, timeout_secs, **kwargs):
+        calls["command"] = command
+        calls["timeout_secs"] = timeout_secs
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="",
+            stderr="soldr cook: auto-hydrate activated\n",
+        )
+
+    monkeypatch.setattr(mod, "stream_and_capture", fake_stream_and_capture)
+    status = mod.main(["--soldr", "/opt/soldr", "--target", "T"])
+    assert status == 0
+    assert calls["command"][0] == "/opt/soldr"
+    assert calls["timeout_secs"] == mod.DEFAULT_TIMEOUT_SECS
+
+
+def test_main_forwards_custom_timeout_secs(mod, monkeypatch):
+    calls = {}
+
+    def fake_stream_and_capture(command, cwd, timeout_secs, **kwargs):
+        calls["timeout_secs"] = timeout_secs
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="",
+            stderr="soldr cook: auto-hydrate activated\n",
+        )
+
+    monkeypatch.setattr(mod, "stream_and_capture", fake_stream_and_capture)
+    mod.main(
+        ["--soldr", "/opt/soldr", "--target", "T", "--timeout-secs", "120"]
+    )
+    assert calls["timeout_secs"] == 120.0
+
+
+def test_main_does_not_double_echo_when_using_the_default_streaming_runner(
+    mod, monkeypatch, capsys
+):
+    def fake_stream_and_capture(command, cwd, timeout_secs, **kwargs):
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="already printed live\n",
+            stderr="soldr cook: auto-hydrate activated\n",
+        )
+
+    monkeypatch.setattr(mod, "stream_and_capture", fake_stream_and_capture)
+    mod.main(["--soldr", "/opt/soldr", "--target", "T"])
+    captured = capsys.readouterr()
+    assert "already printed live" not in captured.out
 
 
 def test_workflow_restores_a_post_fix_cook_cache_generation():

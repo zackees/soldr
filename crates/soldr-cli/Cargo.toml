@@ -95,6 +95,8 @@ filetime = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+# `start_paused = true` for cook_watchdog's non-real-time async tests.
+tokio = { workspace = true, features = ["test-util"] }
 
 # `build.rs` compresses `embed/manifest.json` into the OUT_DIR-resident
 # `manifest.json.zst` that `src/fetch/manifest_v6.rs` includes via
