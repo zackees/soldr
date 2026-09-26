@@ -136,7 +136,8 @@ fn drift_error(
 /// owner and route client the same binary. Any other wrapper is left alone.
 pub fn pin_bare_soldr_wrapper(inherited: &OsStr, current_exe: &Path) -> Option<PathBuf> {
     let bare = inherited == OsStr::new("soldr")
-        || (cfg!(windows) && inherited.eq_ignore_ascii_case("soldr.exe"));
+        || (crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
+            && inherited.eq_ignore_ascii_case("soldr.exe"));
     bare.then(|| current_exe.to_path_buf())
 }
 

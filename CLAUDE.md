@@ -378,8 +378,8 @@ comparison. That is too fragile a mechanism for finding this class.
 
 ## Release Publishing Rules
 
-- **Release PRs must bump the package version**: A release is triggered by merging a PR to `main` that bumps `[workspace.package].version` in `Cargo.toml` and the matching `"version"` in `package.json` to a version that is not already published.
-- **Do not rely on workflow dispatch alone**: Running `Autonomous Release` manually without an unpublished package version will make the prepare job set `should_release=false`, so build and publish jobs will be skipped.
+- **Release PRs must bump the package version**: a release starts from a PR merged to `main` that bumps `[workspace.package].version` in `Cargo.toml` and the matching `"version"` in `package.json` to a version that is not already published. Merging it does **not** release anything by itself.
+- **Releases are two explicit dispatches on one exact SHA** (soldr#3346): dispatch `CI` with `candidate_sha=<merged SHA>` and wait for `Full coverage` to succeed, then dispatch `Autonomous Release` (`release-auto.yml`) with the same `candidate_sha` and `full_ci_run_id=<that run>`. A dispatch whose version is already fully published sets `should_release=false` and skips every job. Re-dispatching the same SHA is the recovery path; completed surfaces are skipped. See [RELEASE.md](RELEASE.md).
 - **Tags are release outputs, not normal agent inputs**: The release workflow derives `vX.Y.Z` from `Cargo.toml` and creates the matching GitHub tag and release when the tag does not already exist. Do not manually create or push `vX.Y.Z` tags unless the owner explicitly asks for a recovery operation.
 - **Check release state before claiming a release is ready**: Verify `Cargo.toml`, `package.json`, PyPI `soldr`, npm `@zackees/soldr`, and `git ls-remote --tags origin vX.Y.Z`. If the candidate version or tag already exists, either bump to the next patch version or stop and report the conflict.
 
