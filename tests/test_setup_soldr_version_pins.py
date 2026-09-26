@@ -109,6 +109,35 @@ def test_pinned_versions_agree() -> None:
     )
 
 
+def test_every_setup_soldr_call_disables_cook_delta() -> None:
+    """Keep expensive compile output out of the archive unless an experiment owns it."""
+    missing_or_enabled: list[str] = []
+    use_line = re.compile(r"^(\s*)(?:-\s*)?uses:\s*zackees/setup-soldr@")
+    for workflow in WORKFLOWS:
+        lines = workflow.read_text(encoding="utf-8").splitlines()
+        for index, line in enumerate(lines):
+            match = use_line.match(line)
+            if not match:
+                continue
+            step_indent = len(match.group(1))
+            block: list[str] = []
+            for candidate in lines[index + 1 :]:
+                stripped = candidate.lstrip()
+                if stripped and not stripped.startswith("#"):
+                    indent = len(candidate) - len(stripped)
+                    if indent <= step_indent and stripped.startswith("-"):
+                        break
+                block.append(candidate)
+            if not re.search(r"^\s*cook-delta:\s*false\s*(?:#.*)?$", "\n".join(block), re.M):
+                missing_or_enabled.append(f"{workflow.name}:{index + 1}")
+
+    assert not missing_or_enabled, (
+        "setup-soldr cook delta must be explicitly disabled to keep per-commit "
+        "archives out of the shared cook-layer budget (soldr#3347 / "
+        "setup-soldr#528): " + ", ".join(missing_or_enabled)
+    )
+
+
 def test_the_pin_is_new_enough_for_catalogue_v2() -> None:
     for name, line, version in _call_sites():
         if version is None or name in EXEMPT:

@@ -80,7 +80,7 @@ def test_prepared_toolchain_and_source_binary_precede_telemetry() -> None:
     assert "toolchain: 1.98.1" in workflow
     assert "soldr cargo build -p soldr-cli --bin soldr" in workflow
     assert (
-        "zackees/setup-soldr/cleanup@d6a0844c40b94f62cf104377b4cc90403c96f6ce"
+        "zackees/setup-soldr/cleanup@4df8db93438594f50505574d9dc8117505d33362"
         in workflow
     )
     assert "run: soldr broker remove" in workflow

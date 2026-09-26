@@ -12,7 +12,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SETUP_SOLDR_REPO = "https://github.com/zackees/setup-soldr.git"
-SETUP_SOLDR_V0_REF = "refs/tags/v0"
+SETUP_SOLDR_RELEASE_REF = "refs/tags/v0.9.80"
 OLD_SETUP_SOLDR_SHA = "1937c19529f3690df5553a36dd33f39ccb20b070"
 SETUP_SOLDR_V0_2_SHA = "13b2e37f3ee8dc6867f08d3b2fe49ece4783dba2"
 SETUP_SOLDR_V0_4_3_SHA = "6c48a0946390a3520a853e30fe417db7465b9119"
@@ -28,21 +28,21 @@ SETUP_SOLDR_USE_RE = re.compile(
     r"\buses:\s*(zackees/setup-soldr(?:/[A-Za-z0-9_.-]+)?)@([^\s#]+)"
 )
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-AUTOFIX_BRANCH_PREFIX = "ci/update-setup-soldr-v0"
-AUTOFIX_ISSUE_TITLE = "Update setup-soldr workflow pin to current @v0"
+AUTOFIX_BRANCH_PREFIX = "ci/update-setup-soldr-v0.9.80"
+AUTOFIX_ISSUE_TITLE = "Update setup-soldr workflow pin to current v0.9.80"
 GIT_LS_REMOTE_TIMEOUT_SECS = 300
 SUBPROCESS_TIMEOUT_SECS = 300
 
 
-def resolve_setup_soldr_v0_sha() -> str:
+def resolve_setup_soldr_release_sha() -> str:
     output = subprocess.check_output(
         [
             "git",
             "ls-remote",
             "--exit-code",
             SETUP_SOLDR_REPO,
-            SETUP_SOLDR_V0_REF,
-            f"{SETUP_SOLDR_V0_REF}^{{}}",
+            SETUP_SOLDR_RELEASE_REF,
+            f"{SETUP_SOLDR_RELEASE_REF}^{{}}",
         ],
         encoding="utf-8",
         timeout=GIT_LS_REMOTE_TIMEOUT_SECS,
@@ -51,7 +51,7 @@ def resolve_setup_soldr_v0_sha() -> str:
     for line in output.splitlines():
         sha, ref = line.split(maxsplit=1)
         refs[ref] = sha
-    return refs.get(f"{SETUP_SOLDR_V0_REF}^{{}}", refs[SETUP_SOLDR_V0_REF])
+    return refs.get(f"{SETUP_SOLDR_RELEASE_REF}^{{}}", refs[SETUP_SOLDR_RELEASE_REF])
 
 
 def executable_workflow_lines(text: str) -> list[str]:
@@ -88,7 +88,7 @@ def workflow_text(repo_root: Path = REPO_ROOT) -> str:
 def verify_setup_soldr_pins(repo_root: Path = REPO_ROOT) -> None:
     text = workflow_text(repo_root)
     refs = setup_soldr_refs(text)
-    current_v0_sha = resolve_setup_soldr_v0_sha()
+    current_release_sha = resolve_setup_soldr_release_sha()
     errors: list[str] = []
 
     for old_sha in [
@@ -111,15 +111,15 @@ def verify_setup_soldr_pins(repo_root: Path = REPO_ROOT) -> None:
             errors.append(
                 f"zackees/setup-soldr must be pinned to a full SHA under repo ruleset: {ref}"
             )
-        elif ref != current_v0_sha:
+        elif ref != current_release_sha:
             errors.append(
-                f"zackees/setup-soldr pin {ref} does not match current @v0 {current_v0_sha}"
+                f"zackees/setup-soldr pin {ref} does not match current v0.9.80 {current_release_sha}"
             )
 
     if errors:
         if truthy_env("SETUP_SOLDR_PIN_AUTOFIX"):
             try:
-                create_or_update_pin_pr(repo_root, current_v0_sha, errors)
+                create_or_update_pin_pr(repo_root, current_release_sha, errors)
             # Best-effort autofix: any failure here must be reported
             # alongside the original pin error, never replace it.
             # pylint: disable-next=broad-exception-caught
@@ -129,7 +129,7 @@ def verify_setup_soldr_pins(repo_root: Path = REPO_ROOT) -> None:
                 )
         raise SystemExit("\n".join(errors))
 
-    print(f"zackees/setup-soldr workflow pins match @v0: {current_v0_sha}")
+    print(f"zackees/setup-soldr workflow pins match v0.9.80: {current_release_sha}")
 
 
 def truthy_env(name: str) -> bool:
@@ -138,15 +138,15 @@ def truthy_env(name: str) -> bool:
 
 
 def create_or_update_pin_pr(
-    repo_root: Path, current_v0_sha: str, errors: list[str]
+    repo_root: Path, current_release_sha: str, errors: list[str]
 ) -> None:
     owner_repo = os.environ["GITHUB_REPOSITORY"]
     owner, repo = owner_repo.split("/", 1)
     token = os.environ["GITHUB_TOKEN"]
     run_url = github_run_url()
-    branch = f"{AUTOFIX_BRANCH_PREFIX}-{current_v0_sha[:12]}"
+    branch = f"{AUTOFIX_BRANCH_PREFIX}-{current_release_sha[:12]}"
 
-    update_workflow_pins(repo_root, current_v0_sha)
+    update_workflow_pins(repo_root, current_release_sha)
     ensure_git_identity(repo_root)
     run(["git", "checkout", "-B", branch], cwd=repo_root)
     run(["git", "add", ".github/workflows"], cwd=repo_root)
@@ -172,7 +172,7 @@ def create_or_update_pin_pr(
         repo,
         token,
         branch=branch,
-        current_v0_sha=current_v0_sha,
+        current_release_sha=current_release_sha,
         errors=errors,
         run_url=run_url,
     )
@@ -180,14 +180,14 @@ def create_or_update_pin_pr(
         owner,
         repo,
         token,
-        current_v0_sha=current_v0_sha,
+        current_release_sha=current_release_sha,
         errors=errors,
         pr_url=pr_url,
         run_url=run_url,
     )
 
 
-def update_workflow_pins(repo_root: Path, current_v0_sha: str) -> None:
+def update_workflow_pins(repo_root: Path, current_release_sha: str) -> None:
     for path in workflow_paths(repo_root):
         lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
         updated_lines = []
@@ -197,7 +197,7 @@ def update_workflow_pins(repo_root: Path, current_v0_sha: str) -> None:
                 continue
             updated_lines.append(
                 SETUP_SOLDR_USE_RE.sub(
-                    lambda match: f"uses: {match.group(1)}@{current_v0_sha}",
+                    lambda match: f"uses: {match.group(1)}@{current_release_sha}",
                     line,
                 )
             )
@@ -226,7 +226,7 @@ def ensure_update_pr(
     token: str,
     *,
     branch: str,
-    current_v0_sha: str,
+    current_release_sha: str,
     errors: list[str],
     run_url: str | None,
 ) -> str:
@@ -242,7 +242,7 @@ def ensure_update_pr(
     body = "\n".join(
         [
             "## Summary",
-            f"- update executable `zackees/setup-soldr` workflow pins to current `@v0` `{current_v0_sha}`",
+            f"- update executable `zackees/setup-soldr` workflow pins to current `@v0.9.80` `{current_release_sha}`",
             "- keep repository SHA-pinning ruleset satisfied while tracking the public major tag",
             "",
             "## Drift Detected",
@@ -274,14 +274,14 @@ def ensure_update_issue(
     repo: str,
     token: str,
     *,
-    current_v0_sha: str,
+    current_release_sha: str,
     errors: list[str],
     pr_url: str,
     run_url: str | None,
 ) -> None:
     issue = find_open_issue(owner, repo, token, AUTOFIX_ISSUE_TITLE)
     if issue is None:
-        body = issue_body(current_v0_sha, errors, pr_url, run_url)
+        body = issue_body(current_release_sha, errors, pr_url, run_url)
         github_api(
             "POST",
             f"/repos/{owner}/{repo}/issues",
@@ -291,20 +291,20 @@ def ensure_update_issue(
         return
 
     body = issue.get("body") or ""
-    if current_v0_sha in body:
+    if current_release_sha in body:
         return
     comments = github_api(
         "GET",
         f"/repos/{owner}/{repo}/issues/{issue['number']}/comments",
         token,
     )
-    if any(current_v0_sha in (comment.get("body") or "") for comment in comments):
+    if any(current_release_sha in (comment.get("body") or "") for comment in comments):
         return
     github_api(
         "POST",
         f"/repos/{owner}/{repo}/issues/{issue['number']}/comments",
         token,
-        {"body": issue_body(current_v0_sha, errors, pr_url, run_url)},
+        {"body": issue_body(current_release_sha, errors, pr_url, run_url)},
     )
 
 
@@ -321,13 +321,13 @@ def find_open_issue(owner: str, repo: str, token: str, title: str) -> dict | Non
 
 
 def issue_body(
-    current_v0_sha: str, errors: list[str], pr_url: str, run_url: str | None
+    current_release_sha: str, errors: list[str], pr_url: str, run_url: str | None
 ) -> str:
     return "\n".join(
         [
-            "`zackees/setup-soldr@v0` moved, but this repository requires full-SHA action pins.",
+            "`zackees/setup-soldr@v0.9.80` moved, but this repository requires full-SHA action pins.",
             "",
-            f"Current `@v0`: `{current_v0_sha}`",
+            f"Current `@v0.9.80`: `{current_release_sha}`",
             f"Update PR: {pr_url}",
             *(["", f"Detected by: {run_url}"] if run_url else []),
             "",

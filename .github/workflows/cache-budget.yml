@@ -53,10 +53,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >-
           uv run --no-project --python 3.13 python
-          .github/scripts/check_cache_budget.py --prune --apply
+          .github/scripts/check_cache_budget.py --require-live --prune --apply
       - name: Repository Actions cache budget
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
           uv run --no-project --python 3.13 python
-          .github/scripts/check_cache_budget.py
+          .github/scripts/check_cache_budget.py --require-live
