@@ -97,6 +97,12 @@ pub fn commit_charge_mb() -> Option<(u64, u64)> {
     None
 }
 
+/// Linux reports available memory through `/proc/meminfo`, which
+/// `HostResourceSnapshot` already reads; this OS-API probe answers `None`.
+pub fn available_physical_memory_bytes() -> Option<u64> {
+    None
+}
+
 /// Resident set size for `pid`, in bytes, read from `/proc/<pid>/status`.
 ///
 /// `VmRSS` (not `/proc/<pid>/statm`'s resident page count) is used because

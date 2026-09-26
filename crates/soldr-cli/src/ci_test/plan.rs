@@ -60,7 +60,15 @@ pub(crate) async fn freeze(
     // one-thread Cargo/compiler policy. Explicit values are frozen verbatim.
     let cargo_build_jobs = inherited_limit("CARGO_BUILD_JOBS");
     let soldr_jobs = inherited_limit("SOLDR_JOBS");
-    let nextest_test_threads = effective_limit("NEXTEST_TEST_THREADS", "1");
+    // soldr#2885: an unset NEXTEST_TEST_THREADS is measured from CPUs and
+    // available memory; an explicit value is frozen verbatim, with a warning
+    // when the measurement says it cannot fit.
+    let test_admission =
+        super::test_admission::resolve(&super::test_admission::AdmissionInputs::from_process());
+    if let Some(warning) = &test_admission.warning {
+        eprintln!("warning: {warning}");
+    }
+    let nextest_test_threads = test_admission.effective_test_threads.clone();
     let dylint_key = canonical_channel(&nightly.channel, &host);
     let dylint_libraries = target_root
         .join("dylint")
@@ -423,6 +431,7 @@ pub(crate) async fn freeze(
             soldr_jobs,
             nextest_test_threads: Some(nextest_test_threads),
         },
+        test_admission,
         test_target_count,
         test_target_warn_threshold,
         dylint_target_trees: DylintTargetTrees {
@@ -639,10 +648,6 @@ fn inherited_limit(name: &str) -> Option<String> {
     // Keep even an empty/invalid explicit value. Cargo/the daemon owns
     // validation; treating it as absent would silently change caller intent.
     std::env::var(name).ok()
-}
-
-fn effective_limit(name: &str, default: &str) -> String {
-    non_empty_env(name).unwrap_or_else(|| default.into())
 }
 
 fn workspace_metadata_fingerprint(root: &Path, config: &[String]) -> Result<String, SoldrError> {

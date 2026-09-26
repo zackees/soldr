@@ -210,6 +210,46 @@ fn nextest_execution_injects_the_cargo_restoring_test_runner() {
 }
 
 #[test]
+fn only_nextest_execution_receives_the_memory_admission_controls() {
+    let directory = tempfile::tempdir().unwrap();
+    let admission = super::super::test_pressure::NextestAdmission::new(
+        directory.path(),
+        super::super::test_admission::resolve(
+            &super::super::test_admission::AdmissionInputs::from_process(),
+        ),
+    );
+    let admission_keys = |stage: &str| -> Vec<String> {
+        let mut command = Command::new("unused");
+        configure_nextest_admission(&mut command, &test_stage(stage), &admission);
+        command
+            .get_envs()
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect()
+    };
+    let execution = admission_keys("nextest");
+    for key in [
+        super::super::test_pressure::ADMISSION_DIR_ENV,
+        super::super::test_pressure::SUMMARY_ENV,
+        super::super::test_pressure::CEILING_ENV,
+    ] {
+        assert!(
+            execution.iter().any(|seen| seen == key),
+            "{key}: {execution:?}"
+        );
+    }
+    for stage in [
+        "nextest-compile",
+        "doctests",
+        "dylint-test-ban_raw_env_flag",
+    ] {
+        assert!(
+            admission_keys(stage).is_empty(),
+            "{stage} must not be gated"
+        );
+    }
+}
+
+#[test]
 fn cargo_restoring_runner_is_not_injected_into_nextest_compilation() {
     let directory = tempfile::tempdir().unwrap();
     let runner = directory.path().join("soldr-ci-test-runner");

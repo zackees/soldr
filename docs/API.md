@@ -680,7 +680,8 @@ period, and platform wrappers. Unset `CARGO_BUILD_JOBS` and `SOLDR_JOBS`
 remain absent from the plan and stage environments, leaving Cargo's default
 jobserver policy and Soldr's canonical compiler admission in control. Explicit
 values are frozen into the plan byte-for-byte. `NEXTEST_TEST_THREADS` alone
-defaults to one test process. Nextest compilation completes before the fork,
+is chosen by ci-test when unset (see "Memory-aware Nextest admission" below).
+Nextest compilation completes before the fork,
 but individual tests intentionally launch nested Cargo/compiler fixtures.
 Those compiles and Dylint share Soldr's canonical shared/exclusive admission;
 their dynamic child-jobserver count is not converted into a global Cargo cap.
@@ -723,11 +724,58 @@ skips Nextest execution, Dylint UI-test execution, and doctests. The archive
 path is printed and included in the JSON plan. Target-directory, profile,
 toolchain, manifest, and release overrides remain rejected.
 
-`--explain-plan` performs no compiler work. Its schema-version-4 JSON freezes
+`--explain-plan` performs no compiler work. Its schema-version-5 JSON freezes
 workspace metadata identity, toolchain/compiler identity, host target, target
 directories, profile, scope/features, Cargo configuration, Rust flags, wrapper
-identity, stage dependencies, resource limits, and metric slots. Human output
-is the compact diagnostic view of the same plan.
+identity, stage dependencies, resource limits, the Nextest admission decision
+(`test_admission`), and metric slots. Human output is the compact diagnostic
+view of the same plan.
+
+#### Memory-aware Nextest admission (soldr#2885)
+
+An unset `NEXTEST_TEST_THREADS` is **measured**, not fixed: ci-test runs the
+smaller of the logical CPU count and the number of per-test memory budgets
+(`SOLDR_CI_TEST_PER_TEST_MEMORY_MIB`, default 1024) that fit in available
+memory after a reserve (`SOLDR_CI_TEST_MEMORY_RESERVE_MIB`, default 2048),
+never fewer than one. Available memory is the *tighter* of host
+`MemAvailable` and finite cgroup headroom; a cgroup `memory.max` of `max`
+(Docker Desktop) is never read as unlimited. Windows uses
+`GlobalMemoryStatusEx` available physical memory and macOS `vm_stat`
+reclaimable pages. When no reading is possible the historical one-test
+fallback applies. `SOLDR_CI_TEST_MEMORY_AVAILABLE_MIB` and
+`SOLDR_CI_TEST_LOGICAL_CPUS` replace the probed values -- for a container
+that cannot see VM-wide pressure, and for reproducible plans.
+
+An explicit `NEXTEST_TEST_THREADS` is authoritative and frozen verbatim
+(including Nextest's `num-cpus` and `-N` spellings). When the measurement says
+it cannot fit, planning prints an actionable warning and records it in
+`test_admission.warning`; the value is never rewritten.
+
+While Nextest executes, a monitor samples available memory. Below one per-test
+budget it creates a pause flag; the Nextest wrapper
+(`.github/scripts/nextest_timeout_wrapper.py`, every Unix test) then holds
+tests that have not started yet while other tests drain. Admissions resume
+once two budgets are available again, transitions are at least two seconds
+apart, and paused tests are released one at a time. A paused test never waits
+when nothing else is running, and waits at most
+`SOLDR_NEXTEST_ADMISSION_MAX_WAIT_SECS` (default 30) because the wait spends
+its own Nextest timeout.
+
+Each test's process tree also has a memory ceiling
+(`SOLDR_CI_TEST_TEST_MEMORY_CEILING_MIB`, default 4096, `0` disables). On
+Linux with a delegated cgroup v2 root named by `SOLDR_NEXTEST_CGROUP_ROOT` the
+kernel enforces it (`memory.max`, `memory.oom.group`) on a per-test leaf;
+otherwise the wrapper samples the tree's resident memory (procfs on Linux,
+`ps` on macOS, so a fast allocation can overshoot between samples) and kills
+only that tree. A test that crosses its ceiling, is OOM-killed in its cgroup,
+cannot be started (`ENOMEM`/`EAGAIN`), or fails while printing an
+allocation-failure signature is reported as an **infrastructure failure, not
+an assertion**: the wrapper prints a `nextest memory:` diagnostic naming the
+test, the requested/effective concurrency, the memory source and limit,
+memory available at admission and at failure, the tree's peak RSS, and PID
+pressure, then exits `75` (`EX_TEMPFAIL`). ci-test lists every such test after
+Nextest exits. Windows does not run the wrapper: Nextest puts each Windows test
+in its own Job Object, and no per-test memory ceiling is applied there.
 
 ### `soldr lint ci`
 

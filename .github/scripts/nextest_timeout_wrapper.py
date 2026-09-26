@@ -14,6 +14,10 @@ import time
 from pathlib import Path
 from typing import BinaryIO
 
+# soldr#2885: memory-aware admission and memory-failure isolation. A sibling
+# module, so its logic is unit-testable and this wrapper stays a thin runner.
+from nextest_memory_guard import OutputTail, ProcessGuard
+
 DIAGNOSTIC_TIMEOUT_SECS = 12
 CHILD_EXIT_GRACE_SECS = 8
 CHILD_EXIT_GRACE_ENV = "SOLDR_NEXTEST_CHILD_EXIT_GRACE_SECS"
@@ -61,7 +65,9 @@ def _child_exit_grace() -> float:
     return value if value > 0 else CHILD_EXIT_GRACE_SECS
 
 
-def _pump(source: BinaryIO, destination: BinaryIO) -> None:
+def _pump(
+    source: BinaryIO, destination: BinaryIO, tail: OutputTail | None = None
+) -> None:
     """Copy a child pipe through to Nextest until EOF."""
 
     try:
@@ -70,6 +76,8 @@ def _pump(source: BinaryIO, destination: BinaryIO) -> None:
             while chunk := read_available(64 * 1024):
                 destination.write(chunk)
                 destination.flush()
+                if tail is not None:
+                    tail.feed(chunk)
         except (OSError, ValueError):
             pass
     finally:
@@ -238,6 +246,7 @@ def run(command: list[str]) -> int:
 
     parent_pid = os.getpid()
     child_exit_grace = _child_exit_grace()
+    guard = ProcessGuard(command, os.environ)
     preexec_fn = None
     creationflags = 0
     if sys.platform.startswith("linux"):
@@ -257,7 +266,7 @@ def run(command: list[str]) -> int:
     # Waiting and pipe closure are explicitly supervised below, so ownership
     # intentionally spans the whole run instead of a Popen context block.
     private_tmpdir = _private_tmpdir()
-    child_env = dict(os.environ)
+    child_env = guard.child_env(dict(os.environ))
     if private_tmpdir is not None:
         child_env["TMPDIR"] = private_tmpdir
     # soldr#3195: a test must never download a Rust toolchain. Arm soldr's own
@@ -270,6 +279,9 @@ def run(command: list[str]) -> int:
     # whose Cargo target directory holds it -- the suite's own target tree.
     if command:
         child_env.setdefault(FORBID_TARGET_CONTAINING_ENV, os.path.abspath(command[0]))
+    # soldr#2885: wait here while soldr ci-test reports memory pressure, and
+    # hold an active-test slot for the controller from now until the test exits.
+    guard.before_spawn()
     try:
         # pylint: disable-next=consider-using-with,subprocess-popen-preexec-fn
         child = subprocess.Popen(
@@ -277,19 +289,30 @@ def run(command: list[str]) -> int:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=child_env,
-            preexec_fn=preexec_fn,
+            preexec_fn=guard.wrap_preexec(preexec_fn),
             creationflags=creationflags,
         )
+    except OSError as error:
+        # ENOMEM/EAGAIN while forking is host exhaustion, not a test failure:
+        # name it instead of surfacing a wrapper traceback.
+        _remove_private_tmpdir(private_tmpdir)
+        return guard.spawn_failed(error)
     except BaseException:
         _remove_private_tmpdir(private_tmpdir)
+        guard.finish(1, terminated=True)
         raise
+    guard.after_spawn(child.pid)
     assert child.stdout is not None and child.stderr is not None
     pumps = [
         threading.Thread(
-            target=_pump, args=(child.stdout, sys.stdout.buffer), daemon=True
+            target=_pump,
+            args=(child.stdout, sys.stdout.buffer, guard.stdout_tail),
+            daemon=True,
         ),
         threading.Thread(
-            target=_pump, args=(child.stderr, sys.stderr.buffer), daemon=True
+            target=_pump,
+            args=(child.stderr, sys.stderr.buffer, guard.stderr_tail),
+            daemon=True,
         ),
     ]
     for pump in pumps:
@@ -359,7 +382,7 @@ def run(command: list[str]) -> int:
         else:
             _write_stderr("=== nextest timeout: stdout/stderr drained ===\n")
     _remove_private_tmpdir(private_tmpdir)
-    return returncode
+    return guard.finish(returncode, terminated=termination_requested)
 
 
 def main(argv: list[str] | None = None) -> int:

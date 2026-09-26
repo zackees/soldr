@@ -9,7 +9,11 @@ use serde::Serialize;
 // Version 4 adds an explicit target, compile-only mode, and an archive path.
 // Unset Cargo/Soldr job limits remain JSON null: ci-test leaves them untouched
 // and the canonical Cargo/daemon schedulers retain ownership of concurrency.
-pub(crate) const PLAN_SCHEMA_VERSION: u32 = 4;
+// Version 5 (soldr#2885) adds `test_admission`: an unset NEXTEST_TEST_THREADS
+// is measured from CPUs and available memory instead of frozen at one, so the
+// same `resource_limits.nextest_test_threads` value can now differ by host and
+// the plan carries the measurements it came from.
+pub(crate) const PLAN_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OutputFormat {
@@ -79,6 +83,10 @@ pub(crate) struct CiTestPlan {
     pub(crate) subsumed_steps: Vec<SubsumedStep>,
     pub(crate) cook: CookDecision,
     pub(crate) resource_limits: ResourceLimits,
+    /// How `resource_limits.nextest_test_threads` was chosen, the memory
+    /// envelope it was measured against, and the run-time pressure marks and
+    /// per-test ceiling Nextest execution enforces (soldr#2885).
+    pub(crate) test_admission: super::test_admission::TestAdmission,
     /// Integration-test *link targets* in the workspace, and the count above
     /// which planning shouts (soldr#2936).
     ///
