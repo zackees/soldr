@@ -32,6 +32,9 @@ fn run(case: &Case) -> (Output, String) {
     command
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        // soldr cargo builds must not write into the target directory that
+        // contains this integration-test binary (soldr#3203).
+        .env("CARGO_TARGET_DIR", cache_root.join("target"))
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env_remove("SOLDR_ZCCACHE_MODE")
