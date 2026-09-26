@@ -1,6 +1,11 @@
 # soldr#3295: one-off Windows guest go/no-go. Never a push, PR, release, or
 # scheduled gate. The established Linux MSVC producer supplies the archive and
 # a verified target-native cargo-nextest.exe; this workflow only replays it.
+#
+# With measure_restore, the cold job also writes the installed guest disk as a
+# same-run artifact (retention 1 day), the restore job boots it on a fresh
+# runner to measure what a cached image would cost, and the last job deletes
+# it. The disk image never enters the repository's Actions cache.
 name: Windows guest feasibility probe
 
 on:
@@ -14,9 +19,15 @@ on:
         options:
           - server-core
           - win11-enterprise
+      measure_restore:
+        description: Export the installed disk and time a restored boot on a fresh runner
+        type: boolean
+        default: true
 
 permissions:
   contents: read
+  # gh reads the live Actions-cache usage and downloads this run's disk image.
+  actions: read
 
 jobs:
   cross-build:
@@ -27,20 +38,28 @@ jobs:
       source_ref: ${{ github.sha }}
 
   guest:
-    name: Windows Server Core guest on ubuntu-24.04
+    name: Windows ${{ inputs.guest_edition }} cold guest on ubuntu-24.04
     needs: cross-build
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 150
+    outputs:
+      disk_exported: ${{ steps.probe.outputs.disk_exported }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPORT_DIR: /mnt/soldr-windows-guest-export-${{ github.run_id }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: Download Linux MSVC cross-build artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: windows-guest-probe-msvc
           path: artifact
       - name: Boot guest, replay native archive, and measure feasibility
+        id: probe
         run: >-
           uv run --no-project --python 3.13 python ci/windows_guest_probe.py
+          --mode cold
           --repo "$GITHUB_WORKSPACE"
           --artifact "$GITHUB_WORKSPACE/artifact"
           --scratch "/mnt/soldr-windows-guest-${{ github.run_id }}"
@@ -48,6 +67,8 @@ jobs:
           --run-id "${{ github.run_id }}"
           --guest-edition "${{ inputs.guest_edition }}"
           --timeout-seconds 3600
+          --export-disk "${{ inputs.measure_restore }}"
+          --export-dir "$EXPORT_DIR"
       - name: Upload probe measurements and guest log
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -62,3 +83,76 @@ jobs:
             ${{ runner.temp }}/windows-guest-vc-redist.log
           if-no-files-found: warn
           retention-days: 7
+      - name: Upload installed guest disk for the restore job
+        if: steps.probe.outputs.disk_exported == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-guest-disk-image
+          path: ${{ env.EXPORT_DIR }}/windows-guest-disk.tar.zst
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Remove exported guest disk
+        if: always()
+        run: rm -rf -- "$EXPORT_DIR"
+
+  restore:
+    name: Windows ${{ inputs.guest_edition }} restored-image boot on ubuntu-24.04
+    needs: [cross-build, guest]
+    if: inputs.measure_restore && needs.guest.outputs.disk_exported == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+      - name: Download Linux MSVC cross-build artifact for the restored guest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-guest-probe-msvc
+          path: artifact
+      - name: Restore installed disk, boot it, and replay native archive
+        run: >-
+          uv run --no-project --python 3.13 python ci/windows_guest_probe.py
+          --mode restore
+          --repo "$GITHUB_WORKSPACE"
+          --artifact "$GITHUB_WORKSPACE/artifact"
+          --scratch "/mnt/soldr-windows-guest-${{ github.run_id }}-restore"
+          --output "$RUNNER_TEMP/windows-guest-restore-report.json"
+          --run-id "${{ github.run_id }}-restore"
+          --guest-edition "${{ inputs.guest_edition }}"
+          --timeout-seconds 2400
+          --disk-run-id "${{ github.run_id }}"
+      - name: Upload restored-image measurements and guest log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-guest-probe-restore-measurements
+          path: |
+            ${{ runner.temp }}/windows-guest-restore-report.json
+            ${{ runner.temp }}/windows-guest-restore-report.md
+            ${{ runner.temp }}/windows-guest-restore-raw-result.json
+            ${{ runner.temp }}/windows-guest-restore-container.log
+            ${{ runner.temp }}/windows-guest-restore-nextest.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  delete-disk:
+    name: Delete the run's guest disk artifact
+    needs: [guest, restore]
+    if: always() && needs.guest.outputs.disk_exported == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+      - name: Delete guest disk artifact
+        run: >-
+          uv run --no-project --python 3.13 python ci/windows_guest_probe.py
+          --mode delete-artifact
+          --disk-run-id "${{ github.run_id }}"

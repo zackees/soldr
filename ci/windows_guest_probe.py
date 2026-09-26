@@ -3,6 +3,17 @@
 The Linux cross-build is owned by _ci-cross-build-linux.yml. This helper only
 stages its verified archive and native nextest, boots an ephemeral guest, and
 turns measurements (including an honest no-go) into a durable summary.
+
+Modes:
+
+* ``cold`` installs a fresh evaluation guest, replays the archive, and (with
+  ``--export-disk true``) shuts it down cleanly and writes the installed disk
+  as a sparse ``tar.zst`` for the restore job.
+* ``restore`` downloads that same-run disk artifact on a fresh runner,
+  extracts it, boots it without setup media, and replays the archive again.
+  This measures what a cached installed image would cost, without ever
+  writing the image to the repository's Actions cache.
+* ``delete-artifact`` removes the run's disk artifact once restore finished.
 """
 
 from __future__ import annotations
@@ -37,6 +48,23 @@ MAX_VC_REDIST_BYTES = 64 * 1024**2
 MINGIT_URL = "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/MinGit-2.55.0.5-64-bit.zip"
 MINGIT_SHA256 = "56d7b226b7693196cfc71fef26568f536c4a021ab6c37ff2db4287bed908e96e"
 MAX_MINGIT_BYTES = 64 * 1024**2
+# A cold or restored guest must reach a usable shell inside this budget for
+# its path to be a go (soldr#3295: "if the cold install takes under ~10 min,
+# don't cache").
+SHELL_BUDGET_SECONDS = 600
+DISK_ARTIFACT = "windows-guest-disk-image"
+DISK_EXPORT_NAME = "windows-guest-disk.tar.zst"
+# dockur writes windows.boot when a guest shuts down after booting from its
+# installed disk; without it a restore would silently reinstall from media.
+DOCKUR_INSTALLED_MARKER = "windows.boot"
+COLD_MARKERS = (
+    "guest-shell-ready.txt",
+    "runtime-install-start.txt",
+    "runtime-ready.txt",
+    "git-install-start.txt",
+    "tools-ready.txt",
+)
+WARM_MARKERS = ("warm-guest-shell-ready.txt", "warm-tools-ready.txt")
 CAPABILITY_NAMES = (
     "powershell",
     "job_objects",
@@ -47,6 +75,7 @@ CAPABILITY_NAMES = (
     "vcruntime140",
     "vcruntime140_after",
     "git",
+    "warm_task",
 )
 
 
@@ -57,14 +86,18 @@ def make_report(
     guest: dict[str, Any] | None,
     disk: dict[str, Any],
     guest_edition: str = "server-core",
+    cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Never turn missing evidence into a success or a measured zero."""
     measured = {
         name: timings.get(name)
         for name in (
             "iso_download_seconds",
+            "media_prep_seconds",
             "install_seconds",
             "boot_seconds",
+            "install_plus_first_boot_seconds",
+            "firmware_disk_boots",
             "runtime_prep_seconds",
             "runtime_install_seconds",
             "git_prep_seconds",
@@ -107,7 +140,7 @@ def make_report(
         reason = "Native nextest replay did not pass a nonempty test set"
     elif measured["usable_shell_seconds"] is None:
         reason = "Install and first-boot timing could not be measured"
-    elif measured["usable_shell_seconds"] > 600:
+    elif measured["usable_shell_seconds"] > SHELL_BUDGET_SECONDS:
         reason = "Cold boot exceeded the ten-minute nightly budget"
     else:
         reason = "Cold boot and native replay fit the probe budget"
@@ -122,6 +155,7 @@ def make_report(
         "host": host,
         "timings": measured,
         "disk": disk,
+        "cache": cache or {"cache_viable": "not-measured"},
         "nextest": nextest,
         "guest_error": guest_error or None,
         "capabilities": capabilities,
@@ -129,6 +163,174 @@ def make_report(
         "dockur_version": GUEST_EDITIONS[guest_edition][0],
         "image": IMAGE,
     }
+
+
+def make_restore_report(
+    *,
+    host: dict[str, Any],
+    timings: dict[str, Any],
+    guest: dict[str, Any] | None,
+    cache: dict[str, Any],
+    guest_edition: str = "server-core",
+) -> dict[str, Any]:
+    """Judge the cached-image path: restore, boot, replay, and budget together."""
+    measured = {
+        name: timings.get(name)
+        for name in (
+            "restore_download_seconds",
+            "restore_extract_seconds",
+            "restored_boot_seconds",
+            "restored_firmware_to_shell_seconds",
+            "restored_replay_seconds",
+        )
+    }
+    parts = (
+        measured["restore_download_seconds"],
+        measured["restore_extract_seconds"],
+        measured["restored_boot_seconds"],
+    )
+    measured["restore_to_shell_seconds"] = (
+        float(sum(part for part in parts if isinstance(part, (int, float))))
+        if all(isinstance(part, (int, float)) for part in parts)
+        else None
+    )
+    nextest = (guest or {}).get("nextest") or {"status": "not-run"}
+    guest_error = str((guest or {}).get("error") or "")[:500]
+    reasons: list[str] = []
+    if host.get("probe_error"):
+        reasons.append(f"Probe infrastructure error: {host['probe_error']}")
+    elif not host.get("kvm"):
+        reasons.append("KVM is unavailable on this runner")
+    if timings.get("reinstalled"):
+        reasons.append("Restored disk reinstalled Windows from setup media")
+    if not reasons and not guest:
+        reasons.append("Restored image did not reach the warm probe within budget")
+    if guest_error:
+        reasons.append(f"Warm guest probe failed: {guest_error}")
+    if guest and (
+        nextest.get("exit_code") != 0
+        or nextest.get("run", 0) <= 0
+        or nextest.get("failed", 0) != 0
+    ):
+        reasons.append("Native nextest replay on the restored image did not pass")
+    if cache.get("cache_viable") == "no":
+        reasons.append("Compressed image does not fit the repository cache budget")
+    total = measured["restore_to_shell_seconds"]
+    if total is None and not reasons:
+        reasons.append("Restore-to-shell time could not be measured")
+    elif total is not None and total > SHELL_BUDGET_SECONDS:
+        reasons.append("Restore plus boot exceeded the ten-minute nightly budget")
+    return {
+        "schema_version": 1,
+        "mode": "restore",
+        "decision": "no-go" if reasons else "go",
+        "reason": reasons[0] if reasons else "Restored image boot and replay fit",
+        "reasons": reasons,
+        "host": host,
+        "timings": measured,
+        "reinstalled": timings.get("reinstalled"),
+        "cache": cache,
+        "nextest": nextest,
+        "guest_error": guest_error or None,
+        "capabilities": {
+            name: (guest or {}).get("capabilities", {}).get(name, "not-measured")
+            for name in CAPABILITY_NAMES
+        },
+        "edition": GUEST_EDITIONS[guest_edition][2],
+        "dockur_version": GUEST_EDITIONS[guest_edition][0],
+        "image": IMAGE,
+    }
+
+
+def cache_budget(
+    compressed_bytes: int | None,
+    manifest: dict[str, Any],
+    live_usage_bytes: int | None,
+) -> dict[str, Any]:
+    """Place an installed-disk entry against ci/cache-ownership.json's budget.
+
+    The families already sum to ``total_max_bytes``, so a new entry fits only
+    in unallocated room; anything larger must evict or defund existing
+    families. The live projection uses GitHub's reported usage when available.
+    """
+    budget = manifest.get("budget") or {}
+    total = int(budget.get("total_max_bytes") or 0)
+    fail_total = int(budget.get("fail_total_bytes") or 0)
+    families = budget.get("families") or {}
+    allocated = sum(
+        int(family.get("max_bytes") or 0)
+        for family in families.values()
+        if isinstance(family, dict)
+    )
+    unallocated = max(0, total - allocated)
+    result: dict[str, Any] = {
+        "compressed_bytes": compressed_bytes,
+        "budget_total_max_bytes": total,
+        "budget_fail_total_bytes": fail_total,
+        "unallocated_bytes": unallocated,
+        "live_usage_bytes": live_usage_bytes,
+        "fits_unallocated": None,
+        "share_of_total_budget": None,
+        "projected_live_bytes": None,
+        "projected_over_fail_total": None,
+        "cache_viable": "not-measured",
+    }
+    if compressed_bytes is None:
+        return result
+    result["fits_unallocated"] = compressed_bytes <= unallocated
+    if total:
+        result["share_of_total_budget"] = round(compressed_bytes / total, 3)
+    if live_usage_bytes is not None:
+        projected = live_usage_bytes + compressed_bytes
+        result["projected_live_bytes"] = projected
+        result["projected_over_fail_total"] = projected > fail_total
+    result["cache_viable"] = "unproven-restore" if result["fits_unallocated"] else "no"
+    return result
+
+
+def _live_cache_usage(repository: str | None) -> int | None:
+    """GitHub's live Actions-cache usage, or None when the API is unavailable."""
+    if not repository:
+        return None
+    try:
+        usage = _run(
+            "gh",
+            "api",
+            f"repos/{repository}/actions/cache/usage",
+            "--jq",
+            ".active_caches_size_in_bytes",
+            check=False,
+            capture=True,
+        )
+    except OSError:
+        return None
+    try:
+        return int(usage.stdout.strip()) if usage.returncode == 0 else None
+    except ValueError:
+        return None
+
+
+def delete_run_artifact(repository: str, run_id: str, name: str) -> int:
+    """Delete this run's named artifact(s); return how many were removed."""
+    listing = _run(
+        "gh",
+        "api",
+        f"repos/{repository}/actions/runs/{run_id}/artifacts",
+        "--jq",
+        f'.artifacts[] | select(.name == "{name}") | .id',
+        capture=True,
+    )
+    removed = 0
+    for artifact_id in listing.stdout.split():
+        _run(
+            "gh",
+            "api",
+            "-X",
+            "DELETE",
+            f"repos/{repository}/actions/artifacts/{artifact_id}",
+        )
+        removed += 1
+    return removed
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -185,7 +387,9 @@ def _fetch_mingit(shared: Path, *, expected_sha256: str = MINGIT_SHA256) -> None
     )
 
 
-def _stage_payload(repo: Path, artifact: Path, shared: Path, oem: Path) -> Path:
+def _stage_payload(
+    repo: Path, artifact: Path, shared: Path, oem: Path, *, fetch_tools: bool = True
+) -> Path:
     archive = artifact / "windows-guest-probe-msvc-tests.tar.zst"
     nextest = artifact / "package" / "tools" / "cargo-nextest.exe"
     if not archive.is_file() or not nextest.is_file():
@@ -198,8 +402,11 @@ def _stage_payload(repo: Path, artifact: Path, shared: Path, oem: Path) -> Path:
     shutil.copy2(nextest, shared / "cargo-nextest.exe")
     shutil.copy2(repo / "ci" / "windows_guest_probe.ps1", oem / "probe.ps1")
     shutil.copy2(repo / "ci" / "windows_guest_probe.bat", oem / "install.bat")
-    _fetch_vc_redist(shared)
-    _fetch_mingit(shared)
+    if fetch_tools:
+        # A restored image already has both installed; the warm probe
+        # verifies that instead of reinstalling them.
+        _fetch_vc_redist(shared)
+        _fetch_mingit(shared)
     workspace = shared / "workspace"
     workspace.mkdir()
     # Nextest requires a real workspace manifest at --workspace-remap. Use the
@@ -216,7 +423,7 @@ def _stage_payload(repo: Path, artifact: Path, shared: Path, oem: Path) -> Path:
     return archive
 
 
-def _disk_measure(storage: Path) -> dict[str, Any]:
+def _disk_measure(storage: Path, *, compress: bool = True) -> dict[str, Any]:
     images = [
         path
         for path in storage.rglob("*")
@@ -230,6 +437,12 @@ def _disk_measure(storage: Path) -> dict[str, Any]:
             "cache_viable": "not-measured",
         }
     image = max(images, key=lambda path: path.stat().st_size)
+    if not compress:
+        # The export already measured the compressed size of this storage.
+        return {
+            "image_bytes": image.stat().st_size,
+            "allocated_bytes": image.stat().st_blocks * 512,
+        }
     # Measure a compressed stream, without creating a multi-GB cache artifact.
     with subprocess.Popen(
         ("zstd", "-q", "-T0", "-3", "-c", str(image)), stdout=subprocess.PIPE
@@ -248,65 +461,198 @@ def _disk_measure(storage: Path) -> dict[str, Any]:
     }
 
 
-def _phase_timings(
-    log: str, started: float, shell_ready: float | None
-) -> dict[str, float | None]:
-    """Use dockur's own phase announcements; report absent boundaries as unknown."""
-    events: dict[str, float] = {}
+def _log_events(log: str) -> list[tuple[float, str]]:
+    """(host timestamp, lowercased message) for each `docker logs -t` line."""
+    events = []
     for line in log.splitlines():
         try:
             timestamp, message = line.split(" ", 1)
             when = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
         except ValueError:
             continue
-        lowered = message.lower()
+        events.append((when, message.lower()))
+    return events
+
+
+def _firmware_boot(message: str) -> str | None:
+    """Classify an OVMF `BdsDxe: starting BootNNNN` line by its boot device.
+
+    The firmware prints one of these per VM boot, so they are hardware-level
+    phase boundaries: setup media (DVD-ROM) for Windows Setup, then the
+    installed disk's Windows Boot Manager for every reboot after that.
+    """
+    if "bdsdxe: starting" not in message:
+        return None
+    if "dvd-rom" in message:
+        return "setup-media"
+    if "windows boot manager" in message:
+        return "disk"
+    return None
+
+
+def _phase_timings(
+    log: str, started: float, shell_ready: float | None
+) -> dict[str, float | None]:
+    """Use dockur's and the firmware's own announcements; absent means unknown."""
+    events: dict[str, float] = {}
+    disk_boots: list[float] = []
+    for when, lowered in _log_events(log):
         if "downloading" in lowered and ("windows" in lowered or "server" in lowered):
             events.setdefault("download_start", when)
         if "extracting" in lowered and "image" in lowered:
             events.setdefault("download_end", when)
         if "booting windows" in lowered and "qemu" in lowered:
-            events.setdefault("install_start", when)
+            events.setdefault("qemu_start", when)
+        boot = _firmware_boot(lowered)
+        if boot == "setup-media":
+            events.setdefault("setup_media_boot", when)
+        elif boot == "disk":
+            disk_boots.append(when)
     download_end = events.get("download_end")
-    install_start = events.get("install_start")
+    qemu_start = events.get("qemu_start")
+    setup_media = events.get("setup_media_boot")
+    # Only disk boots after Setup started from media and before the OEM shell
+    # marker belong to the install; a later reboot is not the first boot.
+    installed_boots = [
+        when
+        for when in disk_boots
+        if setup_media is not None
+        and when >= setup_media
+        and (shell_ready is None or when <= shell_ready)
+    ]
+    last_disk = installed_boots[-1] if installed_boots else None
     return {
         "iso_download_seconds": (
             max(0, download_end - events["download_start"])
             if download_end and "download_start" in events
             else None
         ),
-        # The OEM hook runs on the first usable boot. Dockur exposes no
-        # trustworthy boundary between unattended install and that boot, so
-        # report the combined interval rather than invent two measurements.
-        "install_seconds": (
-            max(0, shell_ready - install_start)
-            if shell_ready and install_start
-            else None
+        "media_prep_seconds": (
+            max(0, qemu_start - download_end) if qemu_start and download_end else None
         ),
-        "boot_seconds": None,
+        # Windows Setup: from booting setup media to the final reboot into
+        # the installed disk (WinPE copy plus the specialize pass).
+        "install_seconds": (
+            max(0, last_disk - setup_media) if setup_media and last_disk else None
+        ),
+        # First boot of the installed OS: OOBE, auto-logon, and dockur's
+        # FirstLogonCommands until the OEM probe's shell marker.
+        "boot_seconds": (
+            max(0, shell_ready - last_disk) if shell_ready and last_disk else None
+        ),
+        "install_plus_first_boot_seconds": (
+            max(0, shell_ready - qemu_start) if shell_ready and qemu_start else None
+        ),
+        "firmware_disk_boots": len(installed_boots) if setup_media else None,
         "observed_total_seconds": (
             max(0, shell_ready - started) if shell_ready else None
         ),
     }
 
 
+def _restore_timings(
+    log: str, started: float, shell_ready: float | None
+) -> dict[str, Any]:
+    """Boot timings of a restored disk; any setup-media boot means reinstall."""
+    reinstalled = False
+    first_disk = None
+    for when, lowered in _log_events(log):
+        boot = _firmware_boot(lowered)
+        if boot == "setup-media":
+            reinstalled = True
+        elif boot == "disk" and first_disk is None:
+            first_disk = when
+    return {
+        "reinstalled": reinstalled,
+        "restored_boot_seconds": (
+            max(0, shell_ready - started) if shell_ready else None
+        ),
+        "restored_firmware_to_shell_seconds": (
+            max(0, shell_ready - first_disk)
+            if shell_ready and first_disk and not reinstalled
+            else None
+        ),
+    }
+
+
+def _export_disk(storage: Path, destination: Path) -> dict[str, Any]:
+    """Write dockur's installed storage (minus setup media) as sparse tar.zst."""
+    if not (storage / DOCKUR_INSTALLED_MARKER).exists():
+        raise OSError(
+            f"dockur never wrote {DOCKUR_INSTALLED_MARKER}; refusing to export an "
+            "unfinished install"
+        )
+    began = time.monotonic()
+    # Docker created the storage files as root; read them with sudo, but
+    # write the archive as the runner so normal cleanup can remove it.
+    with subprocess.Popen(
+        (
+            "sudo",
+            "tar",
+            "--sparse",
+            "--exclude=*.iso",
+            "--exclude=./tmp",
+            "-C",
+            str(storage),
+            "-cf",
+            "-",
+            ".",
+        ),
+        stdout=subprocess.PIPE,
+    ) as tar:
+        with destination.open("wb") as output:
+            zstd = subprocess.run(
+                ("zstd", "-q", "-T0", "-3", "-c"),
+                stdin=tar.stdout,
+                stdout=output,
+                check=False,
+            )
+        tar_status = tar.wait()
+    if tar_status != 0 or zstd.returncode != 0:
+        raise OSError("disk export failed (tar or zstd exited non-zero)")
+    return {
+        "export_bytes": destination.stat().st_size,
+        "export_seconds": time.monotonic() - began,
+    }
+
+
+def _extract_disk(archive: Path, storage: Path) -> float:
+    """Restore dockur storage from the exported tar.zst; return seconds."""
+    began = time.monotonic()
+    with subprocess.Popen(
+        ("zstd", "-q", "-d", "-c", str(archive)), stdout=subprocess.PIPE
+    ) as zstd:
+        tar = subprocess.run(
+            ("tar", "--sparse", "-xf", "-", "-C", str(storage)),
+            stdin=zstd.stdout,
+            check=False,
+        )
+        zstd_status = zstd.wait()
+    if zstd_status != 0 or tar.returncode != 0:
+        raise OSError("disk restore failed (zstd or tar exited non-zero)")
+    return time.monotonic() - began
+
+
 def _write_summary(report: dict[str, Any], path: Path) -> None:
+    title = "restored-image boot" if report.get("mode") == "restore" else "cold boot"
     lines = [
-        "## Windows guest probe (#3295)",
+        f"## Windows guest probe (#3295): {title}",
         "",
         f"**{report['decision'].upper()}** — {report['reason']}",
         "",
     ]
-    lines.extend(["| Measure | Result |", "|---|---|"])
+    for reason in report.get("reasons", [])[1:]:
+        lines.append(f"- also: {reason}")
+    lines.extend(["", "| Measure | Result |", "|---|---|"])
     lines.append(f"| edition | {report['edition']} |")
     lines.append(f"| dockur_version | {report['dockur_version']} |")
-    for key, value in report["timings"].items():
-        lines.append(f"| {key} | {value if value is not None else 'not measured'} |")
-    for key, value in report["disk"].items():
-        lines.append(
-            f"| disk.{key} | {value if value is not None else 'not measured'} |"
-        )
-    for key, value in report["nextest"].items():
-        lines.append(f"| nextest.{key} | {value} |")
+    if "reinstalled" in report:
+        lines.append(f"| reinstalled | {report['reinstalled']} |")
+    for section in ("timings", "disk", "cache", "nextest"):
+        prefix = "" if section == "timings" else f"{section}."
+        for key, value in (report.get(section) or {}).items():
+            shown = value if value is not None else "not measured"
+            lines.append(f"| {prefix}{key} | {shown} |")
     for key, value in report["capabilities"].items():
         lines.append(f"| {key} | {value} |")
     lines.append("")
@@ -314,8 +660,10 @@ def _write_summary(report: dict[str, Any], path: Path) -> None:
         "This is one ephemeral evaluation boot, not a CI gate or a reusable activated image."
     )
     lines.append(
-        "Dockur exposes no reliable install-versus-first-boot boundary; "
-        "`install_seconds` is their combined interval, and `boot_seconds` is explicitly unmeasured."
+        "`install_seconds` runs from the firmware's setup-media boot to its last "
+        "boot from the installed disk; `boot_seconds` runs from that boot to the "
+        "OEM probe's shell marker. Both are unmeasured, never zero, when the "
+        "firmware markers are absent."
     )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -387,11 +735,248 @@ def _remove_scratch(
             ) from exc
 
 
+def _docker_run_args(
+    name: str, guest_edition: str, storage: Path, shared: Path, oem: Path
+) -> list[str]:
+    dockur_version, dockur_edition, _ = GUEST_EDITIONS[guest_edition]
+    docker_args = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--device=/dev/kvm",
+        "--device=/dev/net/tun",
+        "--cap-add=NET_ADMIN",
+        "--stop-timeout=120",
+        "-e",
+        f"VERSION={dockur_version}",
+    ]
+    if dockur_edition is not None:
+        docker_args.extend(("-e", f"EDITION={dockur_edition}"))
+    docker_args.extend(
+        (
+            "-e",
+            "DISK_SIZE=32G",
+            "-e",
+            "RAM_SIZE=8G",
+            "-e",
+            "CPU_CORES=4",
+            "-e",
+            "LOG=Y",
+            "-v",
+            f"{storage}:/storage",
+            "-v",
+            f"{shared}:/shared",
+            "-v",
+            f"{oem}:/oem",
+            IMAGE,
+        )
+    )
+    return docker_args
+
+
+def _guest_session(
+    *,
+    name: str,
+    guest_edition: str,
+    storage: Path,
+    shared: Path,
+    oem: Path,
+    markers: tuple[str, ...],
+    result_file: str,
+    timeout_seconds: int,
+    log_path: Path,
+) -> dict[str, Any]:
+    """Boot dockur, record host times of guest markers, then stop it cleanly."""
+    started = time.time()
+    _run(*_docker_run_args(name, guest_edition, storage, shared, oem))
+    seen: dict[str, float | None] = dict.fromkeys(markers)
+    guest = None
+    result_seen = None
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        for marker in markers:
+            if seen[marker] is None and (shared / marker).is_file():
+                seen[marker] = _host_created_at(shared / marker, started)
+        if (shared / result_file).is_file():
+            result_seen = _host_created_at(shared / result_file, started)
+            guest = _read_json(shared / result_file)
+            break
+        state = _run(
+            "docker", "inspect", "--format", "{{.State.Running}}", name, capture=True
+        )
+        if state.stdout.strip() != "true":
+            break
+        time.sleep(10)
+    # SIGTERM makes dockur send ACPI shutdown and wait for Windows, so the
+    # disk is consistent and dockur records windows.boot for a later restore.
+    _run("docker", "stop", "--time", "120", name, check=False, capture=True)
+    log = _run("docker", "logs", "--timestamps", name, check=False, capture=True)
+    log_path.write_text(log.stdout + log.stderr, encoding="utf-8")
+    return {
+        "started": started,
+        "markers": seen,
+        "guest": guest,
+        "result_seen": result_seen,
+        "log": log.stdout + log.stderr,
+    }
+
+
+def _between(later: float | None, earlier: float | None) -> float | None:
+    return (
+        max(0, later - earlier) if later is not None and earlier is not None else None
+    )
+
+
+def _load_manifest(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _set_output(name: str, value: str) -> None:
+    if output_path := os.environ.get("GITHUB_OUTPUT"):
+        with Path(output_path).open("a", encoding="utf-8") as output:
+            output.write(f"{name}={value}\n")
+
+
+def _cold_body(ctx: dict[str, Any], args: argparse.Namespace) -> None:
+    shared, oem, storage = ctx["shared"], ctx["oem"], ctx["storage"]
+    storage.mkdir()
+    _stage_payload(ctx["repo"], ctx["artifact"], shared, oem)
+    ctx["attempted_container"] = True
+    session = _guest_session(
+        name=ctx["name"],
+        guest_edition=ctx["guest_edition"],
+        storage=storage,
+        shared=shared,
+        oem=oem,
+        markers=COLD_MARKERS,
+        result_file="guest-result.json",
+        timeout_seconds=args.timeout_seconds,
+        log_path=ctx["log_path"],
+    )
+    marks = session["markers"]
+    ctx["guest"] = guest = session["guest"]
+    timings = _phase_timings(
+        session["log"], session["started"], marks["guest-shell-ready.txt"]
+    )
+    timings["runtime_prep_seconds"] = _between(
+        marks["runtime-install-start.txt"], marks["guest-shell-ready.txt"]
+    )
+    timings["runtime_install_seconds"] = _between(
+        marks["runtime-ready.txt"], marks["runtime-install-start.txt"]
+    )
+    timings["git_prep_seconds"] = _between(
+        marks["tools-ready.txt"], marks["git-install-start.txt"]
+    )
+    timings["replay_seconds"] = _between(
+        session["result_seen"], marks["tools-ready.txt"]
+    )
+    ctx["timings"] = timings
+    exported = None
+    export_dir = getattr(args, "export_dir", None)
+    warm_ready = bool(((guest or {}).get("capabilities") or {}).get("warm_task"))
+    if getattr(args, "export_disk", "false") == "true" and export_dir and warm_ready:
+        try:
+            _prepare_scratch(Path(export_dir))
+            exported = _export_disk(storage, Path(export_dir) / DISK_EXPORT_NAME)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            ctx["host"]["export_error"] = str(exc)[:500]
+    if exported is None:
+        ctx["disk"] = _disk_measure(storage)
+    else:
+        ctx["disk"] = {
+            **_disk_measure(storage, compress=False),
+            "compressed_bytes": exported["export_bytes"],
+            "export_seconds": exported["export_seconds"],
+        }
+        _set_output("disk_exported", "true")
+
+
+def _restore_body(ctx: dict[str, Any], args: argparse.Namespace) -> None:
+    shared, oem, storage = ctx["shared"], ctx["oem"], ctx["storage"]
+    download = ctx["scratch"] / "download"
+    download.mkdir()
+    timings: dict[str, Any] = {}
+    ctx["timings"] = timings
+    began = time.monotonic()
+    _run(
+        "gh",
+        "run",
+        "download",
+        str(args.disk_run_id),
+        "-R",
+        str(ctx["repository"]),
+        "-n",
+        DISK_ARTIFACT,
+        "-D",
+        str(download),
+    )
+    timings["restore_download_seconds"] = time.monotonic() - began
+    archive = download / DISK_EXPORT_NAME
+    ctx["compressed_bytes"] = archive.stat().st_size
+    storage.mkdir()
+    timings["restore_extract_seconds"] = _extract_disk(archive, storage)
+    archive.unlink()
+    _stage_payload(ctx["repo"], ctx["artifact"], shared, oem, fetch_tools=False)
+    ctx["attempted_container"] = True
+    session = _guest_session(
+        name=ctx["name"],
+        guest_edition=ctx["guest_edition"],
+        storage=storage,
+        shared=shared,
+        oem=oem,
+        markers=WARM_MARKERS,
+        result_file="warm-guest-result.json",
+        timeout_seconds=args.timeout_seconds,
+        log_path=ctx["log_path"],
+    )
+    ctx["guest"] = session["guest"]
+    marks = session["markers"]
+    timings.update(
+        _restore_timings(
+            session["log"], session["started"], marks["warm-guest-shell-ready.txt"]
+        )
+    )
+    timings["restored_replay_seconds"] = _between(
+        session["result_seen"], marks["warm-tools-ready.txt"]
+    )
+
+
+def _remove_container(name: str) -> str | None:
+    """Remove this run's uniquely named container; return an error, if any."""
+    try:
+        removal = _run("docker", "rm", "-f", name, check=False, capture=True)
+        still_there = _run("docker", "inspect", name, check=False, capture=True)
+    except OSError as exc:
+        return str(exc)[:500]
+    if (
+        still_there.returncode == 0
+        or ("No such object" not in still_there.stderr)
+        or (removal.returncode != 0 and "No such container" not in removal.stderr)
+    ):
+        return f"container {name} removal unverified"
+    return None
+
+
 def run_probe(args: argparse.Namespace) -> int:
+    mode = getattr(args, "mode", "cold")
+    repository = getattr(args, "repository", None) or os.environ.get(
+        "GITHUB_REPOSITORY"
+    )
+    if mode == "delete-artifact":
+        if not repository:
+            raise ValueError("delete-artifact needs --repository or GITHUB_REPOSITORY")
+        removed = delete_run_artifact(repository, str(args.disk_run_id), DISK_ARTIFACT)
+        print(f"deleted {removed} {DISK_ARTIFACT} artifact(s)")
+        return 0
     guest_edition = getattr(args, "guest_edition", "server-core")
     if guest_edition not in GUEST_EDITIONS:
         raise ValueError(f"unsupported guest edition: {guest_edition}")
-    dockur_version, dockur_edition, _ = GUEST_EDITIONS[guest_edition]
     repo, artifact, scratch = (
         Path(args.repo).resolve(),
         Path(args.artifact).resolve(),
@@ -405,140 +990,49 @@ def run_probe(args: argparse.Namespace) -> int:
     if scratch == output or scratch in output.parents:
         raise ValueError("output must live outside ephemeral guest scratch")
     output.parent.mkdir(parents=True, exist_ok=True)
-    host: dict[str, Any] = {"kvm": None, "free_bytes": None}
-    timings: dict[str, Any] = {}
-    guest = None
-    disk: dict[str, Any] = {}
-    name = f"soldr-windows-probe-{args.run_id}-{uuid.uuid4().hex[:12]}"
-    started = time.time()
-    shell_ready = None
-    runtime_install_start = None
-    runtime_ready = None
-    git_install_start = None
-    tools_ready = None
-    result_seen = None
-    attempted_container = False
+    restore = mode == "restore"
+    names = (
+        {
+            "warm-guest-result.json": "windows-guest-restore-raw-result.json",
+            "warm-nextest.log": "windows-guest-restore-nextest.log",
+        }
+        if restore
+        else {
+            "guest-result.json": "windows-guest-raw-result.json",
+            "nextest.log": "windows-guest-nextest.log",
+            "vc-redist-install.log": "windows-guest-vc-redist.log",
+        }
+    )
+    ctx: dict[str, Any] = {
+        "repo": repo,
+        "artifact": artifact,
+        "scratch": scratch,
+        "shared": scratch / "shared",
+        "oem": scratch / "oem",
+        "storage": scratch / "storage",
+        "repository": repository,
+        "guest_edition": guest_edition,
+        "name": f"soldr-windows-probe-{args.run_id}-{uuid.uuid4().hex[:12]}",
+        "log_path": output.parent
+        / (
+            "windows-guest-restore-container.log"
+            if restore
+            else "windows-guest-container.log"
+        ),
+        "host": {"kvm": None, "free_bytes": None},
+        "timings": {},
+        "guest": None,
+        "disk": {},
+        "compressed_bytes": None,
+        "attempted_container": False,
+    }
+    host = ctx["host"]
     try:
         _prepare_scratch(scratch)
         host["kvm"] = _kvm_usable()
         host["free_bytes"] = shutil.disk_usage(scratch).free
         if host["kvm"] and host["free_bytes"] >= 32 * 1024**3:
-            shared, oem, storage = (
-                scratch / "shared",
-                scratch / "oem",
-                scratch / "storage",
-            )
-            storage.mkdir()
-            _stage_payload(repo, artifact, shared, oem)
-            started = time.time()
-            attempted_container = True
-            docker_args = [
-                "docker",
-                "run",
-                "-d",
-                "--name",
-                name,
-                "--device=/dev/kvm",
-                "--device=/dev/net/tun",
-                "--cap-add=NET_ADMIN",
-                "--stop-timeout=120",
-                "-e",
-                f"VERSION={dockur_version}",
-            ]
-            if dockur_edition is not None:
-                docker_args.extend(("-e", f"EDITION={dockur_edition}"))
-            docker_args.extend(
-                (
-                    "-e",
-                    "DISK_SIZE=32G",
-                    "-e",
-                    "RAM_SIZE=8G",
-                    "-e",
-                    "CPU_CORES=4",
-                    "-e",
-                    "LOG=Y",
-                    "-v",
-                    f"{storage}:/storage",
-                    "-v",
-                    f"{shared}:/shared",
-                    "-v",
-                    f"{oem}:/oem",
-                    IMAGE,
-                )
-            )
-            _run(*docker_args)
-            deadline = time.monotonic() + args.timeout_seconds
-            while time.monotonic() < deadline:
-                if shell_ready is None and (shared / "guest-shell-ready.txt").is_file():
-                    shell_ready = _host_created_at(
-                        shared / "guest-shell-ready.txt", started
-                    )
-                if (
-                    runtime_install_start is None
-                    and (shared / "runtime-install-start.txt").is_file()
-                ):
-                    runtime_install_start = _host_created_at(
-                        shared / "runtime-install-start.txt", started
-                    )
-                if runtime_ready is None and (shared / "runtime-ready.txt").is_file():
-                    runtime_ready = _host_created_at(
-                        shared / "runtime-ready.txt", started
-                    )
-                if (
-                    git_install_start is None
-                    and (shared / "git-install-start.txt").is_file()
-                ):
-                    git_install_start = _host_created_at(
-                        shared / "git-install-start.txt", started
-                    )
-                if tools_ready is None and (shared / "tools-ready.txt").is_file():
-                    tools_ready = _host_created_at(shared / "tools-ready.txt", started)
-                if (shared / "guest-result.json").is_file():
-                    result_seen = _host_created_at(
-                        shared / "guest-result.json", started
-                    )
-                    guest = _read_json(shared / "guest-result.json")
-                    break
-                state = _run(
-                    "docker",
-                    "inspect",
-                    "--format",
-                    "{{.State.Running}}",
-                    name,
-                    capture=True,
-                )
-                if state.stdout.strip() != "true":
-                    break
-                time.sleep(10)
-            _run("docker", "stop", "--time", "120", name, check=False, capture=True)
-            log = _run(
-                "docker", "logs", "--timestamps", name, check=False, capture=True
-            )
-            (output.parent / "windows-guest-container.log").write_text(
-                log.stdout + log.stderr, encoding="utf-8"
-            )
-            timings = _phase_timings(log.stdout + log.stderr, started, shell_ready)
-            timings["runtime_prep_seconds"] = (
-                max(0, runtime_install_start - shell_ready)
-                if runtime_install_start is not None and shell_ready is not None
-                else None
-            )
-            timings["runtime_install_seconds"] = (
-                max(0, runtime_ready - runtime_install_start)
-                if runtime_ready is not None and runtime_install_start is not None
-                else None
-            )
-            timings["git_prep_seconds"] = (
-                max(0, tools_ready - git_install_start)
-                if tools_ready is not None and git_install_start is not None
-                else None
-            )
-            timings["replay_seconds"] = (
-                max(0, result_seen - tools_ready)
-                if result_seen is not None and tools_ready is not None
-                else None
-            )
-            disk = _disk_measure(storage)
+            (_restore_body if restore else _cold_body)(ctx, args)
         else:
             host["preflight"] = (
                 "insufficient disk (<32 GiB)" if host["kvm"] else "KVM unavailable"
@@ -546,62 +1040,67 @@ def run_probe(args: argparse.Namespace) -> int:
     except (OSError, subprocess.CalledProcessError, tarfile.TarError) as exc:
         host["probe_error"] = str(exc)[:500]
     finally:
-        for guest_name, host_name in (
-            ("guest-result.json", "windows-guest-raw-result.json"),
-            ("nextest.log", "windows-guest-nextest.log"),
-            ("vc-redist-install.log", "windows-guest-vc-redist.log"),
-        ):
+        for guest_name, host_name in names.items():
             guest_log = scratch / "shared" / guest_name
             try:
                 if guest_log.is_file():
                     shutil.copy2(guest_log, output.parent / host_name)
             except OSError as exc:
                 host["diagnostic_error"] = str(exc)[:500]
-        if attempted_container:
+        if ctx["attempted_container"]:
             try:
-                if not (output.parent / "windows-guest-container.log").is_file():
+                if not ctx["log_path"].is_file():
                     log = _run(
                         "docker",
                         "logs",
                         "--timestamps",
-                        name,
+                        ctx["name"],
                         check=False,
                         capture=True,
                     )
-                    (output.parent / "windows-guest-container.log").write_text(
+                    ctx["log_path"].write_text(
                         log.stdout + log.stderr, encoding="utf-8"
                     )
             except OSError as exc:
                 host["diagnostic_error"] = str(exc)[:500]
-            try:
-                # The random suffix makes this name exclusive to this run,
-                # including when `docker run` created a container then failed.
-                removal = _run("docker", "rm", "-f", name, check=False, capture=True)
-                still_there = _run("docker", "inspect", name, check=False, capture=True)
-                if (
-                    still_there.returncode == 0
-                    or ("No such object" not in still_there.stderr)
-                    or (
-                        removal.returncode != 0
-                        and "No such container" not in removal.stderr
-                    )
-                ):
-                    host["cleanup_error"] = f"container {name} removal unverified"
-            except OSError as exc:
-                host["cleanup_error"] = str(exc)[:500]
+            # The random suffix makes this name exclusive to this run,
+            # including when `docker run` created a container then failed.
+            if removal_error := _remove_container(ctx["name"]):
+                host["cleanup_error"] = removal_error
         # All multi-GB guest state is ephemeral and never enters the Actions cache.
         try:
             if scratch.exists():
                 _remove_scratch(scratch, str(args.run_id))
         except (OSError, subprocess.CalledProcessError) as exc:
             host["cleanup_error"] = str(exc)[:500]
-    report = make_report(
-        host=host,
-        timings=timings,
-        guest=guest,
-        disk=disk,
-        guest_edition=guest_edition,
+    compressed = (
+        ctx["compressed_bytes"] if restore else ctx["disk"].get("compressed_bytes")
     )
+    manifest_path = Path(
+        getattr(args, "budget_manifest", None) or repo / "ci" / "cache-ownership.json"
+    )
+    cache = cache_budget(
+        compressed,
+        _load_manifest(manifest_path),
+        _live_cache_usage(repository) if compressed is not None else None,
+    )
+    if restore:
+        report = make_restore_report(
+            host=host,
+            timings=ctx["timings"],
+            guest=ctx["guest"],
+            cache=cache,
+            guest_edition=guest_edition,
+        )
+    else:
+        report = make_report(
+            host=host,
+            timings=ctx["timings"],
+            guest=ctx["guest"],
+            disk=ctx["disk"],
+            guest_edition=guest_edition,
+            cache=cache,
+        )
     if host.get("preflight") == "insufficient disk (<32 GiB)":
         report["decision"] = "no-go"
         report["reason"] = "Runner scratch has less than dockur's 32 GiB minimum"
@@ -618,16 +1117,40 @@ def run_probe(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", required=True)
-    parser.add_argument("--artifact", required=True)
-    parser.add_argument("--scratch", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--run-id", required=True)
+    parser.add_argument(
+        "--mode", choices=("cold", "restore", "delete-artifact"), default="cold"
+    )
+    parser.add_argument("--repo")
+    parser.add_argument("--artifact")
+    parser.add_argument("--scratch")
+    parser.add_argument("--output")
+    parser.add_argument("--run-id")
     parser.add_argument(
         "--guest-edition", choices=tuple(GUEST_EDITIONS), default="server-core"
     )
     parser.add_argument("--timeout-seconds", type=int, default=3600)
-    return run_probe(parser.parse_args())
+    parser.add_argument(
+        "--export-disk",
+        choices=("true", "false"),
+        default="false",
+        help="cold: write the installed disk for this run's restore job",
+    )
+    parser.add_argument("--export-dir", help="cold: where the disk tar.zst goes")
+    parser.add_argument("--disk-run-id", help="restore/delete: run owning the disk")
+    parser.add_argument("--repository", help="owner/repo (default GITHUB_REPOSITORY)")
+    parser.add_argument("--budget-manifest", help="default ci/cache-ownership.json")
+    args = parser.parse_args()
+    required: tuple[str, ...] = (
+        ("disk_run_id",)
+        if args.mode == "delete-artifact"
+        else ("repo", "artifact", "scratch", "output", "run_id")
+    )
+    if args.mode == "restore":
+        required += ("disk_run_id",)
+    missing = [name for name in required if getattr(args, name) in (None, "")]
+    if missing:
+        parser.error(f"--mode {args.mode} requires: {', '.join(missing)}")
+    return run_probe(args)
 
 
 if __name__ == "__main__":
