@@ -305,8 +305,8 @@ validation lane, but soldr#2996 measured the `Swatinem/rust-cache` step
 serving it at a 0% hit rate — the key's environment hash covers every
 installed toolchain, so it flipped with the Dylint nightly on every run.
 soldr#3047 deleted the step rather than re-key it; the successor is the
-Tier-2 per-unit object store (soldr#3041) plus the workflow-level `soldr
-cook` step (soldr#3043), not another shared-key namespace, and
+Tier-2 per-unit object store (soldr#3041), not another shared-key namespace
+(soldr#3043's workflow-level `soldr cook` step was retired by soldr#3396), and
 `tests/test_ci_cache_key_scheme.py` now pins the namespace's *absence*. The
 surviving `ws-release-*` pair lives in `baseline-zero-deps.yml`, where one
 job populates and the next restores inside a cache-experiment workflow.

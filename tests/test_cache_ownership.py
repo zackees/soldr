@@ -503,3 +503,144 @@ def test_main_reports_zero_on_the_real_tree(capsys: pytest.CaptureFixture) -> No
         ["--manifest", str(MANIFEST), "--workflow-dir", str(WORKFLOW_DIR)]
     )
     assert code == 0, capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# R8 -- appending prefix-fallback caches need a registered prune step
+# (soldr#3396)
+# --------------------------------------------------------------------------
+
+
+def _prefix_cache_workflow(prune_step: str | None, save_before: bool = False) -> str:
+    save = """
+      - name: Save store
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: store/cook
+          key: fixture-v1-${{ github.run_id }}
+"""
+    prune = (
+        f"""
+      - name: {prune_step}
+        run: prune store/cook
+"""
+        if prune_step
+        else ""
+    )
+    return f"""
+name: seeded
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Restore appending store
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: store/cook
+          key: fixture-v1-${{{{ hashFiles('Cargo.lock') }}}}
+          restore-keys: |
+            fixture-v1-
+      - name: Build
+        run: cargo build
+{save if save_before else ""}{prune}{"" if save_before else save}"""
+
+
+def _r8(tmp_path: Path, body: str, pruned: dict | None = None) -> list[str]:
+    workflow_dir = tmp_path / "workflows"
+    workflow_dir.mkdir(parents=True, exist_ok=True)
+    (workflow_dir / "seeded.yml").write_text(body, encoding="utf-8")
+    original = dict(guard.PRUNED_PREFIX_CACHES)
+    try:
+        guard.PRUNED_PREFIX_CACHES.update(pruned or {})
+        return guard.prefix_cache_problems(workflow_dir)
+    finally:
+        guard.PRUNED_PREFIX_CACHES.clear()
+        guard.PRUNED_PREFIX_CACHES.update(original)
+
+
+def test_unregistered_appending_prefix_cache_fails_r8(tmp_path: Path) -> None:
+    problems = _r8(tmp_path, _prefix_cache_workflow(prune_step=None))
+    assert len(problems) == 1
+    assert problems[0].startswith("R8 seeded.yml")
+    assert "Restore appending store" in problems[0]
+
+
+def test_registered_prune_before_save_passes_r8(tmp_path: Path) -> None:
+    key = ("seeded.yml", "Restore appending store")
+    assert (
+        _r8(tmp_path, _prefix_cache_workflow("Prune store"), {key: "Prune store"}) == []
+    )
+
+
+def test_registered_prune_missing_from_job_fails_r8(tmp_path: Path) -> None:
+    key = ("seeded.yml", "Restore appending store")
+    problems = _r8(tmp_path, _prefix_cache_workflow(None), {key: "Prune store"})
+    assert len(problems) == 1 and "no step of that name" in problems[0]
+
+
+def test_save_before_the_prune_fails_r8(tmp_path: Path) -> None:
+    key = ("seeded.yml", "Restore appending store")
+    problems = _r8(
+        tmp_path,
+        _prefix_cache_workflow("Prune store", save_before=True),
+        {key: "Prune store"},
+    )
+    assert len(problems) == 1 and "before the prune step" in problems[0]
+
+
+def test_exact_key_cache_without_restore_keys_is_not_r8(tmp_path: Path) -> None:
+    body = _prefix_cache_workflow(None).replace(
+        "          restore-keys: |\n            fixture-v1-\n", ""
+    )
+    assert _r8(tmp_path, body) == []
+
+
+def test_experiment_workflow_is_exempt_from_r8(tmp_path: Path) -> None:
+    workflow_dir = tmp_path / "workflows"
+    workflow_dir.mkdir()
+    name = sorted(guard.EXPERIMENT_WORKFLOWS)[0]
+    (workflow_dir / name).write_text(_prefix_cache_workflow(None), encoding="utf-8")
+    assert guard.prefix_cache_problems(workflow_dir) == []
+
+
+def test_stale_ratchet_entry_fails_r8(tmp_path: Path) -> None:
+    workflow_dir = tmp_path / "workflows"
+    workflow_dir.mkdir()
+    (workflow_dir / "setup-soldr-action.yml").write_text(
+        "name: x\non: push\njobs: {}\n", encoding="utf-8"
+    )
+    problems = guard.prefix_cache_problems(workflow_dir)
+    assert any("no longer exists" in p for p in problems)
+
+
+def test_retired_stable_cook_block_fails_r8(tmp_path: Path) -> None:
+    # The soldr#3043 block as it stood on main before soldr#3396: a full
+    # actions/cache step over the cook directory with a prefix restore-key
+    # and no prune step anywhere in the job.
+    body = """
+name: seeded
+on: push
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Restore stable cook archives (soldr#3043)
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/cook
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/state.sqlite3
+          key: stable-cook-v2-${{ inputs.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            stable-cook-v2-${{ inputs.target }}-
+      - name: Cook stable dependency tree (soldr#3043)
+        run: python3 .github/scripts/run_stable_cook.py
+"""
+    problems = _r8(tmp_path, body)
+    assert len(problems) == 1
+    assert "Restore stable cook archives (soldr#3043)" in problems[0]
+
+
+def test_real_tree_has_no_unpruned_appending_prefix_cache() -> None:
+    assert guard.prefix_cache_problems(WORKFLOW_DIR) == []

@@ -42,9 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
-      # Sweep only from a main checkout: hashFiles below must describe the
-      # exact source that wrote stable-cook, including after a source rollback.
-      # Pull requests remain read-only checks.
+      # Sweep only from a main checkout; pull requests remain read-only checks.
       - name: Sweep reclaimable cache entries
         if: github.ref == 'refs/heads/main'
         # The script evaluates the budget on the listing it fetched BEFORE
@@ -53,11 +51,6 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          STABLE_COOK_SOURCE_SHA: ${{ github.sha }}
-          # Keep this expression identical to the stable-cook key in
-          # _build-and-test.yml. The checker also verifies this checkout SHA
-          # is still live main before it prunes any stable-cook archive.
-          STABLE_COOK_SOURCE_HASH: ${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
         run: >-
           uv run --no-project --python 3.13 python
           .github/scripts/check_cache_budget.py --prune --apply

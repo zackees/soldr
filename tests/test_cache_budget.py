@@ -254,7 +254,11 @@ def test_prune_supersedes_older_zccache_unit_generations_on_main() -> None:
         {**entry("stable-cook-v1-x86_64-unknown-linux-gnu-abc123", 10), "id": 3},
     ]
     candidates = guard.prune_candidates(guard.normalize_entries(raw))
-    assert [c.key for c in candidates] == [f"{base}-111"]
+    # soldr#3396 retired stable-cook-*, so that entry is reclaimable too.
+    assert [c.key for c in candidates] == [
+        "stable-cook-v1-x86_64-unknown-linux-gnu-abc123",
+        f"{base}-111",
+    ]
 
 
 def test_prune_supersedes_older_sha_keyed_bootstrap_drivers_on_main() -> None:
@@ -375,36 +379,6 @@ def test_cook_lock_prune_preserves_unique_shapes_and_newest_lock() -> None:
     assert {e.key for e in candidates} == {raw[i]["key"] for i in (0, 1, 3)}
 
 
-def test_stable_cook_prune_keeps_both_without_source_hash() -> None:
-    raw = [
-        {
-            **entry("stable-cook-v2-x86_64-unknown-linux-gnu-" + "a" * 64, 100),
-            "createdAt": "2026-09-22T01:00:00Z",
-        },
-        {
-            **entry("stable-cook-v2-x86_64-unknown-linux-gnu-" + "b" * 64, 100),
-            "createdAt": "2026-09-23T01:00:00Z",
-        },
-        {
-            **entry("stable-cook-v2-aarch64-unknown-linux-gnu-" + "c" * 64, 100),
-            "createdAt": "2026-09-22T01:00:00Z",
-        },
-    ]
-    entries = guard.normalize_entries(raw)
-    assert guard.prune_candidates(entries) == []
-    assert guard.prune_candidates(entries, stable_cook_source_hash="invalid") == []
-    assert [
-        e.key for e in guard.prune_candidates(entries, stable_cook_source_hash="b" * 64)
-    ] == [raw[0]["key"]]
-    # Source rollback: the older-created archive is current; the newer one
-    # may be retired only because GitHub's exact source hash says so.
-    assert [
-        e.key for e in guard.prune_candidates(entries, stable_cook_source_hash="a" * 64)
-    ] == [raw[1]["key"]]
-    # Another target's unique archive is always retained.
-    assert guard.prune_candidates(entries, stable_cook_source_hash="d" * 64) == []
-
-
 def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
     # Approximate the 20:26 listing in MiB; five current shapes, two old
     # shapes, PR copies, two unit runs, two stable-cook hashes, and residual.
@@ -469,12 +443,12 @@ def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
     assert guard.budget_problems(
         MANIFEST, manifest, [e for e in entries if e not in old_candidates]
     )
-    candidates = guard.prune_candidates(entries, "9506e5de4a14312c", "b" * 64)
+    candidates = guard.prune_candidates(entries, "9506e5de4a14312c")
     effective = [e for e in entries if e not in candidates]
     problems = guard.budget_problems(MANIFEST, manifest, effective)
     assert (
-        len(candidates) == 7
-    )  # PR bases, old cook locks, old unit and stable generations
+        len(candidates) == 8
+    )  # PR bases, old cook locks, old unit run, both retired stable-cook entries
     assert any("rust-cache-residual" in p for p in problems)
     assert not any("zccache-unit" in p for p in problems)
     # Only after the residual producer shrinks does every family fit.
@@ -528,27 +502,15 @@ def test_main_lock_hash_uses_remote_raw_bytes(monkeypatch: pytest.MonkeyPatch) -
     assert calls == [["api", "repos/zackees/soldr/contents/Cargo.lock?ref=main"]]
 
 
-def test_main_sha_resolves_live_ref(monkeypatch: pytest.MonkeyPatch) -> None:
-    sha = "a" * 40
-    monkeypatch.setattr(
-        guard,
-        "run_gh",
-        lambda args: (
-            json.dumps({"object": {"sha": sha}})
-            if args == ["api", "repos/zackees/soldr/git/ref/heads/main"]
-            else "{}"
-        ),
-    )
-    assert guard.fetch_main_sha("zackees/soldr") == sha
-
-
-def test_stable_cook_source_hash_matches_producer_expression() -> None:
-    producer = (REPO_ROOT / ".github/workflows/_build-and-test.yml").read_text()
-    sweep = (REPO_ROOT / ".github/workflows/cache-budget.yml").read_text()
-    expression = "hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml')"
-    assert expression in producer
-    assert expression in sweep
-    assert "if: github.ref == 'refs/heads/main'" in sweep
+def test_retired_stable_cook_entries_are_prune_candidates() -> None:
+    # soldr#3396: nothing writes stable-cook-* any more, so every generation,
+    # current or not, is reclaimable and none is an unregistered producer.
+    raw = [
+        entry("stable-cook-v2-x86_64-unknown-linux-gnu-" + "a" * 64, 100),
+        entry("stable-cook-v2-aarch64-unknown-linux-gnu-" + "c" * 64, 100),
+    ]
+    entries = guard.normalize_entries(raw)
+    assert [e.key for e in guard.prune_candidates(entries)] == [r["key"] for r in raw]
 
 
 # --------------------------------------------------------------------------
@@ -564,7 +526,6 @@ LINEAGE_FIXTURE = (
 )
 CURRENT_LOCK = "e8c3129b32c03b91"
 PRIOR_LOCK = "9506e5de4a14312c"
-CURRENT_STABLE = "b" * 64
 
 
 def lineage_entries() -> list:
@@ -604,7 +565,7 @@ def test_3347_fixture_is_red_raw() -> None:
 def test_3347_legacy_policy_still_fails_after_its_reclaim() -> None:
     entries = lineage_entries()
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    everything = guard.prune_candidates(entries, CURRENT_LOCK, CURRENT_STABLE)
+    everything = guard.prune_candidates(entries, CURRENT_LOCK)
     new_cook = guard.cook_lineage_candidates(
         [e for e in entries if e.ref == "refs/heads/main"], CURRENT_LOCK
     )
@@ -621,7 +582,7 @@ def test_3347_legacy_policy_still_fails_after_its_reclaim() -> None:
 def test_3347_lineage_policy_fits_every_family_and_total() -> None:
     entries = lineage_entries()
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    candidates = guard.prune_candidates(entries, CURRENT_LOCK, CURRENT_STABLE)
+    candidates = guard.prune_candidates(entries, CURRENT_LOCK)
     effective = without(entries, candidates)
     assert guard.budget_problems(MANIFEST, manifest, effective) == []
     assert guard.effective_verdict([]).endswith("every family and the total fit")
@@ -645,7 +606,7 @@ def test_3347_policy_is_not_green_when_a_family_truly_does_not_fit() -> None:
     ]
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     effective = without(
-        entries, guard.prune_candidates(entries, CURRENT_LOCK, CURRENT_STABLE)
+        entries, guard.prune_candidates(entries, CURRENT_LOCK)
     )
     problems = guard.budget_problems(MANIFEST, manifest, effective)
     assert any("'rust-cache-residual'" in p for p in problems)

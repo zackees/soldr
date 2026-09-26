@@ -85,6 +85,14 @@ R6  The manifest declares a 'budget' whose per-family max_bytes sum to at
     and whose fields are well typed.
 R7  Every durable manifest entry in a non-experiment workflow is claimed
     by exactly one budget family, and every id a family claims exists.
+R8  In a non-exempt workflow, every `actions/cache` or
+    `actions/cache/restore` step with a `restore-keys` prefix fallback is an
+    appending cache (the fallback restores another generation into the
+    directory the job then writes to, and the save keeps both) and must be
+    registered in `PRUNED_PREFIX_CACHES` with a prune/trim step that runs in
+    the same job after the restore and before any explicit save of the same
+    path (soldr#3396: the stable-cook cache grew to 2.8 GB this way). The
+    `UNPRUNED_PREFIX_CACHES_RATCHET` list only shrinks: a stale entry fails.
 
 Usage:
     python .github/scripts/check_cache_ownership.py
@@ -126,8 +134,28 @@ EXPERIMENT_WORKFLOWS: frozenset[str] = frozenset(
         "parent-cache-bench.yml",
         "perf-cold-warm.yml",
         "perf-matrix.yml",
-        "stable-cook-acceptance.yml",
     }
+)
+
+# R8 (soldr#3396): appending prefix-fallback caches, keyed by
+# (workflow file, restore step name), mapped to the name of the step in the
+# same job that prunes or trims the restored directory before it is saved.
+PRUNED_PREFIX_CACHES: dict[tuple[str, str], str] = {
+    (
+        "_build-and-test.yml",
+        "Restore Tier-2 zccache object store (soldr#3039)",
+    ): "Measure, prune and trim the Tier-2 zccache store (soldr#3120, soldr#3252)",
+}
+
+# R8 ratchet: appending prefix-fallback caches that predate the rule and have
+# no prune step yet, each with the issue that adds one. Entries may only be
+# removed; one whose restore step no longer exists is itself a failure.
+UNPRUNED_PREFIX_CACHES_RATCHET: dict[tuple[str, str], str] = {
+    ("setup-soldr-action.yml", "Restore dogfood build cache"): "soldr#3398",
+}
+
+PREFIX_CACHE_ACTIONS: frozenset[str] = frozenset(
+    {"actions/cache", "actions/cache/restore"}
 )
 
 # `uses:` values (SHA stripped, lowercased) that persist something, mapped to
@@ -736,6 +764,107 @@ def cook_ordering_problems(steps: list[PersistedStep]) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# R8 -- appending prefix-fallback caches need a registered prune step
+# --------------------------------------------------------------------------
+
+
+def _path_lines(step: dict) -> frozenset[str]:
+    with_block = step.get("with")
+    raw = with_block.get("path") if isinstance(with_block, dict) else None
+    return frozenset(
+        line.strip() for line in str(raw or "").splitlines() if line.strip()
+    )
+
+
+def prefix_cache_problems(workflow_dir: pathlib.Path) -> list[str]:
+    """Appending `restore-keys` caches without a registered prune step (R8)."""
+    problems: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    paths = sorted(workflow_dir.glob("*.yml")) + sorted(workflow_dir.glob("*.yaml"))
+    for path in paths:
+        if path.name in EXPERIMENT_WORKFLOWS:
+            continue
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict):
+            continue
+        for job_id, job in (document.get("jobs") or {}).items():
+            if not isinstance(job, dict):
+                continue
+            steps = [s for s in (job.get("steps") or []) if isinstance(s, dict)]
+            for index, step in enumerate(steps):
+                uses = step.get("uses")
+                if not isinstance(uses, str):
+                    continue
+                if action_id(uses) not in PREFIX_CACHE_ACTIONS:
+                    continue
+                with_block = step.get("with")
+                if not isinstance(with_block, dict):
+                    continue
+                if not str(with_block.get("restore-keys") or "").strip():
+                    continue
+                name = str(step.get("name") or "")
+                key = (path.name, name)
+                seen.add(key)
+                where = f"{path.name}: job '{job_id}' step '{name or index}'"
+                if key in UNPRUNED_PREFIX_CACHES_RATCHET:
+                    continue
+                prune_name = PRUNED_PREFIX_CACHES.get(key)
+                if prune_name is None:
+                    problems.append(
+                        f"R8 {where} restores through a `restore-keys` prefix "
+                        "into a directory the job appends to, and no prune step "
+                        "is registered for it.\n"
+                        "     A prefix hit restores a superseded generation; the "
+                        "save then keeps old and new together, so the entry grows "
+                        "with every key change (soldr#3396: stable-cook reached "
+                        "2.8 GB).\n"
+                        "     Drop the prefix fallback, or add a step that prunes "
+                        "what the current key does not use and register it in "
+                        "PRUNED_PREFIX_CACHES in check_cache_ownership.py."
+                    )
+                    continue
+                prune_index = next(
+                    (
+                        i
+                        for i, other in enumerate(steps)
+                        if i > index and str(other.get("name") or "") == prune_name
+                    ),
+                    None,
+                )
+                if prune_index is None:
+                    problems.append(
+                        f"R8 {where} is registered with prune step "
+                        f"'{prune_name}', but no step of that name runs after it "
+                        "in the same job."
+                    )
+                    continue
+                restored = _path_lines(step)
+                for later in steps[index + 1 : prune_index]:
+                    later_uses = later.get("uses")
+                    if (
+                        isinstance(later_uses, str)
+                        and action_id(later_uses) == "actions/cache/save"
+                        and _path_lines(later) & restored
+                    ):
+                        problems.append(
+                            f"R8 {where}: '{later.get('name') or 'save'}' saves "
+                            f"the restored path before the prune step "
+                            f"'{prune_name}' runs."
+                        )
+    registered = set(PRUNED_PREFIX_CACHES) | set(UNPRUNED_PREFIX_CACHES_RATCHET)
+    for workflow, name in sorted(registered - seen):
+        # A registration for a workflow outside this tree is not stale here.
+        if not (workflow_dir / workflow).is_file():
+            continue
+        problems.append(
+            f"R8 {workflow}: registered prefix-fallback cache step '{name}' no "
+            "longer exists; remove it from PRUNED_PREFIX_CACHES / "
+            "UNPRUNED_PREFIX_CACHES_RATCHET (the ratchet only shrinks)."
+        )
+    return problems
+
+
+# --------------------------------------------------------------------------
 
 
 def load_manifest(path: pathlib.Path) -> dict:
@@ -776,6 +905,7 @@ def check(manifest_path: pathlib.Path, workflow_dir: pathlib.Path) -> list[str]:
     problems += coverage_problems(manifest, steps)
     problems += banned_product_problems(steps)
     problems += cook_ordering_problems(steps)
+    problems += prefix_cache_problems(workflow_dir)
     return problems
 
 
