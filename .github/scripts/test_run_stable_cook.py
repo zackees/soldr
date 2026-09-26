@@ -489,9 +489,7 @@ def test_main_forwards_custom_timeout_secs(mod, monkeypatch):
         )
 
     monkeypatch.setattr(mod, "stream_and_capture", fake_stream_and_capture)
-    mod.main(
-        ["--soldr", "/opt/soldr", "--target", "T", "--timeout-secs", "120"]
-    )
+    mod.main(["--soldr", "/opt/soldr", "--target", "T", "--timeout-secs", "120"])
     assert calls["timeout_secs"] == 120.0
 
 
@@ -519,3 +517,281 @@ def test_workflow_restores_a_post_fix_cook_cache_generation():
     )
     assert "key: stable-cook-v2-${{ inputs.target }}-" in workflow
     assert "stable-cook-v1-" not in workflow
+
+
+# --- next_tick_number_due (pure, clock-injectable tick scheduling) -----------
+
+
+def test_next_tick_number_due_is_none_before_the_first_interval(mod):
+    assert mod.next_tick_number_due(5.0, 10.0, 0) is None
+
+
+def test_next_tick_number_due_fires_at_the_exact_boundary(mod):
+    assert mod.next_tick_number_due(10.0, 10.0, 0) == 1
+
+
+def test_next_tick_number_due_fires_past_the_boundary(mod):
+    assert mod.next_tick_number_due(14.9, 10.0, 0) == 1
+
+
+def test_next_tick_number_due_is_none_once_that_tick_already_fired(mod):
+    assert mod.next_tick_number_due(14.9, 10.0, 1) is None
+
+
+def test_next_tick_number_due_catches_up_after_a_long_overrun_without_stacking(mod):
+    # 35s elapsed with a 10s interval and no ticks fired yet means ticks 1, 2
+    # and 3 are all technically "due" -- the caller fires once for tick 3 and
+    # never replays 1 and 2 (an inspector-overrun tick is skipped, not
+    # queued).
+    assert mod.next_tick_number_due(35.0, 10.0, 0) == 3
+
+
+def test_next_tick_number_due_disabled_when_interval_is_zero(mod):
+    assert mod.next_tick_number_due(1_000_000.0, 0.0, 0) is None
+
+
+def test_next_tick_number_due_disabled_when_interval_is_negative(mod):
+    assert mod.next_tick_number_due(1_000_000.0, -1.0, 0) is None
+
+
+# --- capture_dir_name / default_inspect_dir ----------------------------------
+
+
+def test_capture_dir_name_pads_the_sequence_and_truncates_elapsed(mod):
+    assert mod.capture_dir_name(1, 600.9) == "capture-001-600s"
+    assert mod.capture_dir_name(12, 5.0) == "capture-012-5s"
+
+
+def test_default_inspect_dir_prefers_runner_temp(mod, monkeypatch):
+    monkeypatch.setenv("RUNNER_TEMP", "/tmp/runner-x")
+    assert mod.default_inspect_dir() == Path("/tmp/runner-x/cook-inspect")
+
+
+def test_default_inspect_dir_falls_back_to_a_relative_path(mod, monkeypatch):
+    monkeypatch.delenv("RUNNER_TEMP", raising=False)
+    assert mod.default_inspect_dir() == Path("cook-inspect")
+
+
+# --- main(): --inspect-every-secs / --inspect-dir wiring ---------------------
+
+
+def test_main_forwards_inspect_every_secs_and_dir(mod, tmp_path, monkeypatch):
+    calls = {}
+
+    def fake_stream_and_capture(command, cwd, timeout_secs, **kwargs):
+        calls.update(kwargs)
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="",
+            stderr="soldr cook: auto-hydrate activated\n",
+        )
+
+    monkeypatch.setattr(mod, "stream_and_capture", fake_stream_and_capture)
+    mod.main(
+        [
+            "--soldr",
+            "/opt/soldr",
+            "--target",
+            "T",
+            "--inspect-every-secs",
+            "42",
+            "--inspect-dir",
+            str(tmp_path / "custom-inspect"),
+        ]
+    )
+    assert calls["inspect_every_secs"] == 42.0
+    assert calls["inspect_dir"] == tmp_path / "custom-inspect"
+
+
+def test_main_default_inspect_every_secs_is_600(mod, monkeypatch):
+    calls = {}
+
+    def fake_stream_and_capture(command, cwd, timeout_secs, **kwargs):
+        calls.update(kwargs)
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="",
+            stderr="soldr cook: auto-hydrate activated\n",
+        )
+
+    monkeypatch.setattr(mod, "stream_and_capture", fake_stream_and_capture)
+    mod.main(["--soldr", "/opt/soldr", "--target", "T"])
+    assert calls["inspect_every_secs"] == mod.DEFAULT_INSPECT_EVERY_SECS == 600.0
+
+
+# --- stream_and_capture: periodic non-fatal inspection -----------------------
+
+
+def _fake_inspector(calls: list[tuple[int, Path]]):
+    def inspector(root_pid: int, capture_dir: Path) -> Path:
+        calls.append((root_pid, capture_dir))
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        (capture_dir / "SUMMARY.md").write_text(
+            f"summary for capture #{len(calls)}\n", encoding="utf-8"
+        )
+        return capture_dir
+
+    return inspector
+
+
+def test_stream_and_capture_runs_periodic_ticks_and_stays_non_fatal(mod, tmp_path):
+    """A healthy-but-slow cook (the 23-37 min case on main) must get several
+    periodic captures, each reported as a warning, while the run's own exit
+    code passes through untouched -- no kill, no error."""
+    script = tmp_path / "slow_but_healthy.py"
+    script.write_text("import time\ntime.sleep(0.9)\n", encoding="utf-8")
+    calls: list[tuple[int, Path]] = []
+    inspect_dir = tmp_path / "inspect"
+    err_sink = io.StringIO()
+
+    result = mod.stream_and_capture(
+        [sys.executable, str(script)],
+        tmp_path,
+        timeout_secs=30.0,
+        stdout_sink=io.StringIO(),
+        stderr_sink=err_sink,
+        inspect_every_secs=0.2,
+        inspect_dir=inspect_dir,
+        inspector=_fake_inspector(calls),
+    )
+
+    assert result.returncode == 0
+    assert len(calls) >= 2
+    text = err_sink.getvalue()
+    assert "::warning title=soldr cook::cook still running" in text
+    assert "::error title=soldr cook::cook exceeded" not in text
+    # Each real capture's directory was actually created on disk.
+    for _, capture_dir in calls:
+        assert capture_dir.is_dir()
+        assert (capture_dir / "SUMMARY.md").is_file()
+
+
+def test_stream_and_capture_periodic_ticks_disabled_by_zero_interval(mod, tmp_path):
+    script = tmp_path / "quick.py"
+    script.write_text("pass\n", encoding="utf-8")
+    calls: list[tuple[int, Path]] = []
+    result = mod.stream_and_capture(
+        [sys.executable, str(script)],
+        tmp_path,
+        timeout_secs=30.0,
+        stdout_sink=io.StringIO(),
+        stderr_sink=io.StringIO(),
+        inspect_every_secs=0,
+        inspect_dir=tmp_path / "inspect",
+        inspector=_fake_inspector(calls),
+    )
+    assert result.returncode == 0
+    assert not calls
+
+
+def test_stream_and_capture_periodic_inspector_failure_is_non_fatal(mod, tmp_path):
+    """An inspector that raises must not affect the cook run it only observes."""
+    script = tmp_path / "slow_but_healthy.py"
+    script.write_text("import time\ntime.sleep(0.5)\n", encoding="utf-8")
+    err_sink = io.StringIO()
+
+    def raising_inspector(root_pid: int, capture_dir: Path) -> Path:
+        raise RuntimeError("boom")
+
+    result = mod.stream_and_capture(
+        [sys.executable, str(script)],
+        tmp_path,
+        timeout_secs=30.0,
+        stdout_sink=io.StringIO(),
+        stderr_sink=err_sink,
+        inspect_every_secs=0.15,
+        inspect_dir=tmp_path / "inspect",
+        inspector=raising_inspector,
+    )
+    assert result.returncode == 0
+    assert "inspector capture failed" in err_sink.getvalue()
+    assert "boom" in err_sink.getvalue()
+
+
+def test_stream_and_capture_skips_a_tick_when_the_previous_capture_overruns(
+    mod, tmp_path
+):
+    """An inspector slower than the tick interval must not queue up a second
+    concurrent capture -- the overrunning tick is skipped instead."""
+    script = tmp_path / "slow_but_healthy.py"
+    script.write_text("import time\ntime.sleep(0.8)\n", encoding="utf-8")
+    calls: list[tuple[int, Path]] = []
+    err_sink = io.StringIO()
+
+    def slow_inspector(root_pid: int, capture_dir: Path) -> Path:
+        calls.append((root_pid, capture_dir))
+        time.sleep(0.5)
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        (capture_dir / "SUMMARY.md").write_text("slow capture\n", encoding="utf-8")
+        return capture_dir
+
+    result = mod.stream_and_capture(
+        [sys.executable, str(script)],
+        tmp_path,
+        timeout_secs=30.0,
+        stdout_sink=io.StringIO(),
+        stderr_sink=err_sink,
+        inspect_every_secs=0.15,
+        inspect_dir=tmp_path / "inspect",
+        inspector=slow_inspector,
+    )
+    assert result.returncode == 0
+    # Roughly 0.8s / 0.15s interval would be ~5 ticks if every one fired a
+    # fresh capture; a 0.5s inspector overlapping several of them must have
+    # collapsed most into skips.
+    assert len(calls) < 4
+    assert "skipped -- previous capture still running" in err_sink.getvalue()
+
+
+# --- stream_and_capture: final capture before the hard timeout kill ---------
+
+
+def test_stream_and_capture_runs_a_final_capture_before_the_hard_kill(mod, tmp_path):
+    script = tmp_path / "hang.py"
+    script.write_text("import time\ntime.sleep(600)\n", encoding="utf-8")
+    calls: list[tuple[int, Path]] = []
+    err_sink = io.StringIO()
+
+    result = mod.stream_and_capture(
+        [sys.executable, str(script)],
+        tmp_path,
+        timeout_secs=0.3,
+        stdout_sink=io.StringIO(),
+        stderr_sink=err_sink,
+        inspect_every_secs=0,  # isolate the final-capture path from periodic ticks
+        inspect_dir=tmp_path / "inspect",
+        inspector=_fake_inspector(calls),
+    )
+
+    assert result.returncode == mod.TIMEOUT_EXIT_CODE
+    assert len(calls) == 1
+    text = err_sink.getvalue()
+    final_group_index = text.index("final capture before hard timeout")
+    error_index = text.index("::error title=soldr cook::cook exceeded")
+    # The final capture is printed BEFORE the hard-timeout error, and the
+    # error message names the capture directory.
+    assert final_group_index < error_index
+    assert str(calls[0][1]) in text[error_index:]
+
+
+def test_stream_and_capture_hard_timeout_with_no_inspect_dir_skips_final_capture(
+    mod, tmp_path
+):
+    """Without an --inspect-dir, the hard-timeout path must behave exactly as
+    it did before this feature existed -- no capture, plain error message."""
+    script = tmp_path / "hang.py"
+    script.write_text("import time\ntime.sleep(600)\n", encoding="utf-8")
+    err_sink = io.StringIO()
+    result = mod.stream_and_capture(
+        [sys.executable, str(script)],
+        tmp_path,
+        timeout_secs=0.3,
+        stdout_sink=io.StringIO(),
+        stderr_sink=err_sink,
+    )
+    assert result.returncode == mod.TIMEOUT_EXIT_CODE
+    text = err_sink.getvalue()
+    assert "inspector report at" not in text
+    assert "::error title=soldr cook::cook exceeded" in text

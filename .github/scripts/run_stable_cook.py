@@ -44,6 +44,17 @@ import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+# Sibling import (soldr#2120 pattern, see dylint_toolchain_channel.py):
+# `cook_inspect.py` lives next to this file and both must resolve regardless
+# of whether this module is run as `__main__`, imported by
+# `stable_cook_acceptance.py`'s `sys.path.insert(0, ".github/scripts")`, or
+# loaded by `_script_loader.load_script_module` in tests.
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+import cook_inspect  # noqa: E402  pylint: disable=wrong-import-position
+
 # soldr cook's own literal markers. Do not invent new spellings here --
 # these are exactly the strings the binary emits, and drift silently breaks
 # classification without touching cook's own tests.
@@ -92,7 +103,59 @@ TIMEOUT_GRACE_SECS = 30
 # `soldr cook` exit code and from `REQUIRE_WARM_FAILURE` / `COOK_ARTIFACT_NOT_INDEXED`.
 TIMEOUT_EXIT_CODE = 124
 
+# How often (seconds) to run a non-fatal `cook_inspect` capture of the whole
+# cook process tree while `soldr cook` is still running, so a healthy-but-
+# slow run (measured 23-37 minutes on main) leaves a trail of periodic
+# on-CPU/off-CPU snapshots instead of CI staying silent until the outer
+# `--timeout-secs` ceiling trips. `0` disables periodic inspection entirely;
+# the final capture at the hard `--timeout-secs` ceiling (below) is
+# unconditional and does not depend on this value.
+DEFAULT_INSPECT_EVERY_SECS = 600.0
+
 Runner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
+# `(root_pid, capture_dir) -> report_dir`. Defaults to `cook_inspect.run_inspection`;
+# injectable so tests never need real `perf`/`gdb`.
+Inspector = Callable[[int, Path], Path]
+
+
+def default_inspect_dir() -> Path:
+    """`$RUNNER_TEMP/cook-inspect` in CI, `./cook-inspect` for a local run."""
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    if runner_temp:
+        return Path(runner_temp) / "cook-inspect"
+    return Path("cook-inspect")
+
+
+def default_inspector(root_pid: int, capture_dir: Path) -> Path:
+    return cook_inspect.run_inspection(root_pid, capture_dir)
+
+
+def capture_dir_name(seq: int, elapsed_secs: float) -> str:
+    """`<inspect-dir>/capture-NNN-<elapsed>s/` per capture, so periodic and
+    final captures never collide and sort in chronological order."""
+    return f"capture-{seq:03d}-{int(elapsed_secs)}s"
+
+
+def next_tick_number_due(
+    elapsed_secs: float, interval_secs: float, ticks_fired: int
+) -> int | None:
+    """The next periodic-inspection tick number (1-indexed) due at
+    `elapsed_secs`, or `None` if no new tick is due yet.
+
+    Pure and clock-injectable on purpose (no real sleeping needed to test the
+    scheduling math): tick `k` is due once `elapsed_secs >= k * interval_secs`.
+    If more than one interval has elapsed since the last check (the caller was
+    busy, or a previous capture ran long), this jumps straight to the highest
+    due tick number rather than replaying every missed one -- an overrun
+    skips the ticks it missed instead of queuing a burst of catch-up
+    captures.
+    """
+    if interval_secs <= 0:
+        return None
+    total_due = int(elapsed_secs // interval_secs)
+    if total_due > ticks_fired:
+        return total_due
+    return None
 
 
 def default_runner(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -141,12 +204,86 @@ def _terminate_with_grace(proc: subprocess.Popen, grace_secs: float) -> None:
         pass
 
 
+def _report_capture(
+    stderr_sink,
+    capture_dir: Path,
+    label: str,
+    *,
+    warn: bool,
+    elapsed_secs: float,
+) -> None:
+    """Print one capture's `REPORT.txt` (falling back to `SUMMARY.md`) into a
+    `::group::` on `stderr_sink`, and -- for a periodic (non-final) capture
+    only -- follow it with a non-fatal `::warning`. The final capture (right
+    before the hard `--timeout-secs` kill) is reported the same way but
+    without its own warning line; the hard-timeout `::error` that follows it
+    already names the capture directory.
+    """
+    report_path = capture_dir / "REPORT.txt"
+    if not report_path.is_file():
+        report_path = capture_dir / "SUMMARY.md"
+    text = ""
+    try:
+        text = report_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        text = f"(inspector report unreadable: {error})\n"
+
+    stderr_sink.write(f"::group::soldr cook inspector -- {label} ({capture_dir})\n")
+    stderr_sink.write(text)
+    if not text.endswith("\n"):
+        stderr_sink.write("\n")
+    stderr_sink.write("::endgroup::\n")
+    if warn:
+        stderr_sink.write(
+            f"::warning title=soldr cook::cook still running after {elapsed_secs:.0f}s; "
+            f"inspector report at {capture_dir}\n"
+        )
+    stderr_sink.flush()
+
+
+def _run_inspection_and_report(
+    inspector: Inspector,
+    root_pid: int,
+    *,
+    inspect_dir: Path,
+    seq: int,
+    elapsed_secs: float,
+    stderr_sink,
+    final: bool,
+) -> Path:
+    """Run one capture (background-tick or final-before-kill) and report it.
+    Never raises: an inspector failure is itself reported as a warning rather
+    than lost, since a broken capture must never take down the cook run it is
+    only observing.
+    """
+    capture_dir = Path(inspect_dir) / capture_dir_name(seq, elapsed_secs)
+    try:
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        inspector(root_pid, capture_dir)
+    except Exception as error:  # pylint: disable=broad-except
+        stderr_sink.write(
+            f"::warning title=soldr cook::inspector capture failed at {capture_dir}: {error}\n"
+        )
+        stderr_sink.flush()
+        return capture_dir
+
+    label = "final capture before hard timeout" if final else f"periodic capture #{seq}"
+    _report_capture(
+        stderr_sink, capture_dir, label, warn=not final, elapsed_secs=elapsed_secs
+    )
+    return capture_dir
+
+
 def stream_and_capture(
     command: list[str],
     cwd: Path,
     timeout_secs: float = DEFAULT_TIMEOUT_SECS,
+    *,
     stdout_sink=None,
     stderr_sink=None,
+    inspect_every_secs: float = 0.0,
+    inspect_dir: Path | None = None,
+    inspector: Inspector | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run `command`, streaming both streams live to `stdout_sink`/
     `stderr_sink` (defaulting to the real `sys.stdout`/`sys.stderr`) while
@@ -156,9 +293,27 @@ def stream_and_capture(
     Unlike `subprocess.run(..., capture_output=True)`, the job log shows
     output as `soldr cook` produces it rather than only after the process
     exits (issue: 23-36 minutes of total silence on a slow cook).
+
+    While `command` runs, a NON-FATAL `cook_inspect` capture of its whole
+    process tree (plus any soldr daemon/broker processes) fires every
+    `inspect_every_secs` seconds when `inspect_every_secs > 0` and
+    `inspect_dir` is given -- each one prints its report in a `::group::`
+    plus a `::warning` and never kills or fails the run. Each capture runs on
+    its own background thread so it never blocks output pumping or the wait
+    loop; if a capture is still running when its next tick comes due, that
+    tick is skipped rather than queued (`next_tick_number_due` never fires
+    twice for ticks missed during one overrun). The existing hard
+    `timeout_secs` ceiling is unchanged: on top of the periodic captures, one
+    final synchronous capture runs immediately before the SIGQUIT-then-SIGTERM
+    shutdown, so the genuinely-wedged case still gets an inspector report,
+    not just the pre-existing dump `soldr cook` itself may already have
+    written under `SOLDR_COOK_NO_PROGRESS_SECS` (see `cook_inspect.py`'s
+    module docstring for how the two relate).
     """
     stdout_sink = stdout_sink if stdout_sink is not None else sys.stdout
     stderr_sink = stderr_sink if stderr_sink is not None else sys.stderr
+    inspector = inspector if inspector is not None else default_inspector
+    periodic_enabled = inspect_every_secs > 0 and inspect_dir is not None
 
     with subprocess.Popen(
         command,
@@ -183,26 +338,103 @@ def stream_and_capture(
         out_thread.start()
         err_thread.start()
 
-        timed_out = False
-        try:
-            proc.wait(timeout=timeout_secs)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _terminate_with_grace(proc, TIMEOUT_GRACE_SECS)
+        started = time.monotonic()
+        ticks_fired = 0
+        capture_seq = 0
+        active_capture: dict[str, threading.Thread | None] = {"thread": None}
+        capture_lock = threading.Lock()
 
-        out_thread.join(timeout=TIMEOUT_GRACE_SECS)
-        err_thread.join(timeout=TIMEOUT_GRACE_SECS)
+        def launch_periodic_capture(tick_no: int, elapsed_secs: float) -> None:
+            nonlocal capture_seq
+            with capture_lock:
+                current = active_capture["thread"]
+                if current is not None and current.is_alive():
+                    stderr_sink.write(
+                        f"soldr cook: inspector tick {tick_no} skipped -- "
+                        "previous capture still running\n"
+                    )
+                    stderr_sink.flush()
+                    return
+                capture_seq += 1
+                seq = capture_seq
+                thread = threading.Thread(
+                    target=_run_inspection_and_report,
+                    args=(inspector, proc.pid),
+                    kwargs={
+                        "inspect_dir": inspect_dir,
+                        "seq": seq,
+                        "elapsed_secs": elapsed_secs,
+                        "stderr_sink": stderr_sink,
+                        "final": False,
+                    },
+                    daemon=True,
+                )
+                active_capture["thread"] = thread
+                thread.start()
+
+        timed_out = False
+        while True:
+            elapsed = time.monotonic() - started
+            remaining_hard = timeout_secs - elapsed
+            if remaining_hard <= 0:
+                timed_out = True
+                break
+            wait_for = remaining_hard
+            if periodic_enabled:
+                next_boundary = (ticks_fired + 1) * inspect_every_secs
+                wait_for = min(wait_for, max(0.0, next_boundary - elapsed))
+            try:
+                proc.wait(timeout=wait_for)
+                break
+            except subprocess.TimeoutExpired:
+                if periodic_enabled:
+                    elapsed_now = time.monotonic() - started
+                    due = next_tick_number_due(
+                        elapsed_now, inspect_every_secs, ticks_fired
+                    )
+                    if due is not None:
+                        ticks_fired = due
+                        launch_periodic_capture(due, elapsed_now)
+                continue
 
         if timed_out:
+            # The process is still alive here -- capture it live BEFORE
+            # sending any signal, then terminate, and only then join the pump
+            # threads (their pipes only EOF once the process is actually
+            # gone). Reordering this would either capture a process already
+            # mid-SIGQUIT-teardown or block the join on a still-running
+            # process for no reason.
+            final_capture_dir: Path | None = None
+            if inspect_dir is not None:
+                with capture_lock:
+                    in_flight = active_capture["thread"]
+                if in_flight is not None:
+                    in_flight.join(timeout=5.0)
+                capture_seq += 1
+                final_capture_dir = _run_inspection_and_report(
+                    inspector,
+                    proc.pid,
+                    inspect_dir=inspect_dir,
+                    seq=capture_seq,
+                    elapsed_secs=timeout_secs,
+                    stderr_sink=stderr_sink,
+                    final=True,
+                )
             message = (
                 f"::error title=soldr cook::cook exceeded its {timeout_secs:.0f}s "
                 "wall-clock timeout; sent SIGQUIT then SIGTERM to the process tree"
             )
+            if final_capture_dir is not None:
+                message += f"; inspector report at {final_capture_dir}"
             stderr_sink.write(message + "\n")
             stderr_sink.flush()
+            _terminate_with_grace(proc, TIMEOUT_GRACE_SECS)
             returncode = TIMEOUT_EXIT_CODE
         else:
             returncode = proc.returncode if proc.returncode is not None else -1
+
+        out_thread.join(timeout=TIMEOUT_GRACE_SECS)
+        err_thread.join(timeout=TIMEOUT_GRACE_SECS)
 
     return subprocess.CompletedProcess(
         args=command,
@@ -350,11 +582,35 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
             "streaming runner, ignored when --runner is injected (tests)"
         ),
     )
+    parser.add_argument(
+        "--inspect-every-secs",
+        type=float,
+        default=DEFAULT_INSPECT_EVERY_SECS,
+        help=(
+            "run a non-fatal cook_inspect capture on this cadence while cook "
+            f"is still running (default {DEFAULT_INSPECT_EVERY_SECS:.0f}s); "
+            "0 disables periodic inspection (the final capture immediately "
+            "before the hard --timeout-secs kill is unaffected). Only used "
+            "for the default streaming runner, ignored when --runner is "
+            "injected (tests)"
+        ),
+    )
+    parser.add_argument(
+        "--inspect-dir",
+        default=None,
+        help=(
+            "directory for periodic + final cook_inspect captures (default: "
+            "$RUNNER_TEMP/cook-inspect, or ./cook-inspect with no "
+            "$RUNNER_TEMP). Only used for the default streaming runner, "
+            "ignored when --runner is injected (tests)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     chef_args = args.chef_args if args.chef_args else list(DEFAULT_CHEF_ARGS)
     command = build_argv(args.soldr, args.target, chef_args)
     repo_root = Path(__file__).resolve().parents[2]
+    inspect_dir = Path(args.inspect_dir) if args.inspect_dir else default_inspect_dir()
 
     # The default (production) path streams live and already wrote every
     # byte to the real stdout/stderr as it arrived, so it must not be
@@ -364,7 +620,13 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     already_streamed = runner is None
     started = time.monotonic()
     if runner is None:
-        result = stream_and_capture(command, repo_root, args.timeout_secs)
+        result = stream_and_capture(
+            command,
+            repo_root,
+            args.timeout_secs,
+            inspect_every_secs=args.inspect_every_secs,
+            inspect_dir=inspect_dir,
+        )
     else:
         result = runner(command, repo_root)
     elapsed_seconds = time.monotonic() - started
