@@ -94,7 +94,8 @@ jobs:
           compression-level: 0
       - name: Remove exported guest disk
         if: always()
-        run: rm -rf -- "$EXPORT_DIR"
+        # /mnt is root-owned, so only sudo can unlink the run's export dir.
+        run: sudo rm -rf -- "$EXPORT_DIR"
 
   restore:
     name: Windows ${{ inputs.guest_edition }} restored-image boot on ubuntu-24.04
