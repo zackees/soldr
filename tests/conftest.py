@@ -264,6 +264,20 @@ def git(repo: Path, *args: str) -> str:
     ).stdout
 
 
+def commit_all(repo: Path, message: str) -> None:
+    """Stage everything and commit -- the ratchet tests' fixture shape.
+
+    Shared so `test_loc_ratchet.py`-style ratchet tests (soldr#1966,
+    soldr#3388) do not each hand-roll the same two-line `git add -A` +
+    `git commit` (soldr#2113's `load_script_module` rationale applies the same
+    way here: one implementation instead of pylint's `duplicate-code` finding
+    the copy).
+    """
+
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", message)
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     """A throwaway git repo with an identity configured.

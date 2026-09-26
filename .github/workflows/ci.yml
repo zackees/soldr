@@ -194,6 +194,17 @@ jobs:
           git fetch --no-tags origin "$GITHUB_BASE_REF"
           uv run --no-project --python 3.13 python .github/scripts/loc_ratchet.py --base-ref "origin/$GITHUB_BASE_REF"
 
+      # soldr#3388 (prevention half of meta soldr#3389) — don't-grow ratchet
+      # for swallowed child-process stdio in Python/shell/workflow YAML, plus
+      # the check that every `ban_swallowed_child_stdio` allow/expect carries
+      # a reason. Same merge-base-ratchet shape as the line-ceiling step
+      # above, reusing its `origin/$GITHUB_BASE_REF` fetched by that step.
+      - name: Swallowed-stdio ratchet
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.13 python .github/scripts/swallowed_stdio_ratchet.py --base-ref "origin/$GITHUB_BASE_REF"
+
       # soldr#2493 — the 1000-line absolute ceiling for production sources.
       # Unlike the 1500-line ratchet above, this is a hard threshold: every
       # production file under crates/*/src must be at or under 1000 lines.
