@@ -263,6 +263,10 @@ pub mod cook;
 /// soldr#3117 -- keeps the daemon route alive for the whole of `soldr cook`.
 pub(crate) mod cook_route_hold;
 pub mod cook_source_snapshot;
+/// No-progress watchdog for `soldr cook`'s cargo-chef phases (CI silence
+/// follow-up to soldr#3043).
+pub(crate) mod cook_watchdog;
+pub(crate) mod cook_watchdog_dump;
 pub mod daemon_entry;
 /// soldr#2360 — actionable attribution for a daemon-unavailable compile
 /// dispatch failure, split out of `compile_dispatch.rs` (over the #1966
