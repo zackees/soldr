@@ -800,6 +800,9 @@ def test_workflow_measures_restore_in_a_second_job_and_deletes_the_disk():
     assert "windows-guest-disk-image" in workflow
     assert "retention-days: 1" in workflow
     assert "actions/cache" not in workflow
+    # /mnt is root-owned: an unprivileged rm of the export dir fails the job
+    # and skips the restore (run 36241951118).
+    assert 'sudo rm -rf -- "$EXPORT_DIR"' in workflow
 
 
 def test_guest_never_shell_executes_a_share_hosted_installer():
