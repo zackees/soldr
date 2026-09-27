@@ -771,54 +771,59 @@ def test_3398_prune_never_deletes_the_newest_or_a_unique_generation() -> None:
 # --------------------------------------------------------------------------
 
 PERF_TARGET_CACHE = "v0-rust-perf-build-soldr-linux-Linux-x64-079eeefc-1a449117"
-PERF_REGISTRY_CACHE = "v0-rust-perf-registry-soldr-linux-Linux-x64-f8df89ca-887f9be0"
+PERF_BINARY_CACHE = (
+    "soldr-bin-linux-"
+    "6bb7426dc0c3e4b2d8ea592c9c5168879a1f293457c7a30f8ee65d399e318149"
+)
 
 
-def test_perf_target_cache_waits_for_same_platform_registry_replacement() -> None:
-    old = guard.CacheEntry(PERF_TARGET_CACHE, "refs/heads/main", 508_702_303, "1")
+def test_perf_target_cache_waits_for_newer_same_platform_binary_replacement() -> None:
+    old = guard.CacheEntry(
+        PERF_TARGET_CACHE,
+        "refs/heads/main",
+        508_702_303,
+        "1",
+        "2026-09-26T09:31:38Z",
+    )
     old_prior = guard.CacheEntry(
         PERF_TARGET_CACHE.rsplit("-", 1)[0] + "-1a449116",
         "refs/heads/main",
         500_000_000,
         "1a",
+        "2026-09-26T08:00:00Z",
     )
 
     # This ~509 MB rust-cache entry is still restorable through the active
     # perf-build shared-key; a newer, unrelated platform cache is not proof
-    # that Linux's compiler path has a replacement.
-    assert (
-        guard.prune_candidates(
-            [
-                old,
-                old_prior,
-                guard.CacheEntry(
-                    PERF_REGISTRY_CACHE.replace("linux-Linux", "win-Windows"),
-                    "refs/heads/main",
-                    20_000_000,
-                    "2",
-                ),
-            ]
-        )
-        == []
+    # that Linux's binary producer has replaced it.
+    wrong_platform = guard.CacheEntry(
+        PERF_BINARY_CACHE.replace("linux-", "win-"),
+        "refs/heads/main",
+        1,
+        "2",
+        "2026-09-27T00:00:00Z",
     )
-    assert (
-        guard.prune_candidates(
-            [
-                old,
-                old_prior,
-                guard.CacheEntry(
-                    PERF_REGISTRY_CACHE.replace("x64", "arm64"),
-                    "refs/heads/main",
-                    20_000_000,
-                    "2b",
-                ),
-            ]
-        )
-        == []
+    assert old.key not in {
+        entry.key for entry in guard.prune_candidates([old, old_prior, wrong_platform])
+    }
+
+    pull_request = guard.CacheEntry(
+        PERF_BINARY_CACHE,
+        "refs/pull/5/merge",
+        1,
+        "2b",
+        "2026-09-27T00:00:00Z",
     )
+    assert old.key not in {
+        entry.key for entry in guard.prune_candidates([old, old_prior, pull_request])
+    }
 
     replacement = guard.CacheEntry(
-        PERF_REGISTRY_CACHE, "refs/heads/main", 18_000_000, "3", "2026-09-27T00:00:00Z"
+        PERF_BINARY_CACHE,
+        "refs/heads/main",
+        34_085_000,
+        "3",
+        "2026-09-27T00:56:54Z",
     )
     assert [
         entry.key for entry in guard.prune_candidates([old, old_prior, replacement])
@@ -826,3 +831,39 @@ def test_perf_target_cache_waits_for_same_platform_registry_replacement() -> Non
         PERF_TARGET_CACHE,
         old_prior.key,
     ]
+
+    # A same-platform binary that predates the legacy target cache is not proof
+    # that the replacement workflow ran before the old archive is retired.
+    older_replacement = guard.CacheEntry(
+        PERF_BINARY_CACHE,
+        "refs/heads/main",
+        34_085_000,
+        "4",
+        "2026-09-26T09:00:00Z",
+    )
+    assert old.key not in {
+        entry.key for entry in guard.prune_candidates([old, older_replacement])
+    }
+
+    # Exact-source binary keys must be well-formed; a prefix-only or malformed
+    # key does not unlock deletion of the still-restorable target archive.
+    malformed = guard.CacheEntry(
+        "soldr-bin-linux-not-a-source-hash",
+        "refs/heads/main",
+        34_085_000,
+        "5",
+        "2026-09-27T01:00:00Z",
+    )
+    assert old.key not in {
+        entry.key for entry in guard.prune_candidates([old, malformed])
+    }
+
+
+def test_retired_perf_registry_generation_is_prunable() -> None:
+    registry = guard.CacheEntry(
+        "v0-rust-perf-registry-soldr-linux-Linux-x64-079eeefc-1a449117",
+        "refs/heads/main",
+        119_579_384,
+        "6",
+    )
+    assert guard.prune_candidates([registry]) == [registry]

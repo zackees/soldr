@@ -137,6 +137,11 @@ RETIRED_PREFIXES: tuple[str, ...] = (
     # lockfile's archives through a restore-keys prefix and never pruned them
     # (one 2.8 GB entry). Nothing writes the prefix any more.
     "stable-cook-",
+    # perf-matrix's registry-only rust-cache layer was removed after
+    # measurements showed the exact-source binary cache retained same-source
+    # perf reruns while the registry saved only cold-build fetch time. No
+    # current workflow writes this namespace.
+    "v0-rust-perf-registry-soldr-",
 )
 
 
@@ -472,10 +477,8 @@ PERF_TARGET_KEY = re.compile(
     r"(?P<os>Linux|Windows|macOS)-(?P<arch>[A-Za-z0-9_]+)-"
     r"[0-9a-f]+-[0-9a-f]+$"
 )
-PERF_REGISTRY_KEY = re.compile(
-    r"^v0-rust-perf-registry-soldr-(?P<platform>[a-z0-9-]+)-"
-    r"(?P<os>Linux|Windows|macOS)-(?P<arch>[A-Za-z0-9_]+)-"
-    r"[0-9a-f]+-[0-9a-f]+$"
+PERF_BINARY_KEY = re.compile(
+    r"^soldr-bin-(?P<platform>[a-z0-9-]+)-[0-9a-f]{64}$"
 )
 
 COOK_KEY = re.compile(
@@ -563,24 +566,32 @@ def cook_lineage_candidates(
 
 
 def perf_target_cache_candidates(on_main: list[CacheEntry]) -> list[CacheEntry]:
-    """Retire obsolete perf target caches only after registry replacement.
+    """Retire obsolete perf target caches after the exact-source binary producer.
 
     The perf-matrix producer previously used `perf-build-soldr-<platform>`
     with rust-cache's default target caching. Those entries are still
     restorable, so they are not unconditional retired prefixes. A matching
-    `perf-registry-soldr-<platform>` entry proves that the new registry-only
-    producer has run on that platform before any old target archive is removed.
+    exact-source `soldr-bin-<platform>-<hashFiles>` entry saved on main after
+    the old target archive proves the replacement producer has run on that
+    platform. Missing timestamps fail closed.
     """
-    replacements: set[tuple[str, str, str]] = set()
+    replacements: dict[str, list[str]] = {}
     for entry in on_main:
-        match = PERF_REGISTRY_KEY.fullmatch(entry.key)
-        if match:
-            replacements.add((match["platform"], match["os"], match["arch"]))
+        match = PERF_BINARY_KEY.fullmatch(entry.key)
+        if match and entry.created_at:
+            replacements.setdefault(match["platform"], []).append(entry.created_at)
 
     candidates: list[CacheEntry] = []
     for entry in on_main:
         match = PERF_TARGET_KEY.fullmatch(entry.key)
-        if match and (match["platform"], match["os"], match["arch"]) in replacements:
+        if (
+            match
+            and entry.created_at
+            and any(
+                replacement_at > entry.created_at
+                for replacement_at in replacements.get(match["platform"], [])
+            )
+        ):
             candidates.append(entry)
     return candidates
 
@@ -611,9 +622,9 @@ def prune_candidates(
 
     groups: dict[str, list[CacheEntry]] = {}
     for entry in on_main:
-        # Old perf target archives remain useful until the new registry-only
-        # producer exists for the same platform. Do not let generic rust-cache
-        # generation pruning bypass that migration guard.
+        # Old perf target archives remain useful until the exact-source binary
+        # producer has saved a matching-platform main generation after them.
+        # Do not let generic rust-cache generation pruning bypass that guard.
         if PERF_TARGET_KEY.fullmatch(entry.key):
             continue
         if not entry.key.startswith(GENERATION_KEY_PREFIXES):

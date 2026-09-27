@@ -365,29 +365,19 @@ jobs:
           path: target/release/soldr
           key: soldr-bin-${{ matrix.platform }}-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
 
-      # Layer 2: cache cargo intermediates (registry, target/) so a
-      # cache-miss rebuild is incremental, not from scratch. Only
-      # exercised when the binary cache misses. Soldr itself is NOT
-      # used here on purpose — perf must work even when soldr is
-      # broken or absent on a new platform.
-      - name: Restore cargo intermediates
-        if: steps.gate.outputs.selected == 'true' && steps.soldr-bin-cache.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          # Keep this lane's cache private from ordinary CI, but persist only
-          # Cargo registry data. The previous target cache was ~509 MB and
-          # duplicated the binary cache below because rust-cache's post-job
-          # cleanup ran before actions/cache's delayed save.
-          shared-key: perf-registry-soldr-${{ matrix.platform }}
-          cache-targets: false
-
+      # The exact-source binary cache is the only durable build cache in this
+      # lane. A miss downloads dependencies and builds from scratch; this took
+      # 5m14s with a warm registry in run 36283735473, under the 45m job limit.
+      # Keeping a second registry cache saved only fetch time on this rare
+      # source-change path, while pushing the experiment-lanes family over its
+      # fixed allocation. Soldr itself is NOT used here on purpose — perf must
+      # work even when soldr is broken or absent on a new platform.
       - name: Build soldr (release)
         if: steps.gate.outputs.selected == 'true' && steps.soldr-bin-cache.outputs.cache-hit != 'true'
         run: cargo build --release -p soldr-cli
 
-      # Save before rust-cache's post-job hook can clean target/. Keeping the
-      # binary layer independent means a cache miss still compiles, but a hit
-      # can skip the build entirely on the next run.
+      # Keep same-source reruns (including perf-only iterations) compile-free.
+      # Source changes miss the exact key and build from the registry normally.
       - name: Save cached soldr binary
         if: steps.gate.outputs.selected == 'true' && steps.soldr-bin-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
