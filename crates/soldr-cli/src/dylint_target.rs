@@ -22,6 +22,11 @@ fn parse_targets(args: &[String], strict: bool) -> Result<Vec<String>, SoldrErro
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if arg == "--" {
+            if strict {
+                return Err(SoldrError::Other(
+                    "soldr dylint prepare accepts only --target <triple>".into(),
+                ));
+            }
             break;
         }
         let target = if arg == "--target" {
@@ -89,6 +94,7 @@ where
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(home.join(".soldr-dylint-targets.lock"))?;
     lock.lock_exclusive()?;
     let result = ensure_target_locked(home, channel, target, install);
@@ -165,6 +171,11 @@ mod tests {
             prepare_targets(&args(&["--target=x86_64-apple-darwin"])).unwrap(),
             ["x86_64-apple-darwin"]
         );
+        assert_eq!(
+            prepare_targets(&args(&["--target", "x86_64-pc-windows-msvc"])).unwrap(),
+            ["x86_64-pc-windows-msvc"]
+        );
+        assert!(prepare_targets(&args(&["--", "ignored"])).is_err());
     }
 
     #[test]

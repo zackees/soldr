@@ -36,6 +36,8 @@ struct LintPlan {
     /// `--host-only`: skip cross-target Clippy entirely, even when the
     /// workspace declares targets. Only meaningful for `rust`/`all`.
     host_only: bool,
+    /// Opt in to one Dylint workspace analysis pass per selected cross target.
+    cross_dylint: bool,
 }
 
 impl LintPlan {
@@ -69,12 +71,19 @@ impl LintPlan {
         // soldr#3378: `--target`/`--host-only` are Soldr-level cross-compile
         // selectors, not cargo scope flags -- strip them before the remaining
         // scope reaches fmt/Clippy/Dylint verbatim.
+        let cross_dylint = scope.iter().any(|arg| arg == "--cross-dylint");
+        scope.retain(|arg| arg != "--cross-dylint");
         let (explicit_targets, host_only) = extract_target_flags(&mut scope)?;
         if !matches!(mode, LintMode::Rust | LintMode::All)
-            && (host_only || !explicit_targets.is_empty())
+            && (host_only || cross_dylint || !explicit_targets.is_empty())
         {
             return Err(SoldrError::Other(
-                "lint: --target and --host-only are only valid for the rust or all suites".into(),
+                "lint: --target, --host-only, and --cross-dylint are only valid for the rust or all suites".into(),
+            ));
+        }
+        if host_only && cross_dylint {
+            return Err(SoldrError::Other(
+                "lint: --cross-dylint cannot be combined with --host-only".into(),
             ));
         }
 
@@ -84,6 +93,7 @@ impl LintPlan {
             ci_format: OutputFormat::Human,
             explicit_targets,
             host_only,
+            cross_dylint,
         })
     }
 
@@ -119,6 +129,7 @@ impl LintPlan {
             ci_format,
             explicit_targets: Vec::new(),
             host_only: false,
+            cross_dylint: false,
         })
     }
 
@@ -192,8 +203,6 @@ impl LintPlan {
         // soldr#3378: one additional Clippy pass per declared/explicit cross
         // target, each landing under cargo's own `target/<triple>/`
         // subdirectory so the host tree's fingerprints stay untouched.
-        // Dylint stays host-only below -- its driver is pinned to one dated
-        // nightly and is out of scope for the cross-target contract here.
         for target in cross_targets {
             let mut cross_clippy = vec![
                 "clippy".into(),
@@ -210,7 +219,16 @@ impl LintPlan {
         let mut dylint = vec!["dylint".into(), "--all".into(), "--".into()];
         dylint.extend(["--workspace".into(), "--all-targets".into()]);
         dylint.extend(compiler_scope);
-        steps.push(dylint);
+        if self.cross_dylint {
+            steps.push(dylint.clone());
+            for target in cross_targets {
+                let mut cross_dylint = dylint.clone();
+                cross_dylint.extend(["--target".into(), target.clone()]);
+                steps.push(cross_dylint);
+            }
+        } else {
+            steps.push(dylint);
+        }
 
         Ok(steps)
     }
@@ -427,23 +445,24 @@ async fn run_compile_steps(
     trust_inherited_soldr_env: bool,
 ) -> Result<i32, SoldrError> {
     for args in steps {
-        // soldr#3378: a cross-target Clippy step is the only one that ever
-        // carries `--target` (the flag is stripped out of the ordinary cargo
-        // scope during parsing), so this doubles as "is this a cross step".
+        let dylint = cargo_front_door::first_cargo_subcommand(&args) == Some("dylint");
         let cross_target = target_arg_value(&args);
-        if let Some(target) = &cross_target {
-            // Clippy only needs the target's std, not a full cross linker.
-            // `rustup_add_target` is idempotent, a no-op for the host triple,
-            // and routes through soldr's managed rustup/cargo homes rather
-            // than a bare `rustup` on PATH.
-            crate::prepare_cmd::rustup_add_target(target)?;
+        if !dylint {
+            if let Some(target) = &cross_target {
+                // Clippy only needs the target's std, not a full cross linker.
+                // `rustup_add_target` is idempotent, a no-op for the host triple,
+                // and routes through soldr's managed rustup/cargo homes rather
+                // than a bare `rustup` on PATH.
+                crate::prepare_cmd::rustup_add_target(target)?;
+            }
         }
         let code =
             cargo_front_door::run_cargo_front_door(&args, cache_enabled, trust_inherited_soldr_env)
                 .await?;
         if code != 0 {
-            if let Some(target) = &cross_target {
-                eprintln!("soldr lint: clippy failed for target {target}");
+            if let Some(target) = target_arg_value(&args) {
+                let command = if dylint { "dylint" } else { "clippy" };
+                eprintln!("soldr lint: {command} failed for target {target}");
             }
             return Ok(code);
         }
@@ -710,6 +729,52 @@ mod tests {
         assert!(steps[3].contains(&"--target".to_string()));
         assert!(steps[3].contains(&"aarch64-apple-darwin".to_string()));
         assert_eq!(steps[4][0], "dylint", "Dylint stays host-only, last");
+    }
+
+    #[test]
+    fn cross_dylint_checks_each_selected_target_with_the_host_pass_first() {
+        let plan = LintPlan::parse(&strings(&[
+            "rust",
+            "--cross-dylint",
+            "--target",
+            "win-x64",
+            "--target=mac-x64",
+        ]))
+        .unwrap();
+        assert!(plan.scope.is_empty());
+        let cross = plan.resolve_cross_targets().unwrap();
+        let steps = plan.rust_steps(false, &cross).unwrap();
+        assert_eq!(steps.len(), 7);
+        assert_eq!(
+            steps[4],
+            strings(&["dylint", "--all", "--", "--workspace", "--all-targets"])
+        );
+        assert_eq!(
+            steps[5],
+            strings(&[
+                "dylint",
+                "--all",
+                "--",
+                "--workspace",
+                "--all-targets",
+                "--target",
+                "x86_64-pc-windows-msvc"
+            ])
+        );
+        assert_eq!(
+            steps[6],
+            strings(&[
+                "dylint",
+                "--all",
+                "--",
+                "--workspace",
+                "--all-targets",
+                "--target",
+                "x86_64-apple-darwin"
+            ])
+        );
+        assert!(LintPlan::parse(&strings(&["rust", "--cross-dylint", "--host-only"])).is_err());
+        assert!(LintPlan::parse(&strings(&["deps", "--cross-dylint"])).is_err());
     }
 
     #[test]
