@@ -620,6 +620,7 @@ soldr lint ci --format json
 soldr lint all
 soldr lint --target x86_64-pc-windows-msvc
 soldr lint --target win-x64 --target mac-arm64
+soldr lint rust --cross-dylint --target win-x64 --target mac-arm64
 soldr lint --host-only
 ```
 
@@ -642,15 +643,20 @@ host-only behavior unchanged. Each cross Clippy pass runs `cargo clippy --target
 <triple>`, so it lands under Cargo's own `target/<triple>/` and never touches the
 host tree's fingerprints; the target's standard library is installed on demand
 through Soldr's managed `rustup target add` (idempotent, never a bare `rustup`).
-Dylint stays host-only — its driver is pinned to one dated nightly and sits
-outside this cross-target contract. A cross Clippy failure prints `soldr lint:
-clippy failed for target <triple>` to stderr and the command exits with that
-step's code.
+Dylint stays host-only by default. `--cross-dylint` opts `lint rust`/`all` into
+one additional Dylint pass per resolved non-host target, after the host Dylint
+pass. Soldr provisions the target standard library for Dylint's own dated
+nightly; a missing driver, linker, sysroot, or target C toolchain fails the
+selected pass rather than silently skipping it. Cross-target failures print
+`soldr lint: clippy failed for target <triple>` or `soldr lint: dylint failed
+for target <triple>` and return the step's nonzero code. Use native CI lanes
+for platforms whose target C dependencies cannot be cross-compiled.
 
 `--target <triple>` (repeatable; friendly aliases such as `win-x64`/`mac-arm64`
 are accepted) overrides the declared list for that invocation. `--host-only`
-skips cross-target Clippy entirely, even when targets are declared. Both flags
-are valid only for the `rust`/`all` suites and are stripped from the cargo scope
+skips all cross-target passes, even when targets are declared, and cannot be
+combined with `--cross-dylint`. These flags are valid only for the `rust`/`all`
+suites and are stripped from the cargo scope
 before it reaches fmt/Clippy/Dylint. An unknown or unsupported triple — declared
 or explicit — is a clear error raised before any compile starts, not a silent
 skip; the host's own triple is never run twice.

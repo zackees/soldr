@@ -906,6 +906,14 @@ pub(crate) fn restore_prepare_state(archive: &Path, paths: &SoldrPaths) -> Resul
 /// Run `rustup target add <triple>` for the active toolchain.
 /// Idempotent — already-installed targets are a no-op.
 pub(crate) fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
+    rustup_add_target_for_toolchain(triple, pinned_toolchain_channel()?.as_deref())
+}
+
+/// Provision target std for a specific compiler (Dylint's dated nightly).
+pub(crate) fn rustup_add_target_for_toolchain(
+    triple: &str,
+    channel: Option<&str>,
+) -> Result<(), SoldrError> {
     // soldr#2612: the host's own std ships with the toolchain, so adding
     // the host triple as a target is a no-op at best — and on a musl host
     // (Alpine) it is a hard failure: rustup errors with "Missing manifest
@@ -920,8 +928,8 @@ pub(crate) fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
     let rustup = crate::binaries::rustup_binary();
     let mut command = std::process::Command::new(rustup);
     command.args(["target", "add", triple]);
-    if let Some(channel) = pinned_toolchain_channel()? {
-        command.args(["--toolchain", &channel]);
+    if let Some(channel) = channel {
+        command.args(["--toolchain", channel]);
     }
     command.env(
         crate::core::CARGO_HOME_ENV_VAR,
