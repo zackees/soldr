@@ -81,7 +81,7 @@ def render_trend(rows):
         # 0 ms means the canary failed (run_canaries.sh's defensive
         # fallback). Map to None so it shows as a gap on the log axis
         # rather than as a matplotlib log-error / misleading floor.
-        ys = [(row.get("canaries", {}).get(name) or None) for row in rows]
+        ys = [((row.get("canaries") or {}).get(name) or None) for row in rows]
         ax.plot(
             x,
             ys,
