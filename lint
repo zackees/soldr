@@ -6,6 +6,9 @@ set -e
 echo Checking platform cfg boundary
 uv run --no-sync python .github/scripts/platform_cfg_boundary_ratchet.py
 
+echo Running pyright benchmark renderers
+uv run --no-sync pyright bench/benchmark_models.py bench/render_benchmark_trend.py bench/render_comparison_bars.py
+
 echo Running ruff src
 uv run --no-sync ruff check --fix src
 echo Running ruff tests

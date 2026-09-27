@@ -45,6 +45,11 @@ if [[ ! -f "${COMPARISON_FILE}" ]]; then
     exit 1
 fi
 
+if ! jq -e '.wall_ms | type == "object"' "${IN_FILE}" >/dev/null; then
+    echo "assemble: invalid canary timings in ${IN_FILE}" >&2
+    exit 1
+fi
+
 # --- Build the new history line --------------------------------------
 
 RAN_AT="$(jq -r '.ran_at' "${IN_FILE}")"

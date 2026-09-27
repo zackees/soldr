@@ -49,6 +49,8 @@ dev = [
     "pytest>=8.0",
     "pytest-xdist>=3.0",
     "ruff>=0.12,<0.13",
+    "pyright>=1.1.400,<2",
+    "matplotlib>=3.10,<4",
 ]
 
 [tool.uv.extra-build-dependencies]
