@@ -210,6 +210,7 @@ pub fn sweep_legacy_cache_roots(
                                     &entry.path(),
                                     max_age,
                                     now,
+                                    zccache::core::config::RetiredSweepMode::Routine,
                                 ));
                             }
                         }
@@ -226,6 +227,7 @@ pub fn sweep_legacy_cache_roots(
             &current_version,
             max_age,
             now,
+            zccache::core::config::RetiredSweepMode::Routine,
         ));
     }
     report.removed += retired.stores_removed;

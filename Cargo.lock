@@ -662,7 +662,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1326,9 +1326,9 @@ dependencies = [
 
 [[package]]
 name = "kernal-api"
-version = "0.1.20"
+version = "0.1.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1154d39a1554c4f0006f074829356b65dc011a5205369e191482faa12546e1d4"
+checksum = "b423567556c31193c3000b520ff23b82943de1d87c4515ab1428c742c0ce118a"
 dependencies = [
  "blake3",
  "crash-handler",
@@ -2031,7 +2031,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2310,7 +2310,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2521,7 +2521,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cache"
-version = "0.9.23"
+version = "0.9.24"
 dependencies = [
  "filetime",
  "fs2",
@@ -2545,7 +2545,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cli"
-version = "0.9.23"
+version = "0.9.24"
 dependencies = [
  "blake3",
  "cap-fs-ext",
@@ -2589,7 +2589,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-core"
-version = "0.9.23"
+version = "0.9.24"
 dependencies = [
  "fs2",
  "libc",
@@ -2608,7 +2608,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-daemon"
-version = "0.9.23"
+version = "0.9.24"
 dependencies = [
  "console-subscriber",
  "filetime",
@@ -2637,7 +2637,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-fetch"
-version = "0.9.23"
+version = "0.9.24"
 dependencies = [
  "flate2",
  "fs2",
@@ -2662,7 +2662,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-platform"
-version = "0.9.23"
+version = "0.9.24"
 dependencies = [
  "blake3",
  "fs2",
@@ -2781,7 +2781,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3384,7 +3384,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3671,9 +3671,9 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.14.13"
+version = "1.14.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24b827a6b9bc2eb926ff904993997c1e2d9f012bdc088846f298acebf336e3b2"
+checksum = "b4e86289f36b4da03fc104df44544c39900c64bf96da0b7f20809c3281fc0d90"
 dependencies = [
  "arc-swap",
  "bincode",
