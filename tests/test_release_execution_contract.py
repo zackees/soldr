@@ -122,9 +122,12 @@ def test_required_execution_with_run_job_passes(tmp_path: Path) -> None:
         "    with:\n"
         "      target: aarch64-apple-darwin\n",
     )
-    assert MODULE.release_execution_failures(
-        contract, workflow, _release_workflow(tmp_path)
-    ) == []
+    assert (
+        MODULE.release_execution_failures(
+            contract, workflow, _release_workflow(tmp_path)
+        )
+        == []
+    )
 
 
 def test_nonexistent_or_detached_run_job_does_not_clear_gate(tmp_path: Path) -> None:
@@ -139,9 +142,12 @@ def test_nonexistent_or_detached_run_job_does_not_clear_gate(tmp_path: Path) -> 
         "    with:\n"
         "      target: x86_64-apple-darwin\n",
     )
-    assert "not a target-matched replay" in MODULE.release_execution_failures(
-        contract, detached, _release_workflow(tmp_path)
-    )[0]
+    assert (
+        "not a target-matched replay"
+        in MODULE.release_execution_failures(
+            contract, detached, _release_workflow(tmp_path)
+        )[0]
+    )
 
     comment_only = _workflow(
         tmp_path,
@@ -151,16 +157,20 @@ def test_nonexistent_or_detached_run_job_does_not_clear_gate(tmp_path: Path) -> 
         "    with:\n"
         "      target: aarch64-apple-darwin\n",
     )
-    assert "not a target-matched replay" in MODULE.release_execution_failures(
-        contract, comment_only, _release_workflow(tmp_path)
-    )[0]
+    assert (
+        "not a target-matched replay"
+        in MODULE.release_execution_failures(
+            contract, comment_only, _release_workflow(tmp_path)
+        )[0]
+    )
 
 
 def test_execution_claim_cannot_outpace_the_real_run_job(tmp_path: Path) -> None:
     contract = json.loads(_contract(tmp_path, None).read_text(encoding="utf-8"))
-    contract["targets"][0]["release"]["artifact_provenance"]["execution"][
-        "archive"
-    ] = {"status": "required-before-publication", "gate_job": "imaginary"}
+    contract["targets"][0]["release"]["artifact_provenance"]["execution"]["archive"] = {
+        "status": "required-before-publication",
+        "gate_job": "imaginary",
+    }
     path = tmp_path / "lying-contract.json"
     path.write_text(json.dumps(contract), encoding="utf-8")
     failures = MODULE.release_execution_failures(path)
@@ -172,9 +182,10 @@ def test_run_job_cannot_leave_manifest_provenance_at_not_executed(
 ) -> None:
     path = _contract(tmp_path, "e2e-macos-arm64")
     contract = json.loads(path.read_text(encoding="utf-8"))
-    contract["targets"][0]["release"]["artifact_provenance"]["execution"][
-        "wheel"
-    ] = {"status": "not-executed", "issue": 3071}
+    contract["targets"][0]["release"]["artifact_provenance"]["execution"]["wheel"] = {
+        "status": "not-executed",
+        "issue": 3071,
+    }
     path.write_text(json.dumps(contract), encoding="utf-8")
     workflow = _workflow(
         tmp_path,
@@ -348,9 +359,7 @@ def test_publish_requires_execution_contract_gate() -> None:
         ("publish-pypi", "smoke-published-dylint"),
         ("publish-npm", "release-completeness"),
     ):
-        job = workflow.split(f"\n  {name}:\n", 1)[1].split(
-            f"\n  {following}:", 1
-        )[0]
+        job = workflow.split(f"\n  {name}:\n", 1)[1].split(f"\n  {following}:", 1)[0]
         assert "release_execution_contract" in job.split("    if:", 1)[0]
         assert "needs.release_execution_contract.result == 'success'" in job
 

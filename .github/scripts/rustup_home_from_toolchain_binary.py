@@ -30,7 +30,9 @@ def rustup_home_from(binary: str) -> str | None:
     """The RUSTUP_HOME containing `binary`, or None if its shape is not
     `<home>/toolchains/<toolchain>/bin/<tool>`."""
 
-    path: PurePath = PureWindowsPath(binary) if "\\" in binary else PurePosixPath(binary)
+    path: PurePath = (
+        PureWindowsPath(binary) if "\\" in binary else PurePosixPath(binary)
+    )
     parts = path.parts
     if len(parts) < 5 or parts[-2] != "bin" or parts[-4] != "toolchains":
         return None

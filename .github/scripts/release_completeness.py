@@ -201,7 +201,10 @@ def release_execution_failures(
                 if artifact == "archive"
                 else f"pypi-soldr-{entry['triple']}"
             )
-            if "actions/download-artifact@" not in gate_job or artifact_name not in gate_job:
+            if (
+                "actions/download-artifact@" not in gate_job
+                or artifact_name not in gate_job
+            ):
                 failures.append(
                     f"{prefix} release gate {release_gate!r} does not download "
                     f"the shipped {artifact} artifact {artifact_name!r}"
@@ -211,7 +214,9 @@ def release_execution_failures(
                 required_smoke_tokens.append("--require-wheel-import")
             else:
                 required_smoke_tokens.append("--require-daemon-cache-smoke")
-            missing_tokens = [token for token in required_smoke_tokens if token not in gate_job]
+            missing_tokens = [
+                token for token in required_smoke_tokens if token not in gate_job
+            ]
             if missing_tokens:
                 failures.append(
                     f"{prefix} release gate {release_gate!r} does not prove the "

@@ -167,9 +167,9 @@ def test_the_workflow_asks_cargo_rather_than_hardcoding_a_path():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "json-render-diagnostics" in workflow, "build must emit artifact records"
     assert "win_gnu_link_smoke.py locate" in workflow, "path must come from cargo"
-    assert (
-        "./target/debug/soldr" not in workflow
-    ), "the hardcoded path is what broke both lanes"
+    assert "./target/debug/soldr" not in workflow, (
+        "the hardcoded path is what broke both lanes"
+    )
 
 
 # --------------------------- reporting the verdict ----------------------------
@@ -247,7 +247,7 @@ def test_the_smoke_prints_through_the_ascii_printer(smoke):
     """A bare `print` of the summary is the exact shape that broke the lane."""
     source = SCRIPT.read_text(encoding="utf-8")
     assert "print_ascii(render_summary(" in source, (
-        "the verdict must go through print_ascii; a bare print re-opens " "soldr#2819"
+        "the verdict must go through print_ascii; a bare print re-opens soldr#2819"
     )
 
 
@@ -287,6 +287,6 @@ def test_the_target_is_added_after_soldr_sets_the_managed_home():
     setup = next(i for i, n in enumerate(names) if n == "Setup soldr")
     add = next(i for i, n in enumerate(names) if "cross target" in n and "soldr" in n)
     build = next(i for i, n in enumerate(names) if n.startswith("Build soldr"))
-    assert (
-        setup < add < build
-    ), f"expected Setup soldr -> add target -> build; got {names}"
+    assert setup < add < build, (
+        f"expected Setup soldr -> add target -> build; got {names}"
+    )

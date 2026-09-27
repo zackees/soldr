@@ -477,9 +477,7 @@ PERF_TARGET_KEY = re.compile(
     r"(?P<os>Linux|Windows|macOS)-(?P<arch>[A-Za-z0-9_]+)-"
     r"[0-9a-f]+-[0-9a-f]+$"
 )
-PERF_BINARY_KEY = re.compile(
-    r"^soldr-bin-(?P<platform>[a-z0-9-]+)-[0-9a-f]{64}$"
-)
+PERF_BINARY_KEY = re.compile(r"^soldr-bin-(?P<platform>[a-z0-9-]+)-[0-9a-f]{64}$")
 
 COOK_KEY = re.compile(
     r"^cook-(base|delta)-v2-(.+-f[0-9a-f]+)-l([0-9a-f]+)-soldr([0-9.]+)(?:-s[0-9a-f]+-g[0-9a-f]+)?$"

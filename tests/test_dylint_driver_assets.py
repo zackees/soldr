@@ -92,9 +92,9 @@ def test_triple_derivation_returns_the_expected_non_empty_set():
     triples = GUARD.release_included_triples(contract_payload())
     assert triples, "the driver guard would check nothing"
     assert sorted(triples) == sorted(EXPECTED_TRIPLES)
-    assert (
-        "x86_64-pc-windows-gnu" not in triples
-    ), "the documented-exclusion target must not be demanded of the catalogue"
+    assert "x86_64-pc-windows-gnu" not in triples, (
+        "the documented-exclusion target must not be demanded of the catalogue"
+    )
 
 
 def test_release_selection_matches_the_release_staging_selector():

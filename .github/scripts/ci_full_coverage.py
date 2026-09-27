@@ -31,9 +31,7 @@ def required_jobs(contract: dict[str, Any]) -> set[str]:
     return jobs
 
 
-def coverage_failures(
-    contract: dict[str, Any], needs: dict[str, object]
-) -> list[str]:
+def coverage_failures(contract: dict[str, Any], needs: dict[str, object]) -> list[str]:
     failures = []
     for job in sorted(required_jobs(contract)):
         result = needs.get(job)

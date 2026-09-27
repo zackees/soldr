@@ -36,7 +36,9 @@ def select_mode(
         mode = (
             "full"
             if "ci-full" in names
-            else "test" if "ci-test" in names else "minimal"
+            else "test"
+            if "ci-test" in names
+            else "minimal"
         )
         return mode, sha.lower()
     if event_name == "push":

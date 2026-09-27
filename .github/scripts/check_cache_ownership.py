@@ -524,8 +524,7 @@ def budget_problems(manifest: dict) -> list[str]:
             isinstance(e, str) for e in entries
         ):
             problems.append(
-                f"R6 budget.families[{family_id!r}].entries must be a list of "
-                "strings"
+                f"R6 budget.families[{family_id!r}].entries must be a list of strings"
             )
 
         if not str(family.get("rationale", "")).strip():

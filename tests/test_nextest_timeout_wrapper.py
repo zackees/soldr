@@ -447,9 +447,9 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     for block in config.split("[[profile.default.overrides]]")[1:]:
         if "terminate-after" not in block:
             continue
-        assert (
-            'grace-period = "30s"' in block
-        ), f"a raised budget with no explicit grace period:\n{block}"
+        assert 'grace-period = "30s"' in block, (
+            f"a raised budget with no explicit grace period:\n{block}"
+        )
     # Kept beside it: the count still makes an addition deliberate rather than
     # incidental. 14 = the default profile + eleven measured per-test override
     # blocks (soldr#3038 added `daemon_rss_ceiling`'s 300s budget, the ninth;
@@ -641,9 +641,9 @@ def test_the_wait_loop_does_not_flat_poll(tmp_path) -> None:
         "the child-wait loop must block in Popen.wait, which returns the instant "
         "the child exits and backs off from 0.5 ms rather than sleeping a flat 50 ms"
     )
-    assert (
-        "while child.poll() is None:" not in code
-    ), "the flat-poll wait loop is the soldr#3144 regression"
+    assert "while child.poll() is None:" not in code, (
+        "the flat-poll wait loop is the soldr#3144 regression"
+    )
 
 
 _LINUX_ONLY = pytest.mark.skipif(

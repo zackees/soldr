@@ -128,7 +128,9 @@ def test_every_setup_soldr_call_disables_cook_delta() -> None:
                     if indent <= step_indent and stripped.startswith("-"):
                         break
                 block.append(candidate)
-            if not re.search(r"^\s*cook-delta:\s*false\s*(?:#.*)?$", "\n".join(block), re.M):
+            if not re.search(
+                r"^\s*cook-delta:\s*false\s*(?:#.*)?$", "\n".join(block), re.M
+            ):
                 missing_or_enabled.append(f"{workflow.name}:{index + 1}")
 
     assert not missing_or_enabled, (

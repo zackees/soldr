@@ -1030,8 +1030,7 @@ def verify_replay_artifacts(
     if failures:
         joined = "\n  - ".join(failures)
         sys.exit(
-            "ERROR: macOS Recovery replay artifact verification failed:\n"
-            f"  - {joined}"
+            f"ERROR: macOS Recovery replay artifact verification failed:\n  - {joined}"
         )
 
     print(

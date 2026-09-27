@@ -148,9 +148,9 @@ def test_the_scan_still_sees_macos_workflows_and_command_lines() -> None:
     # Four today. The bar is deliberately below that: this asserts the scan is
     # still finding workflows at all, not the exact inventory, which would turn
     # every unrelated workflow addition into a failure here.
-    assert (
-        len(macos_workflows) >= 3
-    ), f"expected several macOS workflows, got {macos_workflows}"
+    assert len(macos_workflows) >= 3, (
+        f"expected several macOS workflows, got {macos_workflows}"
+    )
     assert "release-auto.yml" in macos_workflows, (
         "release-auto.yml is the workflow this guard exists for -- if it is no "
         f"longer detected as macOS-capable the rule is not applying: {macos_workflows}"

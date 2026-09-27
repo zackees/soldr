@@ -43,7 +43,7 @@ def _require_absolute_file(path: Path, label: str) -> Path:
 
 
 def render_posix_allowed(source_soldr: Path) -> str:
-    return "#!/bin/sh\n" f'exec {shlex.quote(str(source_soldr))} cargo "$@"\n'
+    return f'#!/bin/sh\nexec {shlex.quote(str(source_soldr))} cargo "$@"\n'
 
 
 def render_posix_trap() -> str:
@@ -55,9 +55,7 @@ def render_posix_trap() -> str:
 
 
 def render_posix_test_runner(allowed_cargo: Path) -> str:
-    return (
-        "#!/bin/sh\n" f"export CARGO={shlex.quote(str(allowed_cargo))}\n" 'exec "$@"\n'
-    )
+    return f'#!/bin/sh\nexport CARGO={shlex.quote(str(allowed_cargo))}\nexec "$@"\n'
 
 
 def _quote_cmd_path(path: Path) -> str:
@@ -76,9 +74,7 @@ def render_windows_allowed(source_soldr: Path) -> str:
 
 
 def render_windows_trap() -> str:
-    return (
-        "@echo off\r\n" f">&2 echo {TRAP_MESSAGE}\r\n" f"exit /b {TRAP_EXIT_CODE}\r\n"
-    )
+    return f"@echo off\r\n>&2 echo {TRAP_MESSAGE}\r\nexit /b {TRAP_EXIT_CODE}\r\n"
 
 
 def render_windows_test_runner(allowed_cargo: Path) -> str:
@@ -87,12 +83,7 @@ def render_windows_test_runner(allowed_cargo: Path) -> str:
         raise ValueError(
             f"path cannot be represented safely in a cmd shim: {allowed_cargo}"
         )
-    return (
-        "@echo off\r\n"
-        f'set "CARGO={raw}"\r\n'
-        "call %*\r\n"
-        "exit /b %ERRORLEVEL%\r\n"
-    )
+    return f'@echo off\r\nset "CARGO={raw}"\r\ncall %*\r\nexit /b %ERRORLEVEL%\r\n'
 
 
 def install_guard(

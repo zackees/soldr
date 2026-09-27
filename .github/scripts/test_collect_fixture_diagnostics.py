@@ -19,8 +19,13 @@ class CollectFixtureDiagnosticsTests(unittest.TestCase):
         """A miniature of what the breach fixture leaves under the temp dir."""
 
         cache = temp / "soldr-rss-breach-cache-b-1700000000000"
-        write(cache / "cache" / "soldr-daemon" / "lifecycle.jsonl", '{"event":"spawn"}\n')
-        write(cache / "cache" / "soldr-daemon" / "rss-ceiling-v1.json", '{"breached":true}')
+        write(
+            cache / "cache" / "soldr-daemon" / "lifecycle.jsonl", '{"event":"spawn"}\n'
+        )
+        write(
+            cache / "cache" / "soldr-daemon" / "rss-ceiling-v1.json",
+            '{"breached":true}',
+        )
         write(
             cache
             / "cache"
@@ -73,7 +78,9 @@ class CollectFixtureDiagnosticsTests(unittest.TestCase):
                 prefixes=collector.DEFAULT_PREFIXES,
             )
 
-            copied = sorted(entry["path"].replace("\\", "/") for entry in index["copied"])
+            copied = sorted(
+                entry["path"].replace("\\", "/") for entry in index["copied"]
+            )
             self.assertEqual(
                 copied,
                 [

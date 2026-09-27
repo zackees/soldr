@@ -70,15 +70,15 @@ def test_runtime_and_manifest_mirrors_match_contract() -> None:
     )
     manifest_targets = re.findall(r'"([^-"\s]+(?:-[^"\s]+){2,})"', manifest_section)
 
-    assert (
-        core == expected_triples
-    ), "CANONICAL_TARGETS drifted from canonical-targets.json"
-    assert (
-        aliases == expected_aliases
-    ), "CANONICAL_ALIASES drifted from canonical-targets.json"
-    assert (
-        manifest_targets == expected_triples
-    ), "Cargo target metadata drifted from canonical-targets.json"
+    assert core == expected_triples, (
+        "CANONICAL_TARGETS drifted from canonical-targets.json"
+    )
+    assert aliases == expected_aliases, (
+        "CANONICAL_ALIASES drifted from canonical-targets.json"
+    )
+    assert manifest_targets == expected_triples, (
+        "Cargo target metadata drifted from canonical-targets.json"
+    )
 
 
 def test_release_included_targets_have_execution_or_tracked_exception() -> None:
@@ -97,12 +97,12 @@ def test_release_included_targets_have_execution_or_tracked_exception() -> None:
         )
         issue = exception.get("issue")
         disposition = exception.get("release_disposition")
-        assert (
-            isinstance(issue, int) and issue > 0
-        ), f"{row['triple']} execution_exception must name a tracking issue"
-        assert (
-            isinstance(disposition, str) and disposition.strip()
-        ), f"{row['triple']} execution_exception must state its release disposition"
+        assert isinstance(issue, int) and issue > 0, (
+            f"{row['triple']} execution_exception must name a tracking issue"
+        )
+        assert isinstance(disposition, str) and disposition.strip(), (
+            f"{row['triple']} execution_exception must state its release disposition"
+        )
 
 
 def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
@@ -120,13 +120,13 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
             "cross-build",
         }, f"{ci['build_job']} has unknown ci.kind {ci['kind']!r}"
         build = workflow_job(workflow, ci["build_job"])
-        assert (
-            row["triple"] in build
-        ), f"{ci['build_job']} no longer builds {row['triple']}"
+        assert row["triple"] in build, (
+            f"{ci['build_job']} no longer builds {row['triple']}"
+        )
         if ci["kind"] == "native":
-            assert (
-                "_bootstrap-e2e.yml" in build
-            ), f"{ci['build_job']} lost native build/run coverage"
+            assert "_bootstrap-e2e.yml" in build, (
+                f"{ci['build_job']} lost native build/run coverage"
+            )
             assert ci["runner"] in build, f"{ci['build_job']} runner drifted"
             continue
         if ci["kind"] == "cross-build":
@@ -134,12 +134,12 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
             # cross-build host itself gets no replay job: the split exists to
             # reach a target-native runner, and there is none to reach. Pin
             # the absence, so the degenerate pair cannot come back unnoticed.
-            assert (
-                "_ci-cross-build-linux.yml" in build
-            ), f"{ci['build_job']} lost Linux cross-build coverage"
-            assert (
-                ci["run_job"] is None
-            ), f"{ci['build_job']} is cross-build but names a run job"
+            assert "_ci-cross-build-linux.yml" in build, (
+                f"{ci['build_job']} lost Linux cross-build coverage"
+            )
+            assert ci["run_job"] is None, (
+                f"{ci['build_job']} is cross-build but names a run job"
+            )
             # The whole justification for dropping the replay is that the
             # contract runner and the cross-build host are the same image. If
             # either side moves, the split becomes non-degenerate again and
@@ -161,9 +161,9 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
             # is cheap to delete by accident while "cleaning up the lane with
             # no consumer", so pin that the archive is still built and that
             # only the unread *upload* was dropped.
-            assert (
-                "upload_test_archive: false" in build
-            ), f"{ci['build_job']} still uploads an artifact nothing replays"
+            assert "upload_test_archive: false" in build, (
+                f"{ci['build_job']} still uploads an artifact nothing replays"
+            )
             cross_build_archive = re.search(
                 r"^\s*- name: Upload artifact\n\s*if: inputs\.upload_test_archive$",
                 cross_build,
@@ -173,9 +173,9 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
                 "the upload gate vanished from _ci-cross-build-linux.yml; "
                 "build-only lanes would resume uploading unread archives"
             )
-            assert (
-                "nextest archive" in cross_build or "nextest_cmd" in cross_build
-            ), f"{ci['build_job']} no longer compiles test binaries for its target"
+            assert "nextest archive" in cross_build or "nextest_cmd" in cross_build, (
+                f"{ci['build_job']} no longer compiles test binaries for its target"
+            )
             replay = ci["build_job"].removesuffix("-build")
             assert not re.search(
                 rf"^  {re.escape(replay)}:\s*$", workflow, re.MULTILINE
@@ -185,12 +185,12 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
             )
             continue
         run = workflow_job(workflow, ci["run_job"])
-        assert (
-            "_ci-cross-build-linux.yml" in build
-        ), f"{ci['build_job']} lost Linux cross-build coverage"
-        assert (
-            "_ci-target-run.yml" in run
-        ), f"{ci['run_job']} lost native execution coverage"
+        assert "_ci-cross-build-linux.yml" in build, (
+            f"{ci['build_job']} lost Linux cross-build coverage"
+        )
+        assert "_ci-target-run.yml" in run, (
+            f"{ci['run_job']} lost native execution coverage"
+        )
         # soldr#3018: gated lanes carry `needs: [<build job>, windows-e2e-policy]`,
         # so assert the dependency rather than the scalar spelling of it. The
         # property under test is that the run job is not detached from its
@@ -199,19 +199,19 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
             (line for line in run.splitlines() if line.strip().startswith("needs:")),
             "",
         )
-        assert (
-            ci["build_job"] in needs_line
-        ), f"{ci['run_job']} is detached from its build job"
-        assert (
-            row["triple"] in run and ci["runner"] in run
-        ), f"{ci['run_job']} target/runner drifted"
+        assert ci["build_job"] in needs_line, (
+            f"{ci['run_job']} is detached from its build job"
+        )
+        assert row["triple"] in run and ci["runner"] in run, (
+            f"{ci['run_job']} target/runner drifted"
+        )
         if ci.get("execution") == "x86_64-recovery":
             assert ci["runner"] == "ubuntu-24.04", (
                 f"{row['triple']} Recovery replay must run on an ubuntu-24.04 host "
                 "(no macos-* GitHub Actions runner, owner mandate 2026-09-02)"
             )
             assert "target_execution: x86_64-recovery" in run, (
-                f"{ci['run_job']} can silently substitute a different execution " "mode"
+                f"{ci['run_job']} can silently substitute a different execution mode"
             )
 
     blessed = (ROOT / ".github" / "workflows" / "build-all-from-linux.yml").read_text(
@@ -219,12 +219,12 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
     )
     matrix = dict(re.findall(r"\{ alias: ([^,]+),\s+target: ([^,]+),", blessed))
     expected = {row["alias"]: row["triple"] for row in rows}
-    assert (
-        matrix == expected
-    ), "blessed build alias matrix drifted from canonical-targets.json"
-    assert (
-        '--target "${{ matrix.input || matrix.alias }}"' in blessed
-    ), "workflow no longer exercises canonical build inputs through soldr build"
+    assert matrix == expected, (
+        "blessed build alias matrix drifted from canonical-targets.json"
+    )
+    assert '--target "${{ matrix.input || matrix.alias }}"' in blessed, (
+        "workflow no longer exercises canonical build inputs through soldr build"
+    )
     assert "input: x86_64-pc-windows-gnu" in blessed, (
         "the N-1 bootstrap must use the GNU triple until a released soldr "
         "contains the new canonical alias"
@@ -270,9 +270,9 @@ def test_release_inclusions_and_exclusions_match_contract() -> None:
     for row in rows:
         release = row["release"]
         if release["status"] == "documented-exclusion":
-            assert (
-                release["workflow_marker"] in workflow
-            ), f"release exclusion for {row['triple']} is undocumented"
+            assert release["workflow_marker"] in workflow, (
+                f"release exclusion for {row['triple']} is undocumented"
+            )
 
 
 def test_catalogue_mappings_cover_every_target() -> None:
@@ -283,9 +283,9 @@ def test_catalogue_mappings_cover_every_target() -> None:
 
     for row in rows:
         expected = tuple(row["catalogue"]["nextest"])
-        assert (
-            module.query_for_target(row["triple"]) == expected
-        ), f"cargo-nextest mapping drifted for {row['triple']}"
+        assert module.query_for_target(row["triple"]) == expected, (
+            f"cargo-nextest mapping drifted for {row['triple']}"
+        )
 
     syslib_tables = {
         "bzip2_sysroot.rs": "BZIP2_TARGETS",
@@ -313,9 +313,9 @@ def test_catalogue_mappings_cover_every_target() -> None:
                 if filename == "uv_tool.rs"
                 else row["catalogue"]["syslib_slug"]
             )
-            assert (
-                mapping.get(row["triple"]) == expected_slug
-            ), f"{constant} mapping drifted for {row['triple']}"
+            assert mapping.get(row["triple"]) == expected_slug, (
+                f"{constant} mapping drifted for {row['triple']}"
+            )
 
 
 def test_documented_alias_table_matches_contract() -> None:
@@ -324,9 +324,9 @@ def test_documented_alias_table_matches_contract() -> None:
         "<!-- canonical-target-contract:end -->", 1
     )[0]
     for row in contract_targets():
-        assert (
-            f"| `{row['alias']}` | `{row['triple']}` |" in table
-        ), f"documentation row missing for {row['alias']} -> {row['triple']}"
+        assert f"| `{row['alias']}` | `{row['triple']}` |" in table, (
+            f"documentation row missing for {row['alias']} -> {row['triple']}"
+        )
 
 
 def test_npm_install_selectors_match_contract() -> None:

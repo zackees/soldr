@@ -83,7 +83,7 @@ def test_called_process_error_carries_output_and_stderr(backend, tmp_path, monke
     # named cause, so the excerpt builder has something real to work with.
     script = tmp_path / "boom.py"
     script.write_text(
-        "import sys\n" f"sys.stderr.write({named!r} + '\\n')\n" "sys.exit(3)\n",
+        f"import sys\nsys.stderr.write({named!r} + '\\n')\nsys.exit(3)\n",
         encoding="utf-8",
     )
     cmd = [sys.executable, str(script)]

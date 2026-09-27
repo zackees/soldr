@@ -266,12 +266,12 @@ def release_included_triples(payload: object) -> list[str]:
         triple = entry.get("triple")
         if not isinstance(triple, str) or not triple:
             raise GuardError(
-                f"{where} has no non-empty string `triple` field " f"(got {triple!r})"
+                f"{where} has no non-empty string `triple` field (got {triple!r})"
             )
         release = entry.get("release")
         if not isinstance(release, dict):
             raise GuardError(
-                f"{where} ({triple}) has no `release` object " f"(got {release!r})"
+                f"{where} ({triple}) has no `release` object (got {release!r})"
             )
         status = release.get("status")
         if not isinstance(status, str) or not status:

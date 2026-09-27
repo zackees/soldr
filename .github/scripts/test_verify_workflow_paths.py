@@ -218,9 +218,9 @@ def test_the_cache_crate_is_watched_where_it_now_lives(mod):
     for name in ("cook-size-gate.yml",):
         text = (REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
         patterns = mod.path_filters(text)
-        assert any(
-            p.startswith("crates/soldr-cache/") for p in patterns
-        ), f"{name} no longer watches the cache crate: {patterns}"
-        assert not any(
-            "soldr-cli/src/cache_lib" in p for p in patterns
-        ), f"{name} still watches the pre-#1490 cache_lib location"
+        assert any(p.startswith("crates/soldr-cache/") for p in patterns), (
+            f"{name} no longer watches the cache crate: {patterns}"
+        )
+        assert not any("soldr-cli/src/cache_lib" in p for p in patterns), (
+            f"{name} still watches the pre-#1490 cache_lib location"
+        )

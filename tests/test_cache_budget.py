@@ -192,9 +192,9 @@ def test_manifest_budget_is_self_consistent() -> None:
         for prefix_b, family_b in owned_prefixes:
             if family_a == family_b:
                 continue
-            assert not prefix_b.startswith(
-                prefix_a
-            ), f"{prefix_a!r} ({family_a}) is a prefix of {prefix_b!r} ({family_b})"
+            assert not prefix_b.startswith(prefix_a), (
+                f"{prefix_a!r} ({family_a}) is a prefix of {prefix_b!r} ({family_b})"
+            )
 
 
 # --------------------------------------------------------------------------
@@ -772,8 +772,7 @@ def test_3398_prune_never_deletes_the_newest_or_a_unique_generation() -> None:
 
 PERF_TARGET_CACHE = "v0-rust-perf-build-soldr-linux-Linux-x64-079eeefc-1a449117"
 PERF_BINARY_CACHE = (
-    "soldr-bin-linux-"
-    "6bb7426dc0c3e4b2d8ea592c9c5168879a1f293457c7a30f8ee65d399e318149"
+    "soldr-bin-linux-6bb7426dc0c3e4b2d8ea592c9c5168879a1f293457c7a30f8ee65d399e318149"
 )
 
 

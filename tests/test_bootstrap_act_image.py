@@ -170,9 +170,9 @@ def test_soldr_bootstrap_installs_rustup_on_act_image(tmp_path: Path) -> None:
     assert '"already_installed": false' in result.stdout, (
         "expected first-run install report; stdout was:\n" + result.stdout
     )
-    assert (
-        "rustup" in result.stdout
-    ), "expected `rustup --version` output to mention rustup"
+    assert "rustup" in result.stdout, (
+        "expected `rustup --version` output to mention rustup"
+    )
 
 
 def _elf64_header(machine: int, *, elf_class: int = _ELFCLASS64) -> bytes:

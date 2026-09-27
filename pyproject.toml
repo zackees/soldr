@@ -48,6 +48,8 @@ dev = [
     "pillow==11.3.0",
     "pytest>=8.0",
     "pytest-xdist>=3.0",
+    "PyYAML>=6.0,<7",
+    "types-PyYAML>=6.0,<7",
     "ruff>=0.12,<0.13",
     "pyright>=1.1.400,<2",
     "matplotlib>=3.10,<4",
