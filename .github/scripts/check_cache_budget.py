@@ -52,12 +52,14 @@ because the caller chose that exact path.
 
 ## Pruning
 
-`--prune` lists (never deletes without `--apply`) four classes of
+`--prune` lists (never deletes without `--apply`) safe classes of
 reclaimable entry: keys under a `RETIRED_PREFIXES` namespace whose producer no
 longer runs, entries on a ref other than `refs/heads/main` (a PR's caches are
 never restored by another PR), and `v0-rust-*` entries on `refs/heads/main`
 that have been superseded by a newer generation of the same shared-key
-lineage. It also retires old cook locks within the same target/feature shape
+lineage. The old perf-matrix target-cache namespace is an exception: it is
+kept until a registry-only replacement exists for the same platform. It also
+retires old cook locks within the same target/feature shape
 (across soldr versions) only when that shape has a base under the exact
 current main Cargo.lock hash; see `cook_lineage_candidates`. The report
 prints raw usage and the projected effective-after-safe-prune usage
@@ -465,6 +467,16 @@ GENERATION_KEY_PREFIXES = (
 )
 
 SOLO_TOOLCHAIN_KEY = re.compile(r"^(solo-toolchain-v3-.+)-soldrv[0-9.]+$")
+PERF_TARGET_KEY = re.compile(
+    r"^v0-rust-perf-build-soldr-(?P<platform>[a-z0-9-]+)-"
+    r"(?P<os>Linux|Windows|macOS)-(?P<arch>[A-Za-z0-9_]+)-"
+    r"[0-9a-f]+-[0-9a-f]+$"
+)
+PERF_REGISTRY_KEY = re.compile(
+    r"^v0-rust-perf-registry-soldr-(?P<platform>[a-z0-9-]+)-"
+    r"(?P<os>Linux|Windows|macOS)-(?P<arch>[A-Za-z0-9_]+)-"
+    r"[0-9a-f]+-[0-9a-f]+$"
+)
 
 COOK_KEY = re.compile(
     r"^cook-(base|delta)-v2-(.+-f[0-9a-f]+)-l([0-9a-f]+)-soldr([0-9.]+)(?:-s[0-9a-f]+-g[0-9a-f]+)?$"
@@ -550,6 +562,29 @@ def cook_lineage_candidates(
     return retired
 
 
+def perf_target_cache_candidates(on_main: list[CacheEntry]) -> list[CacheEntry]:
+    """Retire obsolete perf target caches only after registry replacement.
+
+    The perf-matrix producer previously used `perf-build-soldr-<platform>`
+    with rust-cache's default target caching. Those entries are still
+    restorable, so they are not unconditional retired prefixes. A matching
+    `perf-registry-soldr-<platform>` entry proves that the new registry-only
+    producer has run on that platform before any old target archive is removed.
+    """
+    replacements: set[tuple[str, str, str]] = set()
+    for entry in on_main:
+        match = PERF_REGISTRY_KEY.fullmatch(entry.key)
+        if match:
+            replacements.add((match["platform"], match["os"], match["arch"]))
+
+    candidates: list[CacheEntry] = []
+    for entry in on_main:
+        match = PERF_TARGET_KEY.fullmatch(entry.key)
+        if match and (match["platform"], match["os"], match["arch"]) in replacements:
+            candidates.append(entry)
+    return candidates
+
+
 def prune_candidates(
     entries: list[CacheEntry],
     current_main_lock: str | None = None,
@@ -576,6 +611,11 @@ def prune_candidates(
 
     groups: dict[str, list[CacheEntry]] = {}
     for entry in on_main:
+        # Old perf target archives remain useful until the new registry-only
+        # producer exists for the same platform. Do not let generic rust-cache
+        # generation pruning bypass that migration guard.
+        if PERF_TARGET_KEY.fullmatch(entry.key):
+            continue
         if not entry.key.startswith(GENERATION_KEY_PREFIXES):
             continue
         groups.setdefault(strip_shared_key_hash(entry.key), []).append(entry)
@@ -589,6 +629,7 @@ def prune_candidates(
                 candidates.append(entry)
 
     candidates.extend(cook_lineage_candidates(on_main, current_main_lock))
+    candidates.extend(perf_target_cache_candidates(on_main))
 
     return candidates
 
