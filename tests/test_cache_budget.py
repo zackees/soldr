@@ -650,9 +650,7 @@ def test_3347_policy_is_not_green_when_a_family_truly_does_not_fit() -> None:
         for e in lineage_entries()
     ]
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    effective = without(
-        entries, guard.prune_candidates(entries, CURRENT_LOCK)
-    )
+    effective = without(entries, guard.prune_candidates(entries, CURRENT_LOCK))
     problems = guard.budget_problems(MANIFEST, manifest, effective)
     assert any("'rust-cache-residual'" in p for p in problems)
     assert "STILL OVER BUDGET" in guard.effective_verdict(problems)
@@ -671,9 +669,10 @@ def test_3347_never_retires_a_unique_active_shape() -> None:
         _cook("base", "c0f411d4", PRIOR_LOCK, "0.9.21"),  # no current base
         _cook("delta", "c0f411d4", PRIOR_LOCK, "0.9.21", "-s1-g2"),
     ]
-    assert [entry.key for entry in guard.prune_candidates(guard.normalize_entries(raw), CURRENT_LOCK)] == [
-        raw[2]["key"]
-    ]
+    assert [
+        entry.key
+        for entry in guard.prune_candidates(guard.normalize_entries(raw), CURRENT_LOCK)
+    ] == [raw[2]["key"]]
 
 
 def test_3347_never_retires_an_unknown_prefix() -> None:
@@ -748,10 +747,82 @@ def test_3398_prune_fits_setup_soldr_action_stores() -> None:
 
 def test_3398_prune_never_deletes_the_newest_or_a_unique_generation() -> None:
     main = "refs/heads/main"
-    newest = guard.CacheEntry(f"{DOGFOOD}{DOGFOOD_LOCK}-bbb", main, 1, "1", "2026-09-26T06:00:00Z")
-    older = guard.CacheEntry(f"{DOGFOOD}{DOGFOOD_LOCK}-aaa", main, 1, "2", "2026-09-26T04:00:00Z")
-    unique = guard.CacheEntry(f"{DOGFOOD}otherlock-ccc", main, 1, "3", "2026-09-25T00:00:00Z")
-    unknown = guard.CacheEntry("setup-soldr-dogfood-other-v9-x-1", main, 1, "4", "2026-09-20T00:00:00Z")
-    unknown2 = guard.CacheEntry("setup-soldr-dogfood-other-v9-x-2", main, 1, "5", "2026-09-21T00:00:00Z")
+    newest = guard.CacheEntry(
+        f"{DOGFOOD}{DOGFOOD_LOCK}-bbb", main, 1, "1", "2026-09-26T06:00:00Z"
+    )
+    older = guard.CacheEntry(
+        f"{DOGFOOD}{DOGFOOD_LOCK}-aaa", main, 1, "2", "2026-09-26T04:00:00Z"
+    )
+    unique = guard.CacheEntry(
+        f"{DOGFOOD}otherlock-ccc", main, 1, "3", "2026-09-25T00:00:00Z"
+    )
+    unknown = guard.CacheEntry(
+        "setup-soldr-dogfood-other-v9-x-1", main, 1, "4", "2026-09-20T00:00:00Z"
+    )
+    unknown2 = guard.CacheEntry(
+        "setup-soldr-dogfood-other-v9-x-2", main, 1, "5", "2026-09-21T00:00:00Z"
+    )
     candidates = guard.prune_candidates([older, newest, unique, unknown, unknown2])
     assert [c.key for c in candidates] == [older.key]
+
+
+# --------------------------------------------------------------------------
+# soldr#3347: retire the oversized perf build cache only after its replacement
+# --------------------------------------------------------------------------
+
+PERF_TARGET_CACHE = "v0-rust-perf-build-soldr-linux-Linux-x64-079eeefc-1a449117"
+PERF_REGISTRY_CACHE = "v0-rust-perf-registry-soldr-linux-Linux-x64-f8df89ca-887f9be0"
+
+
+def test_perf_target_cache_waits_for_same_platform_registry_replacement() -> None:
+    old = guard.CacheEntry(PERF_TARGET_CACHE, "refs/heads/main", 508_702_303, "1")
+    old_prior = guard.CacheEntry(
+        PERF_TARGET_CACHE.rsplit("-", 1)[0] + "-1a449116",
+        "refs/heads/main",
+        500_000_000,
+        "1a",
+    )
+
+    # This ~509 MB rust-cache entry is still restorable through the active
+    # perf-build shared-key; a newer, unrelated platform cache is not proof
+    # that Linux's compiler path has a replacement.
+    assert (
+        guard.prune_candidates(
+            [
+                old,
+                old_prior,
+                guard.CacheEntry(
+                    PERF_REGISTRY_CACHE.replace("linux-Linux", "win-Windows"),
+                    "refs/heads/main",
+                    20_000_000,
+                    "2",
+                ),
+            ]
+        )
+        == []
+    )
+    assert (
+        guard.prune_candidates(
+            [
+                old,
+                old_prior,
+                guard.CacheEntry(
+                    PERF_REGISTRY_CACHE.replace("x64", "arm64"),
+                    "refs/heads/main",
+                    20_000_000,
+                    "2b",
+                ),
+            ]
+        )
+        == []
+    )
+
+    replacement = guard.CacheEntry(
+        PERF_REGISTRY_CACHE, "refs/heads/main", 18_000_000, "3", "2026-09-27T00:00:00Z"
+    )
+    assert [
+        entry.key for entry in guard.prune_candidates([old, old_prior, replacement])
+    ] == [
+        PERF_TARGET_CACHE,
+        old_prior.key,
+    ]
