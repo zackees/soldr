@@ -13,6 +13,14 @@ pub(crate) fn requested_targets(args: &[String]) -> Result<Vec<String>, SoldrErr
     parse_targets(&args[separator + 1..], false)
 }
 
+pub(crate) fn requested_targets_for_cargo(args: &[String]) -> Result<Vec<String>, SoldrError> {
+    if crate::cargo_front_door::first_cargo_subcommand(args) == Some("dylint") {
+        requested_targets(args)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 pub(crate) fn prepare_targets(args: &[String]) -> Result<Vec<String>, SoldrError> {
     parse_targets(args, true)
 }

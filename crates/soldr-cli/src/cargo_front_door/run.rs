@@ -116,11 +116,7 @@ pub(crate) async fn run_cargo_front_door(
     let paths = SoldrPaths::new()?;
     paths.ensure_dirs()?;
     let dylint_requested = first_cargo_subcommand(args) == Some("dylint");
-    let dylint_targets = if dylint_requested {
-        crate::dylint_target::requested_targets(args)?
-    } else {
-        Vec::new()
-    };
+    let dylint_targets = crate::dylint_target::requested_targets_for_cargo(args)?;
     let dylint_scope_already_active =
         std::env::var_os(crate::dylint_toolchain::TOOLCHAIN_ENV_VAR).is_some();
     // Only the process that introduces the Dylint scope owns the setup-soldr
@@ -132,10 +128,7 @@ pub(crate) async fn run_cargo_front_door(
         crate::dylint_toolchain::clear_success_marker()?;
     }
     let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    // A missing cargo-dylint or dylint-link asset is a release-packaging
-    // failure, not a reason to prepare a nightly toolchain. Resolve both
-    // binaries first so unsupported hosts fail in seconds without downloads,
-    // component probes, compiler work, or source-build fallback.
+    // Resolve release-packaged Dylint binaries before preparing nightly.
     let early_dylint = if dylint_entrypoint {
         let bootstrap = ensure_known_subcommand_tool(args, &paths).await?;
         let plan =
