@@ -116,6 +116,11 @@ pub(crate) async fn run_cargo_front_door(
     let paths = SoldrPaths::new()?;
     paths.ensure_dirs()?;
     let dylint_requested = first_cargo_subcommand(args) == Some("dylint");
+    let dylint_targets = if dylint_requested {
+        crate::dylint_target::requested_targets(args)?
+    } else {
+        Vec::new()
+    };
     let dylint_scope_already_active =
         std::env::var_os(crate::dylint_toolchain::TOOLCHAIN_ENV_VAR).is_some();
     // Only the process that introduces the Dylint scope owns the setup-soldr
@@ -147,6 +152,9 @@ pub(crate) async fn run_cargo_front_door(
     } else {
         None
     };
+    if let Some(plan) = dylint_plan.as_ref() {
+        crate::dylint_target::ensure_targets(&plan.channel, &dylint_targets)?;
+    }
     let effective_toolchain = dylint_plan
         .as_ref()
         .map(|plan| plan.channel.as_str())
