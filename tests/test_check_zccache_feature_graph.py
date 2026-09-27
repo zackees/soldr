@@ -38,7 +38,9 @@ def test_manifest_feature_set_is_exactly_as_settled(guard) -> None:
         "mimalloc-allocator",
     ]
     assert guard.MANIFEST_FEATURES["crates/soldr-cache/Cargo.toml"] == []
-    assert guard.MANIFEST_FEATURES["crates/soldr-daemon/Cargo.toml"] == ["mimalloc-allocator"]
+    assert guard.MANIFEST_FEATURES["crates/soldr-daemon/Cargo.toml"] == [
+        "mimalloc-allocator"
+    ]
 
 
 def test_cli_and_its_expansion_are_all_forbidden(guard) -> None:
@@ -85,7 +87,9 @@ def test_normal_tree_command_error_fails_closed(guard) -> None:
 
 
 def test_feature_tree_flags_a_restored_cli_feature(guard) -> None:
-    tree = 'zccache v1.13.22\n|-- zccache feature "cli"\n|-- zccache feature "formatter"\n'
+    tree = (
+        'zccache v1.13.22\n|-- zccache feature "cli"\n|-- zccache feature "formatter"\n'
+    )
     with patch.object(guard, "_run", return_value=completed(0, tree)):
         failures = guard._check_tree(
             "soldr",

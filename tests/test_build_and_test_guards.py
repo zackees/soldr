@@ -63,8 +63,7 @@ ZCCACHE_STORE = "Restore Tier-2 zccache object store (soldr#3039)"
 ZCCACHE_SAVE = "Save Tier-2 zccache object store (soldr#3102)"
 ZCCACHE_SCRUB = "Scrub runtime coordination state from the object store (soldr#3039)"
 ZCCACHE_STORE_PATH = (
-    "${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}"
-    "/cache/zccache/daemon-state"
+    "${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/daemon-state"
 )
 CACHE_ENV_VARS = ("SOLDR_CACHE_DIR", "ZCCACHE_CACHE_DIR")
 CACHE_SHELL_ASSIGNMENT = re.compile(
@@ -201,7 +200,10 @@ def test_source_driver_reuse_is_exact_sha_opportunistic_and_fails_closed() -> No
     assert "continue-on-error: true" in verify
     # A full dispatch checks out the explicit candidate rather than the dispatch
     # branch; provenance must follow that source ref, with github.sha as fallback.
-    assert 'expected_sha="${{ inputs.source_ref != \'\' && inputs.source_ref || github.sha }}"' in verify
+    assert (
+        "expected_sha=\"${{ inputs.source_ref != '' && inputs.source_ref || github.sha }}\""
+        in verify
+    )
     assert 'actual_sha=$(<"$artifact_dir/source-sha")' in verify
     assert '[[ "$actual_sha" == "$expected_sha" ]]' in verify
     assert verify.index('[[ "$actual_sha" == "$expected_sha" ]]') < verify.index(

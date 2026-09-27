@@ -98,9 +98,7 @@ def load_artifact_provenance(root: Path, target: str) -> dict:
             continue
         release = entry.get("release")
         provenance = (
-            release.get("artifact_provenance")
-            if isinstance(release, dict)
-            else None
+            release.get("artifact_provenance") if isinstance(release, dict) else None
         )
         if not isinstance(provenance, dict):
             raise ManifestError(

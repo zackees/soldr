@@ -345,9 +345,9 @@ def test_baseline_matches_the_repository_exactly(guard):
 def test_baseline_entries_name_workflows_that_exist(guard):
     """A renamed or deleted workflow must not leave a silent entry behind."""
     for workflow in {entry[0] for entry in guard.BASELINE}:
-        assert (
-            guard.WORKFLOW_DIR / workflow
-        ).is_file(), f"BASELINE names {workflow}, which does not exist"
+        assert (guard.WORKFLOW_DIR / workflow).is_file(), (
+            f"BASELINE names {workflow}, which does not exist"
+        )
 
 
 # --------------------------------- exit codes ----------------------------------

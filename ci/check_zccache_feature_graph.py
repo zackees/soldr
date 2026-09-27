@@ -100,7 +100,9 @@ def _check_tree(
     failures: list[str] = []
     for feature in forbidden_features:
         if f'zccache feature "{feature}"' in result.stdout:
-            failures.append(f"{package}: resolved forbidden zccache feature {feature!r}")
+            failures.append(
+                f"{package}: resolved forbidden zccache feature {feature!r}"
+            )
     for feature in required_features:
         if f'zccache feature "{feature}"' not in result.stdout:
             failures.append(f"{package}: must resolve zccache/{feature}")
@@ -110,7 +112,9 @@ def _check_tree(
 def _check_no_normal_archive_stack(soldr: str) -> list[str]:
     result = _run(soldr, "tree", "-p", "soldr-cli", "-e", "normal")
     if result.returncode:
-        return [f"soldr-cli: could not inspect normal dependency tree:\n{result.stderr}"]
+        return [
+            f"soldr-cli: could not inspect normal dependency tree:\n{result.stderr}"
+        ]
     failures = []
     for package in FORBIDDEN_NORMAL_PACKAGES:
         if f"{package} v" in result.stdout:

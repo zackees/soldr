@@ -15,11 +15,12 @@ stdlib + matplotlib only. matplotlib is installed in the workflow via
 import json
 import sys
 from pathlib import Path
+from benchmark_models import HistoryRow
 
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt
 
 # Match bench/index.html palette so README image and Pages view are
 # visually consistent.
@@ -37,7 +38,7 @@ HISTORY = REPO_ROOT / "benchmark-stats" / "history.jsonl"
 OUTPUT = REPO_ROOT / "benchmark-stats" / "benchmark-trend.png"
 
 
-def load_history():
+def load_history() -> list[HistoryRow]:
     if not HISTORY.exists():
         return []
     rows = []
@@ -47,7 +48,7 @@ def load_history():
             if not line:
                 continue
             try:
-                rows.append(json.loads(line))
+                rows.append(HistoryRow.from_json(json.loads(line)))
             except json.JSONDecodeError as err:
                 print(
                     f"render: skipping malformed history.jsonl line: {err}",
@@ -56,7 +57,7 @@ def load_history():
     return rows
 
 
-def render_empty(reason):
+def render_empty(reason: str) -> None:
     fig, ax = plt.subplots(figsize=(8, 4.5))
     ax.set_axis_off()
     ax.text(
@@ -73,7 +74,7 @@ def render_empty(reason):
     plt.close(fig)
 
 
-def render_trend(rows):
+def render_trend(rows: list[HistoryRow]) -> None:
     canary_names = list(CANARY_COLORS.keys())
     x = list(range(len(rows)))  # commit index; oldest on left, newest on right
     fig, ax = plt.subplots(figsize=(8, 4.5))
@@ -81,7 +82,7 @@ def render_trend(rows):
         # 0 ms means the canary failed (run_canaries.sh's defensive
         # fallback). Map to None so it shows as a gap on the log axis
         # rather than as a matplotlib log-error / misleading floor.
-        ys = [((row.get("canaries") or {}).get(name) or None) for row in rows]
+        ys = [row.canaries.get(name) or float("nan") for row in rows]
         ax.plot(
             x,
             ys,
@@ -103,7 +104,7 @@ def render_trend(rows):
     plt.close(fig)
 
 
-def main():
+def main() -> int:
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     rows = load_history()
     if not rows:

@@ -162,7 +162,9 @@ def test_stage_macos_wheel_runtime_is_content_addressed(
         destination.write_bytes(payload)
 
     monkeypatch.setattr(MODULE, "download_verified", fake_download)
-    monkeypatch.setattr(MODULE, "MACOS_X64_PYTHON_SHA256", hashlib.sha256(payload).hexdigest())
+    monkeypatch.setattr(
+        MODULE, "MACOS_X64_PYTHON_SHA256", hashlib.sha256(payload).hexdigest()
+    )
     share = tmp_path / "share"
     staged_name = MODULE.stage_macos_wheel_runtime(wheel, share)
 
@@ -191,9 +193,15 @@ def test_download_verified_rejects_wrong_portable_python_digest(
             self.done = True
             return b"wrong bytes"
 
-    monkeypatch.setattr(MODULE.urllib.request, "urlopen", lambda *_args, **_kwargs: _Response())
+    monkeypatch.setattr(
+        MODULE.urllib.request, "urlopen", lambda *_args, **_kwargs: _Response()
+    )
     with pytest.raises(SystemExit, match="SHA-256 mismatch"):
-        MODULE.download_verified("https://example.invalid/python.tar.gz", tmp_path / "python.tar.gz", "0" * 64)
+        MODULE.download_verified(
+            "https://example.invalid/python.tar.gz",
+            tmp_path / "python.tar.gz",
+            "0" * 64,
+        )
 
 
 def test_build_release_guest_script_fetches_every_binary_by_basename() -> None:

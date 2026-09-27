@@ -396,8 +396,7 @@ def fetch_tool(
         archive = temporary / asset["filename"]
         source_url = download_catalogued_asset(asset, archive)
         print(
-            f"fetched {tool} {release_version} for {target}: "
-            f"{display_url(source_url)}"
+            f"fetched {tool} {release_version} for {target}: {display_url(source_url)}"
         )
         extract_dir = temporary / "extract"
         extract_dir.mkdir()

@@ -111,9 +111,9 @@ def test_the_condition_selects_gnu_windows_targets_and_no_others() -> None:
 
     selected = [t for t in cross_built_targets() if needle in t]
     expected = [t for t in cross_built_targets() if t.endswith("-pc-windows-gnu")]
-    assert (
-        selected == expected
-    ), f"needle {needle!r} selects {selected}, expected exactly {expected}"
+    assert selected == expected, (
+        f"needle {needle!r} selects {selected}, expected exactly {expected}"
+    )
     assert selected, "no windows-gnu target is being cross-built at all"
 
 

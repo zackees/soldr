@@ -116,9 +116,9 @@ def test_no_externalized_package_comes_from_git() -> None:
         for name, source in locked_packages()
         if is_externalized(name) and source and source.startswith("git+")
     ]
-    assert (
-        not git_sourced
-    ), f"expected registry sources, found git: {sorted(git_sourced)}"
+    assert not git_sourced, (
+        f"expected registry sources, found git: {sorted(git_sourced)}"
+    )
 
 
 # --------------------------------- manifests ---------------------------------
@@ -187,9 +187,9 @@ def test_no_patch_redirects_them_into_the_tree() -> None:
             name = stripped.split("=", 1)[0].strip()
             if is_externalized(name):
                 offenders.append(f"{manifest.relative_to(REPO_ROOT)}: {stripped}")
-    assert (
-        not offenders
-    ), "patched back to a local checkout (soldr#2835):\n" + "\n".join(offenders)
+    assert not offenders, (
+        "patched back to a local checkout (soldr#2835):\n" + "\n".join(offenders)
+    )
 
 
 # --------------------------------- gitlinks ----------------------------------

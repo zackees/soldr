@@ -87,7 +87,9 @@ measure() {
     echo "+ $*" >&2
     t0="$(now_ms)"
     set +e
-    "$@"
+    # Only the elapsed number belongs on stdout: callers capture this
+    # function with command substitution for jq --argjson.
+    "$@" >&2
     rc=$?
     set -e
     local elapsed
@@ -130,7 +132,7 @@ ms_check_cross_verb="$(measure cargo-check-medium-cross-verb soldr cargo check -
 find "${PROJECT_A}" -name '*.rs' -exec touch {} + || true
 find "${PROJECT_A}" -name 'Cargo.toml' -exec touch {} + || true
 find "${PROJECT_A}" -name 'Cargo.lock' -exec touch {} + || true
-cargo clean || true
+soldr cargo clean || true
 ms_touch="$(measure touch-no-change-medium-warm soldr cargo build --release)"
 
 # --- Canary 3: cargo-build-medium-from-warm-zccache -------------------
@@ -139,7 +141,7 @@ ms_touch="$(measure touch-no-change-medium-warm soldr cargo build --release)"
 # cargo's fingerprint reason for invoking rustc is different here
 # (cleaned target/ vs. dirty mtimes).
 
-cargo clean || true
+soldr cargo clean || true
 ms_from_warm="$(measure cargo-build-medium-from-warm-zccache soldr cargo build --release)"
 
 # --- Canary 6: worktree-share-medium-warm -----------------------------
@@ -181,7 +183,7 @@ jq -n \
         ran_at: $ran_at,
         soldr_version: $soldr_version,
         rustc_version: $rustc_version
-    }' >"${OUT_DIR}/canaries.json"
+    }' >"${OUT_DIR}/canaries.json" || exit 1
 
 echo "canaries.json written to ${OUT_DIR}/canaries.json" >&2
 cat "${OUT_DIR}/canaries.json" >&2

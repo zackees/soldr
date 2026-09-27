@@ -105,9 +105,9 @@ def test_every_allowlist_entry_carries_a_reason(mod):
     """The allowlist is reason-bearing by design; a bare name teaches nothing."""
     for name, reason in mod.ALLOWLIST.items():
         assert reason.strip(), f"{name} needs a reason"
-        assert (
-            len(reason) > 20
-        ), f"{name}'s reason is too terse to be useful: {reason!r}"
+        assert len(reason) > 20, (
+            f"{name}'s reason is too terse to be useful: {reason!r}"
+        )
 
 
 # soldr#2139 lane: a per-line, reason-bearing opt-out, so permitting one

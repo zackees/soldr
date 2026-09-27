@@ -466,9 +466,9 @@ def test_unclaimed_durable_entry_in_non_experiment_workflow_fails_r7() -> None:
     manifest["budget"]["families"][FIXTURE_FAMILY_ID]["entries"] = []
     manifest["budget"]["families"][FIXTURE_FAMILY_ID]["reserved"] = True
     problems = guard.budget_coverage_problems(manifest)
-    assert any(
-        p.startswith("R7") and durable_entry["id"] in p for p in problems
-    ), problems
+    assert any(p.startswith("R7") and durable_entry["id"] in p for p in problems), (
+        problems
+    )
 
 
 def test_entry_claimed_by_two_families_fails_r7() -> None:

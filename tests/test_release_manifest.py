@@ -59,9 +59,10 @@ class TestArtifactProvenance:
             if target["release"]["status"] != "included":
                 continue
             expected = target["release"]["artifact_provenance"]
-            assert manifest_mod.load_artifact_provenance(
-                REPO_ROOT, target["triple"]
-            ) == expected
+            assert (
+                manifest_mod.load_artifact_provenance(REPO_ROOT, target["triple"])
+                == expected
+            )
 
     def test_missing_target_fails_instead_of_implying_execution(
         self, tmp_path: Path

@@ -63,9 +63,10 @@ def test_a_pinned_sha_has_one_version_comment() -> None:
                 for v, files in sorted(versions.items())
             )
             conflicts.append(f"{repo}@{sha[:12]} is described as {detail}")
-    assert (
-        not conflicts
-    ), "the same pinned commit is labelled inconsistently:\n  " + "\n  ".join(conflicts)
+    assert not conflicts, (
+        "the same pinned commit is labelled inconsistently:\n  "
+        + "\n  ".join(conflicts)
+    )
 
 
 def test_the_scan_finds_the_pins() -> None:

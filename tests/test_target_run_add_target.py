@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import subprocess
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -120,9 +120,9 @@ def test_linux_and_windows_replays_opt_in_but_darwin_does_not() -> None:
         text = path.read_text(encoding="utf-8")
         for job in darwin_jobs(text):
             block = job_block(text, job)
-            assert (
-                "require_wasm32_wasip1_threads_materialization" not in block
-            ), f"{path.name}:{job} must not provision {TARGET}"
+            assert "require_wasm32_wasip1_threads_materialization" not in block, (
+                f"{path.name}:{job} must not provision {TARGET}"
+            )
 
 
 def darwin_jobs(workflow: str) -> list[str]:

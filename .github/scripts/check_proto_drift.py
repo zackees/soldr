@@ -260,8 +260,7 @@ def check_pair(proto_rel, rust_rel, root):
     proto = parse_proto(proto_text)
     rust = parse_rust(rust_text)
     problems = [
-        f"schema references undefined message `{name}` -- protoc would "
-        f"reject this file"
+        f"schema references undefined message `{name}` -- protoc would reject this file"
         for name in undefined_references(
             proto_text, set(proto) | proto_enum_names(proto_text)
         )

@@ -200,14 +200,14 @@ def test_installs_the_binary_from_a_release_asset(tmp_path: Path) -> None:
     """
     result, install_dir = _run_install(tmp_path, with_assets=True)
 
-    assert (
-        result.returncode == 0
-    ), f"install.sh failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert result.returncode == 0, (
+        f"install.sh failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
     installed = [p.name for p in install_dir.iterdir()] if install_dir.exists() else []
     assert installed, f"nothing installed into {install_dir}\nstdout:\n{result.stdout}"
-    assert (
-        TAG in result.stdout
-    ), f"install should report the tag it used: {result.stdout}"
+    assert TAG in result.stdout, (
+        f"install should report the tag it used: {result.stdout}"
+    )
 
 
 @needs_bash

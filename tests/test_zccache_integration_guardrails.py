@@ -87,9 +87,9 @@ def test_guardrail_test_files_exist() -> None:
     for guardrail in contract["guardrails"]:
         for rel_path in guardrail["test_files"]:
             path = REPO_ROOT / rel_path
-            assert (
-                path.exists()
-            ), f"{guardrail['id']} references missing path: {rel_path}"
+            assert path.exists(), (
+                f"{guardrail['id']} references missing path: {rel_path}"
+            )
 
 
 def _harness_tokens(command: str) -> list[str] | None:

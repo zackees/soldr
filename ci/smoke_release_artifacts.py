@@ -203,7 +203,16 @@ def check_native_wheel_import(wheel: Path, expected: str) -> None:
         run(["uv", "venv", "--python", sys.executable, env_dir])
         python = env_dir / "bin" / "python"
         run(
-            ["uv", "pip", "install", "--python", python, "--no-index", "--no-deps", wheel]
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                python,
+                "--no-index",
+                "--no-deps",
+                wheel,
+            ]
         )
         imported = run(
             [
@@ -213,7 +222,9 @@ def check_native_wheel_import(wheel: Path, expected: str) -> None:
             ]
         )
         if not imported.stdout.strip():
-            sys.exit(f"ERROR: installed release wheel did not expose {WHEEL_IMPORT_MODULE}")
+            sys.exit(
+                f"ERROR: installed release wheel did not expose {WHEEL_IMPORT_MODULE}"
+            )
         check_version_output(env_dir / "bin" / "soldr", expected, "installed wheel")
 
 

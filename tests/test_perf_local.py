@@ -35,9 +35,9 @@ def test_docker_image_bootstraps_with_amalgamation_safe_published_soldr() -> Non
     bootstrap = re.search(
         r"^ARG SOLDR_BOOTSTRAP_VERSION=(\d+)\.(\d+)\.(\d+)$", dockerfile, re.M
     )
-    assert (
-        bootstrap
-    ), "Docker bootstrap version must remain an explicit published SemVer pin"
+    assert bootstrap, (
+        "Docker bootstrap version must remain an explicit published SemVer pin"
+    )
     version = tuple(map(int, bootstrap.groups()))
     assert version >= (0, 9, 6), (
         "Soldr 0.9.6 is the minimum bootstrap carrying zccache's "

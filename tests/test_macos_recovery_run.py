@@ -398,7 +398,7 @@ def test_executor_contract_matches_the_emitted_guest_program() -> None:
     for block in (selected, run):
         assert f'FILTER=$(cat "{filter_contract["source_file"]}")' in block
         assert (
-            f'{filter_contract["argument"]} '
+            f"{filter_contract['argument']} "
             f'"{filter_contract["expression_variable"]}"' in block
         )
     assert_arguments(selected, contract["nextest"]["selected_list_arguments"])

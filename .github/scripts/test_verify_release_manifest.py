@@ -70,9 +70,9 @@ def _write(tmp_path: Path, manifest: dict) -> str:
 def test_the_v0_8_29_env_leak_is_caught(mod):
     # Verbatim from the published artifact.
     leaked = _manifest()
-    leaked["crgx"][
-        "source_commit"
-    ] = "soldr-toolchain:v0.1.0\nCARGO_CHEF_SOURCE_COMMIT=soldr-toolchain:v0.1.73\n"
+    leaked["crgx"]["source_commit"] = (
+        "soldr-toolchain:v0.1.0\nCARGO_CHEF_SOURCE_COMMIT=soldr-toolchain:v0.1.73\n"
+    )
     problems = mod.env_leak_problems(leaked)
     assert len(problems) == 1
     assert "crgx.source_commit" in problems[0]
@@ -236,9 +236,9 @@ def test_a_clean_manifest_passes(mod, tmp_path):
 
 def test_the_published_shape_fails(mod, tmp_path):
     leaked = _manifest()
-    leaked["crgx"][
-        "source_commit"
-    ] = "soldr-toolchain:v0.1.0\nCARGO_CHEF_SOURCE_COMMIT=soldr-toolchain:v0.1.73\n"
+    leaked["crgx"]["source_commit"] = (
+        "soldr-toolchain:v0.1.0\nCARGO_CHEF_SOURCE_COMMIT=soldr-toolchain:v0.1.73\n"
+    )
     assert mod.main([_write(tmp_path, leaked)]) == 1
 
 

@@ -227,8 +227,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     if problems:
         print(
-            f"verify_release_manifest: {args.manifest} has "
-            f"{len(problems)} problem(s):",
+            f"verify_release_manifest: {args.manifest} has {len(problems)} problem(s):",
             file=sys.stderr,
         )
         for problem in problems:

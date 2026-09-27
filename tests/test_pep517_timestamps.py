@@ -155,12 +155,12 @@ def test_relay_stamps_both_streams_and_anchors_stderr(backend, tmp_path, monkeyp
         )
 
     assert "# t0=" in stderr.getvalue(), stderr.getvalue()
-    assert _PREFIX_RE.search(
-        stderr.getvalue()
-    ), f"stderr unstamped: {stderr.getvalue()!r}"
-    assert _PREFIX_RE.search(
-        stdout.getvalue()
-    ), f"stdout unstamped: {stdout.getvalue()!r}"
+    assert _PREFIX_RE.search(stderr.getvalue()), (
+        f"stderr unstamped: {stderr.getvalue()!r}"
+    )
+    assert _PREFIX_RE.search(stdout.getvalue()), (
+        f"stdout unstamped: {stdout.getvalue()!r}"
+    )
 
 
 def test_the_retained_failure_log_is_never_stamped(backend, tmp_path):

@@ -68,6 +68,6 @@ def test_the_retired_pdb_cache_bypass_does_not_return() -> None:
     )
     # The positive claim stays documented so a Windows contributor knows the
     # cached path is supported for symbolized debugging.
-    assert re.search(
-        r"[Cc]ached builds retain", text
-    ), "the doc must state that cached builds retain their debug sidecars"
+    assert re.search(r"[Cc]ached builds retain", text), (
+        "the doc must state that cached builds retain their debug sidecars"
+    )

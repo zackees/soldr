@@ -16,15 +16,20 @@ if ! command -v uv &> /dev/null; then
   fi
 fi
 
-uv venv --allow-existing --no-project
+# Keep lint tools on a supported interpreter while Python 3.14 typeshed
+# support in the pinned mypy release is incomplete.
+uv venv --python 3.13 --allow-existing --no-project
 uv pip install \
   "maturin>=1.7,<2" \
   "pillow==11.3.0" \
   "pytest>=8.0" \
   "pytest-xdist>=3.0" \
+  "PyYAML>=6.0,<7" \
+  "types-PyYAML>=6.0,<7" \
   "ruff>=0.12,<0.13" \
-  "black>=25.1,<26" \
   "isort>=6.0,<7" \
   "flake8>=7.3,<8" \
   "pylint>=4.0,<5" \
-  "mypy>=1.18,<2"
+  "mypy>=1.18,<1.20" \
+  "pyright>=1.1.400,<2" \
+  "matplotlib>=3.10,<4"

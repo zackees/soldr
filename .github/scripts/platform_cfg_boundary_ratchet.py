@@ -15,7 +15,9 @@ from functools import cache
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DYLINT_SOURCE = REPO_ROOT / "dylints" / "ban_platform_cfg_outside_boundary" / "src" / "lib.rs"
+DYLINT_SOURCE = (
+    REPO_ROOT / "dylints" / "ban_platform_cfg_outside_boundary" / "src" / "lib.rs"
+)
 CFG_STARTS = ("#[cfg(", "#[cfg_attr(", "#![cfg(", "#![cfg_attr(", "cfg!(")
 CONCRETE_TREES = ("platform_imp", "platform_win", "platform_linux", "platform_macos")
 NATIVE_MARKERS = (

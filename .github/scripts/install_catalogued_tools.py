@@ -187,8 +187,7 @@ def validate_transport(entry: dict[str, Any], *, asset: str) -> None:
         raise SystemExit(f"catalogue row {asset} has too many parts")
     if entry.get("min_client_version") != CATALOGUE_CAPABILITY:
         raise SystemExit(
-            f"catalogue row {asset} requires min_client_version "
-            f"{CATALOGUE_CAPABILITY}"
+            f"catalogue row {asset} requires min_client_version {CATALOGUE_CAPABILITY}"
         )
     if not safe_source_path(entry.get("source_path")):
         raise SystemExit(f"catalogue row {asset} has invalid source_path")

@@ -57,7 +57,10 @@ def main(argv: list[str]) -> int:
     try:
         objcopy = provision_objcopy(args.soldr, channel=args.channel, rustc=args.rustc)
     except (OSError, subprocess.CalledProcessError, ValueError) as error:
-        print(f"native ARM rust-objcopy runtime preflight failed: {error}", file=sys.stderr)
+        print(
+            f"native ARM rust-objcopy runtime preflight failed: {error}",
+            file=sys.stderr,
+        )
         return 1
     print(f"native ARM rust-objcopy runtime ready: {objcopy}")
     return 0

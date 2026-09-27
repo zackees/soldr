@@ -10,66 +10,72 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from benchmark_models import ComparisonDocument, ComparisonResult
 
 try:
     from PIL import Image, ImageDraw, ImageFont
 except ImportError as exc:  # pragma: no cover - exercised in workflow setup
-    raise SystemExit(
-        "Pillow is required to render benchmark JPGs. Install python3-pil."
-    ) from exc
+    raise SystemExit("Pillow is required to render benchmark JPGs. Install python3-pil.") from exc
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INPUT = REPO_ROOT / "benchmark-output" / "comparison.json"
 OUT_DIR = REPO_ROOT / "benchmark-stats"
 
+
+@dataclass(frozen=True)
+class BenchmarkStyle:
+    title: str
+    subtitle: str
+    output: str
+
+
+@dataclass(frozen=True)
+class OverlaySection:
+    label: str
+    cold_key: str
+    warm_key: str
+
+
+@dataclass(frozen=True)
+class ColorPair:
+    cold: str
+    warm: str
+
+
 BENCHMARKS = {
-    "rust-only": {
-        "title": "soldr Rust benchmarks",
-        "subtitle": "bare cargo vs sccache vs soldr",
-        "output": "benchmark-rust-only.jpg",
-    },
-    "rust-c": {
-        "title": "soldr Rust+C benchmarks",
-        "subtitle": "rust-native fixture",
-        "output": "benchmark-rust-c.jpg",
-    },
+    "rust-only": BenchmarkStyle(
+        "soldr Rust benchmarks", "bare cargo vs sccache vs soldr", "benchmark-rust-only.jpg"
+    ),
+    "rust-c": BenchmarkStyle(
+        "soldr Rust+C benchmarks", "rust-native fixture", "benchmark-rust-c.jpg"
+    ),
 }
 
 OVERLAY_SECTIONS = [
-    {
-        "key": "warm",
-        "label": "Clean-target rebuild (same workspace; warm compiler cache)",
-        "cold_key": "cold",
-        "warm_key": "warm",
-    },
-    {
-        "key": "worktree-share",
-        "label": "Agent worktree / parent-child share",
-        "cold_key": "cold",
-        "warm_key": "worktree-share",
-    },
+    OverlaySection("Clean-target rebuild (same workspace; warm compiler cache)", "cold", "warm"),
+    OverlaySection("Agent worktree / parent-child share", "cold", "worktree-share"),
 ]
 TOOL_ORDER = ["bare", "sccache", "soldr"]
 TOOL_COLOR_PAIRS = {
-    "bare": {"cold": "#3b4046", "warm": "#8b949e"},
-    "sccache": {"cold": "#1f3a7a", "warm": "#79c0ff"},
-    "soldr": {"cold": "#5b1f1c", "warm": "#f85149"},
+    "bare": ColorPair("#3b4046", "#8b949e"),
+    "sccache": ColorPair("#1f3a7a", "#79c0ff"),
+    "soldr": ColorPair("#5b1f1c", "#f85149"),
 }
 WARM_VIOLATION_OUTLINE = "#ffd33d"
 
 
-def load_comparison() -> dict[str, Any]:
+def load_comparison() -> ComparisonDocument:
     with INPUT.open("r", encoding="utf-8-sig") as f:
-        return json.load(f)
+        return ComparisonDocument.from_json(json.load(f))
 
 
 def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    names = (
-        ("DejaVuSans-Bold.ttf", "Arial Bold.ttf") if bold else ("DejaVuSans.ttf", "Arial.ttf")
-    )
+    names = ("DejaVuSans-Bold.ttf", "Arial Bold.ttf") if bold else ("DejaVuSans.ttf", "Arial.ttf")
     for name in names:
         try:
             return ImageFont.truetype(name, size)
@@ -80,7 +86,7 @@ def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.Im
 
 def hex_rgb(value: str) -> tuple[int, int, int]:
     value = value.lstrip("#")
-    return tuple(int(value[i : i + 2], 16) for i in (0, 2, 4))
+    return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
 
 
 def text_width(draw: ImageDraw.ImageDraw, value: str, fnt: Any) -> int:
@@ -128,12 +134,14 @@ def bytes_label(value: Any) -> str:
 
 
 def overlay_speedup_label(
-    rows_by_key: dict[tuple[str, str, str], dict[str, Any]],
+    rows_by_key: dict[tuple[str, str, str], ComparisonResult],
     benchmark: str,
     warm_key: str,
 ) -> str:
-    sccache = rows_by_key.get((benchmark, warm_key, "sccache"), {}).get("wall_ms")
-    soldr = rows_by_key.get((benchmark, warm_key, "soldr"), {}).get("wall_ms")
+    sccache_row = rows_by_key.get((benchmark, warm_key, "sccache"))
+    soldr_row = rows_by_key.get((benchmark, warm_key, "soldr"))
+    sccache = sccache_row.wall_ms if sccache_row else None
+    soldr = soldr_row.wall_ms if soldr_row else None
     if not isinstance(sccache, (int, float)) or not isinstance(soldr, (int, float)):
         return ""
     if sccache <= 0 or soldr <= 0:
@@ -145,14 +153,15 @@ def overlay_speedup_label(
 
 
 def cold_max_for_section(
-    rows_by_key: dict[tuple[str, str, str], dict[str, Any]],
+    rows_by_key: dict[tuple[str, str, str], ComparisonResult],
     benchmark: str,
     cold_key: str,
     warm_key: str,
 ) -> tuple[float, str]:
     cold_values = []
     for tool in TOOL_ORDER:
-        value = rows_by_key.get((benchmark, cold_key, tool), {}).get("wall_ms")
+        row = rows_by_key.get((benchmark, cold_key, tool))
+        value = row.wall_ms if row else None
         if isinstance(value, (int, float)) and value > 0:
             cold_values.append(float(value))
     if cold_values:
@@ -160,7 +169,8 @@ def cold_max_for_section(
 
     warm_values = []
     for tool in TOOL_ORDER:
-        value = rows_by_key.get((benchmark, warm_key, tool), {}).get("wall_ms")
+        row = rows_by_key.get((benchmark, warm_key, tool))
+        value = row.wall_ms if row else None
         if isinstance(value, (int, float)) and value > 0:
             warm_values.append(float(value))
     if warm_values:
@@ -168,13 +178,10 @@ def cold_max_for_section(
     return 1.0, "none"
 
 
-def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
-    rows = [row for row in doc.get("results", []) if row.get("benchmark") == benchmark]
-    rows_by_key = {
-        (row.get("benchmark"), row.get("scenario_key"), row.get("tool")): row
-        for row in rows
-    }
-    tool_labels = {item["key"]: item["label"] for item in doc.get("tools", [])}
+def render_benchmark(doc: ComparisonDocument, benchmark: str) -> Path:
+    rows = [row for row in doc.results if row.benchmark == benchmark]
+    rows_by_key = {(row.benchmark, row.scenario_key, row.tool): row for row in rows}
+    tool_labels = {item.key: item.label for item in doc.tools}
 
     scale = 3
     width = 900
@@ -184,7 +191,13 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
     section_h = 240
     section_gap = 16
     footer_h = 50
-    height = header_h + legend_h + (section_h + section_gap) * len(OVERLAY_SECTIONS) - section_gap + footer_h
+    height = (
+        header_h
+        + legend_h
+        + (section_h + section_gap) * len(OVERLAY_SECTIONS)
+        - section_gap
+        + footer_h
+    )
 
     image = Image.new("RGB", (width * scale, height * scale), hex_rgb("#0d1117"))
     draw = ImageDraw.Draw(image)
@@ -199,7 +212,9 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
     def xy(x: int, y: int) -> tuple[int, int]:
         return x * scale, y * scale
 
-    def rect(values: tuple[int, int, int, int], fill: str, outline: str | None = None, width_px: int = 1) -> None:
+    def rect(
+        values: tuple[int, int, int, int], fill: str, outline: str | None = None, width_px: int = 1
+    ) -> None:
         draw.rectangle(
             tuple(v * scale for v in values),
             fill=hex_rgb(fill),
@@ -209,19 +224,24 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
 
     meta = BENCHMARKS[benchmark]
     rect((0, 0, width, header_h), "#161b22")
-    draw.text(xy(margin, 22), meta["title"], font=title_font, fill=hex_rgb("#f0f6fc"))
-    generated = doc.get("ran_at", "unknown")
+    draw.text(xy(margin, 22), meta.title, font=title_font, fill=hex_rgb("#f0f6fc"))
+    generated = doc.ran_at
     versions = " | ".join(
         part
         for part in (
-            doc.get("soldr_version"),
-            doc.get("sccache_version"),
-            doc.get("rustc_version"),
+            doc.soldr_version,
+            doc.sccache_version,
+            doc.rustc_version,
         )
         if part
     )
-    header_line = f"{meta['subtitle']} | generated {generated}"
-    draw.text(xy(margin, 70), truncate(draw, header_line, subtitle_font, (width - margin * 2) * scale), font=subtitle_font, fill=hex_rgb("#8b949e"))
+    header_line = f"{meta.subtitle} | generated {generated}"
+    draw.text(
+        xy(margin, 70),
+        truncate(draw, header_line, subtitle_font, (width - margin * 2) * scale),
+        font=subtitle_font,
+        fill=hex_rgb("#8b949e"),
+    )
     draw.text(
         xy(margin, 92),
         truncate(
@@ -236,8 +256,8 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
 
     legend_y = header_h + 10
     legend_x = margin
-    rect((legend_x, legend_y + 2, legend_x + 58, legend_y + 22), TOOL_COLOR_PAIRS["soldr"]["cold"])
-    rect((legend_x, legend_y + 7, legend_x + 26, legend_y + 17), TOOL_COLOR_PAIRS["soldr"]["warm"])
+    rect((legend_x, legend_y + 2, legend_x + 58, legend_y + 22), TOOL_COLOR_PAIRS["soldr"].cold)
+    rect((legend_x, legend_y + 7, legend_x + 26, legend_y + 17), TOOL_COLOR_PAIRS["soldr"].warm)
     draw.text(
         xy(legend_x + 70, legend_y + 1),
         "cold (back) + clean-target/warm-cache (front)",
@@ -247,7 +267,7 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
     violation_x = width - margin - 236
     rect(
         (violation_x, legend_y + 7, violation_x + 34, legend_y + 17),
-        TOOL_COLOR_PAIRS["soldr"]["warm"],
+        TOOL_COLOR_PAIRS["soldr"].warm,
         outline=WARM_VIOLATION_OUTLINE,
         width_px=2,
     )
@@ -270,15 +290,15 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
     for idx, section in enumerate(OVERLAY_SECTIONS):
         fill = "#0f1620" if idx % 2 == 0 else "#11202d"
         rect((chart_x, y, chart_x + chart_w, y + section_h), fill)
-        title = section["label"]
+        title = section.label
         draw.text(xy(chart_x + 16, y + 14), title, font=scenario_font, fill=hex_rgb("#f0f6fc"))
         scale_max, scale_source = cold_max_for_section(
             rows_by_key,
             benchmark,
-            section["cold_key"],
-            section["warm_key"],
+            section.cold_key,
+            section.warm_key,
         )
-        speedup = overlay_speedup_label(rows_by_key, benchmark, section["warm_key"])
+        speedup = overlay_speedup_label(rows_by_key, benchmark, section.warm_key)
         if speedup:
             speedup_w = text_width(draw, speedup, subtitle_font) // scale
             draw.text(
@@ -298,8 +318,10 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
 
         row_y = y + 76
         for tool in TOOL_ORDER:
-            cold_value = rows_by_key.get((benchmark, section["cold_key"], tool), {}).get("wall_ms")
-            warm_value = rows_by_key.get((benchmark, section["warm_key"], tool), {}).get("wall_ms")
+            cold_row = rows_by_key.get((benchmark, section.cold_key, tool))
+            warm_row = rows_by_key.get((benchmark, section.warm_key, tool))
+            cold_value = cold_row.wall_ms if cold_row else None
+            warm_value = warm_row.wall_ms if warm_row else None
             label = tool_labels.get(tool, tool)
             colors = TOOL_COLOR_PAIRS[tool]
             warm_violation = (
@@ -309,19 +331,21 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
                 and warm_value > cold_value * 1.10
             )
 
-            draw.text(xy(chart_x + 16, row_y + 14), label, font=tool_font, fill=hex_rgb(colors["warm"]))
+            draw.text(
+                xy(chart_x + 16, row_y + 14), label, font=tool_font, fill=hex_rgb(colors.warm)
+            )
             track_y0 = row_y + 20
             rect((bar_x0, track_y0 + 10, bar_x1, track_y0 + 14), "#21262d")
             if isinstance(cold_value, (int, float)) and cold_value > 0:
                 width_fraction = max(0.01, min(1.0, float(cold_value) / scale_max))
                 bar_end = bar_x0 + max(3, int(bar_w * width_fraction))
-                rect((bar_x0, track_y0, bar_end, track_y0 + 24), colors["cold"])
+                rect((bar_x0, track_y0, bar_end, track_y0 + 24), colors.cold)
             if isinstance(warm_value, (int, float)) and warm_value > 0:
                 width_fraction = max(0.01, min(1.0, float(warm_value) / scale_max))
                 bar_end = bar_x0 + max(3, int(bar_w * width_fraction))
                 rect(
                     (bar_x0, track_y0 + 5, bar_end, track_y0 + 19),
-                    colors["warm"],
+                    colors.warm,
                     outline=WARM_VIOLATION_OUTLINE if warm_violation else None,
                     width_px=2 if warm_violation else 1,
                 )
@@ -329,7 +353,11 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
                 xy(bar_x1 + 12, row_y + 2),
                 f"cold {seconds_label(cold_value)}",
                 font=value_font,
-                fill=hex_rgb(colors["cold"] if isinstance(cold_value, (int, float)) and cold_value > 0 else "#6e7681"),
+                fill=hex_rgb(
+                    colors.cold
+                    if isinstance(cold_value, (int, float)) and cold_value > 0
+                    else "#6e7681"
+                ),
             )
             draw.text(
                 xy(bar_x1 + 12, row_y + 22),
@@ -338,12 +366,12 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
                 fill=hex_rgb(
                     WARM_VIOLATION_OUTLINE
                     if warm_violation
-                    else colors["warm"]
+                    else colors.warm
                     if isinstance(warm_value, (int, float)) and warm_value > 0
                     else "#6e7681"
                 ),
             )
-            cache_value = rows_by_key.get((benchmark, section["warm_key"], tool), {}).get("cache_bytes")
+            cache_value = warm_row.cache_bytes if warm_row else None
             draw.text(
                 xy(bar_x1 + 12, row_y + 42),
                 f"cache {bytes_label(cache_value)}",
@@ -360,13 +388,16 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
         y += section_h + section_gap
 
     footer = "Artifacts: latest.json, benchmark-rust-only.jpg, benchmark-rust-c.jpg"
-    draw.line((xy(margin, height - 34), xy(width - margin, height - 34)), fill=hex_rgb("#30363d"), width=scale)
+    draw.line(
+        (xy(margin, height - 34), xy(width - margin, height - 34)),
+        fill=hex_rgb("#30363d"),
+        width=scale,
+    )
     draw.text(xy(margin, height - 25), footer, font=small_font, fill=hex_rgb("#8b949e"))
 
-    resampling = getattr(Image, "Resampling", Image).LANCZOS
-    image = image.resize((width, height), resampling)
+    image = image.resize((width, height), Image.Resampling.LANCZOS)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    output = OUT_DIR / meta["output"]
+    output = OUT_DIR / meta.output
     image.save(output, format="JPEG", quality=90, optimize=True)
     return output
 
