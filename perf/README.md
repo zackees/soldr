@@ -61,20 +61,22 @@ re-analyse a run without re-firing the workflow.
 
 ## How the master build is cached
 
-The `build-soldr` job uses two layered caches keyed by platform so
-the second dispatch on the same soldr commit is essentially free:
+The `build-soldr` job uses an exact-source binary cache keyed by platform so
+the second dispatch with unchanged Soldr sources is essentially free:
 
 1. **`actions/cache`** keyed by
-   `soldr-bin-<platform>-<hashFiles('crates/**','Cargo.{toml,lock}')>`
-   over `target/release/soldr` — same source, same platform, no
-   compile.
-2. **`Swatinem/rust-cache@v2`** under that, exercised only on a
-   cache miss, so the rare rebuild is incremental.
+   `soldr-bin-<platform>-<hashFiles('crates/**','Cargo.toml','Cargo.lock',`
+   `'rust-toolchain.toml','.cargo/config.toml')>` over `target/release/soldr` —
+   same source/toolchain/config, same platform, no compile.
 
 Soldr itself is deliberately **not** used to build soldr in this
 workflow. The perf matrix has to keep working when soldr is broken
 or absent on a new platform, so the bootstrap path stays on bare
-cargo + stock GHA caches.
+cargo. A cache miss downloads dependencies and builds from scratch; the
+observed release build took 5m14s with a warm registry, within the 45-minute
+build-job timeout. The old registry-only cache was removed because it added
+119 MB to the bounded experiment family while only shortening this rare
+source-change path; it did not cache compiler outputs.
 
 ## Layout
 

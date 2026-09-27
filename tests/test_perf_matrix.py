@@ -23,24 +23,25 @@ def test_perf_matrix_fails_zero_hit_miss_stats() -> None:
     assert "zccache stats were not captured" in workflow
 
 
-def test_perf_binary_is_saved_before_registry_only_rust_cache_cleanup() -> None:
+def test_perf_matrix_keeps_only_exact_source_binary_cache() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "perf-matrix.yml").read_text()
 
     restore = workflow.index(
         "uses: actions/cache/restore@", workflow.index("Restore cached soldr binary")
     )
-    rust_cache = workflow.index("Restore cargo intermediates")
     build = workflow.index("Build soldr (release)")
     save = workflow.index("Save cached soldr binary")
-    assert restore < rust_cache < build < save
+    assert restore < build < save
     assert (
         "uses: actions/cache/save@"
         in workflow[save : workflow.index("Stage binary", save)]
     )
     expected_inputs = "'crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml'"
     assert workflow.count(expected_inputs) == 2
-    assert "shared-key: perf-registry-soldr-${{ matrix.platform }}" in workflow
-    assert "cache-targets: false" in workflow
+    assert "Swatinem/rust-cache" not in workflow
+    assert "perf-registry-soldr-" not in workflow
+    assert "v0-rust-perf-build-soldr-" not in workflow
+    assert "Restore cargo intermediates" not in workflow
 
 
 def test_perf_scenarios_read_stats_from_cache_report() -> None:
