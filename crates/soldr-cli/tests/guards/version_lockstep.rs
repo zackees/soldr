@@ -250,9 +250,7 @@ fn resolved_dependency_version<'a>(entry: &'a str, sole_locked_version: &'a str)
 
 /// soldr#3297: soldr and the locked `zccache` must resolve one shared
 /// `kernal-api` version, and soldr's `running-process` pin must equal the
-/// version that `kernal-api` itself requires. Today `zccache` does not yet
-/// depend on `kernal-api` (Step 2 of soldr#3297 moves it there), so check
-/// (iii) below passes vacuously until that lands.
+/// version that `kernal-api` itself requires.
 #[test]
 fn kernal_api_version_matches_across_the_fleet() {
     let root = repo_root();
@@ -288,8 +286,7 @@ fn kernal_api_version_matches_across_the_fleet() {
          \"{expected_manifest_kernal}\" (or refresh Cargo.lock) so both agree."
     );
 
-    // (iii) if the locked zccache depends on kernal-api, it is the same
-    // single version. Vacuously true while zccache has no kernal-api edge.
+    // (iii) the locked zccache and soldr use the same kernal-api version.
     if let Some(zccache) = packages.iter().find(|p| p.name == "zccache") {
         if let Some(dep_entry) = zccache
             .dependencies
@@ -375,7 +372,7 @@ fn externalized_dependencies_are_exact_and_consistent() {
     for (dependency, version, manifests) in [
         (
             "zccache",
-            "1.14.13",
+            "1.14.14",
             &[
                 "crates/soldr-cli/Cargo.toml",
                 "crates/soldr-cache/Cargo.toml",
@@ -393,7 +390,7 @@ fn externalized_dependencies_are_exact_and_consistent() {
         ),
         (
             "kernal-api",
-            "0.1.20",
+            "0.1.22",
             &["crates/soldr-platform/Cargo.toml"][..],
         ),
     ] {
