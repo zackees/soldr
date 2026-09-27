@@ -34,6 +34,21 @@ fn high_pressure_pauses_and_only_low_pressure_resumes() {
 }
 
 #[test]
+fn the_controller_keeps_the_full_minimum_dwell_between_transitions() {
+    let mut gate = PressureController::new(GIB, 2 * GIB, MIN_DWELL);
+    let start = Instant::now();
+    assert_eq!(gate.observe(Some(GIB - 1), start), Some(Transition::Pause));
+    assert_eq!(
+        gate.observe(Some(2 * GIB), start + MIN_DWELL - Duration::from_nanos(1)),
+        None
+    );
+    assert_eq!(
+        gate.observe(Some(2 * GIB), start + MIN_DWELL),
+        Some(Transition::Resume)
+    );
+}
+
+#[test]
 fn a_reading_oscillating_across_both_marks_cannot_flap_the_gate() {
     let (mut gate, start) = controller();
     let mut transitions = Vec::new();
@@ -167,7 +182,13 @@ fn the_monitor_drives_the_paused_flag_and_cleans_up() {
     .unwrap();
     let (stats, failures) = monitor.finish();
     assert_eq!(stats.pauses, 1);
-    assert!(stats.paused_total >= MIN_DWELL);
+    // This is an integration check that pause accounting ran, not the dwell
+    // invariant: the exact controller boundary is tested deterministically
+    // above, while stats use separate clocks around filesystem scans.
+    assert!(
+        stats.paused_total > Duration::ZERO,
+        "pause duration is recorded"
+    );
     assert_eq!(stats.lowest_available, Some(GIB / 2));
     assert_eq!(failures, ["soldr-cli::guards memory::hog"]);
     assert!(
