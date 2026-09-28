@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the glibc floor of the binary *inside* a manylinux wheel (soldr#1060).
+"""Check the glibc floor of the binaries *inside* a manylinux wheel (soldr#1060).
 
 `release-auto.yml` already asserts that every linux-gnu wheel carries the
 `manylinux_2_17` platform tag. That catches maturin quietly falling back to the
@@ -47,12 +47,34 @@ def _load_baseline_module():
     return module
 
 
-def embedded_binaries(wheel: Path, extract_dir: Path) -> "list[Path]":
-    """Extract `wheel` and return the soldr executables inside it.
+def _is_script_binary(path: Path) -> bool:
+    """maturin's `bin` layout: `<name>-<version>.data/scripts/<exe>`."""
+    return path.parent.name == "scripts" and path.parent.parent.name.endswith(".data")
 
-    maturin places console binaries at `<name>-<version>.data/scripts/<exe>`.
-    Matching on that layout rather than on a bare filename keeps unrelated
-    files (`RECORD`, `METADATA`) out.
+
+def _is_extension_module(path: Path, extract_dir: Path) -> bool:
+    """A native extension module: `*.so` (`.abi3.so`, `.cpython-*.so`, ...)
+    outside the `.dist-info` metadata directory.
+
+    `soldr wheel` builds PyO3 abi3 extensions (soldr#2139), whose ELF lives in
+    the package rather than under `.data/scripts`. Without this the gate found
+    nothing in such a wheel and failed as "no binary", so it could not verify
+    the manylinux_2_17 claim soldr#3432 made for host-target release wheels.
+    """
+    relative = path.relative_to(extract_dir)
+    if any(part.endswith(".dist-info") for part in relative.parts):
+        return False
+    return path.suffix == ".so" or ".so." in path.name
+
+
+def embedded_binaries(wheel: Path, extract_dir: Path) -> "list[Path]":
+    """Extract `wheel` and return the native ELF files inside it.
+
+    Two layouts: maturin places console binaries at
+    `<name>-<version>.data/scripts/<exe>`, and extension modules at
+    `<package>/<module>.abi3.so` (or a top-level `<module>.abi3.so`).
+    Matching on those layouts rather than on a bare filename keeps unrelated
+    files (`RECORD`, `METADATA`, Python sources) out.
     """
     with zipfile.ZipFile(wheel) as archive:
         archive.extractall(extract_dir)
@@ -60,8 +82,7 @@ def embedded_binaries(wheel: Path, extract_dir: Path) -> "list[Path]":
         path
         for path in sorted(extract_dir.rglob("*"))
         if path.is_file()
-        and path.parent.name == "scripts"
-        and path.parent.parent.name.endswith(".data")
+        and (_is_script_binary(path) or _is_extension_module(path, extract_dir))
     ]
 
 
@@ -113,7 +134,7 @@ def main(argv: "list[str] | None" = None) -> int:
                 # this gate stopped gating.
                 print(
                     f"verify_wheel_glibc: {wheel.name} contains no "
-                    f"'*.data/scripts/*' binary to verify",
+                    f"'*.data/scripts/*' binary or '*.so' extension module to verify",
                     file=sys.stderr,
                 )
                 failures += 1

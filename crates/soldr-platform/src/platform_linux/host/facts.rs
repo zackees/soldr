@@ -99,6 +99,32 @@ pub fn path_list_separator() -> &'static str {
     ":"
 }
 
+/// The version of the glibc this process is running against (for example
+/// `2.39`), read from `gnu_get_libc_version(3)`. `None` for a musl build,
+/// which has no glibc to ask.
+pub fn glibc_version() -> Option<String> {
+    running_glibc_version()
+}
+
+#[cfg(target_env = "gnu")]
+fn running_glibc_version() -> Option<String> {
+    // SAFETY: `gnu_get_libc_version` takes no arguments and returns a pointer
+    // to a static, NUL-terminated string owned by glibc for the life of the
+    // process.
+    let raw = unsafe { libc::gnu_get_libc_version() };
+    if raw.is_null() {
+        return None;
+    }
+    // SAFETY: non-null, NUL-terminated, and static (see above).
+    let version = unsafe { std::ffi::CStr::from_ptr(raw) };
+    version.to_str().ok().map(str::to_string)
+}
+
+#[cfg(not(target_env = "gnu"))]
+fn running_glibc_version() -> Option<String> {
+    None
+}
+
 /// The OS version string. Soldr's Linux host facts have no version
 /// probe — the Windows-specific registry/PowerShell queries live in the
 /// Windows tree — so this is always `None` on Linux.
@@ -203,5 +229,16 @@ mod tests {
     #[test]
     fn linux_facts_report_linux() {
         assert_eq!(os(), HostOs::Linux);
+    }
+
+    #[test]
+    fn glibc_version_is_read_from_the_running_libc_on_a_gnu_build() {
+        match libc() {
+            HostLibc::Gnu => {
+                let version = glibc_version().expect("a glibc build can read its glibc version");
+                assert!(version.starts_with("2."), "{version}");
+            }
+            _ => assert_eq!(glibc_version(), None),
+        }
     }
 }

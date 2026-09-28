@@ -811,7 +811,14 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 // policy. Direct maturin and PEP 517 builds receive the same
                 // blessed target preparation as `soldr build` before the
                 // PyO3 plan decides whether any Python variables are valid.
-                if maturin_build && maturin_target != crate::pyo3_detect::host_triple() {
+                // soldr#3432: a `soldr wheel --release` linux-gnu plan also
+                // prepares the host target, for the catalogue 2.17 sysroot.
+                if maturin_build
+                    && crate::wheel_cmd::maturin_target_needs_prep(
+                        &maturin_target,
+                        crate::pyo3_detect::host_triple(),
+                    )
+                {
                     let target_prep =
                         crate::target_lifecycle::prepare_for_invocation(&paths, &maturin_target, &[])
                             .await?;

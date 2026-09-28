@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Decide whether the `soldr wheel` cross-verification lane runs (soldr#2139).
 
-The lane it gates is expensive: an ubuntu-24.04 runner that cross-builds a
-release wheel for `aarch64-unknown-linux-gnu` through the blessed toolchain,
-then unpacks it and reads the embedded binary's glibc requirements. soldr#1978
+The lane it gates is expensive: ubuntu-24.04 runners that build release wheels
+through the blessed toolchain -- a cross build for `aarch64-unknown-linux-gnu`
+and a host-target build for `x86_64-unknown-linux-gnu` (soldr#3432) -- then
+unpack them and read the embedded binary's glibc requirements. soldr#1978
 is an ongoing effort to cut CI spend, so this must not run on every PR.
 
 Policy:
@@ -34,8 +35,9 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple, Sequence
 
-# The one cell the lane runs. Kept as data so adding a second target later is
-# a list edit rather than a workflow rewrite.
+# The cells the lane runs, both from an x86_64 ubuntu-24.04 host: a cross
+# target, and (soldr#3432) the host target itself, which must get the same
+# catalogue glibc-2.17 sysroot rather than the runner's glibc 2.39.
 WHEEL_MATRIX = [
     {
         "name": "linux-arm64",
@@ -46,7 +48,16 @@ WHEEL_MATRIX = [
         # LTO for zccache-daemon-core exceeded the hosted runner's memory
         # ceiling at two concurrent rustc processes (soldr#2469 bootstrap).
         "jobs": "1",
-    }
+    },
+    {
+        "name": "linux-x64-host",
+        "runner": "ubuntu-24.04",
+        "target": "x86_64-unknown-linux-gnu",
+        "expected_tag": "manylinux_2_17",
+        "max_glibc": "2.17",
+        # Same all-miss release+LTO build as the cross cell (soldr#2469).
+        "jobs": "1",
+    },
 ]
 
 # Exact files that decide what the wheel contains or claims.

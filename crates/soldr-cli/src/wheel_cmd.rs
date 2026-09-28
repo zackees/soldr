@@ -32,9 +32,10 @@
 //! # Grammar
 //!
 //! ```text
-//! soldr wheel                          # quick dev wheel, host target
-//! soldr wheel --release                # release wheel, host target
-//! soldr wheel --release --target XXX   # release wheel, cross target
+//! soldr wheel                              # quick dev wheel, host target
+//! soldr wheel --release                    # release wheel, host target
+//! soldr wheel --release --target XXX       # release wheel, cross target
+//! soldr wheel --release --host-glibc       # release wheel, host glibc floor
 //! ```
 //!
 //! `--release` is opt-in, matching `cargo` and `soldr build`: the default is a
@@ -49,41 +50,60 @@
 //! suffixed spelling is therefore rejected here rather than being quietly
 //! accepted into a wheel tag that would read as a promise.
 //!
-//! The same honesty rule now governs the tag soldr emits at all. The first cut
-//! of this module tagged **every** `*-linux-gnu` target `manylinux_2_17`,
-//! including a host-target build — but the maturin execution path only runs
-//! `target_lifecycle::prepare_for_invocation` when the target differs from the
-//! host (`soldr_main.rs`, the `maturin_build && maturin_target !=
-//! host_triple()` gate). On a host build no catalogue sysroot is mounted, the
-//! binary links against whatever glibc the machine has (2.39 on ubuntu-24.04),
-//! and the 2.17 tag is a claim nothing backed. `verify_wheel_glibc.py` exists
+//! The same honesty rule governs the tag soldr emits at all: soldr claims
+//! `manylinux_2_17` only for a build in which
+//! `target_lifecycle::prepare_for_invocation` ran and mounted the catalogue
+//! glibc-2.17 sysroot that *creates* the floor. `verify_wheel_glibc.py` exists
 //! precisely because pip *trusts* that claim and installs the wheel anyway.
 //!
-//! So the floor is claimed only when soldr actually enforced it — a release
-//! build on the cross path — and otherwise soldr passes `--compatibility pypi`,
-//! maturin's "work the tag out from the bytes" pseudo-option. A dev wheel
-//! tagged from reality is correct and useful; a dev wheel tagged
-//! `manylinux_2_17` is a lie pip will act on.
+//! The maturin execution path prepares a target on its own only when the
+//! target differs from the host. soldr#3432 closed the gap that left: a
+//! `--release` `*-linux-gnu` wheel **always** gets target preparation, host
+//! target included, via `maturin_target_needs_prep`. A release wheel is the
+//! thing that goes to PyPI, and it must never silently inherit the build
+//! machine's glibc floor (2.39 on ubuntu-24.04). So "release + linux-gnu"
+//! means an enforced 2.17 floor, and soldr says so on stderr with one green
+//! `info` line ([`GlibcNotice`]) so the floor is never a silent choice.
 //!
-//! Note that maturin does **not** paper over the bad case: with an explicit
+//! The opt-out is explicit: `--host-glibc` skips the forced preparation for a
+//! host-target build, links against this host's glibc, and passes
+//! `--compatibility pypi` — maturin's "work the tag out from the bytes"
+//! pseudo-option — because that is the only claim soldr can back. A dev wheel
+//! gets the same `pypi` treatment: it is a local artifact, and a dev wheel
+//! tagged `manylinux_2_17` without the sysroot would be a lie pip acts on.
+//!
+//! A host that cannot run the catalogue GNU bundle (every bundle is
+//! x86_64-hosted, soldr#2874 — so a native aarch64 Linux host) cannot enforce
+//! the floor for a host-target release wheel. soldr refuses rather than
+//! falling back: the same rule `target_lifecycle::decide_gnu_bundle` applies to
+//! an explicit `.2.17` floor request, where a silent success is worse than a
+//! failure because the artifact would read as a promise. The refusal names both
+//! remedies (cross-build from x86_64, or `--host-glibc`).
+//!
+//! musl is deliberately unchanged: a host-target musl wheel still gets `pypi`.
+//! The catalogue musl bundle is hosted on `x86_64-unknown-linux-gnu`, which a
+//! musl host (the only place a host-target musl build happens) is not
+//! guaranteed to be able to execute, so the glibc fix does not carry over
+//! (soldr#3435).
+//!
+//! Note that maturin does **not** paper over a bad claim: with an explicit
 //! `--compatibility manylinux_2_17` and an ELF needing `GLIBC_2.39`,
 //! `auditwheel_rs` (maturin `src/auditwheel/linux.rs`) returns
 //! `VersionedSymbolTooNewError` from the explicit-tag branch and the build
 //! fails with "Error ensuring manylinux_2_17 compliance" — it downgrades only
 //! when *no* tag was requested. `AuditWheelMode::Repair` is maturin's
 //! `#[default]`, so `release-auto.yml`'s explicit `--auditwheel repair`
-//! restates the default and its absence here changes nothing. The old
-//! behaviour therefore did not ship a mis-tagged wheel; it made
-//! `soldr wheel --target <host-linux-gnu>` fail on any modern distro, with a
-//! maturin compliance error that named neither soldr nor the missing prep.
+//! restates the default and its absence here changes nothing.
 
 use crate::core::SoldrError;
+use crate::fetch::gnu_linux_toolchain::GNU_LINUX_GLIBC_BASELINE;
 use crate::pyo3_detect::PlanMode;
 
 /// Arguments for `soldr wheel`.
 ///
-/// `--target` and `--release` must precede any passthrough arguments, because
-/// everything after the first free argument is forwarded to maturin verbatim.
+/// `--target`, `--release` and `--host-glibc` must precede any passthrough
+/// arguments, because everything after the first free argument is forwarded
+/// to maturin verbatim.
 #[derive(clap::Args, Debug, Clone, Default)]
 pub struct WheelArgs {
     /// Target triple or friendly alias (for example `linux-arm64`).
@@ -91,29 +111,134 @@ pub struct WheelArgs {
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
     /// Build with the release profile. Default is a quick dev-profile wheel,
-    /// matching `cargo` and `soldr build`.
+    /// matching `cargo` and `soldr build`. A release `*-linux-gnu` wheel is
+    /// always built against the catalogue glibc 2.17 sysroot and tagged
+    /// `manylinux_2_17`, including when the target is the host.
     #[arg(long)]
     pub release: bool,
+    /// Link a host-target `*-linux-gnu` wheel against this host's glibc
+    /// instead of the catalogue glibc 2.17 sysroot. The wheel then requires
+    /// this host's glibc version or newer, and maturin tags it from its bytes
+    /// (for example `manylinux_2_39`) rather than `manylinux_2_17`. Refused
+    /// with a cross target or a non-glibc target.
+    #[arg(long)]
+    pub host_glibc: bool,
     /// Extra arguments forwarded verbatim to `maturin build`
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub rest: Vec<String>,
 }
 
-/// Whether soldr actually *enforced* a platform floor for this build, and may
-/// therefore stamp a `manylinux` / `musllinux` claim on the wheel.
-///
-/// Two conditions, both load-bearing:
-///
-/// * **cross** — `target_lifecycle::prepare_for_invocation` runs on the
-///   maturin path only when the target differs from the host
-///   (`soldr_main.rs`). That preparation is what mounts the catalogue sysroot
-///   whose glibc defines the floor. On a host build nothing is mounted and
-///   the floor is whatever the machine happens to have.
-/// * **release** — a dev-profile wheel is a local artifact, not a
-///   distributable one. soldr does not stamp a distribution promise on a build
-///   whose whole point is to be quick.
-pub fn floor_claim_is_backed(triple: &str, host: &str, release: bool) -> bool {
-    release && triple != host
+/// The host facts the wheel plan depends on, injected so the policy can be
+/// tested from any machine rather than only from the host it describes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WheelHost {
+    /// The host triple (`pyo3_detect::host_triple`).
+    pub triple: String,
+    /// Whether the catalogue GNU/Linux bundle's compilers execute here
+    /// (`gnu_linux_toolchain::bundle_host_fitness`). The bundle's pinned
+    /// sysroot is what enforces the 2.17 floor.
+    pub gnu_bundle_runnable: bool,
+    /// The running glibc's version, when it can be read cheaply. Only used in
+    /// the `--host-glibc` notice.
+    pub glibc_version: Option<String>,
+}
+
+impl WheelHost {
+    /// The facts of the machine soldr is running on.
+    pub fn current() -> Self {
+        use crate::platform::host::facts;
+        Self {
+            triple: crate::pyo3_detect::host_triple().to_string(),
+            gnu_bundle_runnable: crate::fetch::gnu_linux_toolchain::bundle_host_fitness(
+                facts::os(),
+                facts::arch(),
+            )
+            .is_runnable(),
+            glibc_version: facts::glibc_version(),
+        }
+    }
+}
+
+/// Everything `soldr wheel` decided before re-entering the maturin path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WheelPlan {
+    /// `maturin build ...`, handed to the ordinary dispatcher.
+    pub argv: Vec<String>,
+    /// The resolved Rust target triple.
+    pub triple: String,
+    /// soldr#3432: run target preparation even though the target is the
+    /// host, because this is a release `*-linux-gnu` wheel.
+    pub prepare_host_target: bool,
+    /// The one `info` line printed before the build, if any.
+    pub notice: Option<GlibcNotice>,
+}
+
+/// The glibc-floor `info` line `soldr wheel` prints before building, so the
+/// floor a Linux wheel gets is never a silent choice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GlibcNotice {
+    /// Built against the catalogue glibc 2.17 sysroot.
+    Catalogue {
+        /// `None` for a host-target build, the triple for a cross build
+        /// (where `--host-glibc` has no meaning, so it is not offered).
+        cross_target: Option<String>,
+        /// The tag soldr asked maturin for; `None` when the caller supplied
+        /// their own `--compatibility` / `--manylinux`.
+        tag: Option<&'static str>,
+    },
+    /// `--host-glibc`: built against this host's glibc.
+    HostGlibc {
+        /// This host's glibc version, when known.
+        version: Option<String>,
+    },
+}
+
+const GREEN: &str = "\x1b[32m";
+const RESET: &str = "\x1b[0m";
+
+impl GlibcNotice {
+    /// The plain-text line.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Catalogue { cross_target, tag } => {
+                let tag = tag.map(|tag| format!(" ({tag})")).unwrap_or_default();
+                match cross_target {
+                    None => format!(
+                        "soldr: info: building release wheel against glibc \
+                         {GNU_LINUX_GLIBC_BASELINE}{tag} for maximum Linux compatibility; \
+                         pass --host-glibc to link against this host's glibc instead"
+                    ),
+                    Some(triple) => format!(
+                        "soldr: info: building release wheel for {triple} against glibc \
+                         {GNU_LINUX_GLIBC_BASELINE}{tag} for maximum Linux compatibility \
+                         (catalogue cross toolchain; --host-glibc applies only to a \
+                         host-target build)"
+                    ),
+                }
+            }
+            Self::HostGlibc { version } => {
+                let floor = match version {
+                    Some(version) => format!("glibc {version} or newer"),
+                    None => "this host's glibc version or newer (version not detected)".to_string(),
+                };
+                format!(
+                    "soldr: info: --host-glibc: building wheel against this host's glibc, \
+                     not glibc {GNU_LINUX_GLIBC_BASELINE}; it will require {floor}, and \
+                     maturin tags it from its bytes instead of manylinux_2_17"
+                )
+            }
+        }
+    }
+
+    /// The line as printed: green when `use_color`, plain otherwise.
+    pub fn render(&self, use_color: bool) -> String {
+        let message = self.message();
+        if use_color {
+            format!("{GREEN}{message}{RESET}")
+        } else {
+            message
+        }
+    }
 }
 
 /// maturin's `--compatibility` value for a resolved Rust target triple.
@@ -129,11 +254,15 @@ pub fn compatibility_for_target(triple: &str, floor_backed: bool) -> &'static st
         "pypi"
     } else if triple.contains("-linux-musl") {
         "musllinux_1_2"
-    } else if triple.contains("-linux-gnu") {
+    } else if is_linux_gnu(triple) {
         "manylinux_2_17"
     } else {
         "pypi"
     }
+}
+
+fn is_linux_gnu(triple: &str) -> bool {
+    triple.contains("-linux-gnu")
 }
 
 fn has_flag(args: &[String], flag: &str) -> bool {
@@ -143,30 +272,18 @@ fn has_flag(args: &[String], flag: &str) -> bool {
         .any(|arg| arg == flag || arg.starts_with(&prefix))
 }
 
-/// Pure argv builder: `(target, release, passthrough) -> maturin argv`.
+/// Pure planner: `(args, host) -> WheelPlan`.
 ///
-/// No I/O, no env reads beyond the host triple — this is the piece worth
+/// No I/O and no env reads — the host is injected — so this is the piece worth
 /// unit-testing, and it is the only place the wheel surface decides anything.
-pub fn maturin_build_argv(
-    target: Option<&str>,
-    release: bool,
-    rest: &[String],
-) -> Result<Vec<String>, SoldrError> {
-    maturin_build_argv_for_host(target, release, rest, crate::pyo3_detect::host_triple())
-}
-
-/// [`maturin_build_argv`] with the host triple injected, so the tag policy can
-/// be tested from any machine rather than only from the host it describes.
-pub fn maturin_build_argv_for_host(
-    target: Option<&str>,
-    release: bool,
-    rest: &[String],
-    host: &str,
-) -> Result<Vec<String>, SoldrError> {
-    let requested = target
+pub fn plan_for_host(args: &WheelArgs, host: &WheelHost) -> Result<WheelPlan, SoldrError> {
+    let rest = args.rest.as_slice();
+    let requested = args
+        .target
+        .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(host);
+        .unwrap_or(&host.triple);
 
     if has_flag(rest, "--target") {
         return Err(SoldrError::Other(
@@ -185,49 +302,125 @@ pub fn maturin_build_argv_for_host(
              so folding it into a manylinux tag would publish a promise soldr cannot keep. \
              Use `soldr wheel --release --target {base}` (tagged \
              `{}`), or `soldr build --target {base}.{floor}` for a bare binary.",
-            compatibility_for_target(base, floor_claim_is_backed(base, host, true))
+            compatibility_for_target(base, true)
         )));
     }
 
     let resolved = crate::target_alias::resolve_soldr_target(requested)
         .map_err(|err| err.into_soldr_error(crate::target_alias::TargetSurface::Wheel))?;
     let triple = resolved.rust_triple;
+    let host_target = triple == host.triple;
+    let gnu = is_linux_gnu(&triple);
+
+    if args.host_glibc && !host_target {
+        return Err(SoldrError::Other(format!(
+            "soldr wheel: --host-glibc links the wheel against this host's glibc, which \
+             only means something for a host-target build. `{triple}` is a cross target \
+             (this host is `{}`), so the wheel is built against the catalogue glibc \
+             {GNU_LINUX_GLIBC_BASELINE} sysroot for that target. Drop --host-glibc.",
+            host.triple
+        )));
+    }
+    if args.host_glibc && !gnu {
+        return Err(SoldrError::Other(format!(
+            "soldr wheel: --host-glibc only applies to a `*-linux-gnu` wheel; `{triple}` \
+             does not link against glibc. Drop --host-glibc."
+        )));
+    }
 
     // `--debug` is maturin's spelling for "not --release". A caller who wrote
     // both is asking for two different profiles; say so rather than picking
     // one and building something they did not ask for.
     let release_in_rest = has_flag(rest, "--release");
     let debug_in_rest = has_flag(rest, "--debug");
-    if release && debug_in_rest {
+    if args.release && debug_in_rest {
         return Err(SoldrError::Other(
             "soldr wheel: `--release` and a forwarded `--debug` ask for different profiles. \
              Drop one — `soldr wheel` alone already builds the dev profile."
                 .to_string(),
         ));
     }
-    let is_release = release || release_in_rest;
+    let is_release = args.release || release_in_rest;
+
+    // soldr#3432: a release linux-gnu wheel always gets the catalogue 2.17
+    // sysroot, host target included, unless the caller opted out.
+    let prepare_host_target = is_release && host_target && gnu && !args.host_glibc;
+    if prepare_host_target && !host.gnu_bundle_runnable {
+        return Err(SoldrError::Other(format!(
+            "soldr wheel: a release wheel for `{triple}` is built against the catalogue \
+             glibc {GNU_LINUX_GLIBC_BASELINE} sysroot so that its manylinux_2_17 tag is \
+             enforced, but that toolchain cannot run on this host: every catalogue \
+             GNU/Linux bundle is hosted on `{bundle_host}` (soldr#2874). soldr will not \
+             silently fall back to this host's glibc for a release wheel (soldr#3432). \
+             Build on an `{bundle_host}` host instead — `soldr wheel --release --target \
+             {triple}` cross-builds it at glibc {GNU_LINUX_GLIBC_BASELINE} — or pass \
+             --host-glibc to link against this host's glibc and have the wheel tagged \
+             from its bytes.",
+            bundle_host = crate::fetch::gnu_linux_toolchain::GNU_LINUX_TOOLCHAIN_HOST_TRIPLE,
+        )));
+    }
+    // Cross builds are prepared by the maturin path's own `target != host`
+    // gate; host-target ones only when this plan asks for it.
+    let floor_backed = is_release && !args.host_glibc && (!host_target || prepare_host_target);
 
     let mut argv = vec!["maturin".to_string(), "build".to_string()];
     if is_release && !release_in_rest {
         argv.push("--release".to_string());
     }
-    if !has_flag(rest, "--compatibility") && !has_flag(rest, "--manylinux") {
+    let caller_tagged = has_flag(rest, "--compatibility") || has_flag(rest, "--manylinux");
+    let compatibility = compatibility_for_target(&triple, floor_backed);
+    if !caller_tagged {
         argv.push("--compatibility".to_string());
-        let backed = floor_claim_is_backed(&triple, host, is_release);
-        argv.push(compatibility_for_target(&triple, backed).to_string());
+        argv.push(compatibility.to_string());
     }
     argv.push("--target".to_string());
-    argv.push(triple);
+    argv.push(triple.clone());
     argv.extend(rest.iter().cloned());
-    Ok(argv)
+
+    let notice = if args.host_glibc {
+        Some(GlibcNotice::HostGlibc {
+            version: host.glibc_version.clone(),
+        })
+    } else if floor_backed && gnu {
+        Some(GlibcNotice::Catalogue {
+            cross_target: (!host_target).then(|| triple.clone()),
+            tag: (!caller_tagged).then_some(compatibility),
+        })
+    } else {
+        None
+    };
+
+    Ok(WheelPlan {
+        argv,
+        triple,
+        prepare_host_target,
+        notice,
+    })
 }
 
-/// Read back the `--target` this module wrote into the argv.
-fn target_in_argv(argv: &[String]) -> Option<&str> {
-    argv.iter()
-        .position(|arg| arg == "--target")
-        .and_then(|idx| argv.get(idx + 1))
-        .map(String::as_str)
+/// The target a `soldr wheel` plan asked the maturin path to prepare although
+/// it is the host (soldr#3432). `soldr wheel` re-enters the dispatcher
+/// in-process, so a process-local slot carries the request without an
+/// environment variable that would leak into maturin, cargo and build scripts.
+static HOST_TARGET_PREP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn request_host_target_prep(triple: &str) {
+    *HOST_TARGET_PREP
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(triple.to_string());
+}
+
+/// Whether the maturin execution path must run
+/// `target_lifecycle::prepare_for_invocation` for `target`: always for a
+/// cross target, and for the host target when `soldr wheel` planned a release
+/// `*-linux-gnu` wheel (soldr#3432).
+pub(crate) fn maturin_target_needs_prep(target: &str, host: &str) -> bool {
+    target != host
+        || HOST_TARGET_PREP
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_deref()
+            == Some(target)
 }
 
 /// The abi3-only scope gate, expressed over the PyO3 planner's decision.
@@ -282,35 +475,55 @@ pub fn abi3_scope_check(
 /// leading global flags, then `maturin build ...`. Re-entering the dispatcher
 /// is what keeps the maturin provisioning ladder, toolchain pinning, build
 /// lease, target preparation, and PyO3 planning in exactly one place.
+///
+/// Side effects, both deliberate and both after every refusal has had its
+/// chance: a host-target release linux-gnu plan registers its target with
+/// [`maturin_target_needs_prep`], and the plan's [`GlibcNotice`] is printed to
+/// stderr (green on a terminal, plain when `NO_COLOR` is set or stderr is
+/// redirected).
 pub(crate) fn maturin_invocation(
     args: &WheelArgs,
     no_cache: bool,
     trust_inherited_soldr_env: bool,
 ) -> Result<Vec<String>, SoldrError> {
-    let build = maturin_build_argv(args.target.as_deref(), args.release, &args.rest)?;
-    let triple = target_in_argv(&build)
-        .expect("maturin_build_argv always writes --target")
-        .to_string();
+    let plan = plan_for_host(args, &WheelHost::current())?;
 
     // The gate only has something to say about cross builds; a host build
     // resolves to `PlanMode::Native` without touching Cargo metadata anyway,
     // so skip the `cargo metadata` round trip entirely.
-    if triple != crate::pyo3_detect::host_triple() {
+    if plan.triple != crate::pyo3_detect::host_triple() {
         let workspace_root =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let plan =
-            crate::pyo3_detect::resolve_for_invocation(&workspace_root, &build, Some(&triple));
-        abi3_scope_check(plan.mode, &triple, plan.diagnostic.as_deref())?;
+        let pyo3_plan = crate::pyo3_detect::resolve_for_invocation(
+            &workspace_root,
+            &plan.argv,
+            Some(&plan.triple),
+        );
+        abi3_scope_check(
+            pyo3_plan.mode,
+            &plan.triple,
+            pyo3_plan.diagnostic.as_deref(),
+        )?;
     }
 
-    let mut argv = Vec::with_capacity(build.len() + 2);
+    if plan.prepare_host_target {
+        request_host_target_prep(&plan.triple);
+    }
+    if let Some(notice) = &plan.notice {
+        eprintln!(
+            "{}",
+            notice.render(crate::cargo_front_door::stderr_should_use_color())
+        );
+    }
+
+    let mut argv = Vec::with_capacity(plan.argv.len() + 2);
     if no_cache {
         argv.push("--no-cache".to_string());
     }
     if trust_inherited_soldr_env {
         argv.push("--trust-inherited-soldr-env".to_string());
     }
-    argv.extend(build);
+    argv.extend(plan.argv);
     Ok(argv)
 }
 
@@ -323,6 +536,62 @@ mod tests {
     /// machine runs the suite. Nothing about the tag policy may depend on the
     /// test host — that dependency is the bug this module now guards.
     const CROSS_HOST: &str = "never-equal-to-any-target";
+
+    /// An x86_64 Linux host: the catalogue GNU bundle runs here.
+    fn x86_64_linux() -> WheelHost {
+        WheelHost {
+            triple: "x86_64-unknown-linux-gnu".to_string(),
+            gnu_bundle_runnable: true,
+            glibc_version: Some("2.39".to_string()),
+        }
+    }
+
+    /// A native aarch64 Linux host: every catalogue GNU bundle is
+    /// x86_64-hosted (soldr#2874), so it cannot run here.
+    fn aarch64_linux() -> WheelHost {
+        WheelHost {
+            triple: "aarch64-unknown-linux-gnu".to_string(),
+            gnu_bundle_runnable: false,
+            glibc_version: Some("2.39".to_string()),
+        }
+    }
+
+    fn host_named(triple: &str) -> WheelHost {
+        WheelHost {
+            triple: triple.to_string(),
+            gnu_bundle_runnable: triple == "x86_64-unknown-linux-gnu",
+            glibc_version: None,
+        }
+    }
+
+    fn wheel_args(
+        target: Option<&str>,
+        release: bool,
+        host_glibc: bool,
+        rest: &[&str],
+    ) -> WheelArgs {
+        WheelArgs {
+            target: target.map(str::to_string),
+            release,
+            host_glibc,
+            rest: rest.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn maturin_build_argv_for_host(
+        target: Option<&str>,
+        release: bool,
+        rest: &[String],
+        host: &str,
+    ) -> Result<Vec<String>, SoldrError> {
+        let args = WheelArgs {
+            target: target.map(str::to_string),
+            release,
+            host_glibc: false,
+            rest: rest.to_vec(),
+        };
+        plan_for_host(&args, &host_named(host)).map(|plan| plan.argv)
+    }
 
     /// Release + cross: the one shape in which soldr may claim a floor.
     fn build(target: &str, rest: &[&str]) -> Vec<String> {
@@ -417,35 +686,237 @@ mod tests {
         );
     }
 
+    // ---- soldr#3432: a release linux-gnu wheel always enforces 2.17.
+
     #[test]
-    fn a_host_target_wheel_does_not_claim_a_manylinux_floor() {
-        // The regression this guards: `prepare_for_invocation` is gated on
-        // `maturin_target != host_triple()` in soldr_main.rs, so a host-target
-        // linux-gnu build mounts no catalogue sysroot and links against the
-        // machine's own glibc (2.39 on ubuntu-24.04). Claiming 2.17 there is
-        // exactly what `verify_wheel_glibc.py` was written to catch.
-        let host = "x86_64-unknown-linux-gnu";
-        let argv = build_on(host, true, host, &[]);
-        assert_eq!(
-            flag_value(&argv, "--compatibility"),
-            Some("pypi"),
-            "no target prep ran, so there is no floor to claim: {argv:?}"
+    fn a_host_target_release_gnu_wheel_prepares_and_claims_manylinux_2_17() {
+        // The RED case from soldr#3432: on an x86_64 Linux host, a host-target
+        // release wheel used to skip target preparation and claim nothing, so
+        // it linked the runner's glibc (manylinux_2_34+ on modern distros).
+        let plan = plan_for_host(
+            &wheel_args(Some("x86_64-unknown-linux-gnu"), true, false, &[]),
+            &x86_64_linux(),
+        )
+        .expect("host-target release wheel must plan");
+        assert!(
+            plan.prepare_host_target,
+            "the catalogue sysroot must be prepared for the host target: {plan:?}"
         );
-        // ...and the same triple from a different host does claim it.
-        let cross = build_on(host, true, "aarch64-apple-darwin", &[]);
         assert_eq!(
-            flag_value(&cross, "--compatibility"),
-            Some("manylinux_2_17")
+            flag_value(&plan.argv, "--compatibility"),
+            Some("manylinux_2_17"),
+            "{plan:?}"
+        );
+        // `--target` omitted is the same request.
+        let implicit = plan_for_host(&wheel_args(None, true, false, &[]), &x86_64_linux())
+            .expect("implicit host target");
+        assert_eq!(implicit, plan);
+    }
+
+    #[test]
+    fn the_release_gnu_plan_emits_the_glibc_2_17_info_line() {
+        let plan =
+            plan_for_host(&wheel_args(None, true, false, &[]), &x86_64_linux()).expect("plan");
+        let notice = plan
+            .notice
+            .expect("a release gnu wheel always announces its floor");
+        assert_eq!(
+            notice.message(),
+            "soldr: info: building release wheel against glibc 2.17 (manylinux_2_17) for \
+             maximum Linux compatibility; pass --host-glibc to link against this host's glibc \
+             instead"
+        );
+        // Cross: same floor, but --host-glibc is not offered where it is refused.
+        let cross = plan_for_host(
+            &wheel_args(Some("aarch64-unknown-linux-gnu"), true, false, &[]),
+            &x86_64_linux(),
+        )
+        .expect("cross plan");
+        assert!(
+            !cross.prepare_host_target,
+            "cross prep is the dispatcher's own gate"
+        );
+        let message = cross.notice.expect("cross gnu notice").message();
+        assert!(
+            message.contains("aarch64-unknown-linux-gnu against glibc 2.17"),
+            "{message}"
+        );
+        assert!(message.contains("only to a host-target build"), "{message}");
+    }
+
+    #[test]
+    fn the_info_line_is_green_only_when_color_is_on() {
+        let notice = GlibcNotice::Catalogue {
+            cross_target: None,
+            tag: Some("manylinux_2_17"),
+        };
+        let plain = notice.render(false);
+        assert_eq!(plain, notice.message());
+        assert!(!plain.contains('\x1b'), "{plain:?}");
+        let green = notice.render(true);
+        assert_eq!(green, format!("\x1b[32m{}\x1b[0m", notice.message()));
+    }
+
+    #[test]
+    fn no_color_and_a_non_tty_stderr_give_plain_text() {
+        // The rule `maturin_invocation` feeds into `GlibcNotice::render`.
+        use crate::cargo_front_door::color_enabled;
+        assert!(
+            color_enabled(false, true),
+            "a terminal with no NO_COLOR is green"
+        );
+        assert!(!color_enabled(true, true), "NO_COLOR wins over a terminal");
+        assert!(!color_enabled(false, false), "a redirected stderr is plain");
+        assert!(!color_enabled(true, false));
+    }
+
+    #[test]
+    fn dev_and_non_gnu_wheels_print_no_floor_notice() {
+        let dev =
+            plan_for_host(&wheel_args(None, false, false, &[]), &x86_64_linux()).expect("dev plan");
+        assert_eq!(dev.notice, None);
+        assert!(!dev.prepare_host_target);
+        for target in ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"] {
+            let plan = plan_for_host(&wheel_args(Some(target), true, false, &[]), &x86_64_linux())
+                .expect("non-linux plan");
+            assert_eq!(plan.notice, None, "{target}");
+            assert!(!plan.prepare_host_target, "{target}");
+        }
+    }
+
+    #[test]
+    fn host_glibc_opts_out_of_the_floor_with_its_own_info_line() {
+        let plan = plan_for_host(&wheel_args(None, true, true, &[]), &x86_64_linux())
+            .expect("--host-glibc plan");
+        assert!(!plan.prepare_host_target, "{plan:?}");
+        assert!(plan.argv.contains(&"--release".to_string()), "{plan:?}");
+        assert_eq!(
+            flag_value(&plan.argv, "--compatibility"),
+            Some("pypi"),
+            "only the bytes-derived tag is backed without the sysroot: {plan:?}"
+        );
+        assert_eq!(
+            plan.notice.as_ref().map(GlibcNotice::message).as_deref(),
+            Some(
+                "soldr: info: --host-glibc: building wheel against this host's glibc, not \
+                 glibc 2.17; it will require glibc 2.39 or newer, and maturin tags it from its \
+                 bytes instead of manylinux_2_17"
+            )
+        );
+        // An undetectable version still produces an honest line.
+        let mut host = x86_64_linux();
+        host.glibc_version = None;
+        let plan = plan_for_host(&wheel_args(None, true, true, &[]), &host).expect("plan");
+        let message = plan.notice.expect("notice").message();
+        assert!(message.contains("version not detected"), "{message}");
+    }
+
+    #[test]
+    fn host_glibc_is_not_the_default() {
+        let args = <WheelArgs as Default>::default();
+        assert!(!args.host_glibc);
+    }
+
+    #[test]
+    fn host_glibc_with_a_cross_target_is_refused() {
+        let err = plan_for_host(
+            &wheel_args(Some("aarch64-unknown-linux-gnu"), true, true, &[]),
+            &x86_64_linux(),
+        )
+        .expect_err("--host-glibc has no meaning for a cross target");
+        let message = err.to_string();
+        assert!(message.contains("--host-glibc"), "{message}");
+        assert!(message.contains("cross target"), "{message}");
+        assert!(message.contains("Drop --host-glibc"), "{message}");
+    }
+
+    #[test]
+    fn host_glibc_with_a_non_glibc_target_is_refused() {
+        let err = plan_for_host(
+            &wheel_args(None, true, true, &[]),
+            &host_named("aarch64-apple-darwin"),
+        )
+        .expect_err("macOS has no glibc");
+        assert!(
+            err.to_string()
+                .contains("only applies to a `*-linux-gnu` wheel"),
+            "{err}"
         );
     }
 
     #[test]
-    fn floor_claim_needs_both_release_and_cross() {
-        let target = "aarch64-unknown-linux-gnu";
-        assert!(floor_claim_is_backed(target, CROSS_HOST, true));
-        assert!(!floor_claim_is_backed(target, CROSS_HOST, false));
-        assert!(!floor_claim_is_backed(target, target, true));
-        assert!(!floor_claim_is_backed(target, target, false));
+    fn aarch64_host_target_release_wheel_is_refused_not_silently_degraded() {
+        // No aarch64-hosted catalogue bundle exists (soldr#2874), so the floor
+        // cannot be enforced here. Refuse with both remedies rather than fall
+        // back to the host glibc under a `pypi` tag.
+        let err = plan_for_host(&wheel_args(None, true, false, &[]), &aarch64_linux())
+            .expect_err("aarch64 host-target release wheel must be refused");
+        let message = err.to_string();
+        assert!(message.contains("soldr#2874"), "{message}");
+        assert!(message.contains("soldr#3432"), "{message}");
+        assert!(message.contains("x86_64-unknown-linux-gnu"), "{message}");
+        assert!(message.contains("--host-glibc"), "{message}");
+
+        // Both remedies work: a dev wheel, and the explicit opt-out.
+        assert!(plan_for_host(&wheel_args(None, false, false, &[]), &aarch64_linux()).is_ok());
+        let opted_out = plan_for_host(&wheel_args(None, true, true, &[]), &aarch64_linux())
+            .expect("--host-glibc is the explicit opt-out");
+        assert_eq!(flag_value(&opted_out.argv, "--compatibility"), Some("pypi"));
+    }
+
+    #[test]
+    fn musl_host_target_release_wheel_is_unchanged() {
+        // The musl bundle is x86_64-glibc-hosted; a musl host is not
+        // guaranteed to run it, so soldr#3432 does not extend to musl.
+        let host = host_named("x86_64-unknown-linux-musl");
+        let plan = plan_for_host(&wheel_args(None, true, false, &[]), &host).expect("plan");
+        assert!(!plan.prepare_host_target);
+        assert_eq!(flag_value(&plan.argv, "--compatibility"), Some("pypi"));
+        assert_eq!(plan.notice, None);
+    }
+
+    #[test]
+    fn a_caller_supplied_tag_keeps_the_floor_but_the_notice_claims_no_tag() {
+        let plan = plan_for_host(
+            &wheel_args(None, true, false, &["--compatibility", "linux"]),
+            &x86_64_linux(),
+        )
+        .expect("plan");
+        assert!(plan.prepare_host_target);
+        assert_eq!(flag_value(&plan.argv, "--compatibility"), Some("linux"));
+        let message = plan.notice.expect("notice").message();
+        assert!(!message.contains("manylinux_2_17"), "{message}");
+        assert!(message.contains("glibc 2.17"), "{message}");
+    }
+
+    #[test]
+    fn the_dispatcher_prepares_a_host_target_only_when_a_wheel_plan_asked() {
+        // A value no real host/target uses, so no other test can collide.
+        let target = "x86_64-unknown-linux-gnu-soldr-3432-test";
+        assert!(!maturin_target_needs_prep(target, target));
+        request_host_target_prep(target);
+        assert!(maturin_target_needs_prep(target, target));
+        // Cross targets are always prepared, requested or not.
+        assert!(maturin_target_needs_prep(
+            "aarch64-unknown-linux-gnu",
+            target
+        ));
+    }
+
+    #[test]
+    fn floor_claim_needs_release_and_no_opt_out() {
+        let host = x86_64_linux();
+        let tag = |target: Option<&str>, release: bool, host_glibc: bool| {
+            plan_for_host(&wheel_args(target, release, host_glibc, &[]), &host)
+                .map(|plan| flag_value(&plan.argv, "--compatibility").map(str::to_string))
+                .expect("plan")
+        };
+        let cross = Some("aarch64-unknown-linux-gnu");
+        assert_eq!(tag(cross, true, false).as_deref(), Some("manylinux_2_17"));
+        assert_eq!(tag(cross, false, false).as_deref(), Some("pypi"));
+        assert_eq!(tag(None, true, false).as_deref(), Some("manylinux_2_17"));
+        assert_eq!(tag(None, false, false).as_deref(), Some("pypi"));
+        assert_eq!(tag(None, true, true).as_deref(), Some("pypi"));
     }
 
     #[test]
@@ -627,7 +1098,10 @@ mod tests {
         // through `cargo metadata`, and this test is about argv ordering.
         let args = WheelArgs {
             target: Some(crate::pyo3_detect::host_triple().to_string()),
-            release: true,
+            // A dev wheel: a host-target release gnu wheel would be refused on
+            // a native aarch64 runner (soldr#3432), and this is about argv order.
+            release: false,
+            host_glibc: false,
             rest: Vec::new(),
         };
         let argv = maturin_invocation(&args, true, true).expect("invocation should build");

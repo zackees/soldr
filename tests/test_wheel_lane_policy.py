@@ -87,16 +87,20 @@ def test_windows_style_paths_are_normalized() -> None:
     assert policy.is_wheel_relevant_path("./pyproject.toml")
 
 
-def test_matrix_cell_is_a_linux_cross_build() -> None:
-    # The issue's acceptance criterion is specifically a CROSS wheel from an
-    # x86_64 Linux host: a host-target wheel would exercise neither target
-    # preparation nor the floor claim.
-    (cell,) = policy.WHEEL_MATRIX
-    assert cell["runner"] == "ubuntu-24.04"
-    assert cell["target"] == "aarch64-unknown-linux-gnu"
-    assert cell["expected_tag"] == "manylinux_2_17"
-    assert cell["max_glibc"] == "2.17"
-    assert cell["jobs"] == "1"
+def test_matrix_cells_cover_cross_and_host_target_builds() -> None:
+    # soldr#2139's criterion is a CROSS wheel from an x86_64 Linux host;
+    # soldr#3432's is the HOST-target wheel on that same host, which must get
+    # the catalogue 2.17 sysroot too rather than the runner's glibc.
+    cells = {cell["target"]: cell for cell in policy.WHEEL_MATRIX}
+    assert set(cells) == {"aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"}
+    for cell in cells.values():
+        assert cell["runner"] == "ubuntu-24.04"
+        assert cell["expected_tag"] == "manylinux_2_17"
+        assert cell["max_glibc"] == "2.17"
+        assert cell["jobs"] == "1"
+    assert len({cell["name"] for cell in policy.WHEEL_MATRIX}) == len(
+        policy.WHEEL_MATRIX
+    )
 
 
 def _ci_jobs() -> dict:
