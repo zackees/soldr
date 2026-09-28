@@ -92,6 +92,8 @@ jobs:
         # unpublished version 404s here.
         uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362
         with:
+          # Save caches fully under act (local bosn runs are pull_request events); setup-soldr#537 makes this the default. Remove then.
+          save-cache: ${{ env.ACT && 'true' || 'auto' }}
           cook-delta: false
           version: "0.7.28"
           cache: false
@@ -193,6 +195,7 @@ jobs:
 
       - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362
         with:
+          save-cache: ${{ env.ACT && 'true' || 'auto' }}
           cook-delta: false
           # 0.7.29 brings `soldr cook` — see delta job above for why.
           version: "0.7.28"

@@ -113,6 +113,8 @@ jobs:
         # because this repository's ruleset requires SHA-pinned actions.
         uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362
         with:
+          # Save caches fully under act (local bosn runs are pull_request events); setup-soldr#537 makes this the default. Remove then.
+          save-cache: ${{ env.ACT && 'true' || 'auto' }}
           cook-delta: false
           cache: true
           zccache-seed-strict: true
