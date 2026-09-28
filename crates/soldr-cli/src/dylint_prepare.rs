@@ -3,7 +3,8 @@
 //!
 //! The front door already auto-prepares on `soldr cargo dylint ...`;
 //! this surface runs exactly that preparation pipeline standalone so a
-//! caller (or CI step) can warm the stack deliberately, see what was
+//! caller (or CI step) can warm the stack and requested cross-target rust-std
+//! deliberately, see what was
 //! resolved, and know the next lint/test invocation will not stall on
 //! downloads — pairing with the wrapper's fail-closed guard against
 //! nested driver source builds.
@@ -11,11 +12,7 @@
 use crate::core::{SoldrError, SoldrPaths};
 
 pub(crate) async fn run(args: &[String]) -> Result<i32, SoldrError> {
-    if !args.is_empty() {
-        return Err(SoldrError::Other(format!(
-            "soldr dylint prepare takes no arguments (got {args:?})"
-        )));
-    }
+    let targets = crate::dylint_target::prepare_targets(args)?;
     let paths = SoldrPaths::new()?;
     paths.ensure_dirs()?;
     let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -38,6 +35,7 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, SoldrError> {
     eprintln!("soldr: dylint prepare: verifying the prebuilt driver");
     crate::dylint_driver::ensure_prebuilt_driver(&plan, &paths).await?;
     let plan = crate::dylint_toolchain::prepare_resolved(plan)?;
+    crate::dylint_target::ensure_targets(&plan.channel, &targets)?;
     println!(
         "soldr: dylint ready on channel {} — the next `soldr cargo dylint` run starts warm",
         plan.channel
@@ -57,6 +55,9 @@ mod tests {
         let error = runtime
             .block_on(run(&["--driver-version".to_string()]))
             .expect_err("arguments must be rejected");
-        assert!(error.to_string().contains("takes no arguments"), "{error}");
+        assert!(
+            error.to_string().contains("accepts only --target"),
+            "{error}"
+        );
     }
 }

@@ -295,6 +295,7 @@ pub(crate) mod dylint_driver;
 /// it instead of each deriving or hard-coding its own answer.
 pub(crate) mod dylint_libraries;
 pub(crate) mod dylint_prepare;
+pub(crate) mod dylint_target;
 pub mod dylint_toolchain;
 pub(crate) mod dylint_toolchain_readiness;
 /// soldr#938 — `soldr env --target` subcommand implementation.

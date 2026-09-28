@@ -642,14 +642,16 @@ host-only behavior unchanged. Each cross Clippy pass runs `cargo clippy --target
 <triple>`, so it lands under Cargo's own `target/<triple>/` and never touches the
 host tree's fingerprints; the target's standard library is installed on demand
 through Soldr's managed `rustup target add` (idempotent, never a bare `rustup`).
-Dylint stays host-only — its driver is pinned to one dated nightly and sits
-outside this cross-target contract. A cross Clippy failure prints `soldr lint:
-clippy failed for target <triple>` to stderr and the command exits with that
-step's code.
+Dylint runs once for the host by default. `--cross-dylint` adds a custom-lint
+pass for each selected target using the lint libraries' exact pinned nightly.
+Soldr installs that nightly's `rust-std` for each target on demand before the
+workspace check; the catalogued driver remains prebuilt. A failed cross pass
+names the target and tool (`clippy` or `dylint`) and returns its exit code.
 
 `--target <triple>` (repeatable; friendly aliases such as `win-x64`/`mac-arm64`
 are accepted) overrides the declared list for that invocation. `--host-only`
-skips cross-target Clippy entirely, even when targets are declared. Both flags
+skips cross-target Clippy entirely, even when targets are declared. It cannot
+be combined with `--cross-dylint`. All three flags
 are valid only for the `rust`/`all` suites and are stripped from the cargo scope
 before it reaches fmt/Clippy/Dylint. An unknown or unsupported triple — declared
 or explicit — is a clear error raised before any compile starts, not a silent

@@ -474,7 +474,7 @@ def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
             "createdAt": "2026-09-23T01:00:00Z",
         },
         entry("v0-rust-bootstrap-soldr-linux-gnu-dev-abc", 402 * mib),
-        entry("v0-rust-wheel-cross-aarch64-unknown-linux-gnu-release-abc", 602 * mib),
+        entry("v0-rust-wheel-cross-aarch64-unknown-linux-gnu-release-abc", 650 * mib),
     ]
     entries = guard.normalize_entries(rows)
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -639,11 +639,11 @@ def test_3347_lineage_policy_fits_every_family_and_total() -> None:
 
 
 def test_3347_policy_is_not_green_when_a_family_truly_does_not_fit() -> None:
-    # The residual producer sizes from the 2026-09-23 20:26 listing were
-    # 36,875,420 B over; no safe candidate touches them, so it must stay red.
+    # A residual producer above the rebalanced allocation has no safe
+    # prune candidate, so it must stay red.
     entries = [
         (
-            guard.CacheEntry(e.key, e.ref, 635_272_319, e.id, e.created_at)
+            guard.CacheEntry(e.key, e.ref, 700_000_000, e.id, e.created_at)
             if e.key.startswith("v0-rust-wheel-cross-")
             else e
         )

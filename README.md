@@ -324,6 +324,9 @@ soldr maturin build --release
 soldr cargo-dylint check
 soldr rustfmt src/main.rs
 soldr dylint cook --workspace --all-targets  # exact-nightly dependency warmup
+soldr dylint prepare --target x86_64-pc-windows-msvc  # install nightly rust-std for a cross-target check
+soldr dylint --all -- --workspace --all-targets --target x86_64-pc-windows-msvc
+soldr lint rust --cross-dylint --target win-x64 --target mac-x64
 ```
 
 Rustfmt still runs through Soldr. Recursive invocations always execute the real

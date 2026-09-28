@@ -358,14 +358,14 @@ pub(crate) enum Commands {
     /// lane. A workspace with no declared targets keeps host-only behavior.
     /// `--target <triple>` (repeatable, friendly aliases like `win-x64`
     /// accepted) overrides the declared list; `--host-only` skips cross
-    /// targets entirely. Both flags are valid only for `rust`/`all`. Dylint
-    /// stays host-only regardless — its driver is pinned to one dated
-    /// nightly, outside this cross-target contract.
+    /// targets entirely. `--cross-dylint` opts in to a custom-lint pass for
+    /// each selected cross target using the lint libraries' exact nightly.
+    /// These flags are valid only for `rust`/`all`.
     Lint {
         /// Suite selector (`rust`, `deps`, `ci`, or `all`). Rust/deps/all
         /// accept cargo scope flags; `ci` accepts only `--format json|human`.
         /// `rust`/`all` additionally accept `--target <triple>` (repeatable)
-        /// and `--host-only`.
+        /// `--host-only`, and `--cross-dylint`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
