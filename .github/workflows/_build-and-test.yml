@@ -189,6 +189,8 @@ jobs:
       - name: Setup pinned soldr toolchain
         uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362
         with:
+          # Save caches fully under act (local bosn runs are pull_request events); setup-soldr#537 makes this the default. Remove then.
+          save-cache: ${{ env.ACT && 'true' || 'auto' }}
           cook-delta: false
           version: 0.9.16
           toolchain: 1.98.1
