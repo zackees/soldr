@@ -1,16 +1,46 @@
-//! zccache cache-hit delivery mode (soldr#3407, zackees/zccache#1683).
+//! zccache cache-hit delivery mode (soldr#3407, zackees/zccache#1683,
+//! soldr#3440, zackees/zccache#1792).
 //!
-//! zccache reads `ZCCACHE_MODE` (`AUTO` | `LINK` | `COPY` | `REFLINK`) per
-//! request from the environment the rustc wrapper forwards. soldr's job is
-//! only to decide which value that is and put it on the cargo child, so the
-//! embedded service sees it on every compile.
+//! zccache reads `ZCCACHE_MODE` (`AUTO` | `LINK` | `COPY` | `REFLINK` |
+//! `REFLINK_OR_LINK_OR_COPY`) per request from the environment the rustc
+//! wrapper forwards. soldr's job is only to decide which value that is and
+//! put it on the cargo child, so the embedded service sees it on every
+//! compile.
 //!
 //! # Precedence
 //!
 //! 1. `SOLDR_ZCCACHE_MODE` — soldr's own knob; `--zccache-mode` publishes it.
 //! 2. `[zccache] mode` in `config.toml`.
-//! 3. The user's own `ZCCACHE_MODE` — honored as-is, never rewritten.
-//! 4. Unset — zccache's default (`AUTO`).
+//! 3. The user's own `ZCCACHE_MODE` — honored as-is for an explicit `LINK`,
+//!    `COPY`, `REFLINK`, or `REFLINK_OR_LINK_OR_COPY`, and never rewritten.
+//! 4. Unset.
+//!
+//! # `AUTO` and unset: soldr probes once and picks the explicit mode (zccache#1792)
+//!
+//! As of zccache 1.15.0 (zccache#1792), zccache's own `AUTO` means reflink,
+//! else an independent copy, for Rust outputs — it never hardlinks a Rust
+//! artifact, closing the read-only-artifact bug in zccache#1791. (C/C++
+//! outputs keep the older reflink → hardlink → copy chain under `AUTO`;
+//! this soldr change is about the Rust-artifact path soldr itself wraps.)
+//! Rather than ask zccache to retry a chain
+//! (reflink → hardlink → copy) on every cache hit, soldr probes **once**,
+//! before the build starts, whether the specific `(zccache cache dir,
+//! cargo target dir)` pair supports a reflink or a hardlink
+//! (`soldr_platform::fs::delivery_probe::probe_delivery_capability`),
+//! and puts the single, explicit answer — `REFLINK`, `LINK`, or `COPY` — on
+//! the cargo child. This applies whenever the resolved mode is `AUTO` —
+//! from *any* tier, including the user's own literal `ZCCACHE_MODE=AUTO` —
+//! or nothing is configured at all. An explicit `LINK`, `COPY`, `REFLINK`,
+//! or `REFLINK_OR_LINK_OR_COPY` is honored unchanged. See
+//! [`ResolvedZccacheMode::child_env_value`] and [`child_env_value_for`].
+//!
+//! `REFLINK_OR_LINK_OR_COPY` ships in zccache 1.15.0 as the new explicit
+//! spelling of the old `AUTO` chain; soldr accepts it as a valid explicit
+//! user/soldr value and simply forwards it, but never *injects* it itself
+//! (it injects the probed, single mode instead). `REFLINK`, `LINK`, and
+//! `COPY` already exist in the pinned zccache `=1.14.14`, so probing and
+//! injecting one of those three needs no zccache version bump — see
+//! soldr#3440 for the compatibility finding.
 //!
 //! Unlike [`crate::core::jobs`], an unrecognised value is an error rather
 //! than a fall-through: silently delivering hardlinks to someone who asked
@@ -30,7 +60,14 @@ pub const ZCCACHE_MODE_ENV_VAR: &str = "ZCCACHE_MODE";
 /// How the embedded zccache delivers a cache hit to its output path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZccacheMode {
-    /// Reflink, else hardlink (when the output may share an inode), else copy.
+    /// zccache's own default. As of zccache 1.15.0 this means reflink, else
+    /// an independent copy, for Rust outputs — it never hardlinks a Rust
+    /// artifact (zccache#1791/#1792); C/C++ outputs keep the older
+    /// reflink → hardlink → copy chain. Soldr's resolver never injects
+    /// `AUTO` itself: it probes the cache-to-target directory pair once and
+    /// injects the concrete [`Self::Reflink`], [`Self::Link`], or
+    /// [`Self::Copy`] answer instead (soldr#3440), whether the resolved
+    /// mode was `AUTO` or nothing was configured at all.
     Auto,
     /// Hardlink eligible outputs.
     Link,
@@ -38,10 +75,22 @@ pub enum ZccacheMode {
     Copy,
     /// An independent copy-on-write clone; a copy where the volume cannot.
     Reflink,
+    /// Reflink, else hardlink (when the output may share an inode), else
+    /// copy — the former meaning of `AUTO` before zccache#1792, now its own
+    /// explicit spelling. Ships in zccache 1.15.0; soldr accepts and
+    /// forwards it unchanged as an explicit user/soldr value but never
+    /// injects it itself.
+    ReflinkOrLinkOrCopy,
 }
 
 impl ZccacheMode {
-    pub const ALL: [Self; 4] = [Self::Auto, Self::Link, Self::Copy, Self::Reflink];
+    pub const ALL: [Self; 5] = [
+        Self::Auto,
+        Self::Link,
+        Self::Copy,
+        Self::Reflink,
+        Self::ReflinkOrLinkOrCopy,
+    ];
 
     /// The canonical spelling zccache documents and soldr injects.
     pub const fn as_str(self) -> &'static str {
@@ -50,6 +99,7 @@ impl ZccacheMode {
             Self::Link => "LINK",
             Self::Copy => "COPY",
             Self::Reflink => "REFLINK",
+            Self::ReflinkOrLinkOrCopy => "REFLINK_OR_LINK_OR_COPY",
         }
     }
 
@@ -68,7 +118,7 @@ impl ZccacheMode {
     }
 }
 
-/// A value that names none of the four modes. [`resolve_zccache_mode_from`]
+/// A value that names none of the five modes. [`resolve_zccache_mode_from`]
 /// attaches the offending tier and value as [`InvalidZccacheMode`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnknownZccacheMode;
@@ -124,13 +174,43 @@ pub struct ResolvedZccacheMode {
 }
 
 impl ResolvedZccacheMode {
-    /// The value soldr must set as `ZCCACHE_MODE` on the cargo child, if any.
-    pub fn child_env_value(self) -> Option<&'static str> {
+    /// The value soldr must set as `ZCCACHE_MODE` on the cargo child, if
+    /// any. `probe` is called at most once, and only when the resolved mode
+    /// is [`ZccacheMode::Auto`]: an explicit `LINK`/`COPY`/`REFLINK`/
+    /// `REFLINK_OR_LINK_OR_COPY` never needs to probe the filesystem to
+    /// decide. `probe` must return one of [`ZccacheMode::Reflink`],
+    /// [`ZccacheMode::Link`], or [`ZccacheMode::Copy`] — the caller (the
+    /// cache-to-target delivery capability probe) never has a reason to
+    /// answer `Auto` or `ReflinkOrLinkOrCopy`.
+    ///
+    /// `AUTO` is decided regardless of `self.source`: even the user's own
+    /// literal `ZCCACHE_MODE=AUTO` means "let the tool decide", so soldr's
+    /// probed answer applies there too (zccache#1792). Any other mode keeps
+    /// the original rule: only a soldr-owned source is injected; the user's
+    /// own explicit `ZCCACHE_MODE` already reaches zccache unaided.
+    pub fn child_env_value(self, probe: impl FnOnce() -> ZccacheMode) -> Option<&'static str> {
+        if self.mode == ZccacheMode::Auto {
+            return Some(probe().as_str());
+        }
         self.source.soldr_owned().then(|| self.mode.as_str())
     }
 }
 
-/// A configured value that is not one of the four modes.
+/// [`ResolvedZccacheMode::child_env_value`], extended to the "nothing
+/// configured at all" case: unset also means "soldr decides" (zccache#1792).
+/// `probe` is called at most once, only when a probe-driven decision is
+/// actually needed.
+pub fn child_env_value_for(
+    resolved: Option<ResolvedZccacheMode>,
+    probe: impl FnOnce() -> ZccacheMode,
+) -> Option<&'static str> {
+    match resolved {
+        None => Some(probe().as_str()),
+        Some(resolved) => resolved.child_env_value(probe),
+    }
+}
+
+/// A configured value that is not one of the five modes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidZccacheMode {
     pub source: ZccacheModeSource,
@@ -139,9 +219,14 @@ pub struct InvalidZccacheMode {
 
 impl fmt::Display for InvalidZccacheMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names = ZccacheMode::ALL
+            .iter()
+            .map(|mode| mode.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         write!(
             f,
-            "soldr: invalid {} value {:?}: expected one of AUTO, LINK, COPY, REFLINK",
+            "soldr: invalid {} value {:?}: expected one of {names}",
             self.source.describe(),
             self.value
         )

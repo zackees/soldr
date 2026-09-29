@@ -217,10 +217,15 @@ pub fn human_age(seconds: i64) -> String {
     }
 }
 
-/// Recursively measure the on-disk size of a directory in bytes,
-/// following directory entries but never crossing symlinks. Errors are
-/// silently swallowed for individual entries — partial sizes are still
-/// useful for the GC heuristic.
+/// Recursively sum each file's apparent byte length (`Metadata::len`) under
+/// a directory, following directory entries but never crossing symlinks.
+/// This is **not** deduplicated across hardlinks or reflink extents: a
+/// hardlinked or reflinked file counts its full logical length here even
+/// though it shares disk blocks with another path, so the total can
+/// overstate what deleting this directory would actually reclaim
+/// (soldr#3439 tracks an nlink/extent-aware fix). Errors are silently
+/// swallowed for individual entries — partial sizes are still useful for
+/// the GC heuristic.
 pub fn directory_size(path: &Path) -> u64 {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
@@ -265,8 +270,9 @@ pub fn directory_size(path: &Path) -> u64 {
     total
 }
 
-/// Recursively measure both on-disk size (bytes) and file count for
-/// a directory in a single walk. Same symlink/error semantics as
+/// Recursively measure both the apparent byte length (not deduplicated
+/// across hardlinks or reflink extents — see [`directory_size`]) and file
+/// count for a directory in a single walk. Same symlink/error semantics as
 /// [`directory_size`]: symlinks are not followed, individual entry
 /// errors are swallowed. Returns `(total_bytes, file_count)`.
 pub fn directory_size_and_files(path: &Path) -> (u64, u64) {

@@ -183,12 +183,12 @@ Applies to a daemon this invocation starts. A daemon already running keeps the l
         value_enum,
         value_name = "MODE",
         hide_possible_values = true,
-        help = "How cache hits are delivered: auto|link|copy|reflink",
-        long_help = "How the embedded zccache delivers a cache hit to its output path (ZCCACHE_MODE, zccache#1683).
+        help = "How cache hits are delivered: auto|link|copy|reflink|reflink-or-link-or-copy",
+        long_help = "How the embedded zccache delivers a cache hit to its output path (ZCCACHE_MODE, zccache#1683, zccache#1792).
 
-`auto` (zccache's default) clones with reflink where the volume supports it, else hardlinks outputs that may share an inode, else copies. `link` hardlinks eligible outputs. `copy` always writes an independent, writable copy. `reflink` writes an independent copy-on-write clone, falling back to a copy where the volume cannot clone.
+`link` hardlinks eligible outputs. `copy` always writes an independent, writable copy. `reflink` writes an independent copy-on-write clone, falling back to a copy where the volume cannot clone. `reflink-or-link-or-copy` clones, else hardlinks, else copies -- the old meaning of `auto`, added in zccache 1.15.0. `auto` -- and leaving this unset entirely -- means soldr decides: zccache's own AUTO no longer hardlinks Rust outputs (zccache#1792), so soldr probes the pair of directories a cache hit actually moves between once and injects the single explicit answer (REFLINK, LINK, or COPY) instead, to keep the fast hardlink path where the pair supports it (soldr#3440). This also applies when your own ZCCACHE_MODE names AUTO; an explicit LINK, COPY, REFLINK, or REFLINK_OR_LINK_OR_COPY in your own ZCCACHE_MODE is passed through untouched.
 
-Equivalent to SOLDR_ZCCACHE_MODE=MODE and takes the same top precedence: above `[zccache] mode` in config.toml, and above your own ZCCACHE_MODE, which soldr otherwise passes through untouched. Soldr sets ZCCACHE_MODE on the cargo child; the embedded service reads it per compile, so it applies without restarting the daemon. An unknown value in any tier fails the build."
+Equivalent to SOLDR_ZCCACHE_MODE=MODE and takes the same top precedence: above `[zccache] mode` in config.toml, and above your own ZCCACHE_MODE. Soldr sets ZCCACHE_MODE on the cargo child; the embedded service reads it per compile, so it applies without restarting the daemon. An unknown value in any tier fails the build."
     )]
     pub(crate) zccache_mode: Option<ZccacheModeArg>,
     #[command(subcommand)]
@@ -254,13 +254,14 @@ impl Cli {
     }
 }
 
-/// `--zccache-mode` values (soldr#3407).
+/// `--zccache-mode` values (soldr#3407, zccache#1792).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum ZccacheModeArg {
     Auto,
     Link,
     Copy,
     Reflink,
+    ReflinkOrLinkOrCopy,
 }
 
 impl ZccacheModeArg {
@@ -271,6 +272,7 @@ impl ZccacheModeArg {
             Self::Link => ZccacheMode::Link,
             Self::Copy => ZccacheMode::Copy,
             Self::Reflink => ZccacheMode::Reflink,
+            Self::ReflinkOrLinkOrCopy => ZccacheMode::ReflinkOrLinkOrCopy,
         }
     }
 }

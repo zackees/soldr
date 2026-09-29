@@ -269,6 +269,7 @@ fn zccache_mode_flag_publishes_the_env_var_the_resolver_reads() {
         ("link", "LINK"),
         ("copy", "COPY"),
         ("reflink", "REFLINK"),
+        ("reflink-or-link-or-copy", "REFLINK_OR_LINK_OR_COPY"),
     ] {
         std::env::remove_var(name);
         Cli::parse_from(["soldr", "--zccache-mode", flag, "status"]).export_global_env();
@@ -294,6 +295,13 @@ fn zccache_mode_flag_publishes_the_env_var_the_resolver_reads() {
 fn zccache_mode_flag_is_global_and_rejects_unknown_modes() {
     let cli = Cli::parse_from(["soldr", "status", "--zccache-mode", "reflink"]);
     assert_eq!(cli.zccache_mode, Some(ZccacheModeArg::Reflink));
+    let cli = Cli::parse_from([
+        "soldr",
+        "status",
+        "--zccache-mode",
+        "reflink-or-link-or-copy",
+    ]);
+    assert_eq!(cli.zccache_mode, Some(ZccacheModeArg::ReflinkOrLinkOrCopy));
     assert!(
         Cli::try_parse_from(["soldr", "--zccache-mode", "hardlink", "status"]).is_err(),
         "an unknown mode is a usage error"
