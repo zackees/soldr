@@ -223,6 +223,60 @@ pub(crate) fn print_shim_removal_section() {
     println!("{}", removal_report(&outcome));
 }
 
+/// Search-path entries that are another soldr version's shim directory
+/// (`<soldr-root>/v<version>/shims`), in order, when they would win over this
+/// version's own shims (soldr#3377). A session that inherited
+/// `~/.soldr/v0.9.21/shims` first resolves `rustc` and `cargo` through that
+/// older soldr even though the project pins a newer one, which is how a stale
+/// shim failed on read-only hardlinked artifacts.
+///
+/// Pure path logic. An older version's directory that sits *after* this
+/// version's shims is harmless and not reported; when this version's directory
+/// is absent, every versioned shim directory is reported.
+pub(crate) fn stale_versioned_shim_dirs(entries: &[PathBuf], current_shims: &Path) -> Vec<PathBuf> {
+    let mut stale = Vec::new();
+    for entry in entries {
+        if entry == current_shims {
+            break;
+        }
+        if is_versioned_shims_dir(entry) {
+            stale.push(entry.clone());
+        }
+    }
+    stale
+}
+
+fn is_versioned_shims_dir(entry: &Path) -> bool {
+    let Some(shims) = entry.file_name() else {
+        return false;
+    };
+    let Some(version_dir) = entry.parent().and_then(Path::file_name) else {
+        return false;
+    };
+    shims == "shims"
+        && version_dir
+            .to_str()
+            .and_then(|name| name.strip_prefix('v'))
+            .is_some_and(|version| version.starts_with(|c: char| c.is_ascii_digit()))
+}
+
+/// The doctor lines for stale shim directories, or `None` when there are none.
+fn stale_shims_report(stale: &[PathBuf], current_shims: &Path) -> Option<String> {
+    if stale.is_empty() {
+        return None;
+    }
+    let mut report =
+        String::from("  status:    lookup resolves through another soldr version's shims first\n");
+    for dir in stale {
+        report.push_str(&format!("  stale:     {}\n", dir.display()));
+    }
+    report.push_str(&format!(
+        "  fix:       remove those entries from the search path; this version's shims are {}",
+        current_shims.display()
+    ));
+    Some(report)
+}
+
 /// Print the `shim hygiene:` doctor section.
 pub(crate) fn print_shim_hygiene_section() {
     println!();
@@ -231,11 +285,50 @@ pub(crate) fn print_shim_hygiene_section() {
         Some(found) => println!("{}", shadowing_report(&found)),
         None => println!("  status:    ok (no unmanaged binary shadowing the installed soldr)"),
     }
+    if let (Ok(paths), Some(search)) = (crate::core::SoldrPaths::new(), std::env::var_os("PATH")) {
+        let entries: Vec<PathBuf> = std::env::split_paths(&search).collect();
+        let current = paths.versioned_shims_dir();
+        let stale = stale_versioned_shim_dirs(&entries, &current);
+        if let Some(report) = stale_shims_report(&stale, &current) {
+            println!("{report}");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn older_versions_shims_ahead_of_the_current_ones_are_stale() {
+        let current = PathBuf::from("/home/u/.soldr/v0.9.22/shims");
+        let entries = vec![
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/home/u/.soldr/v0.9.21/shims"),
+            current.clone(),
+            PathBuf::from("/home/u/.soldr/v0.9.20/shims"),
+        ];
+        assert_eq!(
+            stale_versioned_shim_dirs(&entries, &current),
+            vec![PathBuf::from("/home/u/.soldr/v0.9.21/shims")],
+            "only the older dir that precedes the current one wins resolution"
+        );
+    }
+
+    #[test]
+    fn without_the_current_shims_every_versioned_dir_is_reported() {
+        let current = PathBuf::from("/home/u/.soldr/v0.9.22/shims");
+        let entries = vec![
+            PathBuf::from("/home/u/.soldr/v0.9.21/shims"),
+            PathBuf::from("/home/u/shims"),
+            PathBuf::from("/home/u/.soldr/vendor/shims"),
+        ];
+        assert_eq!(
+            stale_versioned_shim_dirs(&entries, &current),
+            vec![PathBuf::from("/home/u/.soldr/v0.9.21/shims")]
+        );
+        assert!(stale_shims_report(&[], &current).is_none());
+    }
 
     // soldr#1979 remediation. The detection half shipped in #1983; these
     // cover the removal it deliberately left out.
