@@ -144,6 +144,7 @@ jobs:
     needs: [guest, restore]
     if: always() && needs.guest.outputs.disk_exported == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: write
