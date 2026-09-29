@@ -369,8 +369,8 @@ fn failed_policy_tail_stage_cancels_doctest_process_tree() {
 
 /// RED for soldr#3024: compiler-bearing stable and nightly branches may run
 /// concurrently because the daemon's shared/exclusive admission sees both of
-/// them. The join must happen before Fresh Nextest starts, so ordinary test
-/// processes never overlap the exclusive `soldr_cli --test` nightly link.
+/// them. (This is the compile-only archive path; the full run also overlaps
+/// Nextest execution with Dylint analysis -- see soldr#3446's test below.)
 #[test]
 fn nextest_compilation_and_dylint_compilation_really_overlap() {
     if !posix_fixture_available() {
@@ -610,6 +610,310 @@ fn second_branch_spawn_failure_cancels_the_first_branch() {
 
     assert!(error.to_string().contains("fixture spawn failure"));
     assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+fn fixture_full_branch<'a>(
+    libraries: &'a [Stage],
+    workspace: &'a Stage,
+    ui_tests: &'a [Stage],
+) -> DylintBranch<'a> {
+    let mut branch = fixture_compile_branch(libraries, workspace);
+    branch.ui_tests = ui_tests.iter().collect();
+    branch
+}
+
+/// Records the peer chain's hook calls in order, and can refuse a stage.
+#[derive(Default)]
+struct RecordingHooks {
+    events: Vec<String>,
+    refuse: Option<&'static str>,
+}
+
+impl PeerStageHooks for RecordingHooks {
+    fn before_spawn(&mut self, stage: &Stage) -> Result<(), SoldrError> {
+        self.events.push(format!("before {}", stage.name));
+        if self.refuse == Some(stage.name.as_str()) {
+            return Err(SoldrError::Other(format!("hook refused {}", stage.name)));
+        }
+        Ok(())
+    }
+
+    fn after_exit(&mut self, stage: &Stage) {
+        self.events.push(format!("after {}", stage.name));
+    }
+}
+
+/// soldr#3446 RED: Nextest execution must start as soon as `nextest-compile`
+/// succeeds, while Dylint's workspace analysis is still running. The
+/// workspace fixture only exits once it sees Nextest execution start, so the
+/// pre-#3446 executor -- which joined analysis before starting Nextest --
+/// fails it with 74.
+#[test]
+fn nextest_execution_starts_while_dylint_workspace_analysis_runs() {
+    if !posix_fixture_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().expect("barrier directory");
+    let nextest_compile = test_stage("nextest-compile");
+    let nextest = test_stage("nextest");
+    let libraries = [test_stage("dylint-library-one")];
+    let workspace = test_stage("dylint-workspace");
+    let ui_tests = [test_stage("dylint-test-one")];
+    let scripts = BTreeMap::from([
+        ("nextest-compile".into(), "exit 0".into()),
+        (
+            "nextest".into(),
+            "touch \"$FIXTURE_DIR/nextest-started\"".into(),
+        ),
+        ("dylint-library-one".into(), "exit 0".into()),
+        (
+            "dylint-workspace".into(),
+            "i=0; while [ \"$i\" -lt 150 ]; do [ -f \"$FIXTURE_DIR/nextest-started\" ] && exit 0; i=$((i + 1)); sleep 0.02; done; exit 74".into(),
+        ),
+        (
+            "dylint-test-one".into(),
+            "touch \"$FIXTURE_DIR/ui-test-ran\"".into(),
+        ),
+    ]);
+    let spawner = ScriptSpawner {
+        directory: directory.path(),
+        scripts,
+    };
+    let mut hooks = RecordingHooks::default();
+    let mut branch = fixture_full_branch(&libraries, &workspace, &ui_tests);
+
+    let code = supervise_peer_chain_and_dylint(
+        &spawner,
+        &[&nextest_compile, &nextest],
+        &mut hooks,
+        &mut branch,
+        &NoopVerifier,
+    )
+    .expect("peer chain supervisor");
+
+    assert_eq!(code, 0);
+    assert!(directory.path().join("ui-test-ran").is_file());
+    assert!(branch.libraries_built);
+    assert_eq!(
+        hooks.events,
+        [
+            "before nextest-compile",
+            "after nextest-compile",
+            "before nextest",
+            "after nextest"
+        ]
+    );
+}
+
+#[test]
+fn nextest_compile_failure_skips_execution_but_finishes_the_dylint_branch() {
+    if !posix_fixture_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().expect("join directory");
+    let nextest_compile = test_stage("nextest-compile");
+    let nextest = test_stage("nextest");
+    let libraries = [test_stage("dylint-library-one")];
+    let workspace = test_stage("dylint-workspace");
+    let ui_tests = [test_stage("dylint-test-one")];
+    let scripts = BTreeMap::from([
+        ("nextest-compile".into(), "exit 73".into()),
+        (
+            "nextest".into(),
+            "touch \"$FIXTURE_DIR/nextest-should-not-run\"".into(),
+        ),
+        ("dylint-library-one".into(), "sleep 0.2".into()),
+        ("dylint-workspace".into(), "exit 0".into()),
+        (
+            "dylint-test-one".into(),
+            "touch \"$FIXTURE_DIR/ui-test-ran\"".into(),
+        ),
+    ]);
+    let spawner = ScriptSpawner {
+        directory: directory.path(),
+        scripts,
+    };
+    let mut hooks = RecordingHooks::default();
+    let mut branch = fixture_full_branch(&libraries, &workspace, &ui_tests);
+
+    let code = supervise_peer_chain_and_dylint(
+        &spawner,
+        &[&nextest_compile, &nextest],
+        &mut hooks,
+        &mut branch,
+        &NoopVerifier,
+    )
+    .expect("compile failure result");
+
+    assert_eq!(code, 73);
+    assert!(!directory.path().join("nextest-should-not-run").exists());
+    assert!(directory.path().join("ui-test-ran").is_file());
+    assert_eq!(
+        hooks.events,
+        ["before nextest-compile", "after nextest-compile"]
+    );
+}
+
+/// A failed Dylint library leaves `libraries_built` false, so the library
+/// marker is never recorded for a library set that did not build.
+#[test]
+fn a_failed_dylint_library_is_not_recorded_as_built() {
+    if !posix_fixture_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().expect("join directory");
+    let nextest_compile = test_stage("nextest-compile");
+    let nextest = test_stage("nextest");
+    let libraries = [test_stage("dylint-library-one")];
+    let workspace = test_stage("dylint-workspace");
+    let ui_tests = [test_stage("dylint-test-one")];
+    let scripts = BTreeMap::from([
+        ("nextest-compile".into(), "exit 0".into()),
+        ("nextest".into(), "exit 0".into()),
+        ("dylint-library-one".into(), "exit 74".into()),
+        (
+            "dylint-workspace".into(),
+            "touch \"$FIXTURE_DIR/workspace-should-not-run\"".into(),
+        ),
+        ("dylint-test-one".into(), "exit 0".into()),
+    ]);
+    let spawner = ScriptSpawner {
+        directory: directory.path(),
+        scripts,
+    };
+    let mut branch = fixture_full_branch(&libraries, &workspace, &ui_tests);
+
+    let code = supervise_peer_chain_and_dylint(
+        &spawner,
+        &[&nextest_compile, &nextest],
+        &mut RecordingHooks::default(),
+        &mut branch,
+        &NoopVerifier,
+    )
+    .expect("library failure result");
+
+    assert_eq!(code, 74);
+    assert!(!branch.libraries_built);
+    assert!(!directory.path().join("workspace-should-not-run").exists());
+}
+
+/// Every stage whose `before_spawn` ran gets its `after_exit`, even when the
+/// run ends in an error: a refused hook and a spawn failure alike. This is
+/// what keeps the resident lease and memory monitor from leaking.
+#[test]
+fn every_started_peer_hook_is_closed_on_error_paths() {
+    if !posix_fixture_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().expect("spawn directory");
+    let nextest_compile = test_stage("nextest-compile");
+    let nextest = test_stage("nextest");
+    let libraries = [test_stage("dylint-library-one")];
+    let workspace = test_stage("dylint-workspace");
+    let ui_tests = [test_stage("dylint-test-one")];
+    for (nextest_script, refuse) in [("__spawn_error__", None), ("exit 0", Some("nextest"))] {
+        let scripts = BTreeMap::from([
+            ("nextest-compile".into(), "exit 0".into()),
+            ("nextest".into(), nextest_script.into()),
+            ("dylint-library-one".into(), "sleep 30".into()),
+            ("dylint-workspace".into(), "exit 0".into()),
+            ("dylint-test-one".into(), "exit 0".into()),
+        ]);
+        let spawner = ScriptSpawner {
+            directory: directory.path(),
+            scripts,
+        };
+        let mut hooks = RecordingHooks {
+            refuse,
+            ..RecordingHooks::default()
+        };
+        let mut branch = fixture_full_branch(&libraries, &workspace, &ui_tests);
+        let started = Instant::now();
+
+        supervise_peer_chain_and_dylint(
+            &spawner,
+            &[&nextest_compile, &nextest],
+            &mut hooks,
+            &mut branch,
+            &NoopVerifier,
+        )
+        .expect_err("the nextest stage cannot start");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "Dylint was cancelled"
+        );
+        assert_eq!(
+            hooks.events,
+            [
+                "before nextest-compile",
+                "after nextest-compile",
+                "before nextest",
+                "after nextest"
+            ]
+        );
+    }
+}
+
+/// Lease controller fixture for `NextestExecutionHooks`.
+#[derive(Default)]
+struct CountingLease {
+    acquired: std::cell::Cell<u32>,
+    released: std::cell::RefCell<Vec<Option<u32>>>,
+}
+
+impl nextest_resident_lease::ResidentLeaseController for &CountingLease {
+    type Lease = u32;
+
+    fn acquire(&self) -> Option<u32> {
+        self.acquired.set(self.acquired.get() + 1);
+        Some(7)
+    }
+
+    fn release(&self, lease: Option<u32>) {
+        self.released.borrow_mut().push(lease);
+    }
+}
+
+/// The production hooks lease and monitor only the `nextest` stage, and
+/// release exactly what they acquired when it exits.
+#[test]
+fn nextest_execution_hooks_scope_the_lease_and_monitor_to_the_nextest_stage() {
+    let base = tempfile::tempdir().expect("admission base");
+    let mut inputs = super::super::test_admission::AdmissionInputs::from_process();
+    inputs.explicit = None;
+    inputs.logical_cpus = 4;
+    let admission = super::super::test_pressure::NextestAdmission::new(
+        base.path(),
+        super::super::test_admission::resolve(&inputs),
+    );
+    let lease = CountingLease::default();
+    let mut hooks = NextestExecutionHooks {
+        admission: &admission,
+        lease_controller: &lease,
+        lease: None,
+        pressure: None,
+    };
+
+    let compile = test_stage("nextest-compile");
+    hooks.before_spawn(&compile).expect("compile hook");
+    assert_eq!(lease.acquired.get(), 0);
+    assert!(hooks.pressure.is_none());
+    hooks.after_exit(&compile);
+    assert!(lease.released.borrow().is_empty());
+
+    let nextest = test_stage("nextest");
+    hooks.before_spawn(&nextest).expect("nextest hook");
+    assert_eq!(lease.acquired.get(), 1);
+    assert!(hooks.pressure.is_some());
+    assert!(admission.dir().is_dir());
+    hooks.after_exit(&nextest);
+    assert_eq!(*lease.released.borrow(), [Some(7)]);
+    assert!(hooks.pressure.is_none());
+
+    // A second exit report must not double-release.
+    hooks.after_exit(&nextest);
+    assert_eq!(lease.released.borrow().len(), 1);
 }
 
 #[test]

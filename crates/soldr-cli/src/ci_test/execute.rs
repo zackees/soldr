@@ -5,6 +5,10 @@ use super::execute_report::{
 use super::model::{CiTestPlan, Stage};
 use super::nextest_resident_lease;
 use crate::core::SoldrError;
+
+#[path = "execute_branches.rs"]
+mod branches;
+use branches::*;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -15,15 +19,18 @@ pub(super) use super::executor_contract::validate_executor_contract;
 #[cfg(test)]
 pub(super) use super::executor_contract::{require_dependencies, validate_tail_dependencies};
 
-/// Execute the frozen plan in its dependency order. After Clippy, stable
-/// Nextest compilation overlaps the Dylint library -> workspace-analysis
-/// branch. Both sides are compiler-bearing, so the daemon's canonical
-/// shared/exclusive admission sees all of their rustc work and grants the
-/// measured `soldr_daemon --test` and `soldr_cli --test` links exclusive
-/// access. The branches join before Fresh Nextest processes (which are outside
-/// compiler admission) begin. Fresh execution then overlaps only Dylint UI
-/// tests. Individual tests may launch nested compiler fixtures; those and
-/// Dylint still share the daemon's canonical admission gate.
+/// Execute the frozen plan in its dependency order. After Clippy, two chains
+/// run side by side: stable Nextest compilation -> Fresh Nextest execution,
+/// and the Dylint library -> workspace-analysis -> UI-test branch. Compiles on
+/// both sides are compiler-bearing, so the daemon's canonical shared/exclusive
+/// admission sees all of their rustc work and grants the measured
+/// `soldr_daemon --test` and `soldr_cli --test` links exclusive access. Fresh
+/// test processes are outside compiler admission, so Nextest execution holds
+/// a resident-capacity lease and runs under the memory monitor for exactly its
+/// own lifetime (soldr#2878, soldr#2885), and starts as soon as its compile
+/// succeeds rather than after Dylint's analysis (soldr#3446). Individual tests
+/// may launch nested compiler fixtures; those and Dylint still share the
+/// daemon's canonical admission gate.
 /// Dylint manifests remain sequential because all seven intentionally share one
 /// target tree per domain. After both branches join, doctests and the three
 /// non-compiling policy consumers run together from that completed join.
@@ -56,16 +63,16 @@ pub(crate) async fn run(
     factory.prepare_dylint().await?;
     // soldr#2349: library-skip wiring lives in dylint_library_marker::decide/finish.
     let library_decision = dylint_library_marker::decide(plan, &factory.dylint)?;
-    eprintln!(
-        "soldr ci-test: overlapping Nextest compilation with Dylint library/workspace compilation under canonical compiler admission"
-    );
-    stop_on_failure!(run_parallel_nextest_compile_and_dylint_compile(
-        &factory,
-        plan,
-        library_decision.skip
-    ));
-    dylint_library_marker::finish(&library_decision);
     if plan.no_run {
+        eprintln!(
+            "soldr ci-test: overlapping Nextest compilation with Dylint library/workspace compilation under canonical compiler admission"
+        );
+        stop_on_failure!(run_parallel_nextest_compile_and_dylint_compile(
+            &factory,
+            plan,
+            library_decision.skip
+        ));
+        dylint_library_marker::finish(&library_decision);
         let archive_file = plan.archive_file.as_ref().ok_or_else(|| {
             SoldrError::Other("soldr ci-test: compile-only plan has no archive path".into())
         })?;
@@ -90,14 +97,17 @@ pub(crate) async fn run(
         ));
         return Ok(0);
     }
-    // Compiler admission cannot account for ordinary test processes' resident
-    // memory: starting Nextest before the exclusive nightly compile completed
-    // once exceeded the runner envelope and SIGTERM'd the compiler with zero
-    // cgroup OOM events (soldr#3024). UI-test compiles remain independent.
     eprintln!(
-        "soldr ci-test: overlapping Fresh Nextest execution with Dylint UI tests after exclusive workspace analysis"
+        "soldr ci-test: running Nextest compile -> execution beside the Dylint library -> workspace -> UI-test branch under canonical compiler admission"
     );
-    stop_on_failure!(run_parallel_nextest_and_dylint(&factory, plan));
+    let (code, libraries_built) =
+        run_nextest_and_dylint_branches(&factory, plan, library_decision.skip)?;
+    if libraries_built {
+        dylint_library_marker::finish(&library_decision);
+    }
+    if let Some(failure) = failure_code(code) {
+        return Ok(failure);
+    }
     policy_prefetch.join().await;
     // All four tail stages consume the same completed Nextest + Dylint join.
     // The policy tools inspect manifests/advisories and do not compile; they
@@ -124,174 +134,44 @@ impl StageSpawner for StageCommandFactory {
     }
 }
 
-trait DylintBranchVerifier {
-    fn libraries_complete(&self) -> Result<(), SoldrError>;
-    fn analysis_complete(&self) -> Result<(), SoldrError>;
-    fn ui_tests_complete(&self) -> Result<(), SoldrError>;
-}
-
-struct PlanDylintVerifier<'a>(&'a CiTestPlan);
-
-impl DylintBranchVerifier for PlanDylintVerifier<'_> {
-    fn libraries_complete(&self) -> Result<(), SoldrError> {
-        verify_target_tree("Dylint library", &self.0.dylint_target_trees.libraries)
-    }
-
-    fn analysis_complete(&self) -> Result<(), SoldrError> {
-        verify_target_tree("Dylint analysis", &self.0.dylint_target_trees.analysis)
-    }
-
-    fn ui_tests_complete(&self) -> Result<(), SoldrError> {
-        verify_dylint_test_targets(self.0)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum DylintPhase {
-    Library(usize),
-    Workspace,
-    UiTest(usize),
-    Complete,
-}
-
-struct DylintBranch<'a> {
-    libraries: Vec<&'a Stage>,
-    workspace: Option<&'a Stage>,
-    ui_tests: Vec<&'a Stage>,
-    phase: DylintPhase,
-}
-
-impl<'a> DylintBranch<'a> {
-    fn from_plan(plan: &'a CiTestPlan) -> Result<Self, SoldrError> {
-        let ui_tests: Vec<_> = plan
-            .stages
-            .iter()
-            .filter(|stage| stage.name.starts_with("dylint-test-"))
-            .collect();
-        Self::new(ui_tests)
-    }
-
-    fn compilation(libraries: Vec<&'a Stage>, workspace: &'a Stage) -> Result<Self, SoldrError> {
-        if libraries.is_empty() {
-            return Err(SoldrError::Other(
-                "soldr ci-test: parallel Dylint compilation branch has no libraries".into(),
-            ));
-        }
-        Ok(Self {
-            libraries,
-            workspace: Some(workspace),
-            ui_tests: Vec::new(),
-            phase: DylintPhase::Library(0),
-        })
-    }
-
-    /// `skip_libraries` (soldr#2349) fast-forwards to `Workspace`, skipping
-    /// the six `dylint-library-*` stages; `libraries_complete()` still runs
-    /// eagerly as a safety net against the tree being wiped meanwhile.
-    fn compilation_from_plan(
-        plan: &'a CiTestPlan,
-        skip_libraries: bool,
-        verifier: &impl DylintBranchVerifier,
-    ) -> Result<Self, SoldrError> {
-        let libraries = plan
-            .stages
-            .iter()
-            .filter(|stage| stage.name.starts_with("dylint-library-"))
-            .collect();
-        let mut branch = Self::compilation(libraries, stage_named(plan, "dylint-workspace")?)?;
-        if skip_libraries {
-            let names: Vec<&str> = branch.libraries.iter().map(|s| s.name.as_str()).collect();
-            dylint_library_marker::announce_skip(&names);
-            verifier.libraries_complete()?;
-            branch.phase = DylintPhase::Workspace;
-        }
-        Ok(branch)
-    }
-
-    fn new(ui_tests: Vec<&'a Stage>) -> Result<Self, SoldrError> {
-        if ui_tests.is_empty() {
-            return Err(SoldrError::Other(
-                "soldr ci-test: parallel Dylint UI-test branch is empty".into(),
-            ));
-        }
-        Ok(Self {
-            libraries: Vec::new(),
-            workspace: None,
-            ui_tests,
-            phase: DylintPhase::UiTest(0),
-        })
-    }
-
-    fn current(&self) -> Option<&'a Stage> {
-        match self.phase {
-            DylintPhase::Library(index) => self.libraries.get(index).copied(),
-            DylintPhase::Workspace => self.workspace,
-            DylintPhase::UiTest(index) => self.ui_tests.get(index).copied(),
-            DylintPhase::Complete => None,
-        }
-    }
-
-    fn advance(
-        &mut self,
-        verifier: &impl DylintBranchVerifier,
-    ) -> Result<Option<&'a Stage>, SoldrError> {
-        match self.phase {
-            DylintPhase::Library(index) if index + 1 < self.libraries.len() => {
-                self.phase = DylintPhase::Library(index + 1);
-            }
-            DylintPhase::Library(_) => {
-                verifier.libraries_complete()?;
-                self.phase = DylintPhase::Workspace;
-            }
-            DylintPhase::Workspace => {
-                verifier.analysis_complete()?;
-                self.phase = DylintPhase::Complete;
-            }
-            DylintPhase::UiTest(index) if index + 1 < self.ui_tests.len() => {
-                self.phase = DylintPhase::UiTest(index + 1);
-            }
-            DylintPhase::UiTest(_) => {
-                verifier.ui_tests_complete()?;
-                self.phase = DylintPhase::Complete;
-            }
-            DylintPhase::Complete => {}
-        }
-        Ok(self.current())
-    }
-}
-
 struct RunningStage<'a> {
     stage: &'a Stage,
     child: Child,
     started: Instant,
 }
 
-fn run_parallel_nextest_and_dylint(
+/// soldr#3446: Nextest execution starts the moment `nextest-compile`
+/// succeeds, beside whatever phase the serial Dylint branch (libraries ->
+/// workspace analysis -> UI tests) has reached. It used to wait for Dylint's
+/// workspace analysis as well, leaving ~56 s of the Linux gate's critical
+/// path with no tests running (run 36512583508: compile done at t+137 s,
+/// analysis at t+197 s). That wait was soldr#3024's answer to test processes
+/// overlapping the exclusive nightly analysis before test memory was
+/// governed. Test memory is governed now: the lease below declares Nextest's
+/// resident footprint to compiler admission, and soldr#2885's monitor pauses
+/// new tests under memory pressure.
+fn run_nextest_and_dylint_branches(
     factory: &StageCommandFactory,
     plan: &CiTestPlan,
-) -> Result<i32, SoldrError> {
-    let nextest = stage_named(plan, "nextest")?;
-    let dylint = DylintBranch::from_plan(plan)?;
-    // soldr#2878: activate the daemon's resident-capacity lease around
-    // Nextest EXECUTION only. `run_parallel_nextest_compile_and_dylint_compile`
-    // below calls `supervise_parallel_stage_and_dylint` directly and never
-    // references `nextest_resident_lease` -- there is no parameter through
-    // which `nextest-compile` could acquire this lease. See
-    // `nextest_resident_lease`'s module doc for the regression this closes,
-    // the chosen weight, and why release is unconditional here (covers both
-    // the success and the failure/cancel outcomes of the guarded call).
-    let lease_controller = nextest_resident_lease::DaemonResidentLeaseController {
-        permits: nextest_resident_lease::NEXTEST_RESIDENT_LEASE_PERMITS,
+    skip_libraries: bool,
+) -> Result<(i32, bool), SoldrError> {
+    let peer_chain = [
+        stage_named(plan, "nextest-compile")?,
+        stage_named(plan, "nextest")?,
+    ];
+    let verifier = PlanDylintVerifier(plan);
+    let mut dylint = DylintBranch::full_from_plan(plan, skip_libraries, &verifier)?;
+    let mut hooks = NextestExecutionHooks {
+        admission: &factory.nextest_admission,
+        lease_controller: nextest_resident_lease::DaemonResidentLeaseController {
+            permits: nextest_resident_lease::NEXTEST_RESIDENT_LEASE_PERMITS,
+        },
+        lease: None,
+        pressure: None,
     };
-    // soldr#2885: watch memory for exactly the life of Nextest execution; the
-    // wrapper around each Unix test obeys the pause flag this maintains.
-    let pressure = factory.nextest_admission.start()?;
     let result =
-        nextest_resident_lease::run_nextest_execution(&lease_controller, &nextest.name, || {
-            supervise_parallel_stage_and_dylint(factory, nextest, dylint, &PlanDylintVerifier(plan))
-        });
-    pressure.finish();
-    result
+        supervise_peer_chain_and_dylint(factory, &peer_chain, &mut hooks, &mut dylint, &verifier);
+    Ok((result?, dylint.libraries_built))
 }
 
 fn run_parallel_nextest_compile_and_dylint_compile(
@@ -308,7 +188,30 @@ fn run_parallel_nextest_compile_and_dylint_compile(
 fn supervise_parallel_stage_and_dylint<'a>(
     spawner: &impl StageSpawner,
     peer_stage: &'a Stage,
-    mut dylint_branch: DylintBranch<'a>,
+    dylint_branch: DylintBranch<'a>,
+    verifier: &impl DylintBranchVerifier,
+) -> Result<i32, SoldrError> {
+    let mut dylint_branch = dylint_branch;
+    supervise_peer_chain_and_dylint(
+        spawner,
+        &[peer_stage],
+        &mut NoPeerHooks,
+        &mut dylint_branch,
+        verifier,
+    )
+}
+
+/// Runs `peer_chain` in order beside the serial Dylint branch.
+///
+/// Each chain advances on its own: a peer stage starts as soon as the one
+/// before it succeeds, whatever phase Dylint is in (soldr#3446). A failed
+/// stage ends its own chain -- later stages depend on it -- but never the
+/// other chain (soldr#3100), and the first failure is the returned code.
+fn supervise_peer_chain_and_dylint<'a>(
+    spawner: &impl StageSpawner,
+    peer_chain: &[&'a Stage],
+    hooks: &mut impl PeerStageHooks,
+    dylint_branch: &mut DylintBranch<'a>,
     verifier: &impl DylintBranchVerifier,
 ) -> Result<i32, SoldrError> {
     let fork_started = Instant::now();
@@ -317,14 +220,25 @@ fn supervise_parallel_stage_and_dylint<'a>(
     // first non-zero status is what the caller gets. Spawn errors still
     // cancel, since nothing meaningful can complete after them.
     let mut first_failure: Option<i32> = None;
-    let mut peer = Some(spawn_running(spawner, peer_stage)?);
+    let mut remaining_peers = peer_chain.iter().copied();
+    let first_peer = remaining_peers
+        .next()
+        .expect("a supervised peer chain has a first stage");
+    hooks.before_spawn(first_peer)?;
+    let mut peer = match spawn_running(spawner, first_peer) {
+        Ok(running) => Some(running),
+        Err(error) => {
+            hooks.after_exit(first_peer);
+            return Err(error);
+        }
+    };
     let first_dylint = dylint_branch
         .current()
         .expect("a validated Dylint branch has a first stage");
     let mut dylint = match spawn_running(spawner, first_dylint) {
         Ok(running) => Some(running),
         Err(error) => {
-            cancel_running(&mut peer);
+            cancel_peer(&mut peer, hooks);
             return Err(error);
         }
     };
@@ -333,7 +247,7 @@ fn supervise_parallel_stage_and_dylint<'a>(
         let peer_status = match poll_running(&mut peer) {
             Ok(status) => status,
             Err(error) => {
-                cancel_running(&mut peer);
+                cancel_peer(&mut peer, hooks);
                 cancel_running(&mut dylint);
                 return Err(error);
             }
@@ -341,11 +255,26 @@ fn supervise_parallel_stage_and_dylint<'a>(
         if let Some(status) = peer_status {
             let completed = peer.take().expect("polled peer child exists");
             report_completed(&completed, status);
-            if !status.success() {
+            hooks.after_exit(completed.stage);
+            if status.success() {
+                if let Some(next) = remaining_peers.next() {
+                    let spawned = hooks
+                        .before_spawn(next)
+                        .and_then(|()| spawn_running(spawner, next));
+                    match spawned {
+                        Ok(running) => peer = Some(running),
+                        Err(error) => {
+                            hooks.after_exit(next);
+                            cancel_running(&mut dylint);
+                            return Err(error);
+                        }
+                    }
+                }
+            } else {
                 first_failure.get_or_insert(exit_code(status));
                 eprintln!(
                     "soldr ci-test: `{}` failed; letting the Dylint branch finish so this run reports every failure",
-                    peer_stage.name
+                    completed.stage.name
                 );
             }
         }
@@ -353,7 +282,7 @@ fn supervise_parallel_stage_and_dylint<'a>(
         let dylint_status = match poll_running(&mut dylint) {
             Ok(status) => status,
             Err(error) => {
-                cancel_running(&mut peer);
+                cancel_peer(&mut peer, hooks);
                 cancel_running(&mut dylint);
                 return Err(error);
             }
@@ -365,10 +294,10 @@ fn supervise_parallel_stage_and_dylint<'a>(
                 // A failed lint stage stops its own branch (later stages
                 // depend on it) but not the peer.
                 first_failure.get_or_insert(exit_code(status));
-                if peer.is_some() {
+                if let Some(running) = &peer {
                     eprintln!(
                         "soldr ci-test: Dylint branch failed; letting `{}` finish so this run reports every failure",
-                        peer_stage.name
+                        running.stage.name
                     );
                 }
                 continue;
@@ -376,7 +305,7 @@ fn supervise_parallel_stage_and_dylint<'a>(
             let next_stage = match dylint_branch.advance(verifier) {
                 Ok(stage) => stage,
                 Err(error) => {
-                    cancel_running(&mut peer);
+                    cancel_peer(&mut peer, hooks);
                     return Err(error);
                 }
             };
@@ -384,7 +313,7 @@ fn supervise_parallel_stage_and_dylint<'a>(
                 dylint = match spawn_running(spawner, stage) {
                     Ok(running) => Some(running),
                     Err(error) => {
-                        cancel_running(&mut peer);
+                        cancel_peer(&mut peer, hooks);
                         return Err(error);
                     }
                 };
@@ -392,14 +321,23 @@ fn supervise_parallel_stage_and_dylint<'a>(
         }
 
         if peer.is_none() && dylint.is_none() {
+            let last_peer = peer_chain.last().expect("non-empty peer chain");
             eprintln!(
                 "soldr ci-test: `{}` + Dylint branches joined in {} ms",
-                peer_stage.name,
+                last_peer.name,
                 fork_started.elapsed().as_millis()
             );
             return Ok(first_failure.unwrap_or(0));
         }
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn cancel_peer(peer: &mut Option<RunningStage<'_>>, hooks: &mut impl PeerStageHooks) {
+    let stage = peer.as_ref().map(|running| running.stage);
+    cancel_running(peer);
+    if let Some(stage) = stage {
+        hooks.after_exit(stage);
     }
 }
 

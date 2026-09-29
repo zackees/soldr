@@ -75,14 +75,13 @@
 //! `nextest-compile` is a pure compile stage; the daemon's existing
 //! shared/exclusive compiler admission already accounts for it like any
 //! other compiler unit. Only the EXECUTION stage introduces resident test
-//! *processes* the admission semaphore cannot see on its own, so only
-//! `crate::ci_test::execute::run_parallel_nextest_and_dylint` (the caller
-//! of [`run_nextest_execution`]) wires this module in.
-//! `run_parallel_nextest_compile_and_dylint_compile` calls
-//! `supervise_parallel_stage_and_dylint` directly and never references
-//! [`ResidentLeaseController`] at all, so the compile path cannot acquire
-//! this lease even by accident -- there is no parameter through which it
-//! could.
+//! *processes* the admission semaphore cannot see on its own. Since
+//! soldr#3446 both stages run in one peer chain beside Dylint, so the scope
+//! is enforced per stage: `execute.rs`'s `NextestExecutionHooks` acquires
+//! through [`acquire_for_stage`], whose name gate yields nothing for
+//! `nextest-compile`, and releases when the `nextest` stage exits.
+//! `run_parallel_nextest_compile_and_dylint_compile` (the compile-only
+//! archive path) never references [`ResidentLeaseController`] at all.
 
 use crate::core::SoldrError;
 
@@ -99,7 +98,7 @@ use crate::core::SoldrError;
 ///
 /// One permit is deliberately conservative rather than the 2-permit ceiling
 /// that capacity allows: this stage runs concurrently with the Dylint
-/// UI-test branch (`run_parallel_nextest_and_dylint`), and Nextest's own
+/// branch (`run_nextest_and_dylint_branches`), and Nextest's own
 /// test bodies launch nested compiler fixtures (the
 /// `cli_cargo_doc_routes` / maturin class) that must still be able to get
 /// a compiler slot promptly. Warm run 1's regression was exactly one of
@@ -196,29 +195,24 @@ impl ResidentLeaseController for DaemonResidentLeaseController {
     }
 }
 
-/// Runs `guarded` (a stage-supervision call) with the resident-capacity
-/// lease held for its whole duration, released unconditionally afterward
-/// regardless of the outcome `guarded` produces.
+/// Acquires the lease for `stage_name` when -- and only when -- it is the
+/// Nextest EXECUTION stage. The outer `None` means "not a leased stage"; the
+/// inner value is the controller's best-effort acquisition.
 ///
-/// `stage_name` is the belt to `run_parallel_nextest_and_dylint`'s
-/// suspenders: that function is the only caller today, but a future rename
-/// or a second call site copied from it could otherwise wire the lease to
-/// the wrong stage silently. Mirrors the same gate
-/// `configure_nextest_test_cargo_runner` already uses for the Cargo-runner
-/// injection (`stage.name != "nextest"`, `execute.rs`), including its
-/// paired positive/negative test shape.
-pub(super) fn run_nextest_execution<C: ResidentLeaseController>(
+/// The caller (`execute.rs`'s `NextestExecutionHooks`) calls this immediately
+/// before spawning the stage and hands the result back to
+/// [`ResidentLeaseController::release`] on every exit path of that stage --
+/// success, failure, cancellation, and spawn error alike.
+///
+/// The stage-name gate mirrors the one `configure_nextest_test_cargo_runner`
+/// uses for the Cargo-runner injection (`stage.name != "nextest"`,
+/// `execute.rs`), including its paired positive/negative test shape, so a
+/// future caller cannot wire the lease to `nextest-compile` by accident.
+pub(super) fn acquire_for_stage<C: ResidentLeaseController>(
     lease_controller: &C,
     stage_name: &str,
-    guarded: impl FnOnce() -> Result<i32, SoldrError>,
-) -> Result<i32, SoldrError> {
-    if stage_name != "nextest" {
-        return guarded();
-    }
-    let lease = lease_controller.acquire();
-    let result = guarded();
-    lease_controller.release(lease);
-    result
+) -> Option<Option<C::Lease>> {
+    (stage_name == "nextest").then(|| lease_controller.acquire())
 }
 
 #[cfg(test)]
