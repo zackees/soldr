@@ -92,9 +92,7 @@ pub(super) fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrE
     }
     require_dependencies(
         stage_named(plan, "dylint-workspace")?,
-        &[cooks
-            .last()
-            .map_or(last_library, |cook| cook.name.as_str())],
+        &[cooks.last().map_or(last_library, |cook| cook.name.as_str())],
     )?;
     let ui_tests: Vec<_> = plan
         .stages
