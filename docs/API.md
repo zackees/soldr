@@ -468,7 +468,8 @@ Build an **abi3** Python wheel through soldr's blessed toolchain:
 
 ```bash
 soldr wheel                                        # quick DEV wheel, host target
-soldr wheel --release                              # release wheel, host target
+soldr wheel --release                              # release wheel, host target (glibc 2.17 on *-linux-gnu)
+soldr wheel --release --host-glibc                 # release wheel against THIS host's glibc
 soldr wheel --release --target aarch64-unknown-linux-gnu   # release cross wheel
 soldr wheel --release --target linux-arm64         # friendly aliases resolve identically
 soldr wheel --release --target mac-arm64 --out dist # later arguments reach maturin
@@ -476,7 +477,9 @@ soldr wheel --release --target mac-arm64 --out dist # later arguments reach matu
 
 `--release` is **opt-in**, matching `cargo` and `soldr build`: a bare
 `soldr wheel` builds the dev profile, which is what you want while iterating.
-`--target` is optional and defaults to the host triple.
+`--target` is optional and defaults to the host triple. `--target`,
+`--release` and `--host-glibc` must come before any forwarded maturin
+arguments.
 
 `soldr wheel` resolves the target (same alias table as `soldr build`), prepares
 the sysroot and toolchain environment, provisions maturin, and delegates to the
@@ -485,35 +488,81 @@ that contract is maturin's.
 
 #### Platform tags: soldr only claims a floor it enforced
 
-| invocation | `--compatibility` passed to maturin |
-| --- | --- |
-| `soldr wheel --release --target <cross *-linux-gnu>` | `manylinux_2_17` |
-| `soldr wheel --release --target <cross *-linux-musl>` | `musllinux_1_2` |
-| any host-target build (`--target` omitted or equal to the host) | `pypi` |
-| any dev-profile build (no `--release`) | `pypi` |
-| any non-Linux target | `pypi` |
+| invocation | target preparation | `--compatibility` passed to maturin |
+| --- | --- | --- |
+| `soldr wheel --release` for any `*-linux-gnu` target, **host target included** (soldr#3432) | always: catalogue glibc-2.17 toolchain + sysroot | `manylinux_2_17` |
+| `soldr wheel --release --host-glibc` (host-target `*-linux-gnu` only) | none: links this host's glibc | `pypi` |
+| `soldr wheel --release --target <cross *-linux-musl>` | catalogue musl toolchain | `musllinux_1_2` |
+| `soldr wheel --release` for a host-target `*-linux-musl` build | none | `pypi` |
+| any dev-profile build (no `--release`) | cross targets only | `pypi` |
+| any non-Linux target | cross targets only | `pypi` |
 
 `pypi` is maturin's pseudo-option for "derive the platform tag from the bytes,
 then validate the filename for PyPI" — a description of the artifact rather
 than a promise about it.
 
-The distinction is not cosmetic. Target preparation
-(`target_lifecycle::prepare_for_invocation`), which is what mounts the
-catalogue sysroot that *creates* the 2.17 floor, runs on the maturin path only
-when the target differs from the host. A host-target `*-linux-gnu` build links
-against the machine's own glibc — 2.39 on ubuntu-24.04 — so a `manylinux_2_17`
-tag there would be a claim nothing backed, and pip acts on tags: it installs
-such a wheel on an old host and the program then dies with
-``version `GLIBC_2.39' not found``. `.github/scripts/verify_wheel_glibc.py`
-exists to catch exactly that, and the `wheel-cross-verify` CI lane runs the
-whole path end to end on a cross target.
+After soldr#3432, "release + linux-gnu" always means an enforced 2.17 floor.
+Target preparation (`target_lifecycle::prepare_for_invocation`) is what mounts
+the catalogue sysroot that *creates* that floor. The maturin path runs it on
+its own only when the target differs from the host, so before soldr#3432 a
+host-target release wheel linked the machine's own glibc — 2.39 on
+ubuntu-24.04 — and was tagged from the bytes (`manylinux_2_34` or higher).
+That was an honest tag but the wrong artifact: a wheel for PyPI must not
+silently inherit the build machine's glibc floor. `soldr wheel --release` now
+asks the maturin path to prepare the host target too, so on an x86_64 Linux
+host `soldr wheel --release` produces
+`*-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`.
+
+**The floor is never a silent choice.** Before the build starts, soldr prints
+one `info` line on stderr, green on a terminal (plain text when `NO_COLOR` is
+set or stderr is not a TTY; nothing is written to stdout):
+
+```text
+soldr: info: building release wheel against glibc 2.17 (manylinux_2_17) for maximum Linux compatibility; pass --host-glibc to link against this host's glibc instead
+```
+
+A cross `*-linux-gnu` release build prints the same line naming the target,
+without the `--host-glibc` hint, because the flag is refused there.
+
+**`--host-glibc` opts out.** For a host-target `*-linux-gnu` build it skips
+the forced preparation, links against this host's glibc, and claims only what
+that enforces: `--compatibility pypi`, so maturin tags the wheel from its
+bytes. It prints its own `info` line with the version soldr read from
+`gnu_get_libc_version(3)`:
+
+```text
+soldr: info: --host-glibc: building wheel against this host's glibc, not glibc 2.17; it will require glibc 2.39 or newer, and maturin tags it from its bytes instead of manylinux_2_17
+```
+
+It is never the default. It is refused with a cross target (the wheel is not
+linked against this host's libraries at all) and with a non-glibc target
+(macOS, Windows, musl).
+
+**Native aarch64 Linux hosts.** Every catalogue GNU bundle is hosted on
+`x86_64-unknown-linux-gnu` (soldr#2874), so a native aarch64 host cannot run
+the toolchain that enforces the floor. A host-target release wheel there is
+**refused**, naming both remedies: build on an x86_64 Linux host, where
+`soldr wheel --release --target aarch64-unknown-linux-gnu` cross-builds the
+wheel at glibc 2.17, or pass `--host-glibc` to accept this host's glibc floor
+explicitly. Falling back silently would repeat the bug soldr#3432 fixed.
+
+**musl is unchanged.** The catalogue musl bundle is also hosted on
+`x86_64-unknown-linux-gnu`, and a host-target musl build happens only on a
+musl host, which is not guaranteed to run it. So a host-target musl release
+wheel keeps the `pypi` tag (follow-up: soldr#3435).
+
+`.github/scripts/verify_wheel_glibc.py` checks the claim against the bytes —
+both `*.data/scripts/*` executables and `*.so` extension modules — because pip
+acts on tags: it installs a wheel tagged `manylinux_2_17` on an old host, and a
+binary that really needs GLIBC_2.39 then dies with
+``version `GLIBC_2.39' not found``. The `wheel-cross-verify` CI lane runs the
+whole path end to end, for a cross target and for the x86_64 host target.
 
 (maturin does not silently downgrade an explicit tag: with
 `--compatibility manylinux_2_17` and an ELF needing GLIBC_2.39 its auditwheel
 implementation fails the build with "Error ensuring manylinux_2_17
 compliance". It auto-selects the highest satisfied policy only when no tag was
-requested. So the previous unconditional claim did not ship broken wheels — it
-broke `soldr wheel` for host-target Linux builds on any modern distro.)
+requested.)
 
 Scope notes:
 

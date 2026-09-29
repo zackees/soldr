@@ -45,10 +45,21 @@ pub(crate) fn low_disk_warning_for_free_bytes(free_bytes: u64, use_color: bool) 
     ))
 }
 
-fn stderr_should_use_color() -> bool {
+/// Colorize stderr only when it is a terminal and `NO_COLOR` is unset. A
+/// redirected or captured stderr (CI logs, `2>file`) always gets plain text.
+pub(crate) fn stderr_should_use_color() -> bool {
     use std::io::IsTerminal;
 
-    std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal()
+    color_enabled(
+        std::env::var_os("NO_COLOR").is_some(),
+        std::io::stderr().is_terminal(),
+    )
+}
+
+/// The pure rule behind [`stderr_should_use_color`]: any `NO_COLOR` value
+/// disables color (no-color.org), and so does a non-terminal sink.
+pub(crate) fn color_enabled(no_color_set: bool, stderr_is_terminal: bool) -> bool {
+    !no_color_set && stderr_is_terminal
 }
 
 pub(crate) fn available_space(path: &std::path::Path) -> std::io::Result<u64> {

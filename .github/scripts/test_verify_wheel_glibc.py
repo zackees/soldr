@@ -95,6 +95,55 @@ def test_multiple_scripts_are_all_returned(mod, tmp_path):
     assert found == ["soldr", "soldr-daemon"]
 
 
+def test_finds_a_pyo3_extension_module_in_the_package(mod, tmp_path):
+    # soldr#3432: `soldr wheel` builds abi3 PyO3 extensions, whose ELF is a
+    # `.abi3.so` inside the package, not a `.data/scripts` binary.
+    wheel = _wheel(
+        tmp_path / "demo-0.1.0-cp310-abi3-manylinux_2_17_x86_64.whl",
+        {
+            "demo/__init__.py": b"from .demo import *\n",
+            "demo/demo.abi3.so": b"\x7fELF fake",
+            "demo-0.1.0.dist-info/METADATA": b"Name: demo\n",
+            "demo-0.1.0.dist-info/RECORD": b"",
+        },
+    )
+    found = mod.embedded_binaries(wheel, tmp_path / "x")
+    assert [p.name for p in found] == ["demo.abi3.so"]
+
+
+def test_finds_a_top_level_extension_module(mod, tmp_path):
+    wheel = _wheel(
+        tmp_path / "demo-0.1.0-cp310-abi3-manylinux_2_17_x86_64.whl",
+        {
+            "demo.abi3.so": b"\x7fELF fake",
+            "demo-0.1.0.dist-info/RECORD": b"",
+        },
+    )
+    found = mod.embedded_binaries(wheel, tmp_path / "x")
+    assert [p.name for p in found] == ["demo.abi3.so"]
+
+
+def test_python_sources_and_dist_info_are_not_extension_modules(mod, tmp_path):
+    wheel = _wheel(
+        tmp_path / "demo-0.1.0-cp310-abi3-manylinux_2_17_x86_64.whl",
+        {
+            "demo/__init__.py": b"",
+            "demo/solib.py": b"",
+            "demo-0.1.0.dist-info/fake.so": b"not shipped code",
+        },
+    )
+    assert mod.embedded_binaries(wheel, tmp_path / "x") == []
+
+
+def test_a_mis_tagged_extension_module_fails(mod, monkeypatch, tmp_path):
+    _patch_readelf(mod, monkeypatch, NEEDS_2_39)
+    wheel = _wheel(
+        tmp_path / "demo-0.1.0-cp310-abi3-manylinux_2_17_x86_64.whl",
+        {"demo/demo.abi3.so": b"\x7fELF fake"},
+    )
+    assert mod.main(["--max-glibc", "2.17", str(wheel)]) == 1
+
+
 # --- the decision ---------------------------------------------------------
 
 

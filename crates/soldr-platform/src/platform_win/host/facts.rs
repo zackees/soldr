@@ -86,6 +86,12 @@ pub fn path_list_separator() -> &'static str {
     ";"
 }
 
+/// The running glibc's version string (for example `2.39`). Windows has no
+/// glibc, so this is always `None`.
+pub fn glibc_version() -> Option<String> {
+    None
+}
+
 /// The Windows version as a dotted `major.minor.build` string (e.g.
 /// `10.0.22621`). Probes the registry first — it always reflects the
 /// host OS, never the compatibility-mode lie — then falls back to

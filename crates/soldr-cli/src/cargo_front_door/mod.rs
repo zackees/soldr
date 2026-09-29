@@ -87,8 +87,8 @@ const BUILD_HISTORY_RETRY_POLL: Duration = Duration::from_millis(25);
 // on the flat file. Re-export them from the sub-modules so the public
 // API is byte-for-byte identical after the split.
 pub(crate) use disk::{
-    available_space, existing_filesystem_probe_path, low_disk_warning_for_free_bytes,
-    low_disk_warning_for_path,
+    available_space, color_enabled, existing_filesystem_probe_path,
+    low_disk_warning_for_free_bytes, low_disk_warning_for_path, stderr_should_use_color,
 };
 pub(crate) use inputs::{
     build_env_inputs, cargo_config_hash, cargo_feature_inputs, cargo_profile, cargo_target_triple,

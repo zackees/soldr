@@ -319,12 +319,19 @@ pub(crate) enum Commands {
     Cxx(crate::cc_cmd::CcArgs),
     /// Build an abi3 Python wheel through soldr's blessed toolchain (soldr#2139)
     ///
-    /// `soldr wheel [--release] [--target <triple>]` resolves the target
-    /// (friendly aliases included, host by default), prepares the sysroot, and
-    /// provisions maturin. `--release` is opt-in; the default is a quick dev
-    /// wheel. A `manylinux_2_17` / `musllinux_1_2` tag is claimed only on a
-    /// release cross build, where soldr actually enforced that floor;
-    /// otherwise maturin derives the tag from the bytes (`pypi`).
+    /// `soldr wheel [--release] [--host-glibc] [--target <triple>]` resolves
+    /// the target (friendly aliases included, host by default), prepares the
+    /// sysroot, and provisions maturin. `--release` is opt-in; the default is
+    /// a quick dev wheel. A release `*-linux-gnu` wheel is always built
+    /// against the catalogue glibc 2.17 sysroot and tagged `manylinux_2_17`,
+    /// host target included (soldr#3432), and soldr prints one green
+    /// `soldr: info:` line on stderr saying so. `--host-glibc` opts a
+    /// host-target build out: it links this host's glibc, prints its own info
+    /// line, and lets maturin derive the tag from the bytes (`pypi`). A
+    /// release cross musl wheel is tagged `musllinux_1_2`; dev wheels and
+    /// everything else are tagged from the bytes. A native aarch64 Linux host
+    /// cannot run the catalogue bundle, so a host-target release gnu wheel is
+    /// refused there unless `--host-glibc` is passed.
     /// Arguments after the flags are forwarded to `maturin build` verbatim.
     /// abi3 only in this first cut: a non-abi3 extension needs a CPython
     /// built for the target, which is refused rather than silently degraded.
