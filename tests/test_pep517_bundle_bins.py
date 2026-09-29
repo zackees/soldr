@@ -495,9 +495,9 @@ class SdistWorkspacePatchTest(unittest.TestCase):
     extension crate, so maturin's trimmed sdist workspace drops it."""
 
     def setUp(self) -> None:
-        self.tempdir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tempdir.cleanup)
-        self.sdist = Path(self.tempdir.name, "demo-0.1.0.tar.gz")
+        tempdir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tempdir, ignore_errors=True)
+        self.sdist = tempdir / "demo-0.1.0.tar.gz"
 
     def _write_sdist(self, *, trimmed: bool) -> None:
         # `trimmed=True` is what maturin's sdist writer produces today for
@@ -548,8 +548,8 @@ path = "src/main.rs"
                 archive.addfile(info, io.BytesIO(data))
 
     def _entries(self) -> Any:
-        BundleBin = _helper().BundleBin
-        return [BundleBin(bin="demo-cli", package="demo-cli")]
+        bundle_bin = _helper().BundleBin
+        return [bundle_bin(bin="demo-cli", package="demo-cli")]
 
     def _root_cargo_toml(self) -> str:
         with tarfile.open(self.sdist, "r:gz") as archive:
