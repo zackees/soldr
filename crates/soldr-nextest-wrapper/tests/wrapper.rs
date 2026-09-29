@@ -10,14 +10,21 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-const WRAPPER: &str = env!("CARGO_BIN_EXE_soldr-nextest-wrapper");
+/// Cargo defines this for integration tests that build the bin; Dylint's
+/// check pass does not, and Nextest also exports it at run time.
+fn wrapper() -> String {
+    option_env!("CARGO_BIN_EXE_soldr-nextest-wrapper")
+        .map(str::to_owned)
+        .or_else(|| std::env::var("CARGO_BIN_EXE_soldr-nextest-wrapper").ok())
+        .expect("CARGO_BIN_EXE_soldr-nextest-wrapper")
+}
 
 fn linux() -> bool {
     os() == HostOs::Linux
 }
 
 fn wrapped(script: &str, configure: impl FnOnce(&mut Command)) -> Output {
-    let mut command = Command::new(WRAPPER);
+    let mut command = Command::new(wrapper());
     command.args(["/bin/sh", "-c", script]);
     for name in [
         "SOLDR_TEST_FORBID_TOOLCHAIN_INSTALL",
@@ -55,7 +62,7 @@ fn the_test_gets_guards_and_a_private_tmpdir_that_is_removed() {
         |command| {
             command
                 .env("TMPDIR", base.path())
-                .env("SOLDR_NEXTEST_NATIVE_WRAPPER", WRAPPER)
+                .env("SOLDR_NEXTEST_NATIVE_WRAPPER", wrapper())
                 .env("SOLDR_NEXTEST_ADMISSION_DIR", base.path().join("admission"));
         },
     );
@@ -76,7 +83,7 @@ fn sigterm_dumps_threads_and_drains_the_test_output() {
     if !linux() {
         return;
     }
-    let mut child = Command::new(WRAPPER)
+    let mut child = Command::new(wrapper())
         .args([
             "/bin/sh",
             "-c",
@@ -121,7 +128,7 @@ fn a_missing_program_is_an_infrastructure_failure() {
     if !linux() {
         return;
     }
-    let output = Command::new(WRAPPER)
+    let output = Command::new(wrapper())
         .arg("/definitely/not/a/test-binary")
         .output()
         .expect("run wrapper");
