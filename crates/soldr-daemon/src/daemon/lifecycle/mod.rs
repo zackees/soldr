@@ -138,8 +138,15 @@ impl MissingImageDetector {
 pub fn describe_root_ownership_conflict(paths: &SoldrPaths) -> String {
     let root = paths.root.display();
     let Some((pid, exe)) = read_recorded_daemon_identity(paths) else {
+        // soldr#3456: nothing recorded names the holder -- typically another
+        // soldr version's daemon generation on the same root -- so hedge, and
+        // hand over the ways out instead of a bare refusal.
         return format!(
-            "soldr root ownership is busy: {root} (no daemon route claim to name the owner)"
+            "soldr root ownership is busy: {root} (no daemon route claim to name the owner)
+             soldr: another Soldr, possibly a different version, is likely using this root.
+             soldr: run `soldr status` and `soldr logs paths` to see the running broker and daemon.
+             soldr: to build now without touching it, use an isolated root: SOLDR_CACHE_DIR=<scratch dir>.
+             soldr: to retire the running broker deliberately, run `soldr broker remove` (it is never replaced automatically)."
         );
     };
     let alive = pid_is_alive(pid);
