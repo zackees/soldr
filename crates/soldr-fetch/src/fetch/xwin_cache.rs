@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 use crate::core::{SoldrError, SoldrPaths};
 
 use super::manifest_lookup;
+use super::xwin_header_names::CANONICAL_HEADER_NAMES;
 
 /// Pinned xwin-cache release date currently in the catalogue.
 /// Bump when a refreshed bundle ships from soldr-toolchain forge
@@ -218,6 +219,10 @@ fn resolve_xwin_cache_dir(install_dir: &Path) -> Option<PathBuf> {
 ///    sibling (`Kernel32.Lib` → `kernel32.lib`). Covers lowercase
 ///    `#include <windows.h>` / `-lkernel32`-style references to
 ///    mixed-case files.
+/// 3. **Documented-spelling aliases** (soldr#3415) -- the same mechanism,
+///    seeded with the canonical mixed-case names Microsoft documents
+///    (`BaseTsd.h`, `WinSock2.h`, ...), because code outside the SDK (a
+///    vendored `libssh`) includes them that way and nothing scans it.
 /// 2. **Include-referenced aliases** (cross-run 28574600982 fix) — scan every file
 ///    under the include trees for `#include` directives and, for each
 ///    referenced name that only matches an on-disk file
@@ -302,6 +307,13 @@ fn ensure_include_referenced_aliases(xwin_dir: &Path) -> Result<usize, SoldrErro
     // match — a superset of what resolution needs, and harmless.
     let mut dir_maps: Vec<(PathBuf, HashMap<String, String>)> = Vec::new();
     let mut referenced: HashSet<String> = HashSet::new();
+    // Pass 3 (soldr#3415): the documented spellings user code includes, which
+    // the SDK's own headers never reference in that casing.
+    referenced.extend(
+        CANONICAL_HEADER_NAMES
+            .iter()
+            .map(|name| (*name).to_string()),
+    );
     for root in &include_roots {
         if root.is_dir() {
             collect_names_and_includes(root, &mut dir_maps, &mut referenced)?;
@@ -537,6 +549,25 @@ mod tests {
         // Idempotent on re-run.
         let again = ensure_xwin_case_aliases(&xwin).expect("aliases again");
         assert_eq!(again, 0);
+    }
+
+    #[test]
+    fn documented_spelling_alias_materializes_basetsd_for_user_code() {
+        // soldr#3415: libssh-rs-sys includes `<BaseTsd.h>`; the SDK only ever
+        // includes `basetsd.h`, so scanning the SDK finds no reference.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let xwin = tmp.path().join("xwin");
+        let shared = xwin.join("sdk").join("include").join("shared");
+        std::fs::create_dir_all(&shared).expect("mkdir shared");
+        std::fs::write(shared.join("basetsd.h"), b"#pragma once\n").expect("write basetsd");
+        std::fs::write(shared.join("winsock2.h"), b"#pragma once\n").expect("write winsock2");
+
+        let case_insensitive = is_case_insensitive_fs(tmp.path());
+        let created = ensure_xwin_case_aliases(&xwin).expect("aliases");
+        assert_eq!(created, if case_insensitive { 0 } else { 2 });
+        assert!(shared.join("BaseTsd.h").is_file());
+        assert!(shared.join("WinSock2.h").is_file());
+        assert_eq!(ensure_xwin_case_aliases(&xwin).expect("again"), 0);
     }
 
     #[test]
