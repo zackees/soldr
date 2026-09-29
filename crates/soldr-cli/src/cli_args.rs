@@ -183,7 +183,7 @@ Applies to a daemon this invocation starts. A daemon already running keeps the l
         value_enum,
         value_name = "MODE",
         hide_possible_values = true,
-        help = "How cache hits are delivered: auto|link|copy|reflink|reflink-or-link-or-copy",
+        help = "How cache hits are delivered (see --help for modes)",
         long_help = "How the embedded zccache delivers a cache hit to its output path (ZCCACHE_MODE, zccache#1683, zccache#1792).
 
 `link` hardlinks eligible outputs. `copy` always writes an independent, writable copy. `reflink` writes an independent copy-on-write clone, falling back to a copy where the volume cannot clone. `reflink-or-link-or-copy` clones, else hardlinks, else copies -- the old meaning of `auto`, added in zccache 1.15.0. `auto` -- and leaving this unset entirely -- means soldr decides: zccache's own AUTO no longer hardlinks Rust outputs (zccache#1792), so soldr probes the pair of directories a cache hit actually moves between once and injects the single explicit answer (REFLINK, LINK, or COPY) instead, to keep the fast hardlink path where the pair supports it (soldr#3440). This also applies when your own ZCCACHE_MODE names AUTO; an explicit LINK, COPY, REFLINK, or REFLINK_OR_LINK_OR_COPY in your own ZCCACHE_MODE is passed through untouched.
