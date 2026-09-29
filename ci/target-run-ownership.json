@@ -253,6 +253,13 @@
       "binary": "daemon_zccache_embedded",
       "disposition": "target-replay",
       "reason": "The Unix-only embedded-cache tests exercise links, permissions, executable probes, and child processes."
+    },
+    {
+      "id": "nextest-wrapper-linux-once",
+      "package": "soldr-nextest-wrapper",
+      "binary": "wrapper",
+      "disposition": "native-linux-once",
+      "reason": "The native Nextest wrapper runs only in soldr ci-test's Linux Nextest stage (soldr#3453); its tests assert Linux session, signal, TMPDIR and exit-status behaviour and are inert elsewhere."
     }
   ],
   "replay_selectors": [
