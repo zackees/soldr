@@ -639,11 +639,10 @@ fn issue_2554_env_json_against_mismatched_broker_stays_parseable() {
         .expect("run env --json against mismatched broker");
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
-    let incumbent_exit = wait_for_child(&mut incumbent, Instant::now() + Duration::from_secs(15));
-    if incumbent_exit.is_none() {
-        let _ = incumbent.kill();
-        let _ = incumbent.wait();
-    }
+    // Nothing retires this incumbent -- soldr#2549 forbids automatic
+    // replacement and this test never runs `broker remove` -- so waiting for
+    // it to exit only ever spent the full deadline. Reap it directly.
+    kill_and_reap(&mut incumbent);
     let log = spawn_log(&home);
     stop_broker(&home);
 
