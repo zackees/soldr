@@ -375,6 +375,7 @@ pub mod target_lifecycle;
 /// the real production resolvers so the report cannot drift.
 pub(crate) mod timeout_registry;
 pub mod toolchain;
+pub(crate) mod toolchain_dir_name;
 pub mod toolchain_doctor;
 pub mod toolchain_ensure;
 pub mod toolchain_link;

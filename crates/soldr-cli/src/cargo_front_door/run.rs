@@ -277,6 +277,9 @@ pub(crate) async fn run_cargo_front_door(
     if let Some(plan) = &dylint_plan {
         plan.apply_to_command(&mut command);
     }
+    // soldr#3394: tools that read RUSTUP_TOOLCHAIN literally (the Dylint
+    // driver's sysroot) need the installed directory name under a managed home.
+    crate::toolchain_dir_name::apply_installed_toolchain_dir_name(&mut command);
     if dylint_dependency_cook {
         command.env_remove("RUSTC_WORKSPACE_WRAPPER");
         for (name, _) in std::env::vars_os() {
