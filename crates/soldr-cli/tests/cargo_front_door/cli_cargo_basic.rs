@@ -518,7 +518,7 @@ fn fake_long_running_cargo_script(mode: &str, log_path: &Path, lock_path: &Path)
                 "sleep 2 &\ncpu_timer=$!\nwhile kill -0 \"$cpu_timer\" 2>/dev/null; do\n  :\ndone\nwait \"$cpu_timer\"\n",
             ),
             "lock" => format!(
-                "lock='{0}'\n: > \"$lock\"\n(sleep 2; rm -f \"$lock\") &\nunlocker=$!\nwhile [ -e \"$lock\" ] && kill -0 \"$unlocker\" 2>/dev/null; do sleep 1; done\nwait \"$unlocker\"\n[ ! -e \"$lock\" ]\n",
+                "lock='{0}'\n: > \"$lock\"\n(sleep 2; rm -f \"$lock\") &\nunlocker=$!\nwhile [ -e \"$lock\" ] && kill -0 \"$unlocker\" 2>/dev/null; do sleep 0.1; done\nwait \"$unlocker\"\n[ ! -e \"$lock\" ]\n",
                 lock_path.display()
             ),
             other => panic!("unknown fake cargo mode: {other}"),
