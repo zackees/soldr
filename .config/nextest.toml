@@ -318,7 +318,7 @@ test-group = 'soldr-cargo-cold-builds'
 # `soldr ci-test` hands them an admission directory and a per-test ceiling for
 # its Nextest execution stage; a plain `soldr cargo nextest run` is unchanged.
 [scripts.wrapper.timeout-diagnostics]
-command = { command-line = ".github/scripts/nextest_timeout_wrapper.py", relative-to = "workspace-root" }
+command = { command-line = ".github/scripts/nextest_wrapper.sh", relative-to = "workspace-root" }
 target-runner = "within-wrapper"
 
 [[profile.default.scripts]]

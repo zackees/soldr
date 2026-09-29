@@ -8,9 +8,11 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import nextest_wrapper_argv
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = REPO_ROOT / ".github" / "scripts" / "nextest_timeout_wrapper.py"
+WRAPPER_ARGV = nextest_wrapper_argv()
 CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 
 
@@ -66,7 +68,7 @@ def _start_wrapper(child: str, env: dict[str, str]) -> subprocess.Popen[str]:
     """Return a live wrapper so the test can inject SIGTERM before waiting."""
 
     return subprocess.Popen(  # pylint: disable=consider-using-with
-        [sys.executable, str(WRAPPER), sys.executable, "-c", child],
+        [*WRAPPER_ARGV, sys.executable, "-c", child],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -605,10 +607,9 @@ def test_a_trivial_child_is_reaped_well_under_the_old_fifty_millisecond_floor(
     has ~40x headroom over the intended behaviour.
     """
 
-    wrapper = REPO_ROOT / ".github/scripts/nextest_timeout_wrapper.py"
     started = time.monotonic()
     completed = subprocess.run(
-        [sys.executable, str(wrapper), sys.executable, "-c", "pass"],
+        [*WRAPPER_ARGV, sys.executable, "-c", "pass"],
         capture_output=True,
         check=False,
     )
@@ -677,8 +678,7 @@ def _run_wrapper_under_tmpdir(
     env.update(extra_env or {})
     result = subprocess.run(
         [
-            sys.executable,
-            str(WRAPPER),
+            *WRAPPER_ARGV,
             sys.executable,
             "-c",
             _TMPDIR_CHILD,
@@ -741,7 +741,7 @@ def _wrapper_env_for(extra_env: dict[str, str]) -> list[str]:
         if key not in extra_env:
             env.pop(key, None)
     result = subprocess.run(
-        [sys.executable, str(WRAPPER), sys.executable, "-c", _ENV_CHILD],
+        [*WRAPPER_ARGV, sys.executable, "-c", _ENV_CHILD],
         capture_output=True,
         text=True,
         env=env,
@@ -777,7 +777,7 @@ def test_every_test_process_names_its_binary_for_the_target_tripwire() -> None:
     }
     child = "import os; print(os.environ['SOLDR_TEST_FORBID_TARGET_CONTAINING'])"
     result = subprocess.run(
-        [sys.executable, str(WRAPPER), sys.executable, "-c", child],
+        [*WRAPPER_ARGV, sys.executable, "-c", child],
         capture_output=True,
         text=True,
         env=env,

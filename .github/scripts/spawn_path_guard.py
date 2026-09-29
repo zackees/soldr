@@ -63,6 +63,17 @@ ALLOWLIST: dict[str, tuple[int, str]] = {
         "prescribed ci-test DAG children; every command is a frozen soldr "
         "re-exec and sibling process trees are cancelled on failure",
     ),
+    "crates/soldr-nextest-wrapper/src/main.rs": (
+        1,
+        "the native Nextest wrapper's one test child (soldr#3453); it must own "
+        "the child's pipes, session and death signal, mirroring the Python "
+        "wrapper's Popen",
+    ),
+    "crates/soldr-nextest-wrapper/src/dump.rs": (
+        1,
+        "gdb thread dump of a timed-out test (soldr#3453), bounded by "
+        "wait-timeout like the Python wrapper's subprocess.run(timeout=12)",
+    ),
     "crates/soldr-cli/src/dylint_driver.rs": (
         1,
         "dylint driver bootstrap through the managed nightly toolchain "

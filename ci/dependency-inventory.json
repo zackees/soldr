@@ -108,6 +108,11 @@
       "zip",
       "zstd"
     ],
+    "soldr-nextest-wrapper": [
+      "fs2",
+      "sha2",
+      "wait-timeout"
+    ],
     "soldr-platform": [
       "blake3",
       "fs2",

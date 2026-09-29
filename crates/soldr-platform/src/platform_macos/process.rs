@@ -6,3 +6,4 @@ pub mod inspect;
 pub mod signal;
 pub mod spawn;
 pub mod terminate;
+pub mod test_child;
