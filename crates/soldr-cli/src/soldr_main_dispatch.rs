@@ -978,7 +978,11 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 command.status()?
             };
 
-            let code = status.code().unwrap_or(1);
+            let code = maybe_stage_bundle_bins(
+                status.code().unwrap_or(1),
+                stamp_dir.as_deref(),
+                build_started,
+            );
             maybe_stamp_wheel(code, stamp_dir.as_deref(), build_started);
             if code != 0 {
                 // soldr#1878: cargo surfaces a bare `Caused by:` with nothing

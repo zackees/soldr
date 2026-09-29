@@ -486,6 +486,17 @@ the sysroot and toolchain environment, provisions maturin, and delegates to the
 existing `soldr maturin build` execution path. Wheel *naming* is unchanged;
 that contract is maturin's.
 
+`soldr wheel` honours `[tool.soldr.pep517] bundle-bins` (zackees/soldr#3468)
+through the same implementation as the PEP 517 backend: after maturin writes
+the wheel, soldr runs its embedded `_bundle_bins.py stage` with a Python
+interpreter (`$PYO3_PYTHON`, then `python3`, then `python`; needed only when
+`bundle-bins` is declared). Each bin is built with `soldr build --bin <bin>`,
+the `[tool.maturin] manifest-path`, the wheel's profile, and — whenever the
+maturin build prepared its target (any cross build, or a host-target release
+`*-linux-gnu` wheel) — `--target <triple>`, so a bundled CLI gets the same
+catalogue toolchain and glibc 2.17 floor as the extension. A failed bin build
+fails `soldr wheel`.
+
 #### Platform tags: soldr only claims a floor it enforced
 
 | invocation | target preparation | `--compatibility` passed to maturin |

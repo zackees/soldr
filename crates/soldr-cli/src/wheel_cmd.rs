@@ -171,6 +171,9 @@ pub struct WheelPlan {
     pub prepare_host_target: bool,
     /// The one `info` line printed before the build, if any.
     pub notice: Option<GlibcNotice>,
+    /// How `[tool.soldr.pep517] bundle-bins` entries are built so they match
+    /// the extension maturin built (zackees/soldr#3468).
+    pub bundle: crate::wheel_bundle::BundleBuild,
 }
 
 /// The glibc-floor `info` line `soldr wheel` prints before building, so the
@@ -390,11 +393,22 @@ pub fn plan_for_host(args: &WheelArgs, host: &WheelHost) -> Result<WheelPlan, So
         None
     };
 
+    // zackees/soldr#3468: bundled bins get the same toolchain as the
+    // extension. When the maturin path prepared the target (a cross build, or
+    // a host-target release gnu wheel at glibc 2.17), `soldr build --target`
+    // prepares the same catalogue target; otherwise the extension was a
+    // native host build, so the bins are too.
+    let bundle = crate::wheel_bundle::BundleBuild {
+        target: (!host_target || prepare_host_target).then(|| triple.clone()),
+        profile_args: crate::wheel_bundle::profile_args(is_release, rest),
+    };
+
     Ok(WheelPlan {
         argv,
         triple,
         prepare_host_target,
         notice,
+        bundle,
     })
 }
 
@@ -509,6 +523,10 @@ pub(crate) fn maturin_invocation(
     if plan.prepare_host_target {
         request_host_target_prep(&plan.triple);
     }
+    // zackees/soldr#3468: validate `bundle-bins` before the (long) maturin
+    // build, and register the request the maturin path runs after it.
+    let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    crate::wheel_bundle::request_for_workspace(&workspace_root, &plan.bundle)?;
     if let Some(notice) = &plan.notice {
         eprintln!(
             "{}",
