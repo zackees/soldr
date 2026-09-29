@@ -62,7 +62,7 @@ fn probe_delivery_capability_inner(
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(std::time::Duration::as_nanos)
+        .map(|d| d.as_nanos())
         .unwrap_or(0);
     let source = cache_dir.join(format!(".soldr-mode-probe-{pid}-{nanos}.src"));
     let reflink_dest = target_dir.join(format!(".soldr-mode-probe-{pid}-{nanos}.reflink"));
