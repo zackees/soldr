@@ -1,62 +1,66 @@
-# Enforces the repository's GitHub Actions-cache budget (soldr#3047 Phase B).
+# Thin event caller for the cache janitor and budget verdict in ci-pre.yml
+# (soldr#3047, zackees/ci.yml#6 row 9 "Cache (live)").
 #
-# Its scheduled/main/manual operational sweep remains separate so a schedule
-# does not launch canonical CI's full validation graph. The PR check itself is
-# a job in ci.yml, where it receives job-scoped `actions: read`.
+# ci.yml calls ci-pre.yml as its first job on every PR, main push and
+# dispatch. This file adds the triggers ci.yml does not have, so there is one
+# janitor with one set of rules:
 #
-# See ci/cache-ownership.json's `budget` object for the family allocations
-# this gate enforces, and .github/scripts/check_cache_budget.py for the gate
-# itself (including its `--prune` dry-run mode).
+# * push to any other branch -- the janitor runs on every push;
+# * the six-hourly schedule and workflow_dispatch;
+# * pull_request `closed` -- delete that PR's own entries immediately. This
+#   is the one pull_request type a non-ci.yml workflow may declare
+#   (check_pr_workflow_triggers.py): it only runs after the PR is closed, so
+#   it can never become a required check on an open PR.
 
 name: Cache Budget
 
 on:
   push:
-    branches:
+    # Main pushes run ci.yml, which already calls ci-pre.yml first.
+    branches-ignore:
       - main
+  pull_request:
+    types: [closed]
   schedule:
-    # Six-hourly: every host-lane run on a PR ref saves a ~1.3 GiB Tier-2
-    # generation that nothing restores across PRs, and three of them
-    # already breach the 9.5 GiB hard ceiling (soldr#3102).
     - cron: '17 1,7,13,19 * * *'
   workflow_dispatch:
 
-# One live run per workflow per ref: a new push to a branch or PR cancels the
-# superseded run instead of queuing behind it in the shared account-wide runner
-# pool. Runs on main get a unique group, so they are never cancelled or coalesced.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
 permissions:
   contents: read
-  # `actions: write` is what `gh cache delete` needs for the sweep step;
-  # on pull_request events GitHub downgrades the token regardless.
   actions: write
 
 jobs:
-  budget:
-    name: Repository Actions cache budget
+  ci-pre:
+    name: CI Pre
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/ci-pre.yml
+    permissions:
+      contents: read
+      actions: write
+
+  closed-pr-cleanup:
+    name: Delete closed PR caches
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
-      # Sweep only from a main checkout; pull requests remain read-only checks.
-      - name: Sweep reclaimable cache entries
-        if: github.ref == 'refs/heads/main'
-        # The script evaluates the budget on the listing it fetched BEFORE
-        # deleting, so a sweep that reclaims its way back under budget still
-        # exits 1 here; the check step below is the verdict.
-        continue-on-error: true
+        with:
+          # The PR's merge ref may be gone once it is closed; run the default
+          # branch's reviewed script instead of the PR's.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/check_cache_budget.py
+            ci/cache-ownership.json
+          sparse-checkout-cone-mode: false
+      # A fork PR's token is read-only: a refused delete is logged, the job
+      # still exits 0, and the next push-triggered sweep deletes the entry.
+      - name: Delete this PR's cache entries
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          uv run --no-project --python 3.13 python
-          .github/scripts/check_cache_budget.py --require-live --prune --apply
-      - name: Repository Actions cache budget
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          uv run --no-project --python 3.13 python
-          .github/scripts/check_cache_budget.py --require-live
+          PR_REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: python3 .github/scripts/check_cache_budget.py --delete-ref "$PR_REF"

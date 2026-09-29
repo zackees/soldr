@@ -76,19 +76,51 @@ Options:
     --require-live    fail rather than skip when the live cache listing is unavailable
     --prune           report deletion candidates (dry run)
     --apply           with --prune, actually delete the candidates
+    --sweep-only      with --prune --apply, exit 0 after deleting (janitor)
+    --event-name E    triggering event; decides who pays for an overage
+    --ref REF         triggering ref (refs/pull/N/merge for a PR)
+    --delete-ref REF  delete one closed PR's entries, then exit 0
+
+## Convergence and enforcement (zackees/ci.yml#6 "Cache (live)", GEN-009)
+
+The janitor (`--prune --apply --sweep-only`, run by `ci-pre.yml` before every
+CI run and on a schedule) deletes, in order: every safe-prune candidate --
+including every `refs/pull/*` entry, which no other ref can restore -- and
+then, per family, whatever its declared `evict` policy (`lru`,
+`newest-per-lineage`) needs to fit its allocation. Families without `evict`
+are never evicted for budget. Nothing younger than `SWEEP_GRACE_SECONDS` is
+deleted. See `plan_sweep`.
+
+The verdict depends on the event (`enforcement_mode`): a pull request fails
+only for entries it saved from its own ref or for a static manifest breach
+(`forecast_problems`), and warns about everything else; a push to a branch
+other than main warns; main, schedule, dispatch and local runs fail hard.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import hashlib
 import json
+import os
 import pathlib
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
+
+# ci-pre.yml runs this with the runner image's own `python3` (no setup-python,
+# no uv), so it must stay standard-library only and say so if the image's
+# interpreter is ever too old, rather than failing on a syntax/API detail.
+STDLIB_PYTHON_FLOOR = (3, 10)
+if sys.version_info < STDLIB_PYTHON_FLOOR:  # pragma: no cover - old runner image
+    sys.exit(
+        f"check_cache_budget.py needs Python >= "
+        f"{'.'.join(map(str, STDLIB_PYTHON_FLOOR))}, got {sys.version.split()[0]}"
+    )
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANIFEST = REPO_ROOT / "ci" / "cache-ownership.json"
@@ -154,6 +186,7 @@ class CacheEntry:
     size_bytes: int
     id: str | None = None
     created_at: str | None = None
+    last_accessed_at: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +222,7 @@ def normalize_entries(raw: list[object]) -> list[CacheEntry]:
         if isinstance(entry_id, bool) or not isinstance(entry_id, (int, str)):
             entry_id = None
         created_at = item.get("createdAt")
+        last_accessed_at = item.get("lastAccessedAt")
         entries.append(
             CacheEntry(
                 key=key,
@@ -196,6 +230,9 @@ def normalize_entries(raw: list[object]) -> list[CacheEntry]:
                 size_bytes=size,
                 id=str(entry_id) if entry_id is not None else None,
                 created_at=created_at if isinstance(created_at, str) else None,
+                last_accessed_at=(
+                    last_accessed_at if isinstance(last_accessed_at, str) else None
+                ),
             )
         )
     return entries
@@ -239,7 +276,7 @@ def fetch_live_entries(repo: str) -> list[object]:
             "--limit",
             "1000",
             "--json",
-            "id,key,ref,sizeInBytes,createdAt",
+            "id,key,ref,sizeInBytes,createdAt,lastAccessedAt",
         ]
     )
     payload = json.loads(stdout)
@@ -673,6 +710,343 @@ def apply_prune(candidates: list[CacheEntry], repo: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Convergent eviction (zackees/ci.yml#6 "Cache (live)", GEN-009)
+# ---------------------------------------------------------------------------
+
+# An entry younger than this is never deleted by a sweep. The janitor runs on
+# every push, so without a grace window it could delete a cache a producer job
+# saved seconds ago, before the consumer jobs of the same run restore it.
+SWEEP_GRACE_SECONDS = 10 * 60
+
+# `evict` values a family may declare in ci/cache-ownership.json. A family
+# with no `evict` key is never evicted for budget; only the safe classes in
+# `prune_candidates` (retired, non-main ref, superseded) ever touch it.
+#
+# * `lru` -- no required job restores this family, so the janitor deletes its
+#   least-recently-used entries until the family fits its allocation.
+# * `newest-per-lineage` -- the janitor keeps the newest entry of every
+#   lineage (the key with each digit run normalized, so version bumps of one
+#   download share a lineage), and deletes older generations least-recently
+#   used first until the family fits. The newest entry, which is the one a
+#   required job restores, is never a candidate.
+EVICT_POLICIES = ("lru", "newest-per-lineage")
+
+PR_REF = re.compile(r"^refs/pull/(?P<number>[0-9]+)/(?:merge|head)$")
+# The `pr-<N>` component PR-context saves put in their key (zackees/ci.yml#6:
+# "PRs save one small delta ... keyed by PR number"). Delimited on both sides
+# so `pr-12` never matches `pr-123`, and never matches mid-word (`xpr-1`).
+PR_KEY_TAG = re.compile(r"(?:^|[-_.])pr-(?P<number>[0-9]+)(?=$|[-_.])")
+
+
+def pr_number_of(entry: CacheEntry) -> int | None:
+    """The PR an entry belongs to: its `refs/pull/<N>/*` ref or `pr-<N>` key tag."""
+    match = PR_REF.fullmatch(entry.ref) or PR_KEY_TAG.search(entry.key)
+    return int(match["number"]) if match else None
+
+
+def parse_timestamp(value: str | None) -> datetime.datetime | None:
+    """GitHub's ISO-8601 timestamps (`...Z` or with fractional seconds)."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
+def within_grace(entry: CacheEntry, now: datetime.datetime) -> bool:
+    """Whether `entry` is too young to delete. Unknown age fails closed."""
+    created = parse_timestamp(entry.created_at)
+    if created is None:
+        return True
+    return (now - created).total_seconds() < SWEEP_GRACE_SECONDS
+
+
+def lineage_of(key: str) -> str:
+    """A key with every digit run normalized: `rustup-1.97.0-x` ~ `rustup-1.98.1-x`."""
+    return re.sub(r"[0-9]+", "#", key)
+
+
+def recency(entry: CacheEntry) -> str:
+    """LRU order: last access, else creation; unknown sorts oldest."""
+    return entry.last_accessed_at or entry.created_at or ""
+
+
+def eviction_candidates(
+    entries: list[CacheEntry],
+    families: dict[str, object],
+    excluded: set[int],
+    now: datetime.datetime,
+) -> list[CacheEntry]:
+    """Entries an `evict` family must lose to fit its allocation.
+
+    `excluded` holds `id()`s already chosen for deletion by the safe prune, so
+    their bytes are not counted twice. Families without an `evict` policy are
+    never touched here.
+    """
+    grouped, _unmatched = group_by_family(entries, families)
+    chosen: list[CacheEntry] = []
+    for family_id, family_entries in sorted(grouped.items()):
+        spec = families.get(family_id)
+        if not isinstance(spec, dict):
+            continue
+        policy = spec.get("evict")
+        max_bytes = spec.get("max_bytes")
+        if policy not in EVICT_POLICIES or not isinstance(max_bytes, int):
+            continue
+        live = [e for e in family_entries if id(e) not in excluded]
+        used = sum(e.size_bytes for e in live)
+        if used <= max_bytes:
+            continue
+        protected: set[int] = set()
+        if policy == "newest-per-lineage":
+            newest: dict[str, CacheEntry] = {}
+            for entry in (e for e in live if e.ref == "refs/heads/main"):
+                lineage = lineage_of(entry.key)
+                current = newest.get(lineage)
+                if current is None or (entry.created_at or "") > (
+                    current.created_at or ""
+                ):
+                    newest[lineage] = entry
+            protected = {id(entry) for entry in newest.values()}
+        pool = sorted(
+            (
+                e
+                for e in live
+                if id(e) not in protected
+                # An open PR's entries count toward the budget and are
+                # evicted by the same policy as main's (zackees/ci.yml#6).
+                and (e.ref == "refs/heads/main" or pr_number_of(e) is not None)
+                and not within_grace(e, now)
+            ),
+            key=recency,
+        )
+        for entry in pool:
+            if used <= max_bytes:
+                break
+            chosen.append(entry)
+            used -= entry.size_bytes
+    return chosen
+
+
+def fetch_pr_state(repo: str, number: int) -> str | None:
+    """`open` or `closed` (merged PRs are `closed` too); `None` if unknown."""
+    try:
+        state = run_gh(["api", f"repos/{repo}/pulls/{number}", "--jq", ".state"])
+    except (OSError, subprocess.CalledProcessError) as error:
+        print(f"  PR #{number}: state lookup failed ({error}); keeping its entries")
+        return None
+    state = state.strip()
+    return state if state in {"open", "closed"} else None
+
+
+def closed_pr_candidates(
+    entries: list[CacheEntry], pr_state: Callable[[int], str | None] | None
+) -> list[CacheEntry]:
+    """Every entry of a PR that is no longer open (merged or closed).
+
+    GitHub scopes `refs/pull/<N>/*` entries to that PR, so once it is closed
+    nothing can restore them. Open PRs keep theirs -- repeat pushes stay warm
+    -- and those count toward the family budgets like any other entry. One
+    state lookup per PR number; a failed lookup keeps the entries (fail safe).
+    No grace window: a closed PR has no running jobs to race.
+    """
+    by_number: dict[int, list[CacheEntry]] = {}
+    for entry in entries:
+        number = pr_number_of(entry)
+        if number is not None:
+            by_number.setdefault(number, []).append(entry)
+    closed: list[CacheEntry] = []
+    for number, pr_entries in sorted(by_number.items()):
+        state = pr_state(number) if pr_state is not None else None
+        if state is None:
+            print(f"  PR #{number}: state unknown; kept {len(pr_entries)} entr(ies)")
+        elif state == "closed":
+            closed.extend(pr_entries)
+    return closed
+
+
+def plan_sweep(
+    entries: list[CacheEntry],
+    manifest: dict,
+    current_main_lock: str | None,
+    now: datetime.datetime,
+    pr_state: Callable[[int], str | None] | None = None,
+) -> tuple[list[CacheEntry], list[CacheEntry]]:
+    """`(delete, deferred)` for one janitor sweep.
+
+    Order matters and is the whole convergence argument:
+
+    1. Every entry of a PR that is no longer open (`closed_pr_candidates`).
+    2. Every other safe-prune candidate (`prune_candidates`): retired
+       prefixes, entries on non-main branch refs, superseded generations, and
+       the cook/perf lineage rules. Open PRs' entries are not in this class.
+    3. Only then the per-family `evict` policies, measured against what is
+       left, so they delete no more than the family's overage.
+
+    Anything but a closed PR's entry that is younger than
+    `SWEEP_GRACE_SECONDS` is deferred, never deleted, so a running job's
+    just-saved cache is not raced.
+    """
+    closed = closed_pr_candidates(entries, pr_state)
+    closed_ids = {id(e) for e in closed}
+    safe = [
+        e
+        for e in prune_candidates(entries, current_main_lock)
+        if not PR_REF.fullmatch(e.ref) and id(e) not in closed_ids
+    ]
+    delete = closed + [e for e in safe if not within_grace(e, now)]
+    deferred = [e for e in safe if within_grace(e, now)]
+    budget = manifest.get("budget") if isinstance(manifest, dict) else None
+    families = budget.get("families") if isinstance(budget, dict) else None
+    if isinstance(families, dict):
+        excluded = {id(e) for e in safe} | {id(e) for e in closed}
+        delete.extend(eviction_candidates(entries, families, excluded, now))
+    return delete, deferred
+
+
+# ---------------------------------------------------------------------------
+# Who pays for an over-budget cache
+# ---------------------------------------------------------------------------
+
+
+def enforcement_mode(event_name: str, ref: str) -> str:
+    """`pr`, `warn` or `fail` for the triggering event.
+
+    * `pull_request`: pre-existing repository state is not the PR's fault, so
+      it is reported as a warning; only the PR's own contribution fails.
+    * a push to any branch but main: the janitor just swept; report, exit 0.
+    * main, schedule, workflow_dispatch and local runs (no event): hard fail.
+    """
+    if event_name == "pull_request":
+        return "pr"
+    if event_name == "push" and ref != "refs/heads/main":
+        return "warn"
+    return "fail"
+
+
+def forecast_problems(manifest_path: pathlib.Path, manifest: dict) -> list[str]:
+    """Static, listing-independent budget breaches in the manifest itself."""
+    budget = manifest.get("budget") if isinstance(manifest, dict) else None
+    if not isinstance(budget, dict):
+        return [f"{manifest_path} has no object-valued 'budget'"]
+    families = budget.get("families")
+    if not isinstance(families, dict) or not families:
+        return [f"{manifest_path} budget.families must be a non-empty object"]
+    problems: list[str] = []
+    total_max = budget.get("total_max_bytes")
+    fail_total = budget.get("fail_total_bytes")
+    allocated = 0
+    for family_id, spec in sorted(families.items()):
+        if not isinstance(spec, dict) or not isinstance(spec.get("max_bytes"), int):
+            problems.append(f"family {family_id!r} has no integer 'max_bytes'")
+            continue
+        allocated += spec["max_bytes"]
+        policy = spec.get("evict")
+        if policy is not None and policy not in EVICT_POLICIES:
+            problems.append(
+                f"family {family_id!r} declares unknown evict policy {policy!r}; "
+                f"expected one of {', '.join(EVICT_POLICIES)}"
+            )
+        steady = spec.get("steady_state_bytes")
+        if policy is None and isinstance(steady, int) and steady > spec["max_bytes"]:
+            problems.append(
+                f"family {family_id!r} is not evictable and its declared steady "
+                f"state {steady / GIB:.2f} GiB cannot fit its "
+                f"{spec['max_bytes'] / GIB:.2f} GiB allocation"
+            )
+    if isinstance(total_max, int) and allocated > total_max:
+        problems.append(
+            f"family allocations sum to {allocated / GIB:.2f} GiB, over "
+            f"total_max_bytes {total_max / GIB:.2f} GiB"
+        )
+    if isinstance(total_max, int) and isinstance(fail_total, int):
+        if total_max > fail_total:
+            problems.append("total_max_bytes exceeds fail_total_bytes")
+    return problems
+
+
+def pr_owned_problems(
+    manifest: dict, entries: list[CacheEntry], pr_ref: str
+) -> list[str]:
+    """Budget breaches the PR at `pr_ref` itself contributes to."""
+    match = PR_REF.fullmatch(pr_ref)
+    number = int(match["number"]) if match else None
+
+    def is_mine(e: CacheEntry) -> bool:
+        return e.ref == pr_ref or (number is not None and pr_number_of(e) == number)
+
+    own = [e for e in entries if is_mine(e)]
+    if not own:
+        return []
+    budget = manifest.get("budget") if isinstance(manifest, dict) else None
+    families = budget.get("families") if isinstance(budget, dict) else None
+    if not isinstance(families, dict):
+        return []
+    grouped, unmatched = group_by_family(entries, families)
+    problems = [
+        f"this PR ({pr_ref}) saved unregistered cache entry key={e.key!r}"
+        for e in unmatched
+        if is_mine(e)
+    ]
+    for family_id, family_entries in sorted(grouped.items()):
+        spec = families.get(family_id)
+        max_bytes = spec.get("max_bytes") if isinstance(spec, dict) else None
+        if not isinstance(max_bytes, int):
+            continue
+        used = sum(e.size_bytes for e in family_entries)
+        mine = sum(e.size_bytes for e in family_entries if is_mine(e))
+        if used > max_bytes and mine:
+            problems.append(
+                f"family {family_id!r} uses {used / GIB:.2f} GiB, over its "
+                f"{max_bytes / GIB:.2f} GiB budget, and {mine / GIB:.2f} GiB of "
+                f"that was saved by this PR ({pr_ref})"
+            )
+    fail_total = budget.get("fail_total_bytes") if isinstance(budget, dict) else None
+    total = sum(e.size_bytes for e in entries)
+    if isinstance(fail_total, int) and total > fail_total:
+        mine = sum(e.size_bytes for e in own)
+        problems.append(
+            f"total usage {total / GIB:.2f} GiB exceeds fail_total_bytes "
+            f"{fail_total / GIB:.2f} GiB, and {mine / GIB:.2f} GiB of it was "
+            f"saved by this PR ({pr_ref})"
+        )
+    return problems
+
+
+def report_warnings(problems: list[str]) -> None:
+    """Surface non-blocking problems as annotations and in the job summary."""
+    for problem in problems:
+        print(f"::warning title=Actions cache budget::{problem}")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary and problems:
+        with open(summary, "a", encoding="utf-8") as handle:
+            handle.write("### Actions cache budget (warning, not blocking)\n\n")
+            for problem in problems:
+                handle.write(f"- {problem}\n")
+            handle.write("\n")
+
+
+def delete_pr_ref(repo: str, ref: str, entries: list[CacheEntry]) -> int:
+    """Delete one closed PR's entries (by ref or `pr-<N>` tag). Never fails.
+
+    A fork PR's `pull_request` token is read-only; a refused delete is logged
+    and the next push-triggered sweep catches the entry.
+    """
+    match = PR_REF.fullmatch(ref)
+    number = int(match["number"]) if match else None
+    mine = [e for e in entries if number is not None and pr_number_of(e) == number]
+    freed = sum(e.size_bytes for e in mine)
+    print(f"closed PR {ref}: {len(mine)} entr(ies), {freed / GIB:.3f} GiB")
+    for failure in apply_prune(mine, repo):
+        print(f"  could not delete {failure}; the next janitor sweep will")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -709,7 +1083,47 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="with --prune, actually delete the candidates",
     )
+    parser.add_argument(
+        "--event-name",
+        default="",
+        help="triggering GitHub event; pull_request and non-main pushes warn",
+    )
+    parser.add_argument(
+        "--ref",
+        default="",
+        help="triggering ref (a PR's refs/pull/N/merge in pull_request mode)",
+    )
+    parser.add_argument(
+        "--sweep-only",
+        action="store_true",
+        help="with --prune --apply: report and delete, then exit 0 (the janitor)",
+    )
+    parser.add_argument(
+        "--delete-ref",
+        default=None,
+        help="delete every entry saved from this closed PR ref, then exit 0",
+    )
     args = parser.parse_args(argv)
+
+    if args.delete_ref is not None:
+        if not PR_REF.fullmatch(args.delete_ref):
+            print(
+                f"error: --delete-ref must be refs/pull/<N>/merge, got {args.delete_ref!r}"
+            )
+            return 1
+        try:
+            live = normalize_entries(fetch_live_entries(args.repo))
+        except (
+            OSError,
+            subprocess.CalledProcessError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as error:
+            print(
+                f"closed PR {args.delete_ref}: listing unavailable ({error}); skipped"
+            )
+            return 0
+        return delete_pr_ref(args.repo, args.delete_ref, live)
 
     if args.prune and args.from_json is not None:
         print(
@@ -769,13 +1183,27 @@ def main(argv: list[str] | None = None) -> int:
                 f"prune: main Cargo.lock unavailable; cook lock pruning disabled ({error})"
             )
             current_main_lock = None
-        candidates = prune_candidates(entries, current_main_lock)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        candidates, deferred = plan_sweep(
+            entries,
+            manifest,
+            current_main_lock,
+            now,
+            lambda number: fetch_pr_state(args.repo, number),
+        )
         reclaimed = sum(e.size_bytes for e in candidates)
+        pr_bytes = sum(e.size_bytes for e in candidates if PR_REF.fullmatch(e.ref))
         print(
-            f"prune: {len(candidates)} candidate(s), {reclaimed / GIB:.2f} GiB reclaimable"
+            f"prune: {len(candidates)} candidate(s), {reclaimed / GIB:.2f} GiB reclaimable "
+            f"({pr_bytes / GIB:.2f} GiB from closed PRs and evicted open-PR entries)"
         )
         for entry in candidates:
             print(f"  {entry.key} ({entry.ref}) {entry.size_bytes / GIB:.3f} GiB")
+        for entry in deferred:
+            print(
+                f"  deferred, younger than {SWEEP_GRACE_SECONDS}s: "
+                f"{entry.key} ({entry.ref})"
+            )
         candidate_ids = {id(entry) for entry in candidates}
         effective_entries = [e for e in entries if id(e) not in candidate_ids]
         if isinstance(budget, dict) and isinstance(budget.get("families"), dict):
@@ -794,13 +1222,33 @@ def main(argv: list[str] | None = None) -> int:
             for failure in failures:
                 print(f"  failed to delete {failure}")
         print()
+        if args.sweep_only:
+            # The janitor's job is to delete; the verdict is a separate step
+            # that re-lists after the deletions landed.
+            return 0
 
-    if problems:
+    mode = enforcement_mode(args.event_name, args.ref)
+    blocking = forecast_problems(args.manifest, manifest)
+    if mode == "fail":
+        blocking.extend(problems)
+    elif mode == "pr":
+        blocking.extend(pr_owned_problems(manifest, entries, args.ref))
+        report_warnings(problems)
+    else:
+        report_warnings(problems)
+
+    if blocking:
         print("error: repository Actions-cache budget exceeded (soldr#3047):")
-        for problem in problems:
+        for problem in blocking:
             print(f"  {problem}")
         return 1
 
+    if problems:
+        print(
+            f"check_cache_budget: over budget, reported as a warning ({mode} mode: "
+            "this run did not contribute to it)."
+        )
+        return 0
     print("check_cache_budget: repository Actions-cache usage is within budget.")
     return 0
 

@@ -106,7 +106,8 @@ def test_minimal_jobs_and_full_jobs_have_explicit_dependencies() -> None:
         # point (#3349); each carries its own gate independent of CI mode.
         "path-selection",
         "lint-docs",
-        "cache-budget",
+        # zackees/ci.yml#6: the cache janitor + budget verdict (ci-pre.yml).
+        "ci-pre",
         "setup-soldr-action",
         "cook-size-gate",
         "macos-recovery-replay",

@@ -77,6 +77,31 @@ def test_comments_strings_and_workflow_call_do_not_violate_the_invariant(
     assert MODULE.check(workflows) == []
 
 
+def test_a_closed_only_pull_request_trigger_is_allowed(tmp_path: Path) -> None:
+    # It runs after the PR closes, so it can never gate a merge
+    # (cache-budget.yml's closed-PR cache cleanup, zackees/ci.yml#6).
+    workflows = tmp_path / "workflows"
+    workflows.mkdir()
+    (workflows / "ci.yml").write_text("on:\n  pull_request:\n", encoding="utf-8")
+    (workflows / "closed.yml").write_text(
+        "on:\n  pull_request:\n    types: [closed]\n", encoding="utf-8"
+    )
+    widened = workflows / "widened.yml"
+    widened.write_text(
+        "on:\n  pull_request:\n    types: [closed, opened]\n", encoding="utf-8"
+    )
+    target = workflows / "target.yml"
+    target.write_text(
+        "on:\n  pull_request_target:\n    types: [closed]\n", encoding="utf-8"
+    )
+
+    errors = MODULE.check(workflows)
+
+    assert len(errors) == 2
+    assert any(str(widened) in error for error in errors)
+    assert any(str(target) in error for error in errors)
+
+
 def test_real_workflow_tree_has_ci_as_its_only_pr_entry_point() -> None:
     assert MODULE.check(REPO_ROOT / ".github" / "workflows") == []
 
@@ -92,7 +117,7 @@ def test_canonical_ci_owns_docs_and_retained_pr_signals() -> None:
     assert jobs["lint-docs"]["name"] == "Lint"
     assert "docs_only == 'true'" in jobs["lint-docs"]["if"]
     assert "docs_only != 'true'" in jobs["build-linux-x64"]["if"]
-    assert jobs["cache-budget"]["if"] == "${{ github.event_name == 'pull_request' }}"
+    assert jobs["ci-pre"]["uses"] == "./.github/workflows/ci-pre.yml"
     assert jobs["setup-soldr-action"]["uses"].endswith("setup-soldr-action.yml")
     assert jobs["cook-size-gate"]["uses"].endswith("cook-size-gate.yml")
 

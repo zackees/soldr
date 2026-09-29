@@ -53,6 +53,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # zackees/ci.yml#6: every cache this workflow can save in PR context
+  # carries `pr-<N>` in its key, so the ci-pre janitor can delete it once
+  # the PR closes. Empty outside a pull request, so main keys are
+  # unchanged. Enforced by .github/scripts/check_pr_cache_keys.py.
+  PR_CACHE_TAG: ${{ github.event_name == 'pull_request' && format('-pr-{0}', github.event.pull_request.number) || '' }}
+
 jobs:
   build-and-test:
     name: ${{ inputs.target }}
@@ -146,9 +153,9 @@ jobs:
       # contains toolchain X" check and skips its own 9 s rustup
       # install. On cache miss (first run at a new key) the install
       # step runs locally and populates ~/.rustup for the save.
-      - name: Cache rustup 1.98.1 in ~/.rustup
+      - name: Restore rustup 1.98.1 in ~/.rustup
         id: rustup_cache
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ~/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu
           key: rustup-1.98.1-linux-x64-v1
@@ -156,6 +163,15 @@ jobs:
       - name: Install rustup 1.98.1 to ~/.rustup (if not cached)
         if: steps.rustup_cache.outputs.cache-hit != 'true'
         run: rustup toolchain install 1.98.1 --profile minimal --no-self-update
+
+      # zackees/ci.yml#6: an immutable download shared with main -- a PR
+      # restores main's entry but never saves its own copy.
+      - name: Save rustup 1.98.1 cache
+        if: github.event_name != 'pull_request' && steps.rustup_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu
+          key: rustup-1.98.1-linux-x64-v1
 
       # soldr#2349: resolve the Dylint nightly + cargo-dylint version once, from
       # the same authority soldr's own resolver uses, so the cache key below,
@@ -375,7 +391,7 @@ jobs:
       # and the prepared marker depend only on toolchain/tool identity.
       - name: Restore Dylint driver and prepared-plan marker
         id: dylint_driver_cache
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: |
             ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/dylint/drivers
@@ -656,6 +672,17 @@ jobs:
       # needs the restore/save split: PRs restore main's tree and no longer
       # write their own 0.21 GiB copy. This step sits after the size report
       # so the reported numbers describe what is being saved.
+      # zackees/ci.yml#6: keyed on toolchain identity only and shared with
+      # main -- a PR restores main's entry but never saves its own copy.
+      - name: Save Dylint driver and prepared-plan marker
+        if: github.event_name != 'pull_request' && steps.dylint_driver_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/dylint/drivers
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/dylint/prepared
+          key: dylint-driver-v1-${{ inputs.target }}-${{ steps.dylint_identity.outputs.channel }}-${{ steps.dylint_identity.outputs.dylint_version }}
+
       - name: Save Dylint libraries and analysis trees (soldr#3047)
         if: ${{ github.ref == 'refs/heads/main' && steps.dylint_trees.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
