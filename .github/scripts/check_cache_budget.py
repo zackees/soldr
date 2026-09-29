@@ -729,7 +729,11 @@ SWEEP_GRACE_SECONDS = 10 * 60
 #   download share a lineage), and deletes older generations least-recently
 #   used first until the family fits. The newest entry, which is the one a
 #   required job restores, is never a candidate.
-EVICT_POLICIES = ("lru", "newest-per-lineage")
+# * `newest` -- as `newest-per-lineage`, but the whole family is one lineage:
+#   only its single newest main entry is protected. For hash-keyed stores
+#   (zccache-unit-*) whose hex keys defeat digit normalization, so each
+#   generation would otherwise be its own protected lineage (soldr#3458).
+EVICT_POLICIES = ("lru", "newest-per-lineage", "newest")
 
 PR_REF = re.compile(r"^refs/pull/(?P<number>[0-9]+)/(?:merge|head)$")
 # The `pr-<N>` component PR-context saves put in their key (zackees/ci.yml#6:
@@ -802,10 +806,10 @@ def eviction_candidates(
         if used <= max_bytes:
             continue
         protected: set[int] = set()
-        if policy == "newest-per-lineage":
+        if policy in ("newest-per-lineage", "newest"):
             newest: dict[str, CacheEntry] = {}
             for entry in (e for e in live if e.ref == "refs/heads/main"):
-                lineage = lineage_of(entry.key)
+                lineage = lineage_of(entry.key) if policy != "newest" else ""
                 current = newest.get(lineage)
                 if current is None or (entry.created_at or "") > (
                     current.created_at or ""

@@ -80,15 +80,30 @@ def test_verdicts_refuse_unmeasurable_walks(tmp_path: Path) -> None:
     assert "exceeds" in measure.working_set_verdict(over, cap)
 
 
-def test_the_default_cap_is_the_family_allocation_minus_the_cook_reserve() -> None:
+def test_the_default_cap_is_the_uncompressed_store_cap_minus_the_reserve() -> None:
+    # The trim cap bounds the on-disk store, which the Actions save compresses
+    # about 4x; the family's max_bytes is the compressed Actions budget.
     manifest = json.loads(
         (REPO_ROOT / "ci" / "cache-ownership.json").read_text(encoding="utf-8")
     )
-    family_max = manifest["budget"]["families"]["zccache-unit"]["max_bytes"]
+    family = manifest["budget"]["families"]["zccache-unit"]
+    assert family["store_cap_bytes"] > family["max_bytes"]
     assert (
         measure.default_cap_bytes(REPO_ROOT / "ci" / "cache-ownership.json", 7)
-        == family_max - 7
+        == family["store_cap_bytes"] - 7
     )
+
+
+def test_the_store_cap_holds_the_driver_and_ci_test_working_set() -> None:
+    # soldr#3458: the driver build's ~381 dependency units plus ci-test's
+    # measured 2.92 GiB working set must survive the trim, or every run's
+    # driver build starts cold.
+    manifest = json.loads(
+        (REPO_ROOT / "ci" / "cache-ownership.json").read_text(encoding="utf-8")
+    )
+    family = manifest["budget"]["families"]["zccache-unit"]
+    assert family["store_cap_bytes"] >= int(2.92 * (1 << 30))
+    assert family["evict"] == "newest"
     # soldr#3396: the stable-cook co-tenant is retired, so by default the
     # Tier-2 store is trimmed to the whole family allocation.
     assert measure.DEFAULT_RESERVE_BYTES == 0

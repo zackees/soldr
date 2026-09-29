@@ -1081,6 +1081,27 @@ def test_newest_per_lineage_leaves_a_lone_lineage_even_over_budget() -> None:
     assert delete == []
 
 
+def test_newest_keeps_only_the_familys_newest_hash_keyed_generation() -> None:
+    # zccache-unit keys end in a lockfile hash whose letters defeat
+    # newest-per-lineage (every generation is its own lineage), so the Tier-2
+    # store declares `newest`: one protected entry for the whole family.
+    store = {**family("zu-", 100), "evict": "newest"}
+    rows = [
+        aged("zu-13acf6", 60, created="2026-09-20T00:00:00Z"),
+        aged("zu-1dec4d", 60, created="2026-09-10T00:00:00Z"),
+        aged("zu-ff1637", 60, created="2026-09-01T00:00:00Z"),
+    ]
+    delete, _ = _plan(rows, {"fam": store})
+    assert "zu-13acf6" not in [e.key for e in delete]
+    assert sorted(e.key for e in delete) == ["zu-1dec4d", "zu-ff1637"]
+
+
+def test_newest_leaves_a_lone_generation_even_over_budget() -> None:
+    store = {**family("zu-", 100), "evict": "newest"}
+    delete, _ = _plan([aged("zu-only", 150)], {"fam": store})
+    assert delete == []
+
+
 STATES = {1: "open", 2: "closed", 3: "closed"}  # 2 merged, 3 closed unmerged
 
 
@@ -1214,4 +1235,6 @@ def test_real_manifest_declares_evict_only_for_the_safe_families() -> None:
     assert evictable == {
         "experiment-lanes": "lru",
         "pinned-immutable-download": "newest-per-lineage",
+        # soldr#3458: only the newest main store generation is ever restored.
+        "zccache-unit": "newest",
     }
