@@ -251,7 +251,7 @@ impl ZccacheChildEnv {
         // LINK/COPY/REFLINK/REFLINK_OR_LINK_OR_COPY.
         let cache_probe_dir = paths
             .as_ref()
-            .map(|paths| crate::cache_lib::zccache_dir(paths))
+            .map(crate::cache_lib::zccache_dir)
             .unwrap_or_else(|| cwd.clone());
         let target_probe_dir =
             non_empty_env_path("CARGO_TARGET_DIR").unwrap_or_else(|| cwd.join("target"));
