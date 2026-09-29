@@ -37,6 +37,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator, Mapping, Optional, TextIO
 
+from soldr._tty_quiet import quiet_tty_echo
+
 _FAST_PROFILE_ENV = "SOLDR_PEP517_PROFILE"
 _STATS_ENV = "SOLDR_PEP517_STATS"
 _WHEEL_CACHE_ENV = "SOLDR_PEP517_WHEEL_CACHE"
@@ -1308,10 +1310,8 @@ def _maturin_pep517(
         session_id = None
     cmd = ["soldr", "maturin", "pep517", subcommand, *args]
     try:
-        # soldr#2742: a terminated *child* is named by the CalledProcessError
-        # path below; this names a terminated *backend*, which is what uv
-        # reported as a bare `exit code: 0xffffffff`.
-        with _explain_backend_termination(cmd, env, started_at):
+        # soldr#2742: names a terminated *backend* (uv's bare 0xffffffff).
+        with _explain_backend_termination(cmd, env, started_at), quiet_tty_echo():
             _run_pep517_streaming(cmd, env=env)
     except subprocess.TimeoutExpired as exc:
         if session_id is not None:
