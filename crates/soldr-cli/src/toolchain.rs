@@ -58,6 +58,8 @@ struct ToolchainIdentity {
     rustc_binary: FileIdentity,
     channel_manifest: FileIdentity,
     components_manifest: FileIdentity,
+    /// soldr#3376: `(triple, libcore length)` for the host and declared targets.
+    std_libs: Vec<(String, u64)>,
 }
 
 #[derive(Debug, Serialize)]
@@ -584,13 +586,27 @@ fn toolchain_identity(
     let channel_manifest =
         toolchain_dir.join(crate::toolchain_readiness::TOOLCHAIN_CHANNEL_MANIFEST);
     let components = toolchain_dir.join("lib").join("rustlib").join("components");
+    let host = toolchain_host(toolchain_dir);
+    let std_libs = crate::toolchain_std_libs::std_lib_fingerprint(
+        toolchain_dir,
+        host.as_deref(),
+        &key.targets,
+    )?;
     Some(ToolchainIdentity {
         toolchain_dir: normalize_existing_path(toolchain_dir),
         rustup_binary: file_identity(&key.rustup_binary, false)?,
         rustc_binary: file_identity(&rustc, false)?,
         channel_manifest: file_identity(&channel_manifest, true)?,
         components_manifest: file_identity(&components, true)?,
+        std_libs,
     })
+}
+
+fn toolchain_host(toolchain_dir: &Path) -> Option<String> {
+    crate::toolchain_std_libs::host_of_toolchain_dir(
+        toolchain_dir,
+        crate::pyo3_detect::host_triple(),
+    )
 }
 
 fn memoized_toolchain_dir(paths: &SoldrPaths, key: &CargoPrepareMemoKey) -> Option<PathBuf> {
@@ -802,6 +818,16 @@ pub(crate) fn ensure_cargo_toolchain(explicit_channel: Option<&str>) -> Result<(
     if let Some(key) = memo_key {
         let toolchain_dirs = discover_toolchain_dirs(&key, None);
         if toolchain_dirs.len() == 1 {
+            // soldr#3376: rustup's component list is a claim; check the files.
+            crate::toolchain_std_libs::repair_missing_std_libs(
+                channel,
+                &toolchain_dirs[0],
+                toolchain_host(&toolchain_dirs[0]).as_deref(),
+                &key.targets,
+                std::env::var_os(crate::core::RUSTUP_HOME_ENV_VAR)
+                    .is_some_and(|home| !home.is_empty()),
+                &mut |triple| crate::toolchain_std_libs::reinstall_rust_std(channel, triple),
+            )?;
             write_cargo_prepare_memo(&paths, key, &toolchain_dirs[0]);
         }
     }
@@ -942,7 +968,7 @@ pub(crate) fn rustup_target_add(channel: &str, target: &str) -> Result<i32, Sold
     Ok(status.code().unwrap_or(1))
 }
 
-fn run_toolchain_command(
+pub(crate) fn run_toolchain_command(
     command: &mut std::process::Command,
     context: &str,
 ) -> Result<std::process::ExitStatus, SoldrError> {

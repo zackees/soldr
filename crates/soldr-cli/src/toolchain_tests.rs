@@ -105,6 +105,21 @@ fn test_memo_key(root: &Path) -> CargoPrepareMemoKey {
     }
 }
 
+/// Fake `libcore`/`libstd` so a fixture toolchain has the standard-library
+/// files the memo identity now requires (soldr#3376).
+fn write_fake_std(toolchain: &Path, triple: &str, with_std: bool) {
+    let lib = toolchain
+        .join("lib")
+        .join("rustlib")
+        .join(triple)
+        .join("lib");
+    std::fs::create_dir_all(&lib).expect("create target lib dir");
+    std::fs::write(lib.join("libcore-0123456789abcdef.rlib"), b"core").expect("libcore");
+    if with_std {
+        std::fs::write(lib.join("libstd-0123456789abcdef.rlib"), b"std").expect("libstd");
+    }
+}
+
 #[test]
 fn cargo_prepare_memo_key_covers_every_requirement() {
     let root = tempfile::tempdir().expect("temp dir");
@@ -165,6 +180,11 @@ fn cargo_prepare_memo_rejects_changed_or_missing_toolchain() {
     let components = toolchain.join("lib").join("rustlib").join("components");
     std::fs::write(&components, b"rustc-test\n").expect("write components");
 
+    assert!(
+        toolchain_identity(&key, &toolchain).is_none(),
+        "a declared target with no libcore must not memoize (soldr#3376)"
+    );
+    write_fake_std(&toolchain, "wasm32-unknown-unknown", false);
     let original = toolchain_identity(&key, &toolchain).expect("initial identity");
     filetime::set_file_mtime(
         &components,
@@ -189,6 +209,13 @@ fn cargo_prepare_memo_rejects_changed_or_missing_toolchain() {
         cargo_prepare_memo_path(&paths, &key, changed),
         cargo_prepare_memo_path(&paths, &key, channel_changed),
         "a changed channel manifest must invalidate Cargo's warm-prepare memo"
+    );
+
+    std::fs::remove_dir_all(toolchain.join("lib/rustlib/wasm32-unknown-unknown"))
+        .expect("delete the target's libraries, leaving `components` claiming them");
+    assert!(
+        toolchain_identity(&key, &toolchain).is_none(),
+        "a claimed-but-missing target must be a memo miss, not a false hit"
     );
 
     std::fs::remove_dir_all(&toolchain).expect("remove fake toolchain");
@@ -317,6 +344,8 @@ fn dylint_blessed_and_cargo_share_the_readiness_matrix() {
             std::fs::create_dir_all(path.parent().expect("components parent"))
                 .expect("components parent");
             std::fs::write(path, b"rustc\n").expect("components");
+            write_fake_std(&toolchain, host, true);
+            write_fake_std(&toolchain, "wasm32-unknown-unknown", false);
         }
 
         assert_eq!(
