@@ -1,13 +1,19 @@
 """The PEP 517 relay must not echo terminal input reports over the build."""
 
+# pylint: disable=possibly-used-before-assignment
 from __future__ import annotations
 
 import os
 import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from soldr._tty_quiet import quiet_tty_echo
+from conftest import load_script_module
+
+quiet_tty_echo = load_script_module(
+    Path(__file__).resolve().parents[1] / "src" / "soldr" / "_tty_quiet.py"
+).quiet_tty_echo
 
 if sys.platform != "win32":
     import pty

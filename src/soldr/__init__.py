@@ -37,8 +37,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator, Mapping, Optional, TextIO
 
-from soldr._tty_quiet import quiet_tty_echo
-
 _FAST_PROFILE_ENV = "SOLDR_PEP517_PROFILE"
 _STATS_ENV = "SOLDR_PEP517_STATS"
 _WHEEL_CACHE_ENV = "SOLDR_PEP517_WHEEL_CACHE"
@@ -1311,8 +1309,9 @@ def _maturin_pep517(
     cmd = ["soldr", "maturin", "pep517", subcommand, *args]
     try:
         # soldr#2742: names a terminated *backend* (uv's bare 0xffffffff).
-        with _explain_backend_termination(cmd, env, started_at), quiet_tty_echo():
-            _run_pep517_streaming(cmd, env=env)
+        with _explain_backend_termination(cmd, env, started_at):
+            with _sibling_module("_tty_quiet").quiet_tty_echo():
+                _run_pep517_streaming(cmd, env=env)
     except subprocess.TimeoutExpired as exc:
         if session_id is not None:
             _session_command("session-end", env, "--id", session_id)
@@ -1720,22 +1719,20 @@ def _target_args(config_settings: Optional[dict]) -> "list[str]":
     return []
 
 
-def _bundle_bins_module() -> Any:
-    """Load the sibling bundle-bins helper (soldr#3239).
-
-    Tests load this file standalone, outside the ``soldr`` package, where a
-    relative import cannot resolve, so fall back to loading it by path.
-    """
+def _sibling_module(stem: str) -> Any:
+    """Load a sibling helper such as ``_bundle_bins`` (soldr#3239). Tests load
+    this file standalone, outside the ``soldr`` package, where a relative
+    import cannot resolve, so fall back to loading it by path."""
     if __package__:
-        return importlib.import_module(f"{__package__}._bundle_bins")
-    name = "_soldr_bundle_bins"
+        return importlib.import_module(f"{__package__}.{stem}")
+    name = f"_soldr{stem}"
     module = sys.modules.get(name)
     if module is None:
         spec = importlib.util.spec_from_file_location(
-            name, Path(__file__).with_name("_bundle_bins.py")
+            name, Path(__file__).with_name(f"{stem}.py")
         )
         if spec is None or spec.loader is None:
-            raise ImportError("cannot load soldr's _bundle_bins helper")
+            raise ImportError(f"cannot load soldr's {stem} helper")
         module = importlib.util.module_from_spec(spec)
         sys.modules[name] = module
         spec.loader.exec_module(module)
@@ -1743,7 +1740,9 @@ def _bundle_bins_module() -> Any:
 
 
 def _project_bundle_bins() -> "list[Any]":
-    return _bundle_bins_module().read_bundle_bins(_project_root() / "pyproject.toml")
+    return _sibling_module("_bundle_bins").read_bundle_bins(
+        _project_root() / "pyproject.toml"
+    )
 
 
 def _bundle_bin_profile_args(
@@ -1771,7 +1770,7 @@ def _stage_bundle_bins(
     editable: bool,
 ) -> str:
     """Build `[tool.soldr.pep517] bundle-bins` and stage them into the wheel."""
-    helper = _bundle_bins_module()
+    helper = _sibling_module("_bundle_bins")
     entries = _project_bundle_bins()
     if not entries:
         return filename

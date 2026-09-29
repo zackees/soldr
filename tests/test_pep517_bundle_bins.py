@@ -307,7 +307,7 @@ class BackendIntegrationTest(unittest.TestCase):
         self.backend = load_script_module(
             SRC / "__init__.py", "soldr_bundle_bins_backend"
         )
-        self.helper = self.backend._bundle_bins_module()
+        self.helper = self.backend._sibling_module("_bundle_bins")
         self.scratch = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.scratch, ignore_errors=True)
         self.root = self.scratch / "project"
