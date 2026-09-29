@@ -7,6 +7,49 @@
 pub(crate) const DAEMON_START_ROUTE_BUDGET: std::time::Duration =
     std::time::Duration::from_secs(180);
 
+/// Stamp the newest `.whl` in `out_dir` that this build just wrote
+/// (soldr#3433) — mtime at or after `build_started` — with a `Generator:`
+/// naming soldr. Best-effort: any problem is a warning, never a build
+/// failure, because a missed stamp is a provenance gap, not a broken wheel.
+fn stamp_newest_wheel(out_dir: &std::path::Path, build_started: std::time::SystemTime) {
+    let entries = match std::fs::read_dir(out_dir) {
+        Ok(entries) => entries,
+        Err(_) => return, // no output dir yet is not an error worth a warning
+    };
+    let newest = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "whl"))
+        .filter(|entry| {
+            entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|modified| modified >= build_started)
+        })
+        .max_by_key(|entry| {
+            entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        });
+    let Some(entry) = newest else {
+        return;
+    };
+    match crate::wheel_stamp::stamp_wheel_generator(&entry.path(), env!("CARGO_PKG_VERSION")) {
+        Ok(true) => {
+            eprintln!(
+                "soldr: stamped {} with Generator: soldr {}",
+                entry.path().display(),
+                env!("CARGO_PKG_VERSION")
+            );
+        }
+        Ok(false) => {} // already stamped, nothing to say
+        Err(err) => eprintln!(
+            "soldr warning: could not stamp {} with soldr's Generator provenance: {err}",
+            entry.path().display()
+        ),
+    }
+}
+
 fn acquire_maturin_build_lease(
     paths: &SoldrPaths,
     args: &[String],

@@ -2584,6 +2584,7 @@ dependencies = [
  "widestring",
  "windows-sys 0.61.2",
  "zccache",
+ "zip",
  "zstd",
 ]
 

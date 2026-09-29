@@ -702,6 +702,11 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             let mut command = std::process::Command::new(&result.binary_path);
             let mut pep517_linker_state = None;
             let mut pep517_paths = None;
+            // soldr#3433: where to look for the wheel this child produces,
+            // set only when this is a wheel-producing maturin invocation
+            // (`maturin build` / `maturin pep517 build-wheel`) so the wheel
+            // can be stamped with `Generator: soldr ...` on success.
+            let mut wheel_stamp_dir: Option<std::path::PathBuf> = None;
             // Held across the complete direct/PEP517 maturin child. This is
             // separate from the short-lived stats session request: the
             // OS-held lease is what prevents daemon GC from deleting a reused
@@ -788,6 +793,12 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 let workspace_root =
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let maturin_build = crate::pyo3_detect::maturin_args_are_build(tool_args);
+                if maturin_build && crate::wheel_stamp::maturin_args_produce_wheel(tool_args) {
+                    wheel_stamp_dir = Some(crate::wheel_stamp::maturin_output_dir(
+                        tool_args,
+                        &workspace_root,
+                    ));
+                }
                 _maturin_build_lease = acquire_maturin_build_lease(&paths, tool_args)?;
                 let maturin_target =
                     crate::pyo3_detect::resolve_build_target(tool_args, &workspace_root);
@@ -943,6 +954,10 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             };
 
             suppress_windows_console_window(&mut command);
+            // soldr#3433: captured before the child runs so the wheel stamp
+            // below only ever touches a `.whl` this invocation just wrote,
+            // never a stale one already sitting in the output directory.
+            let build_started = std::time::SystemTime::now();
             // soldr#2024: the child's output explains this exit, inherited
             // or teed back via `emit_child_output`.
             exit_guard::mark_spoke();
@@ -981,6 +996,11 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             };
 
             let code = status.code().unwrap_or(1);
+            if code == 0 {
+                if let Some(out_dir) = wheel_stamp_dir.as_deref() {
+                    stamp_newest_wheel(out_dir, build_started);
+                }
+            }
             if code != 0 {
                 // soldr#1878: cargo surfaces a bare `Caused by:` with nothing
                 // in it when the wrapped rustc dies without diagnostics. Say
