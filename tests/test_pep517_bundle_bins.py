@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import types
 import unittest
@@ -408,6 +409,49 @@ class BackendIntegrationTest(unittest.TestCase):
         self.assertEqual(Path(manifest), self.root / "crates" / "demo" / "Cargo.toml")
         self.assertEqual(command[-2:], ["--profile", "release"])
 
+    def test_build_sdist_patches_the_trimmed_workspace(self) -> None:
+        # soldr#3239 / zackees/soldr#3444: `build_sdist` must patch a
+        # maturin-trimmed root Cargo.toml back so `demo-cli` (no Cargo
+        # dependency edge to the `demo` extension crate named by
+        # `manifest-path`) survives as a workspace member.
+        (self.root / "pyproject.toml").write_text(
+            PYPROJECT.replace('package = "demo"', 'package = "demo-cli"'),
+            encoding="utf-8",
+        )
+        sdist_name = "demo-0.1.0.tar.gz"
+
+        def maturin(subcommand: str, *_args: str, **_kwargs: Any) -> None:
+            self.assertEqual(subcommand, "write-sdist")
+            root_cargo = '[workspace]\nmembers = [\n    "crates/demo",\n]\n'
+            extension_cargo = '[package]\nname = "demo"\n'
+            cli_cargo = (
+                '[package]\nname = "demo-cli"\n\n'
+                '[[bin]]\nname = "demo-cli"\npath = "src/main.rs"\n'
+            )
+            with tarfile.open(self.out / sdist_name, "w:gz") as archive:
+                for name, text in (
+                    ("demo-0.1.0/Cargo.toml", root_cargo),
+                    ("demo-0.1.0/crates/demo/Cargo.toml", extension_cargo),
+                    ("demo-0.1.0/crates/demo-cli/Cargo.toml", cli_cargo),
+                ):
+                    data = text.encode("utf-8")
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    archive.addfile(info, io.BytesIO(data))
+
+        with mock.patch.object(self.backend, "_maturin_pep517", maturin):
+            result = self.backend.build_sdist(str(self.out))
+        self.assertEqual(result, sdist_name)
+        with tarfile.open(self.out / sdist_name, "r:gz") as archive:
+            extracted = archive.extractfile("demo-0.1.0/Cargo.toml")
+            assert extracted is not None
+            text = extracted.read().decode("utf-8")
+        import tomllib
+
+        parsed = tomllib.loads(text)
+        self.assertIn("crates/demo-cli", parsed["workspace"]["members"])
+        self.assertIn("crates/demo", parsed["workspace"]["members"])
+
     def test_no_backend_function_is_shadowed_by_a_sibling_module(self) -> None:
         """Importing `soldr.<name>` rebinds the package attribute `<name>`.
 
@@ -443,6 +487,122 @@ class BackendIntegrationTest(unittest.TestCase):
         self.assertEqual(self._build("build_wheel"), [])
         with zipfile.ZipFile(self.out / WHEEL_NAME) as archive:
             self.assertFalse(any(".data/" in name for name in archive.namelist()))
+
+
+class SdistWorkspacePatchTest(unittest.TestCase):
+    """soldr#3239 / zackees/soldr#3444: reproduce and fix the sdist-then-wheel
+    failure when a `bundle-bins` package isn't a Cargo dependency of the
+    extension crate, so maturin's trimmed sdist workspace drops it."""
+
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self.sdist = Path(self.tempdir.name, "demo-0.1.0.tar.gz")
+
+    def _write_sdist(self, *, trimmed: bool) -> None:
+        # `trimmed=True` is what maturin's sdist writer produces today for
+        # the reported bug: `demo-cli` has no Cargo dependency edge to
+        # `demo-py` (the `manifest-path` crate), so it is dropped from
+        # `[workspace] members`. `trimmed=False` is the already-fixed shape.
+        root_cargo = """\
+[workspace]
+resolver = "3"
+members = [
+    "crates/demo-py",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+"""
+        if not trimmed:
+            root_cargo = root_cargo.replace(
+                'members = [\n    "crates/demo-py",\n]',
+                'members = [\n    "crates/demo-py",\n    "crates/demo-cli",\n]',
+            )
+        extension_cargo = """\
+[package]
+name = "demo-py"
+version = "0.1.0"
+edition = "2021"
+"""
+        cli_cargo = """\
+[package]
+name = "demo-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "demo-cli"
+path = "src/main.rs"
+"""
+        with tarfile.open(self.sdist, "w:gz") as archive:
+            for name, text in (
+                ("demo-0.1.0/Cargo.toml", root_cargo),
+                ("demo-0.1.0/crates/demo-py/Cargo.toml", extension_cargo),
+                ("demo-0.1.0/crates/demo-cli/Cargo.toml", cli_cargo),
+            ):
+                data = text.encode("utf-8")
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+
+    def _entries(self) -> Any:
+        BundleBin = _helper().BundleBin
+        return [BundleBin(bin="demo-cli", package="demo-cli")]
+
+    def _root_cargo_toml(self) -> str:
+        with tarfile.open(self.sdist, "r:gz") as archive:
+            extracted = archive.extractfile("demo-0.1.0/Cargo.toml")
+            assert extracted is not None
+            return extracted.read().decode("utf-8")
+
+    def test_dropped_package_reproduces_and_is_not_a_workspace_member(self) -> None:
+        # RED: this is exactly what maturin's sdist writer produces today --
+        # `demo-cli` has no Cargo dependency edge to `demo-py` (the
+        # `manifest-path` crate), so it is trimmed from `[workspace] members`
+        # even though its files were copied into the sdist. A later
+        # `soldr build --package demo-cli --manifest-path
+        # <sdist>/crates/demo-py/Cargo.toml` would fail with "package ID
+        # specification `demo-cli` did not match any packages", matching the
+        # reproduction in zackees/soldr#3444.
+        self._write_sdist(trimmed=True)
+        import tomllib
+
+        parsed = tomllib.loads(self._root_cargo_toml())
+        self.assertNotIn("crates/demo-cli", parsed["workspace"]["members"])
+
+    def test_patch_adds_the_missing_bundle_bins_package(self) -> None:
+        self._write_sdist(trimmed=True)
+        helper = _helper()
+        added = helper.patch_sdist_workspace_members(self.sdist, self._entries())
+        self.assertEqual(added, ["crates/demo-cli"])
+        import tomllib
+
+        parsed = tomllib.loads(self._root_cargo_toml())
+        self.assertIn("crates/demo-cli", parsed["workspace"]["members"])
+        self.assertIn("crates/demo-py", parsed["workspace"]["members"])
+        # The extension crate's own Cargo.toml is untouched.
+        with tarfile.open(self.sdist, "r:gz") as archive:
+            extension = archive.extractfile("demo-0.1.0/crates/demo-py/Cargo.toml")
+            assert extension is not None
+            self.assertIn('name = "demo-py"', extension.read().decode("utf-8"))
+
+    def test_already_present_member_is_left_alone(self) -> None:
+        self._write_sdist(trimmed=False)
+        helper = _helper()
+        added = helper.patch_sdist_workspace_members(self.sdist, self._entries())
+        self.assertEqual(added, [])
+
+    def test_no_bundle_bins_entries_is_a_noop(self) -> None:
+        self._write_sdist(trimmed=True)
+        helper = _helper()
+        added = helper.patch_sdist_workspace_members(self.sdist, [])
+        self.assertEqual(added, [])
+        import tomllib
+
+        parsed = tomllib.loads(self._root_cargo_toml())
+        self.assertNotIn("crates/demo-cli", parsed["workspace"]["members"])
 
 
 if __name__ == "__main__":

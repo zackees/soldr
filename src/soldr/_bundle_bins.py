@@ -34,6 +34,7 @@ import re
 import stat
 import subprocess
 import sys
+import tarfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -396,6 +397,159 @@ def add_files_to_wheel(
             raise
     os.replace(temporary, wheel)
     return [arcname for arcname, _ in additions]
+
+
+def _sdist_top_level(names: "Sequence[str]") -> str:
+    tops = {name.split("/", 1)[0] for name in names if "/" in name}
+    if len(tops) != 1:
+        raise BundleBinsError(
+            f"expected exactly one top-level directory in the sdist, found "
+            f"{sorted(tops)}"
+        )
+    return next(iter(tops))
+
+
+def _cargo_package_name(text: str) -> Optional[str]:
+    try:
+        # pylint: disable=import-outside-toplevel  # 3.10 has no tomllib
+        import tomllib  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    try:
+        parsed: Any = tomllib.loads(text)
+    except ValueError:
+        return None
+    package = parsed.get("package") if isinstance(parsed, dict) else None
+    if isinstance(package, dict):
+        name = package.get("name")
+        if isinstance(name, str):
+            return name
+    return None
+
+
+def _append_workspace_members(text: str, additions: "Sequence[str]") -> str:
+    """Insert ``additions`` into a ``[workspace] members = [...]`` array.
+
+    Text-level, not a TOML writer, so the file's existing formatting and
+    comments survive untouched apart from the appended entries.
+    """
+    if not additions:
+        return text
+    match = re.search(r"members\s*=\s*\[(.*?)\]", text, re.DOTALL)
+    if not match:
+        raise BundleBinsError(
+            "sdist root Cargo.toml has a [workspace] table but no `members` "
+            "array to patch"
+        )
+    existing = match.group(1).rstrip()
+    if existing and not existing.endswith(","):
+        existing += ","
+    new_items = "".join(f'\n    "{member}",' for member in additions)
+    replacement = f"members = [{existing}{new_items}\n]"
+    return text[: match.start()] + replacement + text[match.end() :]
+
+
+def patch_sdist_workspace_members(
+    sdist: Path, entries: "Sequence[BundleBin]"
+) -> "list[str]":
+    """Keep every ``bundle-bins`` package as an sdist workspace member.
+
+    maturin's sdist builder regenerates the root ``Cargo.toml``'s
+    ``[workspace] members`` array, trimmed to the Cargo dependency graph
+    reachable from ``[tool.maturin] manifest-path``. A ``bundle-bins``
+    package with no Cargo dependency edge to the extension crate is dropped
+    from that array even though its files are still copied into the sdist
+    (soldr#3239 / zackees/soldr#3444), so a later
+    ``soldr build --package <it> --manifest-path <the trimmed Cargo.toml>``
+    fails with "package ID specification did not match any packages".
+
+    This patches the trimmed array back in place, in the sdist tarball
+    itself, right after maturin writes it. Returns the workspace-relative
+    directories that were added (empty if nothing needed patching).
+    """
+    wanted = sorted({entry.package for entry in entries if entry.package})
+    if not wanted:
+        return []
+
+    with tarfile.open(sdist, "r:gz") as archive:
+        members = archive.getmembers()
+        names = [member.name for member in members]
+        top = _sdist_top_level(names)
+        root_cargo_name = f"{top}/Cargo.toml"
+        package_dirs: "dict[str, str]" = {}
+        root_text: Optional[str] = None
+        for member in members:
+            if not member.isfile() or not member.name.endswith("/Cargo.toml"):
+                continue
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                continue
+            text = extracted.read().decode("utf-8", errors="replace")
+            if member.name == root_cargo_name:
+                root_text = text
+                continue
+            name = _cargo_package_name(text)
+            if name is not None:
+                package_dirs[name] = member.name[len(top) + 1 : -len("/Cargo.toml")]
+
+        if root_text is None:
+            raise BundleBinsError(f"sdist {sdist} has no root {root_cargo_name}")
+        workspace_name = _cargo_package_name(root_text)
+        # The root manifest may itself be a package (a virtual manifest has
+        # no [package] table); either way, a [workspace] table is what we
+        # need to check for.
+        del workspace_name
+        try:
+            # pylint: disable=import-outside-toplevel  # 3.10 has no tomllib
+            import tomllib  # type: ignore[import-not-found]
+
+            parsed_root: Any = tomllib.loads(root_text)
+        except ImportError:
+            parsed_root = None
+        except ValueError:
+            parsed_root = None
+        workspace = (
+            parsed_root.get("workspace") if isinstance(parsed_root, dict) else None
+        )
+        if not isinstance(workspace, dict):
+            return []
+        existing_members = set(workspace.get("members") or [])
+        additions = [
+            package_dirs[name]
+            for name in wanted
+            if name in package_dirs and package_dirs[name] not in existing_members
+        ]
+        if not additions:
+            return []
+        patched_root = _append_workspace_members(root_text, additions).encode("utf-8")
+
+    temporary = sdist.with_name(f".{sdist.name}.{os.getpid()}.tmp")
+    try:
+        with (
+            tarfile.open(sdist, "r:gz") as source,
+            tarfile.open(temporary, "w:gz") as out,
+        ):
+            for member in source.getmembers():
+                if member.name == root_cargo_name and member.isfile():
+                    info = tarfile.TarInfo(member.name)
+                    info.size = len(patched_root)
+                    info.mode = member.mode
+                    info.mtime = member.mtime
+                    info.uid = member.uid
+                    info.gid = member.gid
+                    info.uname = member.uname
+                    info.gname = member.gname
+                    out.addfile(info, io.BytesIO(patched_root))
+                elif member.isfile():
+                    data = source.extractfile(member)
+                    out.addfile(member, data)
+                else:
+                    out.addfile(member)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    os.replace(temporary, sdist)
+    return additions
 
 
 def bundle_into_wheel(

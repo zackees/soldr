@@ -2022,4 +2022,16 @@ def build_sdist(
         sdist_directory,
         config_settings=config_settings,
     )
-    return _newest_entry(sdist_directory, ".tar.gz", want_dir=False)
+    filename = _newest_entry(sdist_directory, ".tar.gz", want_dir=False)
+    entries = _project_bundle_bins()
+    if entries:
+        # soldr#3239 / zackees/soldr#3444: maturin's sdist trims the root
+        # workspace Cargo.toml to the Cargo dependency graph reachable from
+        # `manifest-path`, which drops a `bundle-bins` package that has no
+        # dependency edge to the extension crate even though its files are
+        # still copied in. Patch the trimmed `members` array back so a
+        # later `soldr build --package <it>` against the extracted sdist
+        # can resolve the workspace.
+        helper = _sibling_module("_bundle_bins")
+        helper.patch_sdist_workspace_members(Path(sdist_directory, filename), entries)
+    return filename
