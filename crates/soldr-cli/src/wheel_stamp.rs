@@ -39,6 +39,14 @@ pub fn maturin_args_produce_wheel(args: &[String]) -> bool {
     }
 }
 
+/// `maturin_output_dir`, but only when `args` is a wheel-producing maturin
+/// invocation (re-derives that with `pyo3_detect::maturin_args_are_build` so
+/// the call site stays a single short expression).
+pub fn wheel_dir_for_stamp(args: &[String], workspace_root: &Path) -> Option<PathBuf> {
+    (crate::pyo3_detect::maturin_args_are_build(args) && maturin_args_produce_wheel(args))
+        .then(|| maturin_output_dir(args, workspace_root))
+}
+
 /// Resolve the directory maturin will write its `.whl` into for this argv:
 /// an explicit `--out`/`-o` (soldr's own PEP 517 backend always passes
 /// `--out`; `soldr wheel` does not), else maturin's own default,

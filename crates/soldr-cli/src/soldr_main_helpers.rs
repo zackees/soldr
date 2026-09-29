@@ -7,11 +7,15 @@
 pub(crate) const DAEMON_START_ROUTE_BUDGET: std::time::Duration =
     std::time::Duration::from_secs(180);
 
-/// Stamp the newest `.whl` in `out_dir` that this build just wrote
-/// (soldr#3433) — mtime at or after `build_started` — with a `Generator:`
-/// naming soldr. Best-effort: any problem is a warning, never a build
-/// failure, because a missed stamp is a provenance gap, not a broken wheel.
-fn stamp_newest_wheel(out_dir: &std::path::Path, build_started: std::time::SystemTime) {
+/// Stamp the newest `.whl` in `out_dir` (when the build succeeded and an
+/// `out_dir` was resolved) that this build just wrote — mtime at or after
+/// `build_started` — with a `Generator:` naming soldr (soldr#3433).
+/// Best-effort: any problem is a warning, never a build failure, because a
+/// missed stamp is a provenance gap, not a broken wheel.
+fn maybe_stamp_wheel(code: i32, out_dir: Option<&std::path::Path>, build_started: std::time::SystemTime) {
+    let (0, Some(out_dir)) = (code, out_dir) else {
+        return;
+    };
     let entries = match std::fs::read_dir(out_dir) {
         Ok(entries) => entries,
         Err(_) => return, // no output dir yet is not an error worth a warning
