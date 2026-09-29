@@ -29,6 +29,7 @@ impl DylintBranchVerifier for PlanDylintVerifier<'_> {
 #[derive(Clone, Copy)]
 pub(super) enum DylintPhase {
     Library(usize),
+    Cook(usize),
     Workspace,
     UiTest(usize),
     Complete,
@@ -36,6 +37,9 @@ pub(super) enum DylintPhase {
 
 pub(super) struct DylintBranch<'a> {
     pub(super) libraries: Vec<&'a Stage>,
+    /// soldr#3460: the UI tests' dependency-layer cooks, between the
+    /// libraries and the workspace analysis. Empty on the compile-only path.
+    pub(super) cooks: Vec<&'a Stage>,
     pub(super) workspace: Option<&'a Stage>,
     pub(super) ui_tests: Vec<&'a Stage>,
     pub(super) phase: DylintPhase,
@@ -65,6 +69,7 @@ impl<'a> DylintBranch<'a> {
         }
         Ok(Self {
             libraries,
+            cooks: Vec::new(),
             workspace: Some(workspace),
             ui_tests: Vec::new(),
             phase: DylintPhase::Library(0),
@@ -72,8 +77,9 @@ impl<'a> DylintBranch<'a> {
         })
     }
 
-    /// The whole serial Dylint branch -- libraries, workspace analysis, then
-    /// UI tests -- supervised as one chain beside Nextest (soldr#3446).
+    /// The whole serial Dylint branch -- libraries, UI-test dependency cooks,
+    /// workspace analysis, then UI tests -- supervised as one chain beside
+    /// Nextest (soldr#3446, soldr#3460).
     pub(super) fn full_from_plan(
         plan: &'a CiTestPlan,
         skip_libraries: bool,
@@ -81,7 +87,30 @@ impl<'a> DylintBranch<'a> {
     ) -> Result<Self, SoldrError> {
         let mut branch = Self::compilation_from_plan(plan, skip_libraries, verifier)?;
         branch.ui_tests = Self::from_plan(plan)?.ui_tests;
+        branch.set_cooks(
+            plan.stages
+                .iter()
+                .filter(|stage| stage.name.starts_with("dylint-cook-"))
+                .collect(),
+        );
         Ok(branch)
+    }
+
+    /// Installs the cook stages. A branch already fast-forwarded past its
+    /// libraries (soldr#2349's marker skip) starts at the first cook.
+    pub(super) fn set_cooks(&mut self, cooks: Vec<&'a Stage>) {
+        self.cooks = cooks;
+        if matches!(self.phase, DylintPhase::Workspace) && !self.cooks.is_empty() {
+            self.phase = DylintPhase::Cook(0);
+        }
+    }
+
+    fn after_libraries(&self) -> DylintPhase {
+        if self.cooks.is_empty() {
+            DylintPhase::Workspace
+        } else {
+            DylintPhase::Cook(0)
+        }
     }
 
     /// `skip_libraries` (soldr#2349) fast-forwards to `Workspace`, skipping
@@ -115,6 +144,7 @@ impl<'a> DylintBranch<'a> {
         }
         Ok(Self {
             libraries: Vec::new(),
+            cooks: Vec::new(),
             workspace: None,
             ui_tests,
             phase: DylintPhase::UiTest(0),
@@ -125,6 +155,7 @@ impl<'a> DylintBranch<'a> {
     pub(super) fn current(&self) -> Option<&'a Stage> {
         match self.phase {
             DylintPhase::Library(index) => self.libraries.get(index).copied(),
+            DylintPhase::Cook(index) => self.cooks.get(index).copied(),
             DylintPhase::Workspace => self.workspace,
             DylintPhase::UiTest(index) => self.ui_tests.get(index).copied(),
             DylintPhase::Complete => None,
@@ -142,6 +173,12 @@ impl<'a> DylintBranch<'a> {
             DylintPhase::Library(_) => {
                 verifier.libraries_complete()?;
                 self.libraries_built = true;
+                self.phase = self.after_libraries();
+            }
+            DylintPhase::Cook(index) if index + 1 < self.cooks.len() => {
+                self.phase = DylintPhase::Cook(index + 1);
+            }
+            DylintPhase::Cook(_) => {
                 self.phase = DylintPhase::Workspace;
             }
             DylintPhase::Workspace => {

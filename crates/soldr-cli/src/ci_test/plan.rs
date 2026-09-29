@@ -150,6 +150,46 @@ pub(crate) async fn freeze(
             &root.join("dylints").join(lint),
         ));
     }
+    // soldr#3460: pre-compile the UI tests' third-party dependency layer
+    // (dylint_testing -> compiletest_rs, git2, libgit2-sys, plus dylint's own
+    // build script) inside the Dylint branch, between the libraries and the
+    // workspace analysis. That is still the compile-only window -- Fresh
+    // Nextest starts only after `nextest-compile`, and the Dylint branch is
+    // shorter than the Nextest one -- which is what soldr#3042 required: none
+    // of these ~137 units may compile beside running tests. It used to be a
+    // serial workflow step ahead of `ci-test`, on the lane's critical path.
+    // One cook per lint crate: each is its own Cargo workspace whose cook key
+    // hashes its own manifest and lockfile.
+    let cook_names: Vec<String> = DYLINTS
+        .iter()
+        .map(|lint| format!("dylint-cook-{lint}"))
+        .collect();
+    if !invocation.no_run {
+        for (index, lint) in DYLINTS.iter().enumerate() {
+            let dependency = if index == 0 {
+                library_names
+                    .last()
+                    .expect("the frozen Dylint inventory is non-empty")
+                    .as_str()
+            } else {
+                cook_names[index - 1].as_str()
+            };
+            stages.push(stage(
+                &cook_names[index],
+                "dylint-ui-tests",
+                COMPILER,
+                dylint_tests_cook_command(&target_root),
+                &[dependency],
+                &root.join("dylints").join(lint),
+            ));
+        }
+    }
+    let workspace_dependency = if invocation.no_run {
+        library_names.last()
+    } else {
+        cook_names.last()
+    }
+    .expect("the frozen Dylint inventory is non-empty");
     let mut dylint = vec![
         "dylint".into(),
         "--no-build".into(),
@@ -164,9 +204,7 @@ pub(crate) async fn freeze(
         "dylint-analysis",
         COMPILER,
         cargo_command(&dylint, &[]),
-        &[library_names
-            .last()
-            .expect("the frozen Dylint inventory is non-empty")],
+        &[workspace_dependency],
         &root,
     ));
     let dylint_test_names: Vec<String> = DYLINTS
@@ -368,12 +406,15 @@ pub(crate) async fn freeze(
     let mut compiler_execution_groups = vec![
         group("stable-clippy", "stable", vec!["clippy".into()]),
         group("dylint-libraries", "dylint-libraries", library_names),
-        group(
-            "dylint-workspace",
-            "dylint-analysis",
-            vec!["dylint-workspace".into()],
-        ),
     ];
+    if !invocation.no_run {
+        compiler_execution_groups.push(group("dylint-ui-test-cook", "dylint-ui-tests", cook_names));
+    }
+    compiler_execution_groups.extend([group(
+        "dylint-workspace",
+        "dylint-analysis",
+        vec!["dylint-workspace".into()],
+    )]);
     if !invocation.no_run {
         compiler_execution_groups.push(group(
             "dylint-ui-tests",
@@ -521,6 +562,25 @@ fn group(id: &'static str, domain: &'static str, stages: Vec<String>) -> Compile
         stages,
         fresh_dirty: "Cargo-reported at execution time",
     }
+}
+
+/// `soldr dylint cook --tree tests` for one lint crate, run from that crate's
+/// directory. `--target-root` points at the repository's target root because
+/// `dylints/<lint>/target` must stay empty
+/// (`.github/scripts/verify_dylint_target_dirs.py`); the cook derives the same
+/// nightly-keyed `dylint/tests/<key>` tree the UI-test stages build into.
+fn dylint_tests_cook_command(target_root: &Path) -> Vec<String> {
+    vec![
+        "soldr".into(),
+        "dylint".into(),
+        "cook".into(),
+        "--tree".into(),
+        "tests".into(),
+        "--tests".into(),
+        "--target-root".into(),
+        target_root.display().to_string(),
+        "--json".into(),
+    ]
 }
 
 fn cargo_command(fixed: &[impl AsRef<str>], scope: &[String]) -> Vec<String> {

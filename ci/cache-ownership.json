@@ -146,14 +146,6 @@
       "rationale": "soldr#2349: the cargo-dylint driver binary (`<SOLDR_CACHE_DIR>/dylint/drivers/<nightly>-<host>/`) and the warm-run prepared-plan TTL marker (`<SOLDR_CACHE_DIR>/dylint/prepared/v1/`), keyed on the resolved nightly identity plus the pinned cargo-dylint version. SOLDR_CACHE_DIR is exported to a `runner.temp`-rooted, per-run-wiped directory (soldr#1241's cache-domain step), so both otherwise go cold and the driver is re-fetched from the soldr-toolchain catalogue every run even though its identity never changed between runs. Same nightly-keyed identity class as build-and-test-dylint-foundation, not a new tier."
     },
     {
-      "id": "build-and-test-dylint-tests-cook",
-      "workflow": "_build-and-test.yml",
-      "step": "Cook the Dylint UI-test dependency layer (soldr#3042)",
-      "mechanism": "soldr dylint cook",
-      "tier": "cook",
-      "rationale": "soldr#3042. Prepares the third-party dependency layer of target/dylint/tests (dylint_testing -> compiletest_rs, git2, libgit2-sys, and dylint's build script) before ci-test, so those compiles no longer overlap Fresh Nextest. Tier 1 by identity key: the lint crate's Cargo.lock plus the one exact nightly every lint manifest declares. Nothing is uploaded and no directory enters a cross-run store -- the step fills an in-run target tree, and cross-run reuse comes from the Tier-2 object store (soldr#3041). The Tier-3 ban on the linked UI-test products in that same directory is unchanged."
-    },
-    {
       "id": "build-and-test-build-logs",
       "workflow": "_build-and-test.yml",
       "step": "Upload build log artifacts",

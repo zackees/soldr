@@ -13,6 +13,12 @@ pub(super) fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrE
             .filter(|stage| stage.name.starts_with("dylint-library-"))
             .map(|stage| stage.name.as_str()),
     );
+    expected.extend(
+        plan.stages
+            .iter()
+            .filter(|stage| stage.name.starts_with("dylint-cook-"))
+            .map(|stage| stage.name.as_str()),
+    );
     expected.push("dylint-workspace");
     expected.extend(
         plan.stages

@@ -315,6 +315,13 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
             "dylint-library-ban_platform_cfg_outside_boundary",
             "dylint-library-ban_raw_env_flag",
             "dylint-library-ban_swallowed_child_stdio",
+            "dylint-cook-ban_raw_process_creation",
+            "dylint-cook-ban_raw_network_access",
+            "dylint-cook-ban_raw_local_socket_name",
+            "dylint-cook-ban_raw_ipc_transport",
+            "dylint-cook-ban_platform_cfg_outside_boundary",
+            "dylint-cook-ban_raw_env_flag",
+            "dylint-cook-ban_swallowed_child_stdio",
             "dylint-workspace",
             "dylint-test-ban_raw_process_creation",
             "dylint-test-ban_raw_network_access",
@@ -445,9 +452,59 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
             "Dylint libraries share one target tree and must remain serial"
         );
     }
+    // soldr#3460: the UI tests' dependency layer is cooked inside the Dylint
+    // branch -- after the libraries, before workspace analysis -- so it
+    // overlaps Nextest compilation but never a running test (soldr#3042).
+    let cooks = [
+        "ban_raw_process_creation",
+        "ban_raw_network_access",
+        "ban_raw_local_socket_name",
+        "ban_raw_ipc_transport",
+        "ban_platform_cfg_outside_boundary",
+        "ban_raw_env_flag",
+        "ban_swallowed_child_stdio",
+    ];
+    let target_root = plan["dylint_target_trees"]["tests"]
+        .as_str()
+        .and_then(|tests| std::path::Path::new(tests).ancestors().nth(3))
+        .expect("the tests tree is <target-root>/dylint/tests/<key>")
+        .display()
+        .to_string();
+    for (index, lint) in cooks.iter().enumerate() {
+        let name = format!("dylint-cook-{lint}");
+        let cook = find_stage(&plan, &name);
+        let expected = if index == 0 {
+            libraries[libraries.len() - 1].to_string()
+        } else {
+            format!("dylint-cook-{}", cooks[index - 1])
+        };
+        assert_eq!(
+            cook["depends_on"],
+            serde_json::json!([expected]),
+            "the cooks share one tests tree and must remain serial"
+        );
+        assert_eq!(cook["domain"], "dylint-ui-tests");
+        assert!(cook["working_directory"]
+            .as_str()
+            .is_some_and(|dir| std::path::Path::new(dir).ends_with(format!("dylints/{lint}"))));
+        assert_eq!(
+            cook["command"],
+            serde_json::json!([
+                "soldr",
+                "dylint",
+                "cook",
+                "--tree",
+                "tests",
+                "--tests",
+                "--target-root",
+                target_root,
+                "--json"
+            ])
+        );
+    }
     assert_eq!(
         dylint["depends_on"],
-        serde_json::json!([libraries[libraries.len() - 1]])
+        serde_json::json!([format!("dylint-cook-{}", cooks[cooks.len() - 1])])
     );
     let ui_tests = [
         "dylint-test-ban_raw_process_creation",
@@ -585,6 +642,15 @@ fn ci_test_preserves_scope_and_exposes_incompatible_overrides_as_domains_or_erro
     assert_eq!(
         find_stage(&compile_only, "nextest-archive")["depends_on"],
         serde_json::json!(["nextest-compile", "dylint-workspace"])
+    );
+    // soldr#3460: no UI tests run on the compile-only path, so nothing is
+    // cooked for them and analysis follows the libraries directly.
+    assert!(!stage_names(&compile_only)
+        .iter()
+        .any(|name| name.starts_with("dylint-cook-")));
+    assert_eq!(
+        find_stage(&compile_only, "dylint-workspace")["depends_on"],
+        serde_json::json!(["dylint-library-ban_swallowed_child_stdio"])
     );
     assert!(array(&compile_only, "domains")
         .iter()

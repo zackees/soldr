@@ -622,6 +622,68 @@ fn fixture_full_branch<'a>(
     branch
 }
 
+fn walk_branch(mut branch: DylintBranch<'_>) -> Vec<String> {
+    let mut order = Vec::new();
+    let mut current = branch.current();
+    while let Some(stage) = current {
+        order.push(stage.name.clone());
+        current = branch.advance(&NoopVerifier).expect("advance");
+    }
+    order
+}
+
+/// soldr#3460: the UI-test dependency cooks run after the libraries and
+/// before workspace analysis -- inside the Dylint branch, so they overlap
+/// Nextest compilation but never Nextest execution.
+#[test]
+fn dylint_branch_cooks_between_the_libraries_and_the_analysis() {
+    let libraries = [
+        test_stage("dylint-library-one"),
+        test_stage("dylint-library-two"),
+    ];
+    let cooks = [test_stage("dylint-cook-one"), test_stage("dylint-cook-two")];
+    let workspace = test_stage("dylint-workspace");
+    let ui_tests = [test_stage("dylint-test-one")];
+
+    let mut branch = fixture_full_branch(&libraries, &workspace, &ui_tests);
+    branch.set_cooks(cooks.iter().collect());
+    assert_eq!(
+        walk_branch(branch),
+        [
+            "dylint-library-one",
+            "dylint-library-two",
+            "dylint-cook-one",
+            "dylint-cook-two",
+            "dylint-workspace",
+            "dylint-test-one"
+        ]
+    );
+
+    // soldr#2349's library-marker skip lands on the first cook, not past it.
+    let mut skipped = fixture_full_branch(&libraries, &workspace, &ui_tests);
+    skipped.phase = DylintPhase::Workspace;
+    skipped.set_cooks(cooks.iter().collect());
+    assert_eq!(
+        walk_branch(skipped),
+        [
+            "dylint-cook-one",
+            "dylint-cook-two",
+            "dylint-workspace",
+            "dylint-test-one"
+        ]
+    );
+
+    // The compile-only path has no cooks and goes straight to analysis.
+    assert_eq!(
+        walk_branch(fixture_compile_branch(&libraries, &workspace)),
+        [
+            "dylint-library-one",
+            "dylint-library-two",
+            "dylint-workspace"
+        ]
+    );
+}
+
 /// Records the peer chain's hook calls in order, and can refuse a stage.
 #[derive(Default)]
 struct RecordingHooks {

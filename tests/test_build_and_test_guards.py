@@ -140,7 +140,6 @@ def test_setup_soldr_job_caps_are_cleared_before_source_work() -> None:
     command_by_step = {
         CI_TEST_DRIVER: "soldr cargo build",
         BROKER_HANDOFF: '"$source_soldr" daemon start',
-        DYLINT_TESTS_COOK: "cook_dylint_tests_tree.py",
         CI_TEST_RUN: "ci-test --target",
     }
     for step_name, source_command in command_by_step.items():
@@ -149,33 +148,20 @@ def test_setup_soldr_job_caps_are_cleared_before_source_work() -> None:
         assert body.index(clear_caps) < body.index(source_command)
 
 
-def test_the_dylint_tests_tree_is_cooked_between_the_broker_handoff_and_validation() -> (
-    None
-):
-    """The tests-tree cook (soldr#3042) has a load-bearing position.
+def test_the_dylint_tests_tree_is_cooked_inside_ci_test_not_as_a_serial_step() -> None:
+    """soldr#3460: the tests-tree cook (soldr#3042) moved into `soldr ci-test`.
 
-    It must run AFTER the broker handoff, not before: `--tree` exists only on
-    the source binary (the pinned setup-soldr 0.9.10 builder has no such
-    flag), and the compiles must route through the same source-owned daemon
-    `ci-test` uses -- the handoff step is what makes that daemon current. It
-    must run BEFORE prescribed host validation, or the whole point (keeping
-    these compiles out of the concurrent Dylint UI-test / Fresh Nextest
-    window) is lost. A future re-order that moves this step either direction
-    silently reintroduces the contention soldr#3042 removed.
+    As a workflow step it ran serially between the broker handoff and
+    prescribed host validation -- ~63 s on this lane's critical path. ci-test
+    now plans it as `dylint-cook-*` stages inside its Dylint branch, which
+    keeps soldr#3042's guarantee (none of those compiles run beside tests)
+    while overlapping Nextest compilation. Re-adding the step would pay the
+    cost twice.
     """
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    assert workflow.count(f"- name: {DYLINT_TESTS_COOK}") == 1
-    assert (
-        workflow.index(f"- name: {BROKER_HANDOFF}")
-        < workflow.index(f"- name: {DYLINT_TESTS_COOK}")
-        < workflow.index(f"- name: {CI_TEST_RUN}")
-    )
-
-    body = _step_body(workflow, DYLINT_TESTS_COOK)
-    assert "--target-root" in body
-    assert "cook_dylint_tests_tree.py" in body
-    assert "continue-on-error: true" not in body
+    assert f"- name: {DYLINT_TESTS_COOK}" not in workflow
+    assert "cook_dylint_tests_tree.py" not in workflow
 
 
 def test_source_driver_reuse_is_exact_sha_opportunistic_and_fails_closed() -> None:
@@ -218,9 +204,10 @@ def test_source_driver_reuse_is_exact_sha_opportunistic_and_fails_closed() -> No
     # The driver BUILDS in the workspace target dir, so its rustc invocations
     # match ci-test's and share zccache contexts (a $RUNNER_TEMP target dir
     # made 29 units miss every run). It RUNS from a copy outside that dir:
-    # the Dylint UI-test cook builds into that tree too, so the copy must
-    # happen in this step, before the cook step (soldr#3396 retired the
-    # stable-tree cargo-chef cook, whose skeleton build stubbed every bin).
+    # ci-test's Dylint UI-test cook stages build into that tree too, so the
+    # copy must happen in this step, before host validation (soldr#3396
+    # retired the stable-tree cargo-chef cook, whose skeleton build stubbed
+    # every bin; soldr#3460 moved the UI-test cook into ci-test).
     assert 'source_soldr="${RUNNER_TEMP}/soldr-source-driver/' in verify
     assert "CARGO_TARGET_DIR: ${{ github.workspace }}/target" in build
     assert "CARGO_TARGET_DIR: ${{ runner.temp }}/soldr-source-driver" not in build
@@ -233,7 +220,7 @@ def test_source_driver_reuse_is_exact_sha_opportunistic_and_fails_closed() -> No
     )
     assert build.index("soldr cargo build") < build.index("install -D")
     build_at = workflow.index("- name: Build ci-test driver")
-    assert build_at < workflow.index("- name: Cook the Dylint UI-test dependency layer")
+    assert build_at < workflow.index(f"- name: {CI_TEST_RUN}")
     assert "- name: Cook stable dependency tree" not in workflow
     assert 'source_soldr="${GITHUB_WORKSPACE}/target/' not in workflow
 
