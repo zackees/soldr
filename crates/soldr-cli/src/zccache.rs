@@ -194,14 +194,38 @@ pub(crate) fn find_git_worktree_root(cwd: &std::path::Path) -> Option<std::path:
     None
 }
 
+/// [`soldr_platform::platform::fs::delivery_probe::DeliveryCapability`] ->
+/// the [`crate::core::materialization_mode::ZccacheMode`] soldr injects for
+/// it. Lives here, not in either lower-level crate, because it is the only
+/// place that depends on both (soldr-platform never depends on soldr-core's
+/// domain types, and soldr-core never depends on soldr-platform's).
+fn delivery_capability_to_mode(
+    capability: crate::platform::fs::delivery_probe::DeliveryCapability,
+) -> crate::core::materialization_mode::ZccacheMode {
+    use crate::core::materialization_mode::ZccacheMode;
+    use crate::platform::fs::delivery_probe::DeliveryCapability;
+    match capability {
+        DeliveryCapability::Reflink => ZccacheMode::Reflink,
+        DeliveryCapability::Link => ZccacheMode::Link,
+        DeliveryCapability::Copy => ZccacheMode::Copy,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ZccacheChildEnv {
     pub(crate) path_remap: Option<&'static str>,
     pub(crate) worktree_root: Option<std::path::PathBuf>,
-    /// Canonical `ZCCACHE_MODE` soldr sets on the child (soldr#3407): only
-    /// for a soldr-owned source (`--zccache-mode`, `SOLDR_ZCCACHE_MODE`,
-    /// `[zccache] mode`). The user's own `ZCCACHE_MODE` reaches the
-    /// embedded service unaided and is never rewritten.
+    /// Canonical `ZCCACHE_MODE` soldr sets on the child (soldr#3407,
+    /// zccache#1792): for a soldr-owned source (`--zccache-mode`,
+    /// `SOLDR_ZCCACHE_MODE`, `[zccache] mode`); or when the resolved mode
+    /// is `AUTO` (from any tier, including the user's own `ZCCACHE_MODE`)
+    /// or nothing is configured at all, soldr probes the `(zccache cache
+    /// dir, cargo target dir)` pair once
+    /// ([`crate::platform::fs::delivery_probe::probe_delivery_capability`])
+    /// and injects the single explicit answer -- `REFLINK`, `LINK`, or
+    /// `COPY` -- instead of the chain zccache's own `AUTO` no longer runs.
+    /// An explicit user `LINK`/`COPY`/`REFLINK`/`REFLINK_OR_LINK_OR_COPY`
+    /// still reaches the embedded service unaided and is never rewritten.
     pub(crate) materialization_mode: Option<&'static str>,
 }
 
@@ -215,18 +239,36 @@ impl ZccacheChildEnv {
         // ignored here like the other build-time tiers, but an invalid mode
         // value in it — or in either environment tier — fails the build
         // rather than silently delivering the wrong way.
-        let config_mode = crate::core::SoldrPaths::new()
-            .ok()
+        let paths = crate::core::SoldrPaths::new().ok();
+        let config_mode = paths
+            .as_ref()
             .and_then(|paths| paths.load_config().ok())
             .and_then(|config| config.zccache.mode);
         let mode = crate::core::materialization_mode::resolve_zccache_mode(config_mode.as_deref())
             .map_err(|error| SoldrError::Other(error.to_string()))?;
+        // soldr#3440/zccache#1792: only ever probes the filesystem when the
+        // resolved mode needs it (AUTO or unset) -- never for an explicit
+        // LINK/COPY/REFLINK/REFLINK_OR_LINK_OR_COPY.
+        let cache_probe_dir = paths
+            .as_ref()
+            .map(|paths| crate::cache_lib::zccache_dir(paths))
+            .unwrap_or_else(|| cwd.clone());
+        let target_probe_dir =
+            non_empty_env_path("CARGO_TARGET_DIR").unwrap_or_else(|| cwd.join("target"));
         Ok(Self::from_inputs(
             user_zccache.as_deref(),
             soldr_override.as_deref(),
             user_worktree_root.as_deref(),
             &cwd,
             mode,
+            || {
+                delivery_capability_to_mode(
+                    crate::platform::fs::delivery_probe::probe_delivery_capability(
+                        &cache_probe_dir,
+                        &target_probe_dir,
+                    ),
+                )
+            },
         ))
     }
 
@@ -236,6 +278,7 @@ impl ZccacheChildEnv {
         user_worktree_root: Option<&std::ffi::OsStr>,
         cwd: &std::path::Path,
         mode: Option<crate::core::materialization_mode::ResolvedZccacheMode>,
+        probe: impl FnOnce() -> crate::core::materialization_mode::ZccacheMode,
     ) -> Self {
         let path_remap = resolve_path_remap_env(user_zccache, soldr_override);
         let worktree_root = if path_remap_auto_active(user_zccache, soldr_override) {
@@ -246,7 +289,9 @@ impl ZccacheChildEnv {
         Self {
             path_remap,
             worktree_root,
-            materialization_mode: mode.and_then(|mode| mode.child_env_value()),
+            materialization_mode: crate::core::materialization_mode::child_env_value_for(
+                mode, probe,
+            ),
         }
     }
 
@@ -687,8 +732,16 @@ mod tests {
 
     fn child_env_with_mode(
         mode: Option<crate::core::materialization_mode::ResolvedZccacheMode>,
+        probed: crate::core::materialization_mode::ZccacheMode,
     ) -> ZccacheChildEnv {
-        ZccacheChildEnv::from_inputs(Some("off"), None, None, std::path::Path::new("/repo"), mode)
+        ZccacheChildEnv::from_inputs(
+            Some("off"),
+            None,
+            None,
+            std::path::Path::new("/repo"),
+            mode,
+            move || probed,
+        )
     }
 
     fn injected_mode(env: &ZccacheChildEnv) -> Option<Option<String>> {
@@ -701,15 +754,24 @@ mod tests {
     }
 
     #[test]
-    fn soldr_owned_mode_is_injected_in_canonical_spelling() {
+    fn soldr_owned_non_auto_mode_is_injected_in_canonical_spelling() {
         use crate::core::materialization_mode::{
             ResolvedZccacheMode, ZccacheMode, ZccacheModeSource,
         };
         for (mode, source) in [
             (ZccacheMode::Copy, ZccacheModeSource::SoldrEnv),
             (ZccacheMode::Reflink, ZccacheModeSource::Config),
+            (
+                ZccacheMode::ReflinkOrLinkOrCopy,
+                ZccacheModeSource::SoldrEnv,
+            ),
         ] {
-            let env = child_env_with_mode(Some(ResolvedZccacheMode { mode, source }));
+            // Probe result is irrelevant (and must not be consulted) for an
+            // explicit non-AUTO mode; pin it to something else to prove it.
+            let env = child_env_with_mode(
+                Some(ResolvedZccacheMode { mode, source }),
+                ZccacheMode::Copy,
+            );
             assert_eq!(env.materialization_mode, Some(mode.as_str()));
             assert_eq!(
                 injected_mode(&env),
@@ -720,23 +782,123 @@ mod tests {
     }
 
     #[test]
-    fn the_users_own_zccache_mode_is_left_alone() {
+    fn the_users_own_non_auto_zccache_mode_is_left_alone() {
         use crate::core::materialization_mode::{
             ResolvedZccacheMode, ZccacheMode, ZccacheModeSource,
         };
-        let env = child_env_with_mode(Some(ResolvedZccacheMode {
-            mode: ZccacheMode::Link,
-            source: ZccacheModeSource::ZccacheEnv,
-        }));
-        assert_eq!(env.materialization_mode, None);
-        assert_eq!(injected_mode(&env), None, "never rewrite the user's value");
+        for mode in [
+            ZccacheMode::Link,
+            ZccacheMode::Copy,
+            ZccacheMode::Reflink,
+            ZccacheMode::ReflinkOrLinkOrCopy,
+        ] {
+            let env = child_env_with_mode(
+                Some(ResolvedZccacheMode {
+                    mode,
+                    source: ZccacheModeSource::ZccacheEnv,
+                }),
+                ZccacheMode::Copy,
+            );
+            assert_eq!(env.materialization_mode, None, "{mode:?}");
+            assert_eq!(
+                injected_mode(&env),
+                None,
+                "{mode:?}: never rewrite the user's value"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // AUTO / unset: soldr probes once and injects the explicit answer
+    // (soldr#3440, zccache#1792) instead of the chain zccache's own AUTO no
+    // longer runs.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn auto_from_any_tier_is_injected_as_the_probed_mode() {
+        use crate::core::materialization_mode::{
+            ResolvedZccacheMode, ZccacheMode, ZccacheModeSource,
+        };
+        for source in [
+            ZccacheModeSource::SoldrEnv,
+            ZccacheModeSource::Config,
+            ZccacheModeSource::ZccacheEnv,
+        ] {
+            let auto = Some(ResolvedZccacheMode {
+                mode: ZccacheMode::Auto,
+                source,
+            });
+            for probed in [ZccacheMode::Reflink, ZccacheMode::Link, ZccacheMode::Copy] {
+                let env = child_env_with_mode(auto, probed);
+                assert_eq!(
+                    injected_mode(&env),
+                    Some(Some(probed.as_str().to_string())),
+                    "{source:?} probed={probed:?}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn no_mode_configured_injects_nothing() {
-        let env = child_env_with_mode(None);
-        assert_eq!(env.materialization_mode, None);
-        assert_eq!(injected_mode(&env), None);
+    fn no_mode_configured_is_also_injected_as_the_probed_mode() {
+        use crate::core::materialization_mode::ZccacheMode;
+        for probed in [ZccacheMode::Reflink, ZccacheMode::Link, ZccacheMode::Copy] {
+            let env = child_env_with_mode(None, probed);
+            assert_eq!(env.materialization_mode, Some(probed.as_str()));
+            assert_eq!(injected_mode(&env), Some(Some(probed.as_str().to_string())));
+        }
+    }
+
+    #[test]
+    fn probe_is_not_invoked_when_an_explicit_non_auto_mode_wins() {
+        use crate::core::materialization_mode::{
+            ResolvedZccacheMode, ZccacheMode, ZccacheModeSource,
+        };
+        for (mode, source) in [
+            (ZccacheMode::Link, ZccacheModeSource::SoldrEnv),
+            (ZccacheMode::Copy, ZccacheModeSource::ZccacheEnv),
+            (ZccacheMode::Reflink, ZccacheModeSource::Config),
+            (
+                ZccacheMode::ReflinkOrLinkOrCopy,
+                ZccacheModeSource::SoldrEnv,
+            ),
+        ] {
+            let mut probed = false;
+            let env = ZccacheChildEnv::from_inputs(
+                Some("off"),
+                None,
+                None,
+                std::path::Path::new("/repo"),
+                Some(ResolvedZccacheMode { mode, source }),
+                || {
+                    probed = true;
+                    ZccacheMode::Reflink
+                },
+            );
+            let _ = env.materialization_mode;
+            assert!(
+                !probed,
+                "probe must not run for explicit {mode:?} ({source:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn delivery_capability_conversion_matches_zccache_mode() {
+        use crate::core::materialization_mode::ZccacheMode;
+        use crate::platform::fs::delivery_probe::DeliveryCapability;
+        assert_eq!(
+            delivery_capability_to_mode(DeliveryCapability::Reflink),
+            ZccacheMode::Reflink
+        );
+        assert_eq!(
+            delivery_capability_to_mode(DeliveryCapability::Link),
+            ZccacheMode::Link
+        );
+        assert_eq!(
+            delivery_capability_to_mode(DeliveryCapability::Copy),
+            ZccacheMode::Copy
+        );
     }
 
     #[test]

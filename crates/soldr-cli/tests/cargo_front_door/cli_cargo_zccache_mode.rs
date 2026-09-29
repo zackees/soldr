@@ -1,6 +1,15 @@
-//! soldr#3407 / zccache#1683: the cache-hit delivery mode reaches the cargo
-//! child as `ZCCACHE_MODE`, resolved as `--zccache-mode` /
-//! `SOLDR_ZCCACHE_MODE` > `[zccache] mode` > the user's own `ZCCACHE_MODE`.
+//! soldr#3407 / zccache#1683 / soldr#3440 / zccache#1792: the cache-hit
+//! delivery mode reaches the cargo child as `ZCCACHE_MODE`, resolved as
+//! `--zccache-mode` / `SOLDR_ZCCACHE_MODE` > `[zccache] mode` > the user's
+//! own `ZCCACHE_MODE`. `AUTO` (from any tier) or nothing configured makes
+//! soldr probe the `(zccache cache dir, cargo target dir)` pair once and
+//! inject the single explicit answer (`REFLINK`, `LINK`, or `COPY`) instead
+//! of the chain zccache's own `AUTO` no longer runs. The exact probed value
+//! is host-filesystem-dependent (btrfs/APFS reflink vs. ext4/tmpfs/NTFS
+//! hardlink-only), so these tests assert the *shape* of the probe-driven
+//! cases (one of the three concrete modes, never `AUTO` and never empty)
+//! rather than pin a specific one; `soldr_platform`'s unit tests pin the
+//! probe's own decision logic with a forced tempdir pair.
 
 use crate::common::*;
 use std::fs;
@@ -50,7 +59,7 @@ fn run(case: &Case) -> (Output, String) {
     (output, log)
 }
 
-fn assert_child_mode(case: Case, expected: &str) {
+fn run_ok(case: Case) -> String {
     let (output, log) = run(&case);
     assert!(
         output.status.success(),
@@ -59,11 +68,27 @@ fn assert_child_mode(case: Case, expected: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    child_mode(&log).unwrap_or_else(|| panic!("{}: no ZCCACHE_MODE logged: {log}", case.label))
+}
+
+fn assert_child_mode(case: Case, expected: &str) {
+    let label = case.label;
+    let mode = run_ok(case);
     assert_eq!(
-        child_mode(&log).as_deref(),
-        Some(expected),
-        "{}: the cargo child must see ZCCACHE_MODE={expected:?}: {log}",
-        case.label
+        mode, expected,
+        "{label}: the cargo child must see ZCCACHE_MODE={expected:?}"
+    );
+}
+
+/// For the probe-driven cases (AUTO from any tier, or nothing configured):
+/// assert soldr picked one of the three concrete delivery modes rather than
+/// leaving `AUTO` (or nothing) for zccache to chain through itself.
+fn assert_child_mode_is_probed_concrete(case: Case) {
+    let label = case.label;
+    let mode = run_ok(case);
+    assert!(
+        ["REFLINK", "LINK", "COPY"].contains(&mode.as_str()),
+        "{label}: expected an explicit probed mode (REFLINK/LINK/COPY), got {mode:?}"
     );
 }
 
@@ -135,17 +160,50 @@ fn the_users_own_variable_passes_through_untouched() {
 }
 
 #[test]
-fn nothing_configured_leaves_zccache_mode_unset() {
+fn the_flag_accepts_reflink_or_link_or_copy() {
     assert_child_mode(
         Case {
-            label: "unset",
-            flag: None,
+            label: "flag-reflink-or-link-or-copy",
+            flag: Some("reflink-or-link-or-copy"),
             soldr_env: None,
             config: None,
             user_env: None,
         },
-        "",
+        "REFLINK_OR_LINK_OR_COPY",
     );
+}
+
+#[test]
+fn nothing_configured_injects_a_probed_concrete_mode() {
+    assert_child_mode_is_probed_concrete(Case {
+        label: "unset",
+        flag: None,
+        soldr_env: None,
+        config: None,
+        user_env: None,
+    });
+}
+
+#[test]
+fn the_flag_auto_injects_a_probed_concrete_mode() {
+    assert_child_mode_is_probed_concrete(Case {
+        label: "flag-auto",
+        flag: Some("auto"),
+        soldr_env: None,
+        config: None,
+        user_env: None,
+    });
+}
+
+#[test]
+fn the_users_own_auto_value_is_replaced_with_a_probed_concrete_mode() {
+    assert_child_mode_is_probed_concrete(Case {
+        label: "user-auto",
+        flag: None,
+        soldr_env: None,
+        config: None,
+        user_env: Some("auto"),
+    });
 }
 
 #[test]
