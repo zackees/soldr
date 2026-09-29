@@ -23,6 +23,7 @@ pub mod cargo_path_check;
 pub mod core;
 pub mod defender;
 pub mod defender_probe;
+pub(crate) mod elf_origin;
 pub mod fuzzy_match;
 pub mod self_relocate;
 pub mod startup_profile;

@@ -284,6 +284,8 @@ pub fn exe_depends_on_bundled_wheel_libs(exe: &Path) -> bool {
 /// can legitimately appear in a data section as an ordinary string, and
 /// matching that would misclassify unrelated binaries.
 ///
+/// Also answers `true` for an ELF whose rpath carries `$ORIGIN` (soldr#3403).
+///
 /// Returns `false` for anything it cannot parse — a non-Mach-O, a
 /// truncated file, an unreadable path. The caller's fallback is the
 /// hardlink fast path, so a false negative preserves today's behaviour
@@ -292,7 +294,10 @@ pub fn exe_has_loader_path_reference(exe: &Path) -> bool {
     let Ok(bytes) = fs::read(exe) else {
         return false;
     };
-    macho_load_commands_mention_loader_path(&bytes)
+    // soldr#3403: an ELF names its bundled libraries relative to itself with
+    // `$ORIGIN` in DT_RPATH/DT_RUNPATH, and breaks the same way on a copy.
+    crate::elf_origin::elf_has_origin_rpath(&bytes)
+        || macho_load_commands_mention_loader_path(&bytes)
 }
 
 /// `@loader_path` is the only Mach-O prefix that is relative to the
