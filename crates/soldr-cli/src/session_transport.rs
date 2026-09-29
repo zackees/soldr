@@ -568,10 +568,23 @@ where
                     }
                     return Ok(route);
                 }
-                Some(HelloReplyResult::Refused(refused)) => Err(io::Error::other(format!(
-                    "broker refused the daemon route: {} (code={}, retry_after_ms={}, details={:?})",
-                    refused.reason, refused.code, refused.retry_after_ms, refused.details
-                ))),
+                Some(HelloReplyResult::Refused(refused)) => {
+                    let (wrapper, service) = crate::route_refusal::wrapper_and_service();
+                    let wanted =
+                        crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_VERSION;
+                    Err(io::Error::other(crate::route_refusal::describe_refusal(
+                        refused.code,
+                        &refused.reason,
+                        refused.retry_after_ms,
+                        &refused.details,
+                        &crate::route_refusal::RefusalContext {
+                            wrapper: &wrapper,
+                            wrapper_version: env!("CARGO_PKG_VERSION"),
+                            wanted_version: wanted,
+                            service: service.as_deref(),
+                        },
+                    )))
+                }
                 None => Err(io::Error::other("broker returned an empty HelloReply")),
             }?;
         }
