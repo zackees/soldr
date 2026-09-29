@@ -19,10 +19,11 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import load_script_module
+from conftest import load_script_module, nextest_wrapper_argv
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = REPO_ROOT / ".github" / "scripts" / "nextest_timeout_wrapper.py"
+WRAPPER_ARGV = nextest_wrapper_argv()
 guard = load_script_module(WRAPPER.parent / "nextest_memory_guard.py")
 
 MIB = 1024 * 1024
@@ -64,7 +65,7 @@ def _run(
     args: list[str], env: dict[str, str], timeout: float = 60, **kwargs
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(WRAPPER), sys.executable, *args],
+        [*WRAPPER_ARGV, sys.executable, *args],
         capture_output=True,
         text=True,
         env=env,
@@ -558,8 +559,7 @@ def test_delegated_cgroup_v2_ceiling_is_enforced_by_the_kernel(tmp_path: Path) -
             "-c",
             _DELEGATED_SCOPE,
             "scope",
-            sys.executable,
-            str(WRAPPER),
+            *WRAPPER_ARGV,
             sys.executable,
             "-c",
             _HOG,

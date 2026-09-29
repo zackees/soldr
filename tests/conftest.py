@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import shutil
 import subprocess
@@ -11,6 +12,27 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+NEXTEST_WRAPPER_UNDER_TEST_ENV = "SOLDR_NEXTEST_WRAPPER_UNDER_TEST"
+
+
+def nextest_wrapper_argv() -> list[str]:
+    """The Nextest wrapper the black-box suites drive (soldr#3453).
+
+    Defaults to the Python wrapper. Naming the native
+    ``soldr-nextest-wrapper`` binary in ``SOLDR_NEXTEST_WRAPPER_UNDER_TEST``
+    runs the same tests against it, which is the parity contract between the
+    two implementations.
+    """
+
+    native = os.environ.get(NEXTEST_WRAPPER_UNDER_TEST_ENV, "").strip()
+    if native:
+        return [native]
+    script = (
+        Path(__file__).resolve().parents[1]
+        / ".github/scripts/nextest_timeout_wrapper.py"
+    )
+    return [sys.executable, str(script)]
 
 
 def load_script_module(path: str | Path, name: str | None = None) -> ModuleType:

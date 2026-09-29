@@ -15,3 +15,4 @@ pub mod signal;
 pub mod spawn;
 pub mod spawn_exclusion;
 pub mod terminate;
+pub mod test_child;

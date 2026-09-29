@@ -1,0 +1,27 @@
+[package]
+name = "soldr-nextest-wrapper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Native Nextest run-wrapper for soldr ci-test (soldr#3453)"
+publish = false
+
+[[bin]]
+name = "soldr-nextest-wrapper"
+path = "src/main.rs"
+
+[dependencies]
+fs2 = { workspace = true }
+sha2 = { workspace = true }
+soldr-core = { path = "../soldr-core" }
+soldr-platform = { path = "../soldr-platform" }
+wait-timeout = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
