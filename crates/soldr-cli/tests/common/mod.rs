@@ -342,6 +342,14 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         // them out of the pin requirement rather than seeding a manifest into
         // every fixture.
         .env(soldr_cli::toolchain::ALLOW_UNPINNED_ENV_VAR, "1")
+        // soldr#3466: a cacheable `cargo build/test/...` front door eagerly
+        // materializes managed cmake + ninja into `$SOLDR_CACHE_DIR/bin/syslib`.
+        // Every fixture has its own fresh cache root, so 92 fixture front
+        // doors each downloaded both bundles from GitHub (~3-5 s apiece) for
+        // workspaces that never run cmake. Select system cmake instead, the
+        // same opt-out the lib unit tests use; a fixture that exercises the
+        // managed-cmake injection removes this after calling the helper.
+        .env(soldr_cli::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1")
         .env_remove("RUSTC_WRAPPER")
         // `soldr ci-test` deliberately points this override at the source
         // binary. Nested fixture front doors model fresh callers: inheriting

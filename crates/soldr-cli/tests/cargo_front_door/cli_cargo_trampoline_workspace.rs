@@ -68,6 +68,8 @@ where
     // This legacy test-only switch used to force the unsafe path. Keep it set
     // to prove no hidden opt-in can restore the retired freshness oracle.
     command.env("SOLDR_TEST_FORCE_WORKSPACE_TRAMPOLINE", "1");
+    // soldr#3466: skip the per-cache-root managed cmake + ninja download.
+    command.env(soldr_cli::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1");
     command.env_remove("CARGO_TARGET_DIR");
     command.env_remove("SOLDR_TARGET_CACHE_MODE");
     command.env_remove("SOLDR_BUILD_CACHE_MODE");
