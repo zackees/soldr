@@ -104,7 +104,7 @@ jobs:
       #
       # This raises the ceiling so the extra concurrency cannot manufacture a
       # failure. It is safe because the ceiling is NOT the hang detector:
-      # `first_response` (2s) and `progress_silence` (5s) catch a dead or
+      # `first_response` (10s) and `progress_silence` (5s) catch a dead or
       # stalled broker and are untouched, while `route_ceiling` fires only on
       # "alive, progressing, but slow" -- pinned by
       # `continuous_progress_is_still_bounded_by_route_ceiling` in

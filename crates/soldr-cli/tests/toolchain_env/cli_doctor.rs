@@ -353,7 +353,10 @@ fn issue_2476_doctor_json_reports_broker_deadline_provenance() {
     assert!(output.status.success());
     assert_eq!(row("SOLDR_BROKER_BUSY_BUDGET_MS")["effective_ms"], 17);
     assert_eq!(row("SOLDR_BROKER_BUSY_BUDGET_MS")["source"], "override");
-    assert_eq!(row("SOLDR_BROKER_FIRST_RESPONSE_MS")["effective_ms"], 2_000);
+    assert_eq!(
+        row("SOLDR_BROKER_FIRST_RESPONSE_MS")["effective_ms"],
+        10_000
+    );
     assert!(row("SOLDR_BROKER_FIRST_RESPONSE_MS")["source"]
         .as_str()
         .is_some_and(|source| source.contains("ignored")));
