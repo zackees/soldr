@@ -1,0 +1,86 @@
+# CI Pre: called as the first job of ci.yml, and by cache-budget.yml for the
+# triggers ci.yml does not have (non-main pushes, schedule, dispatch). It
+# implements the fleet proto-policy in zackees/ci.yml#6 ("Two workflows",
+# section 2, row 9 "Cache (live)") under the owner's name, `ci-pre.yml`.
+#
+# Contract: stdlib `python3` from the runner image only (nothing installed),
+# one sparse checkout per job, 2-minute timeouts, and nothing in ci.yml
+# `needs:` this workflow, so a janitor queued behind another sweep never
+# delays a build. Concurrency is job-level on the janitor only: no
+# workflow-level group (which would cancel sweeps mid-delete), and the verdict
+# never waits for the janitor.
+#
+# See .github/scripts/check_cache_budget.py for the sweep plan
+# (`plan_sweep`) and the event-dependent verdict (`enforcement_mode`), and
+# ci/cache-ownership.json for each family's allocation and `evict` policy.
+
+name: CI Pre
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  cache-janitor:
+    name: Cache janitor
+    # Deleting needs a writable token. A fork PR's token is read-only, so the
+    # sweep runs on pushes, schedule, dispatch and same-repository PRs only.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    # One sweep at a time, repository-wide, and never cancelled mid-delete.
+    concurrency:
+      group: cache-janitor
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/check_cache_budget.py
+            ci/cache-ownership.json
+          sparse-checkout-cone-mode: false
+      - name: Sweep reclaimable and evictable cache entries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 .github/scripts/check_cache_budget.py
+          --require-live --prune --apply --sweep-only
+
+  cache-budget:
+    # Kept from ci.yml's former job so the check still reads the same.
+    name: Repository Actions cache budget
+    # No `needs: cache-janitor` and no concurrency: the verdict runs at once
+    # and evaluates live state on its own, so it never queues behind a sweep.
+    # On main/schedule a transient overage that a concurrent sweep is still
+    # deleting can fail one run; the next run sees the converged state.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/check_cache_budget.py
+            ci/cache-ownership.json
+          sparse-checkout-cone-mode: false
+      - name: Repository Actions cache budget
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          # Fork PR tokens can be read-only; keep the intentional skip there.
+          REQUIRE_LIVE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          args=(--event-name "$EVENT_NAME" --ref "$REF")
+          if [[ "$REQUIRE_LIVE" == "true" ]]; then args+=(--require-live); fi
+          python3 .github/scripts/check_cache_budget.py "${args[@]}"

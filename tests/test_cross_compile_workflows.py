@@ -606,8 +606,9 @@ def test_host_validation_opportunistically_reuses_exact_sha_bootstrap() -> None:
     assert "if: inputs.source_driver_artifact_name != ''" in host_template
 
     assert (
-        "bootstrap-soldr-blessed-linux-gnu-dev-v1-${{ needs.ci-mode.outputs.checkout_sha }}"
-        in producer
+        # zackees/ci.yml#6: `-pr-<N>` in PR context, empty elsewhere.
+        "bootstrap-soldr-blessed-linux-gnu-dev-v1${{ env.PR_CACHE_TAG }}-"
+        "${{ needs.ci-mode.outputs.checkout_sha }}" in producer
     )
     assert "key: rustup-1.98.1-linux-x64-v1" in producer
     assert "rustup toolchain install 1.98.1 --profile minimal" in producer

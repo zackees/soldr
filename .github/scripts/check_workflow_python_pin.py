@@ -69,6 +69,16 @@ UV_PYTHON_313_PATTERN = re.compile(r"--python(?:=|\s+)3\.13(?=\s|$)")
 UV_NO_PROJECT_PATTERN = re.compile(r"--no-project(?=\s|$)")
 RELEASE_WORKFLOW = "release-auto.yml"
 
+# Repo scripts that run under a runner image's own `python3` on purpose: the
+# fast pre-check (ci-pre.yml, zackees/ci.yml#6) may install nothing. Each is
+# standard-library only and refuses to run below its declared
+# `STDLIB_PYTHON_FLOOR` (tests/test_ci_pre_workflow.py checks both), so the
+# interpreter floor is enforced by the script instead of by an install step.
+# That counts as pinned only on a versioned runner label, whose image ships a
+# known python3 (ubuntu-24.04: 3.12), never on a floating `-latest` label.
+STDLIB_SCRIPTS: frozenset[str] = frozenset({".github/scripts/check_cache_budget.py"})
+VERSIONED_UBUNTU = re.compile(r"^ubuntu-[0-9]{2}\.[0-9]{2}(?:-arm)?$")
+
 # Jobs running repo Python under an unpinned interpreter as of soldr#2763.
 # Entries are `(workflow file, job id)`. Shrink this list; never grow it.
 BASELINE: frozenset[tuple[str, str]] = frozenset(
@@ -215,6 +225,15 @@ def job_runs_repo_python(job: dict) -> bool:
     return bool(SCRIPT_PATTERN.search(job_run_text(job)))
 
 
+def stdlib_only_job(job: dict) -> bool:
+    """Every repo script is in `STDLIB_SCRIPTS`, on a versioned ubuntu image."""
+    runs_on = job.get("runs-on")
+    if not isinstance(runs_on, str) or not VERSIONED_UBUNTU.fullmatch(runs_on):
+        return False
+    scripts = set(SCRIPT_PATTERN.findall(job_run_text(job)))
+    return bool(scripts) and scripts <= STDLIB_SCRIPTS
+
+
 def job_pins_interpreter(job: dict, *, release_job: bool = False) -> bool:
     """Does `job` fix which Python runs its repo scripts?
 
@@ -234,6 +253,8 @@ def job_pins_interpreter(job: dict, *, release_job: bool = False) -> bool:
     environment must not be influenced by a checked-out project.
     """
     if job.get("container") and not release_job:
+        return True
+    if not release_job and stdlib_only_job(job):
         return True
     uses = job_uses_text(job)
     if SETUP_PYTHON_PATTERN.search(uses) and not release_job:

@@ -408,3 +408,36 @@ docstring for the selection policy. See `ci/cache-ownership.json`'s
 `budget.comment` field for the exact measurement this table was derived from,
 including the one issue-scope adjustment (the pep517 rust-cache) made after
 the original soldr#3047 step-1 list was written.
+
+### The janitor converges; the verdict charges whoever caused it (zackees/ci.yml#6)
+
+The budget is enforced by `.github/workflows/ci-pre.yml` ("CI Pre"), the first
+job of `ci.yml`, which `cache-budget.yml` also calls for non-main pushes, the
+six-hourly schedule and `workflow_dispatch`. It installs nothing: stdlib
+`python3` on `ubuntu-24.04`, a sparse checkout, 2-minute timeouts, and no job
+in `ci.yml` `needs:` it. It has two independent jobs:
+
+- **Cache janitor** (`--prune --apply --sweep-only`, job-level
+  `concurrency: cache-janitor`, never cancelled). It deletes, in this order:
+  every entry of a PR that is no longer open (merged or closed; matched by
+  `refs/pull/<N>/*` ref or `pr-<N>` key tag, one state lookup per PR, kept
+  when the lookup fails); the existing safe-prune classes; then, for families
+  that declare an `evict` policy in `ci/cache-ownership.json`, whatever that
+  policy needs to fit the family's allocation. `experiment-lanes` is `lru`;
+  `pinned-immutable-download` is `newest-per-lineage` (the newest version of
+  each download is never evicted). Families without `evict` are never evicted
+  for budget. Apart from closed PRs' entries, nothing younger than
+  `SWEEP_GRACE_SECONDS` (10 minutes) is deleted. Open PRs keep their entries,
+  which count toward the budget.
+- **Repository Actions cache budget** (the verdict). It depends on the event:
+  a pull request fails only for what it saved itself (its own ref or `pr-<N>`
+  tag) or for a static manifest breach, and warns about everything else; a push
+  to a non-main branch warns; main, schedule and dispatch fail hard.
+
+`cache-budget.yml` also runs on `pull_request: closed` (the one PR trigger a
+non-`ci.yml` workflow may declare) to delete that PR's entries at once.
+Every cache a PR-reachable workflow can save in PR context carries
+`${{ env.PR_CACHE_TAG }}` (`-pr-<N>`, empty elsewhere), or does not save on PRs
+at all. The immutable downloads (rustup, xwin, Apple SDK, Dylint driver) are
+restore/save splits that PRs restore but never save.
+`.github/scripts/check_pr_cache_keys.py` enforces this in Lint.

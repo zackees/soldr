@@ -22,6 +22,22 @@ def workflow_paths(directory: Path) -> list[Path]:
     return sorted([*directory.glob("*.yml"), *directory.glob("*.yaml")])
 
 
+def closed_only(config: object) -> bool:
+    """A `pull_request` trigger limited to `types: [closed]`.
+
+    The invariant exists so that no second PR workflow can become a required
+    check. A closed-only trigger runs after the PR is closed, never on an
+    open PR's head, so it cannot gate a merge. cache-budget.yml uses it to
+    delete a closed PR's Actions-cache entries (zackees/ci.yml#6).
+    """
+    if not isinstance(config, dict):
+        return False
+    types = config.get("types")
+    if isinstance(types, str):
+        types = [types]
+    return isinstance(types, list) and types == ["closed"]
+
+
 def workflow_events(path: Path) -> set[str]:
     """Return PR events declared at the top level of one workflow document."""
 
@@ -31,7 +47,11 @@ def workflow_events(path: Path) -> set[str]:
     # PyYAML's YAML 1.1 resolver turns the unquoted GitHub key `on` into True.
     triggers = document.get("on", document.get(True, {}))
     if isinstance(triggers, dict):
-        events = set(triggers)
+        events = {
+            event
+            for event, config in triggers.items()
+            if not (event == "pull_request" and closed_only(config))
+        }
     elif isinstance(triggers, str):
         events = {triggers}
     elif isinstance(triggers, list):

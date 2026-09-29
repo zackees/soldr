@@ -866,3 +866,352 @@ def test_retired_perf_registry_generation_is_prunable() -> None:
         "6",
     )
     assert guard.prune_candidates([registry]) == [registry]
+
+
+# --------------------------------------------------------------------------
+# zackees/ci.yml#6 "Cache (live)" / GEN-009: who pays, and a janitor that
+# converges instead of leaving a permanently red cron.
+# --------------------------------------------------------------------------
+
+NOW = __import__("datetime").datetime(
+    2026, 9, 29, 12, 0, tzinfo=__import__("datetime").timezone.utc
+)
+OLD = "2026-09-20T00:00:00Z"
+FRESH = "2026-09-29T11:55:00Z"  # 5 minutes before NOW: inside the grace window
+
+
+def aged(
+    key: str,
+    size: int,
+    *,
+    ref: str = "refs/heads/main",
+    created: str = OLD,
+    accessed: str | None = None,
+) -> dict:
+    row = {**entry(key, size, ref=ref), "createdAt": created}
+    if accessed is not None:
+        row["lastAccessedAt"] = accessed
+    return row
+
+
+def budget_with(**families: dict) -> dict:
+    total = sum(spec["max_bytes"] for spec in families.values())
+    return {
+        "total_max_bytes": total,
+        "fail_total_bytes": total * 2,
+        "families": families,
+    }
+
+
+def over_budget_listing(
+    tmp_path: Path, ref: str = "refs/heads/main"
+) -> tuple[Path, Path]:
+    manifest = write_manifest(tmp_path, budget_with(fam=family("exp-", 100)))
+    listing = write_listing(tmp_path, [entry("exp-a", 80), entry("exp-b", 80, ref=ref)])
+    return manifest, listing
+
+
+def run_mode(manifest: Path, listing: Path, *extra: str) -> int:
+    return guard.main(
+        ["--manifest", str(manifest), "--from-json", str(listing), *extra]
+    )
+
+
+def test_pr_run_with_preexisting_overage_warns_and_passes(tmp_path, capsys) -> None:
+    manifest, listing = over_budget_listing(tmp_path)
+    code = run_mode(
+        manifest, listing, "--event-name", "pull_request", "--ref", "refs/pull/7/merge"
+    )
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "::warning title=Actions cache budget::family 'fam'" in out
+
+
+def test_pr_run_writes_the_warning_to_the_job_summary(tmp_path, monkeypatch) -> None:
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    manifest, listing = over_budget_listing(tmp_path)
+    assert (
+        run_mode(
+            manifest,
+            listing,
+            "--event-name",
+            "pull_request",
+            "--ref",
+            "refs/pull/7/merge",
+        )
+        == 0
+    )
+    assert "over its" in summary.read_text(encoding="utf-8")
+
+
+def test_pr_that_saved_over_budget_from_its_own_ref_fails(tmp_path, capsys) -> None:
+    manifest, listing = over_budget_listing(tmp_path, ref="refs/pull/7/merge")
+    code = run_mode(
+        manifest, listing, "--event-name", "pull_request", "--ref", "refs/pull/7/merge"
+    )
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "saved by this PR (refs/pull/7/merge)" in out
+
+
+def test_pr_saving_an_unregistered_key_from_its_own_ref_fails(tmp_path) -> None:
+    manifest = write_manifest(tmp_path, budget_with(fam=family("exp-", 100)))
+    listing = write_listing(tmp_path, [entry("rogue-x", 1, ref="refs/pull/7/merge")])
+    assert (
+        run_mode(
+            manifest,
+            listing,
+            "--event-name",
+            "pull_request",
+            "--ref",
+            "refs/pull/7/merge",
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("event", "ref"),
+    [
+        ("push", "refs/heads/main"),
+        ("schedule", "refs/heads/main"),
+        ("workflow_dispatch", "refs/heads/main"),
+        ("", ""),
+    ],
+)
+def test_main_schedule_dispatch_and_local_runs_fail_when_over_budget(
+    tmp_path, event, ref
+) -> None:
+    manifest, listing = over_budget_listing(tmp_path)
+    assert run_mode(manifest, listing, "--event-name", event, "--ref", ref) == 1
+
+
+def test_a_push_to_another_branch_warns(tmp_path, capsys) -> None:
+    manifest, listing = over_budget_listing(tmp_path)
+    assert (
+        run_mode(manifest, listing, "--event-name", "push", "--ref", "refs/heads/topic")
+        == 0
+    )
+    assert "::warning" in capsys.readouterr().out
+
+
+def test_a_static_forecast_breach_fails_even_in_pr_mode(tmp_path) -> None:
+    budget = budget_with(fam=family("exp-", 100))
+    budget["families"]["fam"]["evict"] = "sometimes"
+    manifest = write_manifest(tmp_path, budget)
+    listing = write_listing(tmp_path, [entry("exp-a", 1)])
+    assert (
+        run_mode(
+            manifest,
+            listing,
+            "--event-name",
+            "pull_request",
+            "--ref",
+            "refs/pull/7/merge",
+        )
+        == 1
+    )
+
+
+def test_a_non_evictable_steady_state_that_cannot_fit_is_a_static_finding(
+    tmp_path,
+) -> None:
+    spec = {**family("exp-", 100), "steady_state_bytes": 150}
+    problems = guard.forecast_problems(
+        tmp_path / "m.json", {"budget": budget_with(fam=spec)}
+    )
+    assert any("cannot fit" in p for p in problems)
+    evictable = {**spec, "evict": "lru"}
+    assert (
+        guard.forecast_problems(
+            tmp_path / "m.json", {"budget": budget_with(fam=evictable)}
+        )
+        == []
+    )
+
+
+def test_the_real_manifest_has_no_forecast_problems() -> None:
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    assert guard.forecast_problems(MANIFEST, manifest) == []
+
+
+def _plan(rows: list[dict], families: dict, pr_state=None) -> tuple[list, list]:
+    manifest = {"budget": budget_with(**families)}
+    return guard.plan_sweep(
+        guard.normalize_entries(rows), manifest, None, NOW, pr_state
+    )
+
+
+def test_lru_janitor_plan_reaches_the_family_budget() -> None:
+    lru = {**family("exp-", 100), "evict": "lru"}
+    rows = [
+        aged("exp-a", 60, accessed="2026-09-21T00:00:00Z"),
+        aged("exp-b", 60, accessed="2026-09-28T00:00:00Z"),
+        aged("exp-c", 60, accessed="2026-09-25T00:00:00Z"),
+    ]
+    delete, _ = _plan(rows, {"fam": lru})
+    # Least recently used first, and only as much as the overage needs.
+    assert [e.key for e in delete] == ["exp-a", "exp-c"]
+    remaining = sum(r["sizeInBytes"] for r in rows) - sum(e.size_bytes for e in delete)
+    assert remaining <= lru["max_bytes"]
+
+
+def test_a_non_evictable_family_is_never_touched_for_budget() -> None:
+    rows = [aged("keep-a", 90), aged("keep-b", 90)]
+    delete, _ = _plan(rows, {"fam": family("keep-", 100)})
+    assert delete == []
+
+
+def test_newest_per_lineage_never_evicts_the_newest_download() -> None:
+    pinned = {**family("dl-", 100), "evict": "newest-per-lineage"}
+    rows = [
+        aged("dl-tool-v1.0", 60, created="2026-09-01T00:00:00Z"),
+        aged("dl-tool-v1.1", 60, created="2026-09-10T00:00:00Z"),
+        aged("dl-tool-v1.2", 60, created="2026-09-20T00:00:00Z"),
+    ]
+    delete, _ = _plan(rows, {"fam": pinned})
+    assert "dl-tool-v1.2" not in [e.key for e in delete]
+    assert [e.key for e in delete] == ["dl-tool-v1.0", "dl-tool-v1.1"]
+
+
+def test_newest_per_lineage_leaves_a_lone_lineage_even_over_budget() -> None:
+    pinned = {**family("dl-", 100), "evict": "newest-per-lineage"}
+    delete, _ = _plan([aged("dl-only-v1", 150)], {"fam": pinned})
+    assert delete == []
+
+
+STATES = {1: "open", 2: "closed", 3: "closed"}  # 2 merged, 3 closed unmerged
+
+
+def test_an_open_prs_entries_are_kept() -> None:
+    rows = [aged("keep-a", 1, ref="refs/pull/1/merge", created=FRESH)]
+    delete, _ = _plan(rows, {"fam": family("keep-", 1000)}, STATES.get)
+    assert delete == []
+
+
+def test_merged_and_closed_unmerged_prs_entries_are_deleted() -> None:
+    rows = [
+        aged("keep-open", 1, ref="refs/pull/1/merge"),
+        aged("keep-merged", 1, ref="refs/pull/2/merge"),
+        # Closed PRs have no running jobs, so the grace window does not apply.
+        aged("keep-closed", 1, ref="refs/pull/3/merge", created=FRESH),
+        aged("keep-main", 1),
+    ]
+    looked_up: list[int] = []
+
+    def state(number: int) -> str | None:
+        looked_up.append(number)
+        return STATES.get(number)
+
+    delete, _ = _plan(rows, {"fam": family("keep-", 1000)}, state)
+    assert sorted(e.key for e in delete) == ["keep-closed", "keep-merged"]
+    assert looked_up == [1, 2, 3], "one lookup per PR number"
+
+
+def test_a_failed_pr_state_lookup_keeps_the_entries(capsys) -> None:
+    rows = [aged("keep-a", 1, ref="refs/pull/9/merge")]
+    delete, _ = _plan(rows, {"fam": family("keep-", 1000)}, lambda _n: None)
+    assert delete == []
+    assert "PR #9: state unknown; kept 1" in capsys.readouterr().out
+
+
+def test_fetch_pr_state_logs_and_returns_none_on_failure(monkeypatch, capsys) -> None:
+    def boom(_args: list[str]) -> str:
+        raise guard.subprocess.CalledProcessError(1, ["gh"], "HTTP 502")
+
+    monkeypatch.setattr(guard, "run_gh", boom)
+    assert guard.fetch_pr_state("zackees/soldr", 5) is None
+    assert "state lookup failed" in capsys.readouterr().out
+
+
+def test_the_janitor_matches_pr_caches_by_key_tag_and_by_ref() -> None:
+    rows = [
+        aged("keep-x-pr-2-linux", 1, ref="refs/heads/main"),
+        aged("keep-y", 1, ref="refs/pull/2/merge"),
+        aged("keep-z-pr-1", 1, ref="refs/heads/main"),
+    ]
+    delete, _ = _plan(rows, {"fam": family("keep-", 1000)}, STATES.get)
+    assert sorted(e.key for e in delete) == ["keep-x-pr-2-linux", "keep-y"]
+
+
+def test_an_untagged_key_on_a_branch_ref_is_not_a_pr_cache() -> None:
+    untagged = guard.CacheEntry("keep-sprint-2", "refs/heads/feature-pr-2", 1)
+    assert guard.pr_number_of(untagged) is None
+
+
+def test_pr_12_does_not_match_pr_123() -> None:
+    def number(key: str) -> int | None:
+        return guard.pr_number_of(guard.CacheEntry(key, "refs/heads/main", 1))
+
+    assert number("cook-pr-123-linux") == 123
+    assert number("cook-pr-12-linux") == 12
+    assert number("cook-pr-12") == 12
+    assert number("pr-12_x") == 12
+    assert number("cook-xpr-12") is None
+    assert number("cook-pr-12a") is None
+
+
+def test_the_plan_skips_entries_younger_than_the_window() -> None:
+    lru = {**family("exp-", 10), "evict": "lru"}
+    rows = [aged("exp-new", 60, created=FRESH), aged("exp-old", 60)]
+    delete, _ = _plan(rows, {"fam": lru})
+    assert [e.key for e in delete] == ["exp-old"]
+    assert guard.SWEEP_GRACE_SECONDS == 600
+
+
+def test_an_entry_with_no_creation_time_is_never_swept() -> None:
+    rows = [entry("keep-a", 1, ref="refs/heads/topic")]
+    delete, deferred = _plan(rows, {"fam": family("keep-", 1000)})
+    assert delete == [] and len(deferred) == 1
+
+
+def test_delete_ref_removes_only_that_closed_prs_entries(monkeypatch, capsys) -> None:
+    listing = [
+        {**aged("keep-a", 1, ref="refs/pull/7/merge"), "id": 1},
+        {**aged("keep-b", 1, ref="refs/pull/70/merge"), "id": 2},
+        {**aged("keep-c", 1), "id": 3},
+        {**aged("keep-d-pr-7", 1), "id": 4},
+        {**aged("keep-e-pr-70", 1), "id": 5},
+    ]
+    calls: list[list[str]] = []
+
+    def fake_gh(args: list[str]) -> str:
+        calls.append(args)
+        return json.dumps(listing) if args[:2] == ["cache", "list"] else ""
+
+    monkeypatch.setattr(guard, "run_gh", fake_gh)
+    assert guard.main(["--delete-ref", "refs/pull/7/merge"]) == 0
+    deletes = [c for c in calls if c[:2] == ["cache", "delete"]]
+    assert deletes == [
+        ["cache", "delete", "1", "--repo", "zackees/soldr"],
+        ["cache", "delete", "4", "--repo", "zackees/soldr"],
+    ]
+
+
+def test_delete_ref_refusal_is_logged_and_exits_zero(monkeypatch, capsys) -> None:
+    listing = [{**aged("keep-a", 1, ref="refs/pull/7/merge"), "id": 1}]
+
+    def fake_gh(args: list[str]) -> str:
+        if args[:2] == ["cache", "list"]:
+            return json.dumps(listing)
+        raise guard.subprocess.CalledProcessError(1, ["gh"], "HTTP 403")
+
+    monkeypatch.setattr(guard, "run_gh", fake_gh)
+    assert guard.main(["--delete-ref", "refs/pull/7/merge"]) == 0
+    assert "next janitor sweep" in capsys.readouterr().out
+
+
+def test_delete_ref_rejects_anything_but_a_pr_ref() -> None:
+    assert guard.main(["--delete-ref", "refs/heads/main"]) == 1
+
+
+def test_real_manifest_declares_evict_only_for_the_safe_families() -> None:
+    families = json.loads(MANIFEST.read_text(encoding="utf-8"))["budget"]["families"]
+    evictable = {
+        name: spec["evict"] for name, spec in families.items() if "evict" in spec
+    }
+    assert evictable == {
+        "experiment-lanes": "lru",
+        "pinned-immutable-download": "newest-per-lineage",
+    }

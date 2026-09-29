@@ -61,6 +61,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # zackees/ci.yml#6: every cache this workflow can save in PR context
+  # carries `pr-<N>` in its key, so the ci-pre janitor can delete it once
+  # the PR closes. Empty outside a pull request, so main keys are
+  # unchanged. Enforced by .github/scripts/check_pr_cache_keys.py.
+  PR_CACHE_TAG: ${{ github.event_name == 'pull_request' && format('-pr-{0}', github.event.pull_request.number) || '' }}
+
 jobs:
   cross-build:
     name: cross-build ${{ inputs.target }} (linux host)
@@ -229,9 +236,10 @@ jobs:
       #
       # Cache key embeds MANAGED_XWIN_CACHE_VERSION (2026-06-22 today —
       # bump when crates/soldr-cli/src/fetch/xwin_cache.rs changes).
-      - name: Cache MSVC CRT+SDK (via XWIN_CACHE_DIR)
+      - name: Restore MSVC CRT+SDK (via XWIN_CACHE_DIR)
+        id: xwin_cache
         if: contains(inputs.target, 'pc-windows-msvc')
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ runner.temp }}/setup-soldr-soldr/sdk/${{ inputs.target }}/xwin/2026-06-22
           key: soldr-xwin-cache-${{ inputs.target }}-v2026-06-22
@@ -240,16 +248,18 @@ jobs:
       # blessed_build::prepare on darwin targets. Cache path + key both
       # include the catalogue version and shape so x86_64 and aarch64
       # lanes never reuse the wrong SDK slice.
-      - name: Cache Apple SDK (x86_64)
+      - name: Restore Apple SDK (x86_64)
+        id: apple_sdk_x86_64_cache
         if: inputs.target == 'x86_64-apple-darwin'
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ runner.temp }}/setup-soldr-soldr/bin/apple-sdk/14.5/darwin-x86_64
           key: soldr-apple-sdk-14.5-darwin-x86_64-v1
 
-      - name: Cache Apple SDK (aarch64)
+      - name: Restore Apple SDK (aarch64)
+        id: apple_sdk_aarch64_cache
         if: inputs.target == 'aarch64-apple-darwin'
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ runner.temp }}/setup-soldr-soldr/bin/apple-sdk/14.5/darwin-aarch64
           key: soldr-apple-sdk-14.5-darwin-aarch64-v1
@@ -307,7 +317,7 @@ jobs:
           # rebuild it. (Only used by manual callers that omit
           # bootstrap_artifact_name; main CI downloads the shared artifact,
           # whose producer job is fixed the same way.)
-          key: bootstrap-soldr-blessed-linux-gnu-${{ inputs.source_ref != '' && inputs.source_ref || github.sha }}
+          key: bootstrap-soldr-blessed-linux-gnu${{ env.PR_CACHE_TAG }}-${{ inputs.source_ref != '' && inputs.source_ref || github.sha }}
 
       - name: Bootstrap soldr for SDK / blessed-build prep
         if: (contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')) && inputs.bootstrap_artifact_name == '' && steps.bootstrap_cache.outputs.cache-hit != 'true'
@@ -859,6 +869,29 @@ jobs:
           test -s dist/package/tools/cargo-nextest.json
 
       # Stage D — stage + upload artifact bundle
+      # zackees/ci.yml#6: the SDKs are immutable downloads shared with main;
+      # a PR restores main's entries above but never saves its own copies.
+      - name: Save MSVC CRT+SDK (via XWIN_CACHE_DIR)
+        if: contains(inputs.target, 'pc-windows-msvc') && github.event_name != 'pull_request' && steps.xwin_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/setup-soldr-soldr/sdk/${{ inputs.target }}/xwin/2026-06-22
+          key: soldr-xwin-cache-${{ inputs.target }}-v2026-06-22
+
+      - name: Save Apple SDK (x86_64)
+        if: inputs.target == 'x86_64-apple-darwin' && github.event_name != 'pull_request' && steps.apple_sdk_x86_64_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/setup-soldr-soldr/bin/apple-sdk/14.5/darwin-x86_64
+          key: soldr-apple-sdk-14.5-darwin-x86_64-v1
+
+      - name: Save Apple SDK (aarch64)
+        if: inputs.target == 'aarch64-apple-darwin' && github.event_name != 'pull_request' && steps.apple_sdk_aarch64_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/setup-soldr-soldr/bin/apple-sdk/14.5/darwin-aarch64
+          key: soldr-apple-sdk-14.5-darwin-aarch64-v1
+
       - name: Stage artifact bundle
         shell: bash
         run: |

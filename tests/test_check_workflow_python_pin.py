@@ -508,3 +508,54 @@ def test_two_scripts_on_one_routed_line_are_not_double_counted(guard):
         )
         == []
     )
+
+
+# ---------------- stdlib-only scripts on a versioned image (ci-pre) ----------------
+
+
+def test_stdlib_script_on_a_versioned_ubuntu_image_counts_as_pinned(guard, tmp_path):
+    # ci-pre.yml may install nothing (zackees/ci.yml#6); check_cache_budget.py
+    # is stdlib-only and enforces its own floor, and ubuntu-24.04 fixes python3.
+    write_workflow(
+        tmp_path,
+        "ci-pre.yml",
+        """
+jobs:
+  cache-budget:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: python3 .github/scripts/check_cache_budget.py --event-name push
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == set()
+
+
+def test_stdlib_script_on_a_floating_image_is_still_unpinned(guard, tmp_path):
+    write_workflow(
+        tmp_path,
+        "ci-pre.yml",
+        """
+jobs:
+  cache-budget:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 .github/scripts/check_cache_budget.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {("ci-pre.yml", "cache-budget")}
+
+
+def test_a_non_allowlisted_script_beside_a_stdlib_one_is_unpinned(guard, tmp_path):
+    write_workflow(
+        tmp_path,
+        "ci-pre.yml",
+        """
+jobs:
+  cache-budget:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: python3 .github/scripts/check_cache_budget.py
+      - run: python3 .github/scripts/stage_release_binaries.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {("ci-pre.yml", "cache-budget")}
