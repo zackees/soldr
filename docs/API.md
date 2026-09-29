@@ -1031,8 +1031,10 @@ current directory. Without the flag, the tree would be created at
 The two trees never share a cook key: the tree name is folded into the cache
 digest, so one tree's marker can never satisfy the other's.
 
-`.github/scripts/cook_dylint_tests_tree.py` is the CI driver — it runs one
-`--tree tests` cook per `dylints/*` crate before `soldr ci-test` starts.
+`soldr ci-test` is the CI driver: its `dylint-cook-<lint>` stages run one
+`--tree tests` cook per `dylints/*` crate inside the Dylint branch, after the
+lint libraries and before workspace analysis, so none of these compiles
+overlap running tests (soldr#3460).
 Neither tree is uploaded anywhere: the cook fills an in-run target tree, and
 cross-run reuse comes from the per-unit object store
 (see `ci/cache-ownership.json`).

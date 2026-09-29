@@ -13,6 +13,12 @@ pub(super) fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrE
             .filter(|stage| stage.name.starts_with("dylint-library-"))
             .map(|stage| stage.name.as_str()),
     );
+    expected.extend(
+        plan.stages
+            .iter()
+            .filter(|stage| stage.name.starts_with("dylint-cook-"))
+            .map(|stage| stage.name.as_str()),
+    );
     expected.push("dylint-workspace");
     expected.extend(
         plan.stages
@@ -63,13 +69,30 @@ pub(super) fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrE
         };
         require_dependencies(stage, &[dependency])?;
     }
+    let last_library = libraries
+        .last()
+        .ok_or_else(|| SoldrError::Other("soldr ci-test: no Dylint libraries".into()))?
+        .name
+        .as_str();
+    // soldr#3460: the UI tests' dependency-layer cooks chain serially from
+    // the last library and must finish before workspace analysis -- which is
+    // what keeps them out of the window where tests run (soldr#3042).
+    let cooks: Vec<_> = plan
+        .stages
+        .iter()
+        .filter(|stage| stage.name.starts_with("dylint-cook-"))
+        .collect();
+    for (index, stage) in cooks.iter().enumerate() {
+        let dependency = if index == 0 {
+            last_library
+        } else {
+            cooks[index - 1].name.as_str()
+        };
+        require_dependencies(stage, &[dependency])?;
+    }
     require_dependencies(
         stage_named(plan, "dylint-workspace")?,
-        &[libraries
-            .last()
-            .ok_or_else(|| SoldrError::Other("soldr ci-test: no Dylint libraries".into()))?
-            .name
-            .as_str()],
+        &[cooks.last().map_or(last_library, |cook| cook.name.as_str())],
     )?;
     let ui_tests: Vec<_> = plan
         .stages
@@ -80,6 +103,13 @@ pub(super) fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrE
         return Err(SoldrError::Other(
             "soldr ci-test: compile-only plan must not execute Dylint UI tests".into(),
         ));
+    }
+    if cooks.len() != ui_tests.len() {
+        return Err(SoldrError::Other(format!(
+            "soldr ci-test: {} Dylint UI-test cook(s) for {} UI-test stage(s); every UI-test crate needs its dependency layer cooked before analysis",
+            cooks.len(),
+            ui_tests.len()
+        )));
     }
     for (index, stage) in ui_tests.iter().enumerate() {
         let dependency = if index == 0 {

@@ -59,8 +59,20 @@ pub(crate) async fn run(
     }
 
     stop_on_failure!(run_group(&factory, plan, &["rustfmt", "lint-ci"]));
-    stop_on_failure!(run_group(&factory, plan, &["clippy"]));
-    factory.prepare_dylint().await?;
+    // soldr#3460: resolving Dylint -- cargo-dylint, the nightly's rustc-dev /
+    // rust-src / llvm-tools components (~22 s of download on a fresh runner),
+    // and the prebuilt driver -- touches no stable target tree, so it runs
+    // beside Clippy instead of after it. Clippy's code is reported first; the
+    // preparation is still awaited so it never outlives the run half-done.
+    let preparing = tokio::spawn(prepare_dylint(factory.dylint.clone()));
+    let clippy = run_group(&factory, plan, &["clippy"]);
+    let prepared = preparing.await.map_err(|error| {
+        SoldrError::Other(format!(
+            "soldr ci-test: Dylint preparation task failed: {error}"
+        ))
+    })?;
+    stop_on_failure!(clippy);
+    factory.apply_prepared_dylint(prepared?);
     // soldr#2349: library-skip wiring lives in dylint_library_marker::decide/finish.
     let library_decision = dylint_library_marker::decide(plan, &factory.dylint)?;
     if plan.no_run {
@@ -631,6 +643,35 @@ struct StageCommandFactory {
     nextest_admission: super::test_pressure::NextestAdmission,
 }
 
+/// What `prepare_dylint` resolves for every Dylint stage.
+struct PreparedDylint {
+    dylint: crate::dylint_toolchain::DylintToolchainPlan,
+    bin_dirs: Vec<PathBuf>,
+    env: Vec<(String, String)>,
+}
+
+/// Owns its inputs so it can run as its own task beside Clippy (soldr#3460).
+async fn prepare_dylint(
+    dylint: crate::dylint_toolchain::DylintToolchainPlan,
+) -> Result<PreparedDylint, SoldrError> {
+    let paths = crate::core::SoldrPaths::new()?;
+    paths.ensure_dirs()?;
+    let bootstrap =
+        crate::cargo_front_door::ensure_known_subcommand_tool(&["dylint".to_string()], &paths)
+            .await?;
+    // The prebuilt driver probe needs the selected rustc's runtime
+    // libraries. Install and verify the exact nightly first so a clean
+    // managed rustup home cannot fail while probing an otherwise valid
+    // catalogued driver.
+    let dylint = crate::dylint_toolchain::prepare_resolved(dylint)?;
+    crate::dylint_driver::ensure_prebuilt_driver(&dylint, &paths).await?;
+    Ok(PreparedDylint {
+        dylint,
+        bin_dirs: bootstrap.bin_dirs,
+        env: bootstrap.env,
+    })
+}
+
 impl StageCommandFactory {
     fn new(
         plan: &CiTestPlan,
@@ -694,21 +735,10 @@ impl StageCommandFactory {
         })
     }
 
-    async fn prepare_dylint(&mut self) -> Result<(), SoldrError> {
-        let paths = crate::core::SoldrPaths::new()?;
-        paths.ensure_dirs()?;
-        let bootstrap =
-            crate::cargo_front_door::ensure_known_subcommand_tool(&["dylint".to_string()], &paths)
-                .await?;
-        // The prebuilt driver probe needs the selected rustc's runtime
-        // libraries. Install and verify the exact nightly first so a clean
-        // managed rustup home cannot fail while probing an otherwise valid
-        // catalogued driver.
-        self.dylint = crate::dylint_toolchain::prepare_resolved(self.dylint.clone())?;
-        crate::dylint_driver::ensure_prebuilt_driver(&self.dylint, &paths).await?;
-        self.dylint_bin_dirs = bootstrap.bin_dirs;
-        self.dylint_env = bootstrap.env;
-        Ok(())
+    fn apply_prepared_dylint(&mut self, prepared: PreparedDylint) {
+        self.dylint = prepared.dylint;
+        self.dylint_bin_dirs = prepared.bin_dirs;
+        self.dylint_env = prepared.env;
     }
 
     fn spawn(&self, stage: &Stage) -> Result<Child, SoldrError> {
@@ -753,6 +783,11 @@ impl StageCommandFactory {
             // ambient workspace target directory.
             if stage.name.starts_with("dylint-test-") {
                 command.env("CARGO_TARGET_DIR", &self.dylint_test_target_dir(stage)?);
+            }
+            // soldr#3460: the tests-tree cook names its tree with
+            // `--target-root`; an inherited CARGO_TARGET_DIR would fight it.
+            if stage.name.starts_with("dylint-cook-") {
+                command.env_remove("CARGO_TARGET_DIR");
             }
         }
         crate::cargo_front_door::configure_cargo_child_for_timeout(&mut command);
