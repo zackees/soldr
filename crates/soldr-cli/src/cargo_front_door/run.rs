@@ -263,16 +263,7 @@ pub(crate) async fn run_cargo_front_door(
     if let Some(toolchain) = explicit_toolchain {
         command.env("RUSTUP_TOOLCHAIN", toolchain);
     } else if std::env::var_os("RUSTUP_TOOLCHAIN").is_none() {
-        let manifest_dir =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        if let Ok(manifest) = crate::core::read_rust_toolchain_manifest(&manifest_dir) {
-            if let Some(channel) = manifest.channel {
-                let channel = channel.trim();
-                if !channel.is_empty() {
-                    command.env("RUSTUP_TOOLCHAIN", channel);
-                }
-            }
-        }
+        crate::toolchain_dir_name::export_manifest_channel(&mut command);
     }
     if let Some(plan) = &dylint_plan {
         plan.apply_to_command(&mut command);

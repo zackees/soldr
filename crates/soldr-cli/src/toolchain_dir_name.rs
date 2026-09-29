@@ -34,6 +34,20 @@ pub(crate) fn installed_toolchain_dir_name(rustup_home: &Path, toolchain: &str) 
     matches.next().is_none().then_some(first)
 }
 
+/// Export the `rust-toolchain.toml` channel of the current directory as the
+/// command's `RUSTUP_TOOLCHAIN` (soldr#836). A missing or channel-less manifest
+/// exports nothing.
+pub(crate) fn export_manifest_channel(command: &mut Command) {
+    let manifest_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let Ok(manifest) = crate::core::read_rust_toolchain_manifest(&manifest_dir) else {
+        return;
+    };
+    let channel = manifest.channel.as_deref().map(str::trim).unwrap_or("");
+    if !channel.is_empty() {
+        command.env("RUSTUP_TOOLCHAIN", channel);
+    }
+}
+
 /// Rewrite the command's effective `RUSTUP_TOOLCHAIN` to the installed
 /// directory name when the command's effective `RUSTUP_HOME` only has the
 /// suffixed spelling. Explicit values on the command win over the process
