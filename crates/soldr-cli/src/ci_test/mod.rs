@@ -32,6 +32,11 @@ pub(crate) async fn run(
     // is the point.
     test_targets::warn_if_excessive(plan.test_target_count, plan.test_target_warn_threshold);
     if invocation.explain {
+        // soldr#3460: an explained plan must be one the executor accepts.
+        // The planner and the executor contract changed apart once and only
+        // a real CI run noticed; validating here puts every `--explain-plan`
+        // guard test on the executor's side of that contract too.
+        execute::validate_executor_contract(&plan)?;
         render(&plan, invocation.format)?;
         return Ok(0);
     }
