@@ -203,7 +203,7 @@ jobs:
       # soldr#1799: pin the soldr that builds us. This prevents action-default
       # drift from changing build or catalogue behavior between lanes.
       - name: Setup pinned soldr toolchain
-        uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362
+        uses: zackees/setup-soldr@a07bab94f16124b5c6857b137a237a53a61e06d1
         with:
           # Save caches fully under act (local bosn runs are pull_request events); setup-soldr#537 makes this the default. Remove then.
           save-cache: ${{ env.ACT && 'true' || 'auto' }}

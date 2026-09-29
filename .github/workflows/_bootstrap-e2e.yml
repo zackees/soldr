@@ -166,7 +166,7 @@ jobs:
           key: rustup-1.98.1-linux-x64-v1
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362
+        uses: zackees/setup-soldr@a07bab94f16124b5c6857b137a237a53a61e06d1
         env:
           ACTION_WORKSPACE: ${{ github.workspace }}/soldr
         with:
@@ -266,7 +266,7 @@ jobs:
           & "${{ steps.soldr_binary.outputs.path }}" --version
 
       - name: Stop setup-soldr builder cache before bootstrap test
-        uses: zackees/setup-soldr/cleanup@4df8db93438594f50505574d9dc8117505d33362
+        uses: zackees/setup-soldr/cleanup@a07bab94f16124b5c6857b137a237a53a61e06d1
 
       - name: Build third-party app through soldr
         shell: pwsh

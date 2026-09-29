@@ -39,7 +39,7 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
         REPO_ROOT / ".github" / "scripts" / "release_detect.py"
     ).read_text(encoding="utf-8")
     assert (
-        "uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362" in workflow
+        "uses: zackees/setup-soldr@a07bab94f16124b5c6857b137a237a53a61e06d1" in workflow
     )
     assert "version: 0.9.16" in workflow
     assert "cross-targets: ${{ matrix.setup_target }}" in workflow
