@@ -70,3 +70,28 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
         _ => false,
     }
 }
+
+/// Which inode a file is and how many names it has (soldr#3439). Two files
+/// with equal `dev` and `index` are one file; `links` is its total name count,
+/// including names outside any directory being measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HardlinkIdentity {
+    /// Device (Unix) or volume (Windows) the file lives on.
+    pub dev: u64,
+    /// Inode (Unix) or file index (Windows).
+    pub index: u64,
+    /// Total number of names for this file.
+    pub links: u64,
+}
+
+/// Device, inode and hard-link count of a file, from metadata the caller
+/// already holds (soldr#3439).
+pub fn hardlink_identity(metadata: &std::fs::Metadata) -> Option<HardlinkIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    Some(HardlinkIdentity {
+        dev: metadata.dev(),
+        index: metadata.ino(),
+        links: metadata.nlink(),
+    })
+}

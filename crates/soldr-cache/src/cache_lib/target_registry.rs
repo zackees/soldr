@@ -217,98 +217,19 @@ pub fn human_age(seconds: i64) -> String {
     }
 }
 
-/// Recursively measure the on-disk size of a directory in bytes,
-/// following directory entries but never crossing symlinks. Errors are
-/// silently swallowed for individual entries — partial sizes are still
-/// useful for the GC heuristic.
+/// Bytes that deleting `path` would free, never crossing symlinks. A hardlinked
+/// file counts once, and only when all its names are inside `path`
+/// (soldr#3439); reflink sharing and Windows hardlinks are not detected, so
+/// there the figure is an upper bound. Errors on individual entries are
+/// swallowed -- partial sizes are still useful for the GC heuristic.
 pub fn directory_size(path: &Path) -> u64 {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(m) => m,
-        Err(_) => return 0,
-    };
-    if metadata.file_type().is_symlink() {
-        return 0;
-    }
-    if metadata.is_file() {
-        return metadata.len();
-    }
-    let mut total: u64 = 0;
-    let entries = match std::fs::read_dir(path) {
-        Ok(e) => e,
-        Err(_) => return 0,
-    };
-    for entry in entries.flatten() {
-        let entry_path = entry.path();
-        // `DirEntry::file_type` does NOT follow the link, unlike
-        // `DirEntry::metadata` (which is `fs::metadata` and resolves it).
-        // Using the latter here meant the symlink check below could never
-        // fire — the metadata always described the *target* — so a symlink
-        // to a directory was recursed into and a symlink cycle recursed
-        // until the stack blew (#1662).
-        let entry_type = match entry.file_type() {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-        if entry_type.is_symlink() {
-            continue;
-        }
-        if entry_type.is_dir() {
-            total = total.saturating_add(directory_size(&entry_path));
-        } else if entry_type.is_file() {
-            // Safe to resolve now: the entry is a real file, so
-            // `metadata()` and `symlink_metadata()` agree.
-            if let Ok(meta) = entry.metadata() {
-                total = total.saturating_add(meta.len());
-            }
-        }
-    }
-    total
+    crate::cache_lib::dir_footprint::measure(path).0
 }
 
-/// Recursively measure both on-disk size (bytes) and file count for
-/// a directory in a single walk. Same symlink/error semantics as
-/// [`directory_size`]: symlinks are not followed, individual entry
-/// errors are swallowed. Returns `(total_bytes, file_count)`.
+/// [`directory_size`] plus the file count from the same walk, as
+/// `(total_bytes, file_count)`.
 pub fn directory_size_and_files(path: &Path) -> (u64, u64) {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(m) => m,
-        Err(_) => return (0, 0),
-    };
-    if metadata.file_type().is_symlink() {
-        return (0, 0);
-    }
-    if metadata.is_file() {
-        return (metadata.len(), 1);
-    }
-    let mut total_bytes: u64 = 0;
-    let mut total_files: u64 = 0;
-    let entries = match std::fs::read_dir(path) {
-        Ok(e) => e,
-        Err(_) => return (0, 0),
-    };
-    for entry in entries.flatten() {
-        let entry_path = entry.path();
-        // See `directory_size`: `file_type()` does not follow the link,
-        // `metadata()` does. The old code used the latter, so the symlink
-        // guard was dead and cycles recursed forever (#1662).
-        let entry_type = match entry.file_type() {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-        if entry_type.is_symlink() {
-            continue;
-        }
-        if entry_type.is_dir() {
-            let (sub_bytes, sub_files) = directory_size_and_files(&entry_path);
-            total_bytes = total_bytes.saturating_add(sub_bytes);
-            total_files = total_files.saturating_add(sub_files);
-        } else if entry_type.is_file() {
-            total_bytes =
-                total_bytes.saturating_add(entry.metadata().map(|m| m.len()).unwrap_or(0));
-            total_files = total_files.saturating_add(1);
-        }
-    }
-    (total_bytes, total_files)
+    crate::cache_lib::dir_footprint::measure(path)
 }
 
 /// Resolve the workspace `target/` dir from an arbitrary path that
