@@ -87,8 +87,40 @@ fn walk_for_deps_dirs(
 /// who specifically want the old behavior.
 pub(crate) const SOLDR_FORCE_RESTORE_ENV_VAR: &str = "SOLDR_RUST_PLAN_FORCE_RESTORE";
 
-/// Delete `.rmeta` files in `deps_dir` that have no companion library.
+/// Hold the profile directory's cargo build lock (`<profile>/.cargo-lock`,
+/// the parent of `deps/`) for the length of a prune, or `None` when another
+/// cargo holds it (soldr#3442). A concurrent build's `.rmeta` has no `.rlib`
+/// yet, so it looks exactly like an orphan; the lock is the only signal that
+/// separates the two. A missing lock file means no cargo ever built here, so
+/// there is nothing to protect.
+fn lock_profile_dir_for_prune(deps_dir: &std::path::Path) -> Option<Option<std::fs::File>> {
+    let lock_path = deps_dir.parent()?.join(".cargo-lock");
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+    else {
+        return Some(None);
+    };
+    match file.try_lock() {
+        Ok(()) => Some(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => None,
+        // An unsupported or failing lock cannot vouch that no build is
+        // running, so keep every file.
+        Err(std::fs::TryLockError::Error(_)) => None,
+    }
+}
+
+/// Delete `.rmeta` files in `deps_dir` that have no companion library, unless
+/// another cargo build currently holds the profile's build lock.
 fn prune_orphan_rmetas_in_deps(deps_dir: &std::path::Path) -> usize {
+    let Some(_build_lock) = lock_profile_dir_for_prune(deps_dir) else {
+        eprintln!(
+            "soldr: skipping orphan .rmeta prune under {}: another cargo build holds its lock (soldr#3442)",
+            deps_dir.display()
+        );
+        return 0;
+    };
     let entries = match std::fs::read_dir(deps_dir) {
         Ok(e) => e,
         Err(_) => return 0,
@@ -143,4 +175,40 @@ fn prune_orphan_rmetas_in_deps(deps_dir: &std::path::Path) -> usize {
         }
     }
     deleted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile_with_rmeta() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let root = tempfile::tempdir().expect("temp root");
+        let profile = root.path().join("debug");
+        let deps = profile.join("deps");
+        std::fs::create_dir_all(&deps).expect("deps");
+        let rmeta = deps.join("libinflight.rmeta");
+        std::fs::write(&rmeta, b"in flight").expect("rmeta");
+        (root, profile, rmeta)
+    }
+
+    #[test]
+    fn prune_leaves_rmeta_alone_while_another_build_holds_the_lock() {
+        let (root, profile, rmeta) = profile_with_rmeta();
+        let other_build = std::fs::File::create(profile.join(".cargo-lock")).expect("lock file");
+        other_build.lock().expect("other build takes the lock");
+
+        assert_eq!(prune_orphan_rmetas_after_failed_build(root.path()), 0);
+        assert!(rmeta.exists(), "a concurrent build's .rmeta must survive");
+
+        drop(other_build);
+        assert_eq!(prune_orphan_rmetas_after_failed_build(root.path()), 1);
+        assert!(!rmeta.exists());
+    }
+
+    #[test]
+    fn prune_proceeds_when_no_cargo_ever_created_the_lock() {
+        let (root, _profile, rmeta) = profile_with_rmeta();
+        assert_eq!(prune_orphan_rmetas_after_failed_build(root.path()), 1);
+        assert!(!rmeta.exists());
+    }
 }
