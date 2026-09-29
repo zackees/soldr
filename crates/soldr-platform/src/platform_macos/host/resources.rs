@@ -47,13 +47,60 @@ pub fn commit_charge_mb() -> Option<(u64, u64)> {
 /// probe rather than new Mach FFI. `None` when `vm_stat` cannot be run or its
 /// output is not understood -- never a guessed zero.
 pub fn available_physical_memory_bytes() -> Option<u64> {
+    probe_vm_stat_available().ok()
+}
+
+/// [`available_physical_memory_bytes`] with the reason for a `None`: whether
+/// `vm_stat` could not run, exited unsuccessfully (with its stderr), printed
+/// non-UTF-8, or printed something the parser does not recognize (with a
+/// bounded sample of it). soldr#3427: a Recovery guest returned `None` once and
+/// the bare `expect` recorded nothing about which of those it was.
+pub fn probe_vm_stat_available() -> Result<u64, String> {
     let output = std::process::Command::new("/usr/bin/vm_stat")
         .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+        .map_err(|error| format!("could not run /usr/bin/vm_stat: {error}"))?;
+    explain_vm_stat(
+        output.status.success(),
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    )
+}
+
+/// Longest stdout/stderr excerpt quoted in a probe failure.
+const VM_STAT_SAMPLE_BYTES: usize = 400;
+
+fn sample(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(VM_STAT_SAMPLE_BYTES)]);
+    format!("{:?}", text.as_ref())
+}
+
+fn explain_vm_stat(
+    success: bool,
+    code: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<u64, String> {
+    if !success {
+        return Err(format!(
+            "vm_stat exited unsuccessfully (code {code:?}); stderr {}; stdout {}",
+            sample(stderr),
+            sample(stdout)
+        ));
     }
-    parse_vm_stat_available(&String::from_utf8(output.stdout).ok()?)
+    let text = String::from_utf8(stdout.to_vec()).map_err(|_| {
+        format!(
+            "vm_stat printed non-UTF-8 output; stdout sample {}",
+            sample(stdout)
+        )
+    })?;
+    parse_vm_stat_available(&text).ok_or_else(|| {
+        format!(
+            "vm_stat output was not recognized; stdout sample {}; stderr {}",
+            sample(stdout),
+            sample(stderr)
+        )
+    })
 }
 
 fn parse_vm_stat_available(text: &str) -> Option<u64> {
@@ -105,8 +152,26 @@ Pages purgeable:                           2.\n";
 
     #[test]
     fn live_vm_stat_reports_nonzero_available_memory() {
-        let available = available_physical_memory_bytes().expect("vm_stat probe");
+        let available =
+            probe_vm_stat_available().unwrap_or_else(|why| panic!("vm_stat probe: {why}"));
         assert!(available > 0);
+    }
+
+    #[test]
+    fn probe_failures_name_the_condition_and_bound_their_samples() {
+        let failed = explain_vm_stat(false, Some(1), b"", b"vm_stat: sandboxed").unwrap_err();
+        assert!(failed.contains("exited unsuccessfully") && failed.contains("sandboxed"));
+
+        let binary = explain_vm_stat(true, Some(0), &[0xff, 0xfe], b"").unwrap_err();
+        assert!(binary.contains("non-UTF-8"), "{binary}");
+
+        let long = vec![b'x'; 5000];
+        let odd = explain_vm_stat(true, Some(0), &long, b"").unwrap_err();
+        assert!(odd.contains("not recognized"), "{odd}");
+        assert!(odd.len() < 1000, "the sample must be bounded, got {} bytes", odd.len());
+
+        let good = b"Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 2.\n";
+        assert_eq!(explain_vm_stat(true, Some(0), good, b""), Ok(2 * 4096));
     }
 }
 
