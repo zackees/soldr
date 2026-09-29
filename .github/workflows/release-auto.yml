@@ -205,7 +205,7 @@ jobs:
           save-cache: ${{ env.ACT && 'true' || 'auto' }}
           cook-delta: false
           enable: true
-          version: 0.9.16
+          version: 0.9.25
           toolchain: 1.98.1
           cross-targets: ${{ matrix.setup_target }}
           linker: platform-default

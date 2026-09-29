@@ -202,13 +202,21 @@ jobs:
 
       # soldr#1799: pin the soldr that builds us. This prevents action-default
       # drift from changing build or catalogue behavior between lanes.
+      #
+      # soldr#3458: the pin must embed the SAME zccache as the workspace. The
+      # bootstrap compiles the ci-test driver against the Tier-2 object store
+      # the source-built soldr saves, and zccache keeps one tree per version:
+      # 0.9.16 (zccache 1.13.22) against a 1.14.14 store was 0 HIT / 381 MISS
+      # on every run, a 139 s step. tests/test_bootstrap_zccache_pin.py fails
+      # when Cargo.toml's zccache pin moves without this declaration.
+      # bootstrap-embeds-zccache: 1.14.14
       - name: Setup pinned soldr toolchain
         uses: zackees/setup-soldr@a07bab94f16124b5c6857b137a237a53a61e06d1
         with:
           # Save caches fully under act (local bosn runs are pull_request events); setup-soldr#537 makes this the default. Remove then.
           save-cache: ${{ env.ACT && 'true' || 'auto' }}
           cook-delta: false
-          version: 0.9.16
+          version: 0.9.25
           toolchain: 1.98.1
           # Provision the ci-test Dylint foundation once, separately from
           # the stable source-driver target tree used by the prescribed DAG.
