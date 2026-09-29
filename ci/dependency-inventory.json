@@ -52,6 +52,7 @@
       "widestring",
       "windows-sys",
       "zccache",
+      "zip",
       "zstd"
     ],
     "soldr-core": [

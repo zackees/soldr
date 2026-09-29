@@ -702,36 +702,32 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             let mut command = std::process::Command::new(&result.binary_path);
             let mut pep517_linker_state = None;
             let mut pep517_paths = None;
+            let mut stamp_dir: Option<std::path::PathBuf> = None; // soldr#3433
             // Held across the complete direct/PEP517 maturin child. This is
             // separate from the short-lived stats session request: the
             // OS-held lease is what prevents daemon GC from deleting a reused
             // PEP517 target or wheel namespace while maturin is using it.
             let mut _maturin_build_lease = None;
 
-            // soldr#1264: `soldr maturin ...` is the engine behind the
-            // PEP 517 build backend (src/soldr/__init__.py). maturin
-            // spawns `cargo` itself, and on Windows the #493 `.cmd`
-            // PATH shims below are invisible to Rust-spawned children
-            // (CreateProcess resolves only `cargo.exe`, never `.cmd`),
-            // so on a PATH-poisoned machine (e.g. a chocolatey GNU
-            // cargo ahead of rustup's proxies) maturin silently builds
-            // the wrong toolchain and cmake-based *-sys deps explode
-            // in "MSYS Makefiles" flag mangling. Pin the child's
-            // toolchain + build tools before exec:
-            //   * `CARGO` → soldr's resolved rustup cargo (honors
-            //     rust-toolchain.toml + MSVC-on-Windows). maturin
-            //     reads `CARGO` before falling back to bare PATH
-            //     lookup. A caller-provided CARGO always wins.
-            //   * `RUSTC_WRAPPER` -> soldr's current binary when
-            //     caching is enabled and the caller did not already
-            //     choose a wrapper. Direct `soldr maturin build` then
-            //     gets the same embedded-zccache route as the PEP 517
-            //     backend. A caller-provided RUSTC_WRAPPER always
-            //     wins over this auto-injection.
-            //   * managed cmake/ninja env (`CMAKE`,
-            //     `CMAKE_GENERATOR=Ninja`, PATH prepends) via the same
-            //     `inject_cmake_tooling` the blessed `soldr build`
-            //     surface uses (#1257). Same opt-outs apply.
+            // soldr#1264: `soldr maturin ...` is the engine behind the PEP
+            // 517 build backend (src/soldr/__init__.py). maturin spawns
+            // `cargo` itself, and on Windows the #493 `.cmd` PATH shims
+            // below are invisible to Rust-spawned children (CreateProcess
+            // resolves only `cargo.exe`, never `.cmd`), so on a
+            // PATH-poisoned machine (e.g. a chocolatey GNU cargo ahead of
+            // rustup's proxies) maturin silently builds the wrong toolchain
+            // and cmake-based *-sys deps explode in "MSYS Makefiles" flag
+            // mangling. Pin the child's toolchain + build tools before exec:
+            //   * `CARGO` -> soldr's resolved rustup cargo (honors
+            //     rust-toolchain.toml + MSVC-on-Windows); maturin reads it
+            //     before falling back to bare PATH lookup (caller-provided
+            //     CARGO always wins).
+            //   * `RUSTC_WRAPPER` -> soldr's current binary when caching is
+            //     enabled and unset, so `soldr maturin build` gets the same
+            //     embedded-zccache route as the PEP 517 backend (caller wins).
+            //   * managed cmake/ninja env (`CMAKE`, `CMAKE_GENERATOR=Ninja`,
+            //     PATH prepends) via the same `inject_cmake_tooling` the
+            //     blessed `soldr build` surface uses (#1257); same opt-outs.
             if crate_name == "maturin" {
                 if std::env::var_os("CARGO").is_none() {
                     match resolve_toolchain_binary("cargo") {
@@ -788,6 +784,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 let workspace_root =
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let maturin_build = crate::pyo3_detect::maturin_args_are_build(tool_args);
+                stamp_dir = crate::wheel_stamp::wheel_dir_for_stamp(tool_args, &workspace_root);
                 _maturin_build_lease = acquire_maturin_build_lease(&paths, tool_args)?;
                 let maturin_target =
                     crate::pyo3_detect::resolve_build_target(tool_args, &workspace_root);
@@ -943,6 +940,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             };
 
             suppress_windows_console_window(&mut command);
+            let build_started = std::time::SystemTime::now(); // soldr#3433
             // soldr#2024: the child's output explains this exit, inherited
             // or teed back via `emit_child_output`.
             exit_guard::mark_spoke();
@@ -981,6 +979,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             };
 
             let code = status.code().unwrap_or(1);
+            maybe_stamp_wheel(code, stamp_dir.as_deref(), build_started);
             if code != 0 {
                 // soldr#1878: cargo surfaces a bare `Caused by:` with nothing
                 // in it when the wrapped rustc dies without diagnostics. Say
