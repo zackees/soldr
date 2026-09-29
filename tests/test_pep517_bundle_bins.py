@@ -301,6 +301,127 @@ class WheelTest(unittest.TestCase):
             self.assertEqual(wheel.read_bytes(), before)
 
 
+class SoldrWheelCliTest(unittest.TestCase):
+    """zackees/soldr#3468: `soldr wheel` runs this module's `stage` CLI after
+    maturin, so the native wheel verb and the PEP 517 backend bundle bins
+    through one implementation."""
+
+    def setUp(self) -> None:
+        self.helper = _helper()
+
+    def _stage(self, argv: "list[str]") -> "tuple[int, list[list[str]], Path]":
+        calls: "list[list[str]]" = []
+        raw = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, raw, True)
+        root = Path(raw)
+        (root / "pyproject.toml").write_text(PYPROJECT, encoding="utf-8")
+        wheel = root / WHEEL_NAME
+        _write_wheel(wheel)
+
+        def run(command: Any, **_kwargs: Any) -> Any:
+            calls.append(list(command))
+            bin_name = command[command.index("--bin") + 1]
+            executable = root / bin_name
+            executable.write_bytes(b"built " + bin_name.encode())
+            message = json.dumps(
+                {
+                    "reason": "compiler-artifact",
+                    "target": {"name": bin_name, "kind": ["bin"]},
+                    "executable": str(executable),
+                }
+            )
+            return subprocess.CompletedProcess(command, 0, stdout=message)
+
+        with mock.patch.object(self.helper.subprocess, "run", run):
+            code = self.helper.main(
+                [
+                    "stage",
+                    "--wheel",
+                    str(wheel),
+                    "--pyproject",
+                    str(root / "pyproject.toml"),
+                    *argv,
+                ]
+            )
+        return code, calls, wheel
+
+    def test_stage_builds_every_bin_with_the_given_soldr_target_and_profile(
+        self,
+    ) -> None:
+        code, calls, wheel = self._stage(
+            [
+                "--soldr",
+                "/opt/soldr",
+                "--manifest-path",
+                "crates/demo/Cargo.toml",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--profile-arg=--release",
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            calls[0],
+            [
+                "/opt/soldr",
+                "build",
+                "--bin",
+                "demo-cli",
+                "--message-format=json-render-diagnostics",
+                "--package",
+                "demo",
+                "--manifest-path",
+                "crates/demo/Cargo.toml",
+                "--release",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+            ],
+        )
+        self.assertEqual(len(calls), 2)
+        with zipfile.ZipFile(wheel) as archive:
+            names = archive.namelist()
+            self.assertIn("demo-0.1.0.data/scripts/demo-cli", names)
+            self.assertIn("demo/_bin/helper", names)
+            record = archive.read("demo-0.1.0.dist-info/RECORD").decode()
+        self.assertIn("demo-0.1.0.data/scripts/demo-cli,sha256=", record)
+
+    def test_stage_without_target_or_profile_builds_the_host_dev_bin(self) -> None:
+        code, calls, _wheel = self._stage([])
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[0][0], "soldr")
+        self.assertNotIn("--target", calls[0])
+        self.assertNotIn("--release", calls[0])
+        self.assertNotIn("--manifest-path", calls[0])
+
+    def test_stage_reports_a_failed_bin_build_and_exits_nonzero(self) -> None:
+        raw = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, raw, True)
+        root = Path(raw)
+        (root / "pyproject.toml").write_text(PYPROJECT, encoding="utf-8")
+        wheel = root / WHEEL_NAME
+        _write_wheel(wheel)
+        before = wheel.read_bytes()
+
+        def run(command: Any, **_kwargs: Any) -> Any:
+            return subprocess.CompletedProcess(command, 101, stdout="")
+
+        stderr = io.StringIO()
+        with mock.patch.object(self.helper.subprocess, "run", run):
+            with contextlib.redirect_stderr(stderr):
+                code = self.helper.main(
+                    [
+                        "stage",
+                        "--wheel",
+                        str(wheel),
+                        "--pyproject",
+                        str(root / "pyproject.toml"),
+                    ]
+                )
+        self.assertEqual(code, 1)
+        self.assertIn("demo-cli", stderr.getvalue())
+        self.assertEqual(wheel.read_bytes(), before)
+
+
 class BackendIntegrationTest(unittest.TestCase):
     """The native maturin hooks build and stage configured bins."""
 

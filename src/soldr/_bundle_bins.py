@@ -22,8 +22,15 @@ onto ``PATH``), ``platlib``, ``purelib``, ``data``, and ``headers``.
 
 This module has no dependency on the backend in ``__init__.py`` so it can be
 unit-tested in isolation; the backend supplies the command environment.
+
+It is also the one implementation behind ``soldr wheel`` (zackees/soldr#3468):
+the native verb embeds this file and, after maturin writes the wheel, runs
+``python _bundle_bins.py stage --wheel <whl> --pyproject <file> --soldr <exe>
+[--manifest-path <p>] [--target <triple>] [--profile-arg=<arg>]...``, so the
+wheel verb and the PEP 517 backend cannot drift apart.
 """
 
+import argparse
 import base64
 import csv
 import hashlib
@@ -213,10 +220,11 @@ def cargo_build_command(
     manifest_path: Optional[Path],
     profile_args: Sequence[str],
     target_args: Sequence[str],
+    soldr: str = "soldr",
 ) -> "list[str]":
     """Build one bin through soldr's blessed build surface."""
     command = [
-        "soldr",
+        soldr,
         "build",
         "--bin",
         entry.bin,
@@ -560,3 +568,51 @@ def bundle_into_wheel(
     """Build every entry, then stage all of them into ``wheel`` at once."""
     built = [(entry, build(entry)) for entry in entries]
     return add_files_to_wheel(wheel, built)
+
+
+def _parse_stage_args(argv: "Sequence[str]") -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="_bundle_bins.py",
+        description="Stage [tool.soldr.pep517] bundle-bins into a built wheel.",
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+    stage = commands.add_parser("stage", help="build the bins and add them")
+    stage.add_argument("--wheel", required=True, type=Path)
+    stage.add_argument("--pyproject", required=True, type=Path)
+    stage.add_argument("--soldr", default="soldr")
+    stage.add_argument("--manifest-path", type=Path, default=None)
+    stage.add_argument("--target", default=None)
+    stage.add_argument("--profile-arg", action="append", default=[])
+    return parser.parse_args(list(argv))
+
+
+def main(argv: "Optional[Sequence[str]]" = None) -> int:
+    """``soldr wheel``'s entry point (zackees/soldr#3468)."""
+    args = _parse_stage_args(sys.argv[1:] if argv is None else argv)
+    try:
+        entries = read_bundle_bins(args.pyproject)
+        if not entries:
+            return 0
+        target_args = ["--target", args.target] if args.target else []
+        env = dict(os.environ)
+
+        def build(entry: BundleBin) -> Path:
+            command = cargo_build_command(
+                entry,
+                manifest_path=args.manifest_path,
+                profile_args=args.profile_arg,
+                target_args=target_args,
+                soldr=args.soldr,
+            )
+            return build_bundle_bin(entry, command, env, run=subprocess.run)
+
+        added = bundle_into_wheel(args.wheel, entries, build)
+    except BundleBinsError as error:
+        print(f"soldr wheel: bundle-bins: {error}", file=sys.stderr)
+        return 1
+    print(f"soldr wheel: bundled {', '.join(added)}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

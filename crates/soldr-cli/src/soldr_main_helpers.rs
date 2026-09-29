@@ -16,11 +16,56 @@ fn maybe_stamp_wheel(code: i32, out_dir: Option<&std::path::Path>, build_started
     let (0, Some(out_dir)) = (code, out_dir) else {
         return;
     };
-    let entries = match std::fs::read_dir(out_dir) {
-        Ok(entries) => entries,
-        Err(_) => return, // no output dir yet is not an error worth a warning
+    let Some(wheel) = newest_built_wheel(out_dir, build_started) else {
+        return;
     };
-    let newest = entries
+    match crate::wheel_stamp::stamp_wheel_generator(&wheel, env!("CARGO_PKG_VERSION")) {
+        Ok(true) => {
+            eprintln!(
+                "soldr: stamped {} with Generator: soldr {}",
+                wheel.display(),
+                env!("CARGO_PKG_VERSION")
+            );
+        }
+        Ok(false) => {} // already stamped, nothing to say
+        Err(err) => eprintln!(
+            "soldr warning: could not stamp {} with soldr's Generator provenance: {err}",
+            wheel.display()
+        ),
+    }
+}
+
+/// zackees/soldr#3468: after a successful `soldr wheel` maturin build, stage
+/// `[tool.soldr.pep517] bundle-bins` into the wheel it wrote. Unlike the
+/// stamp, a failure here fails the build: a wheel missing a declared CLI is
+/// a broken artifact. Returns the exit code to use.
+fn maybe_stage_bundle_bins(
+    code: i32,
+    out_dir: Option<&std::path::Path>,
+    build_started: std::time::SystemTime,
+) -> i32 {
+    let (0, Some(out_dir)) = (code, out_dir) else {
+        return code;
+    };
+    let Some(wheel) = newest_built_wheel(out_dir, build_started) else {
+        return code;
+    };
+    match crate::wheel_bundle::stage_requested(&wheel) {
+        Ok(()) => code,
+        Err(error) => {
+            eprintln!("{error}");
+            1
+        }
+    }
+}
+
+/// The newest `.whl` in `out_dir` written at or after `build_started`.
+fn newest_built_wheel(
+    out_dir: &std::path::Path,
+    build_started: std::time::SystemTime,
+) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(out_dir).ok()?;
+    entries
         .filter_map(Result::ok)
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "whl"))
         .filter(|entry| {
@@ -34,24 +79,8 @@ fn maybe_stamp_wheel(code: i32, out_dir: Option<&std::path::Path>, build_started
                 .metadata()
                 .and_then(|meta| meta.modified())
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-        });
-    let Some(entry) = newest else {
-        return;
-    };
-    match crate::wheel_stamp::stamp_wheel_generator(&entry.path(), env!("CARGO_PKG_VERSION")) {
-        Ok(true) => {
-            eprintln!(
-                "soldr: stamped {} with Generator: soldr {}",
-                entry.path().display(),
-                env!("CARGO_PKG_VERSION")
-            );
-        }
-        Ok(false) => {} // already stamped, nothing to say
-        Err(err) => eprintln!(
-            "soldr warning: could not stamp {} with soldr's Generator provenance: {err}",
-            entry.path().display()
-        ),
-    }
+        })
+        .map(|entry| entry.path())
 }
 
 fn acquire_maturin_build_lease(

@@ -574,3 +574,32 @@ fn global_flags_precede_the_subcommand_in_the_reentry_argv() {
     let argv = maturin_invocation(&args, false, false).expect("invocation should build");
     assert_eq!(argv[0], "maturin");
 }
+
+/// zackees/soldr#3468: bundled bins are built with the same toolchain as the
+/// extension, so a host-target release gnu wheel's CLI gets glibc 2.17 too.
+#[test]
+fn bundled_bins_follow_the_extensions_target_preparation_and_profile() {
+    let x86 = "x86_64-unknown-linux-gnu";
+    let release =
+        plan_for_host(&wheel_args(Some(x86), true, false, &[]), &x86_64_linux()).expect("plan");
+    assert_eq!(release.bundle.target.as_deref(), Some(x86), "{release:?}");
+    assert_eq!(release.bundle.profile_args, vec!["--release".to_string()]);
+
+    let host_glibc =
+        plan_for_host(&wheel_args(Some(x86), true, true, &[]), &x86_64_linux()).expect("plan");
+    assert_eq!(host_glibc.bundle.target, None, "{host_glibc:?}");
+
+    let dev = plan_for_host(&wheel_args(None, false, false, &[]), &x86_64_linux()).expect("plan");
+    assert_eq!(dev.bundle.target, None, "{dev:?}");
+    assert!(dev.bundle.profile_args.is_empty());
+
+    let cross = plan_for_host(
+        &wheel_args(Some("aarch64-unknown-linux-gnu"), true, false, &[]),
+        &x86_64_linux(),
+    )
+    .expect("plan");
+    assert_eq!(
+        cross.bundle.target.as_deref(),
+        Some("aarch64-unknown-linux-gnu")
+    );
+}

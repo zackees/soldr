@@ -386,6 +386,7 @@ pub mod trampoline;
 pub mod version_trampoline;
 /// soldr#2139 gap 1 — the `soldr wheel --target <triple>` surface. Thin,
 /// abi3-only front end over the existing `soldr maturin ...` execution path.
+pub mod wheel_bundle;
 pub mod wheel_cmd;
 pub mod wheel_stamp;
 pub mod wrapper;
