@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure how much of the Tier-2 zccache store one gate run uses (soldr#3120).
 
-The `zccache-unit` cache family is 2.00 GiB and one saved store generation is
+The `zccache-unit` store was once trimmed to its 2.00 GiB Actions budget; one saved store generation is
 about 4 GiB, so the Repository Actions cache budget check stays red. Trimming
 the store before the save is the proposed fix, and its cost depends on one
 number: how many bytes of the store a single gate run actually touches. If that
@@ -193,9 +193,15 @@ def working_set_verdict(walk: Walk, cap_bytes: int) -> str:
 
 
 def default_cap_bytes(manifest_path: pathlib.Path, reserve_bytes: int) -> int:
+    """The on-disk trim cap: the family's `store_cap_bytes` minus the reserve.
+
+    `max_bytes` is the family's Actions budget, which counts the COMPRESSED
+    saved entry (the store compresses about 4x). Trimming the uncompressed
+    store to it evicted the driver build's units every run (soldr#3458).
+    """
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    family_max = int(manifest["budget"]["families"][FAMILY]["max_bytes"])
-    return family_max - reserve_bytes
+    family = manifest["budget"]["families"][FAMILY]
+    return int(family["store_cap_bytes"]) - reserve_bytes
 
 
 def read_since(path: pathlib.Path) -> float | None:
