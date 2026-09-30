@@ -304,11 +304,16 @@ fn linker_driver_shim_forwards_the_driver_argument_and_linker_argv() {
 
 #[test]
 fn windows_linker_driver_shim_quotes_spaces_and_cmd_metacharacters() {
-    let body = render_windows_linker_driver_shim("--ld-path=C:\\A B\\100% & tools\\reld.exe");
+    let body = render_windows_linker_driver_shim(
+        "C:\\LLVM 100%\\bin\\clang.exe",
+        "--ld-path=C:\\A B\\100% & tools\\reld.exe",
+    );
     assert_eq!(
         body,
-        "@echo off\r\nclang \"--ld-path=C:\\A B\\100%% & tools\\reld.exe\" %*\r\n"
+        "@echo off\r\n\"C:\\LLVM 100%%\\bin\\clang.exe\" \
+         \"--ld-path=C:\\A B\\100%% & tools\\reld.exe\" %*\r\n"
     );
+    assert!(!body.contains("\r\nclang "), "never a bare clang: {body}");
 }
 
 #[test]
@@ -915,4 +920,33 @@ fn project_target_config_does_not_match_cfg_sections() {
     )
     .expect("write .cargo/config.toml");
     assert!(target_config_value_in_root(root.path(), LINUX, "rustflags").is_none());
+}
+
+#[test]
+fn the_lld_requirement_follows_the_driver_argument_and_lld_must_be_reachable() {
+    use crate::linker_shim::{driver_arg_needs_lld_for_tests, lld_reachable_for_tests};
+    assert!(driver_arg_needs_lld_for_tests("-fuse-ld=lld"));
+    assert!(!driver_arg_needs_lld_for_tests("--ld-path=/managed/reld"));
+
+    let temp = tempfile::tempdir().unwrap();
+    let bin = temp.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let clang = bin.join("clang");
+    std::fs::write(&clang, b"").unwrap();
+    assert!(!lld_reachable_for_tests(&clang, None), "no lld anywhere");
+    std::fs::write(bin.join("ld.lld"), b"").unwrap();
+    assert!(lld_reachable_for_tests(&clang, None), "lld beside clang");
+
+    let elsewhere = temp.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("ld.lld"), b"").unwrap();
+    let lonely = temp.path().join("lonely");
+    std::fs::create_dir_all(&lonely).unwrap();
+    let other_clang = lonely.join("clang");
+    std::fs::write(&other_clang, b"").unwrap();
+    let search = std::env::join_paths([&elsewhere]).unwrap();
+    assert!(
+        lld_reachable_for_tests(&other_clang, Some(&search)),
+        "lld on the search path"
+    );
 }
