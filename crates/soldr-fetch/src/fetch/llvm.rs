@@ -182,6 +182,13 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
     let stamp = install_dir.join(".complete");
 
     if stamp.is_file() && bin_dir.is_dir() {
+        // An install stamped before exec bits were restored (linux-arm64
+        // archive, soldr#3505) is repaired in place instead of re-fetched.
+        let stamped = std::fs::read_to_string(&stamp).unwrap_or_default();
+        if !stamped.contains(STAMP_EXEC_MARKER) {
+            restore_bin_exec_bits(&bin_dir)?;
+            std::fs::write(&stamp, stamp_contents())?;
+        }
         return Ok(bin_dir);
     }
 
@@ -225,7 +232,8 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
         )));
     }
 
-    std::fs::write(&stamp, MANAGED_LLVM_VERSION)?;
+    restore_bin_exec_bits(&bin_dir)?;
+    std::fs::write(&stamp, stamp_contents())?;
     eprintln!("soldr: extracted LLVM to {}", install_dir.display());
     Ok(bin_dir)
 }
@@ -282,6 +290,30 @@ fn catalogue_entry_from_index(
         )));
     }
     Ok(entry)
+}
+
+/// Marks a `.complete` stamp whose install has had [`restore_bin_exec_bits`]
+/// applied.
+const STAMP_EXEC_MARKER: &str = "exec-bits";
+
+fn stamp_contents() -> String {
+    format!("{MANAGED_LLVM_VERSION}\n{STAMP_EXEC_MARKER}\n")
+}
+
+/// The `linux-arm64` LLVM archive stores its binaries as `rw-rw-rw-` (no
+/// exec bit; the x86_64 one is `rwxr-xr-x`), so a clang extracted with the
+/// archive's permissions cannot run: the linker shim then fails with
+/// `exec: .../hardlinked/bin/clang: Permission denied` (exit 126). Every
+/// regular file in `bin/` is a tool, so each gets the executable mode.
+/// Hardlinked aliases share the inode and follow.
+fn restore_bin_exec_bits(bin_dir: &Path) -> Result<(), SoldrError> {
+    for entry in std::fs::read_dir(bin_dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            crate::platform::fs::permissions::make_executable(&entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 fn extract_tar_zst_tree<R: std::io::Read>(reader: R, dest: &Path) -> Result<(), SoldrError> {
@@ -345,6 +377,27 @@ mod tests {
             resolved.is_none(),
             "missing dir should be ignored: {resolved:?}",
         );
+    }
+
+    #[test]
+    fn restore_bin_exec_bits_makes_archive_tools_runnable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bin = tmp.path().join("hardlinked").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let clang = bin.join("clang");
+        std::fs::write(&clang, b"tool").unwrap();
+        std::fs::hard_link(&clang, bin.join("clang++")).unwrap();
+        std::fs::create_dir(bin.join("nested")).unwrap();
+        // The linux-arm64 archive's mode: no exec bit anywhere.
+        crate::platform::fs::permissions::restore_mode(&clang, Some(0o666)).unwrap();
+        restore_bin_exec_bits(&bin).expect("restore exec bits");
+        for tool in ["clang", "clang++"] {
+            // `mode` is None where the platform has no Unix mode bits.
+            if let Some(mode) = crate::platform::fs::permissions::mode(&bin.join(tool)) {
+                assert_eq!(mode & 0o111, 0o111, "{tool} must be executable: {mode:o}");
+            }
+        }
+        assert!(stamp_contents().contains(STAMP_EXEC_MARKER));
     }
 
     #[test]
