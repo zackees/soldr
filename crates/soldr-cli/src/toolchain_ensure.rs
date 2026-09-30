@@ -40,6 +40,11 @@ pub(crate) struct ToolchainEnsureOutput {
 pub(crate) struct SmokeVerify {
     pub cargo_version: Option<String>,
     pub rustc_version: Option<String>,
+    /// Additive (soldr#3376): host or declared-target triples whose
+    /// `libcore`/`libstd` files are absent from the resolved toolchain even
+    /// though rustup's metadata may still claim them. Always present, possibly
+    /// empty; a non-empty list makes `ok` false. Does not bump `schema_version`.
+    pub missing_std_targets: Vec<String>,
     pub ok: bool,
 }
 
@@ -111,11 +116,12 @@ pub(crate) async fn run_toolchain_ensure(json: bool) -> Result<i32, SoldrError> 
     // 5. Smoke verify only when a channel exists. Without a manifest
     //    there's no toolchain to validate against.
     let smoke = if manifest.channel.is_some() {
-        run_smoke_verify()?
+        run_smoke_verify(manifest.targets.as_deref().unwrap_or(&[]))?
     } else {
         SmokeVerify {
             cargo_version: None,
             rustc_version: None,
+            missing_std_targets: Vec::new(),
             // No channel means nothing to verify; treat as ok so the
             // exit code stays 0 (matches prepare's no-channel path).
             ok: true,
@@ -180,15 +186,41 @@ async fn bootstrap_rustup_if_missing() -> Result<bool, SoldrError> {
     }
 }
 
-fn run_smoke_verify() -> Result<SmokeVerify, SoldrError> {
+fn run_smoke_verify(declared_targets: &[String]) -> Result<SmokeVerify, SoldrError> {
     let cargo_version = probe_version("cargo");
     let rustc_version = probe_version("rustc");
-    let ok = cargo_version.is_some() && rustc_version.is_some();
+    let missing_std_targets = missing_std_targets(declared_targets);
+    let ok = cargo_version.is_some() && rustc_version.is_some() && missing_std_targets.is_empty();
     Ok(SmokeVerify {
         cargo_version,
         rustc_version,
+        missing_std_targets,
         ok,
     })
+}
+
+/// Triples whose standard-library files are missing from the toolchain the
+/// resolved `rustc` belongs to (soldr#3376). Reads files only, so a toolchain
+/// whose `components` manifest still claims a deleted `rust-std` fails here
+/// instead of at `E0463` in a later build. An unresolvable `rustc` reports
+/// nothing: the version probe already fails `ok` in that case.
+fn missing_std_targets(declared_targets: &[String]) -> Vec<String> {
+    let Ok(rustc) = resolve_toolchain_binary("rustc") else {
+        return Vec::new();
+    };
+    let Some(toolchain_dir) = rustc.parent().and_then(std::path::Path::parent) else {
+        return Vec::new();
+    };
+    // Only a real toolchain layout is judged: a `rustc` that is not inside a
+    // `lib/rustlib` tree (a wrapper, a test double) has no std files to check.
+    if !toolchain_dir.join("lib").join("rustlib").is_dir() {
+        return Vec::new();
+    }
+    let host = crate::toolchain_std_libs::host_of_toolchain_dir(
+        toolchain_dir,
+        crate::pyo3_detect::host_triple(),
+    );
+    crate::toolchain_std_libs::missing_std_triples(toolchain_dir, host.as_deref(), declared_targets)
 }
 
 /// Spawn `<tool> --version` and capture stdout. Returns `None` when
@@ -292,6 +324,7 @@ mod tests {
             smoke_verify: SmokeVerify {
                 cargo_version: Some("cargo 1.94.1".to_string()),
                 rustc_version: Some("rustc 1.94.1".to_string()),
+                missing_std_targets: Vec::new(),
                 ok: true,
             },
             elapsed_ms: 42,
@@ -325,6 +358,7 @@ mod tests {
             smoke_verify: SmokeVerify {
                 cargo_version: Some("cargo 1.94.1".to_string()),
                 rustc_version: Some("rustc 1.94.1".to_string()),
+                missing_std_targets: Vec::new(),
                 ok: true,
             },
             elapsed_ms: 7,

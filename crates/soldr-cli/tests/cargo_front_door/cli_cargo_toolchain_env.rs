@@ -109,3 +109,87 @@ fn a_caller_set_toolchain_is_honored_not_overwritten() {
     let seen = recorded_toolchain(Some("caller-choice"), "test");
     assert_eq!(seen.trim(), "caller-choice");
 }
+
+/// soldr#3376: prepare once (memo written), confirm the warm run spawns no
+/// rustup, then delete a declared target's library files while `components`
+/// still claims them. Before the fix the memo still hit and the build failed
+/// later with `E0463`; now the memo misses, the toolchain is checked again, and a
+/// caller-selected `RUSTUP_HOME` (never repaired automatically) fails closed
+/// naming the target and the recovery commands.
+#[test]
+fn a_target_whose_std_files_vanish_defeats_the_memo_and_fails_closed() {
+    const TARGET: &str = "wasm32-unknown-unknown";
+    let workspace = unique_temp_dir("cargo-toolchain-std-vanish");
+    let soldr_root = workspace.join("soldr-root");
+    let rustup_home = workspace.join("rustup-home");
+    let rustup_log = workspace.join("rustup.log");
+    let cargo_log = workspace.join("cargo.log");
+    let host = soldr_cli::core::TargetTriple::host()
+        .expect("detect test host triple")
+        .triple();
+    let toolchain = rustup_home
+        .join("toolchains")
+        .join(format!("1.94.1-{host}"));
+    seed_fake_toolchain_dir(&toolchain, b"fake-rustc", b"rustc-test-host\n");
+    let rustup = install_logging_fake_rustup(&rustup_log);
+    let cargo = install_logging_fake_cargo(&cargo_log);
+    let (_, rustc, _) = install_fake_toolchain(&cargo_log);
+    seed_rust_toolchain_toml(
+        &workspace,
+        &format!(
+            "[toolchain]\nchannel = \"1.94.1\"\nprofile = \"minimal\"\ntargets = [\"{TARGET}\"]\n"
+        ),
+    );
+
+    let run = || {
+        isolated_soldr_command()
+            .args(["--no-cache", "cargo", "--version"])
+            .current_dir(&workspace)
+            .env("SOLDR_CACHE_DIR", &soldr_root)
+            .env_remove("SOLDR_ROOT")
+            .env("RUSTUP_HOME", &rustup_home)
+            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .env("SOLDR_TEST_CARGO_BIN", &cargo)
+            .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+            .env("CARGO_TARGET_DIR", workspace.join("target"))
+            .env("PATH", isolated_test_path())
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .output()
+            .expect("run soldr cargo front door")
+    };
+
+    let first = run();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    fs::write(&rustup_log, b"").expect("clear rustup log");
+    let warm = run();
+    assert!(
+        warm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warm.stderr)
+    );
+    assert!(
+        read_logged_rustup_invocations(&rustup_log).is_empty(),
+        "an unchanged toolchain must hit the memo and spawn no rustup"
+    );
+
+    fs::remove_dir_all(toolchain.join("lib").join("rustlib").join(TARGET))
+        .expect("delete the target's library files");
+    let broken = run();
+    assert!(
+        !broken.status.success(),
+        "a claimed-but-missing target must not pass as a memo hit"
+    );
+    let stderr = String::from_utf8_lossy(&broken.stderr);
+    assert!(
+        stderr.contains(TARGET),
+        "the error must name the target: {stderr}"
+    );
+    assert!(
+        stderr.contains("target add") && stderr.contains("caller-selected"),
+        "the error must give the recovery commands for a caller-selected home: {stderr}"
+    );
+}

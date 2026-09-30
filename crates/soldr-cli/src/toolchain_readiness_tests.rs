@@ -30,29 +30,35 @@ fn empty_host_keeps_bare_channel() {
 
 #[test]
 fn classification_matrix() {
-    assert_eq!(classify(false, false, false), ToolchainReadiness::Missing);
     assert_eq!(
-        classify(true, false, false),
+        classify(false, false, false, true),
+        ToolchainReadiness::Missing
+    );
+    assert_eq!(
+        classify(true, false, false, true),
         ToolchainReadiness::Partial(MissingToolchainEvidence {
             channel_manifest: true,
             native_rustc: true,
+            host_std: false,
         })
     );
     assert_eq!(
-        classify(true, false, true),
+        classify(true, false, true, true),
         ToolchainReadiness::Partial(MissingToolchainEvidence {
             channel_manifest: true,
             native_rustc: false,
+            host_std: false,
         })
     );
     assert_eq!(
-        classify(true, true, false),
+        classify(true, true, false, true),
         ToolchainReadiness::Partial(MissingToolchainEvidence {
             channel_manifest: false,
             native_rustc: true,
+            host_std: false,
         })
     );
-    assert_eq!(classify(true, true, true), ToolchainReadiness::Ready);
+    assert_eq!(classify(true, true, true, true), ToolchainReadiness::Ready);
 }
 
 #[test]
@@ -60,6 +66,8 @@ fn probe_reports_missing_partial_and_ready() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path();
     let host = "x86_64-unknown-linux-gnu";
+    // The std check applies only to a directory named for the running host.
+    let judged = crate::pyo3_detect::host_triple() == host;
 
     assert_eq!(
         probe_toolchain_state(home, "1.95.0", host),
@@ -85,6 +93,7 @@ fn probe_reports_missing_partial_and_ready() {
         ToolchainReadiness::Partial(MissingToolchainEvidence {
             channel_manifest: true,
             native_rustc: true,
+            host_std: judged,
         })
     );
 
@@ -102,6 +111,7 @@ fn probe_reports_missing_partial_and_ready() {
         ToolchainReadiness::Partial(MissingToolchainEvidence {
             channel_manifest: true,
             native_rustc: false,
+            host_std: judged,
         })
     );
     std::fs::write(
@@ -109,6 +119,21 @@ fn probe_reports_missing_partial_and_ready() {
         b"manifest-version = '2'\n",
     )
     .expect("write channel manifest");
+    // Base evidence alone is not enough on the running host: std is required.
+    if judged {
+        assert_eq!(
+            probe_toolchain_state(home, "1.95.0", host),
+            ToolchainReadiness::Partial(MissingToolchainEvidence {
+                channel_manifest: false,
+                native_rustc: false,
+                host_std: true,
+            })
+        );
+    }
+    let std_lib = toolchain.join("lib/rustlib").join(host).join("lib");
+    std::fs::create_dir_all(&std_lib).expect("mkdir std lib");
+    std::fs::write(std_lib.join("libcore-0123456789abcdef.rlib"), b"").expect("libcore");
+    std::fs::write(std_lib.join("libstd-0123456789abcdef.rlib"), b"").expect("libstd");
     assert_eq!(
         probe_toolchain_state(home, "1.95.0", host),
         ToolchainReadiness::Ready
@@ -124,6 +149,7 @@ fn caller_selected_partial_toolchain_has_non_destructive_recovery_guidance() {
         MissingToolchainEvidence {
             channel_manifest: true,
             native_rustc: false,
+            host_std: false,
         },
     )
     .to_string();

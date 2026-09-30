@@ -1489,6 +1489,7 @@ existing field names and types will not change without a schema bump:
   "smoke_verify": {
     "cargo_version": "cargo 1.95.0 (abc1234 2026-04-15)",
     "rustc_version": "rustc 1.95.0 (def5678 2026-04-15)",
+    "missing_std_targets": [],
     "ok": true
   },
   "elapsed_ms": 12345,
@@ -1512,8 +1513,15 @@ Notes on the schema:
   manifest entries that the `prepare` pipeline attempted. Plugin labels
   are `name` for bare or `*` versions, otherwise `name@version`.
 - `smoke_verify.ok` is `false` when either spawn fails or returns
-  non-zero. The JSON payload is emitted in both success and failure
-  cases; only the process exit code differs.
+  non-zero, or when `missing_std_targets` is not empty. The JSON payload is
+  emitted in both success and failure cases; only the process exit code
+  differs.
+- `smoke_verify.missing_std_targets` (additive, soldr#3376; `schema_version`
+  stays `1`) lists the host and declared-target triples whose
+  `lib/rustlib/<triple>/lib/libcore-*.rlib` (and, for the host, `libstd-*.rlib`)
+  are missing from the resolved toolchain even though rustup's `components`
+  manifest may still claim them. It is always present and empty when all files
+  exist. Only a `rustc` inside a real `lib/rustlib` layout is judged.
 
 #### `soldr toolchain link`
 
