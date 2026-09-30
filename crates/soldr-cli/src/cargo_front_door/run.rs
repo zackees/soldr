@@ -263,20 +263,14 @@ pub(crate) async fn run_cargo_front_door(
     if let Some(toolchain) = explicit_toolchain {
         command.env("RUSTUP_TOOLCHAIN", toolchain);
     } else if std::env::var_os("RUSTUP_TOOLCHAIN").is_none() {
-        let manifest_dir =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        if let Ok(manifest) = crate::core::read_rust_toolchain_manifest(&manifest_dir) {
-            if let Some(channel) = manifest.channel {
-                let channel = channel.trim();
-                if !channel.is_empty() {
-                    command.env("RUSTUP_TOOLCHAIN", channel);
-                }
-            }
-        }
+        crate::toolchain_dir_name::export_manifest_channel(&mut command);
     }
     if let Some(plan) = &dylint_plan {
         plan.apply_to_command(&mut command);
     }
+    // soldr#3394: tools that read RUSTUP_TOOLCHAIN literally (the Dylint
+    // driver's sysroot) need the installed directory name under a managed home.
+    crate::toolchain_dir_name::apply_installed_toolchain_dir_name(&mut command);
     if dylint_dependency_cook {
         command.env_remove("RUSTC_WORKSPACE_WRAPPER");
         for (name, _) in std::env::vars_os() {
