@@ -66,6 +66,9 @@ def test_the_verdict_keeps_its_check_name_and_never_waits() -> None:
     verdict = _load("ci-pre.yml")["jobs"]["cache-budget"]
     assert verdict["name"] == "Repository Actions cache budget"
     assert verdict["permissions"]["actions"] == "read"
+    # soldr#3342: the post-main-CI sweep event must not run a verdict that races
+    # the deletions it triggers, while every other event keeps it.
+    assert verdict["if"] == "${{ github.event_name != 'workflow_run' }}"
     run = " ".join(step.get("run", "") for step in verdict["steps"])
     assert "--event-name" in run and "--ref" in run
 
