@@ -295,7 +295,9 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                     side_effect=subprocess.CalledProcessError(1, "soldr"),
                 ):
                     with contextlib.redirect_stderr(stream):
-                        with self.assertRaises(subprocess.CalledProcessError):
+                        # soldr#3401: the hook ends with a message, not a
+                        # traceback-producing CalledProcessError.
+                        with self.assertRaises(SystemExit):
                             self.backend._maturin_pep517(
                                 "build-wheel", build_label="wheel"
                             )

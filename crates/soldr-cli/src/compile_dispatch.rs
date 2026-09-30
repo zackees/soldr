@@ -125,9 +125,50 @@ where
     match crate::session_transport::session_hot_path(rustc_argv) {
         crate::session_transport::SessionHotPathOutcome::Served(exit_code) => Ok(exit_code),
         crate::session_transport::SessionHotPathOutcome::HardFail(error) => {
-            Err(SoldrError::Other(session_failure_message(&error)))
+            Err(SoldrError::Other(match fatal_refusal_message(&error) {
+                Some(message) => message,
+                None => session_failure_message(&error),
+            }))
         }
     }
+}
+
+/// The message for a fatal broker route refusal (soldr#3401), or `None` for any
+/// other failure. The first refusal of a build prints the full explanation and
+/// records a sentinel; every later one in that build prints one line pointing
+/// back at it. The "SESSION compile failed" prefix is dropped: a refused route is
+/// not a failed compile, and repeating the prefix per crate was the spew.
+fn fatal_refusal_message(error: &std::io::Error) -> Option<String> {
+    let paths = crate::core::SoldrPaths::new().ok();
+    fatal_refusal_message_with(
+        error,
+        paths.as_ref(),
+        crate::wrapper_target::read_build_session_id_env(),
+    )
+}
+
+/// [`fatal_refusal_message`] with the sentinel location and build id supplied,
+/// so tests do not touch the real cache or the process environment.
+fn fatal_refusal_message_with(
+    error: &std::io::Error,
+    paths: Option<&crate::core::SoldrPaths>,
+    build_id: Option<u64>,
+) -> Option<String> {
+    let refusal = crate::route_refusal::RouteRefusal::from_io(error).filter(|r| r.fatal)?;
+    if refusal.repeat {
+        return Some(refusal.text.clone());
+    }
+    let recorded = match paths {
+        Some(paths) => crate::route_refusal_sentinel::record(paths, build_id),
+        None => crate::route_refusal_sentinel::Recorded::Unkeyed,
+    };
+    Some(match recorded {
+        crate::route_refusal_sentinel::Recorded::Repeat => {
+            crate::route_refusal_sentinel::REPEAT_LINE.to_string()
+        }
+        crate::route_refusal_sentinel::Recorded::First
+        | crate::route_refusal_sentinel::Recorded::Unkeyed => refusal.text.clone(),
+    })
 }
 
 /// Does this error mean the peer went away mid-request, rather than refusing
@@ -259,5 +300,58 @@ mod tests {
         let error = Error::new(ErrorKind::PermissionDenied, "permission denied");
         let message = session_failure_message(&error);
         assert_eq!(message, "broker SESSION compile failed: permission denied");
+    }
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+    use crate::route_refusal::RouteRefusal;
+
+    fn refusal(fatal: bool, repeat: bool) -> std::io::Error {
+        std::io::Error::other(RouteRefusal {
+            text: "the full explanatory block".into(),
+            fatal,
+            repeat,
+        })
+    }
+
+    #[test]
+    fn a_fatal_refusal_prints_the_block_once_per_build_then_one_line() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::core::SoldrPaths::with_root(temp.path().join("root"));
+        let error = refusal(true, false);
+
+        let first = fatal_refusal_message_with(&error, Some(&paths), Some(42)).unwrap();
+        assert_eq!(first, "the full explanatory block");
+        for _ in 0..3 {
+            let later = fatal_refusal_message_with(&error, Some(&paths), Some(42)).unwrap();
+            assert_eq!(later, crate::route_refusal_sentinel::REPEAT_LINE);
+        }
+        // A different build starts over; a missing build id never dedupes.
+        assert_eq!(
+            fatal_refusal_message_with(&error, Some(&paths), Some(43)).unwrap(),
+            "the full explanatory block"
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                fatal_refusal_message_with(&error, Some(&paths), None).unwrap(),
+                "the full explanatory block"
+            );
+        }
+    }
+
+    #[test]
+    fn the_session_prefix_is_not_used_for_a_refusal_and_transient_ones_keep_it() {
+        // A repeat carries only the pointer line.
+        assert_eq!(
+            fatal_refusal_message_with(&refusal(true, true), None, Some(1)).unwrap(),
+            "the full explanatory block"
+        );
+        // A transient refusal, or any other error, is not handled here.
+        assert!(fatal_refusal_message_with(&refusal(false, false), None, Some(1)).is_none());
+        assert!(
+            fatal_refusal_message_with(&std::io::Error::other("plain"), None, Some(1)).is_none()
+        );
     }
 }

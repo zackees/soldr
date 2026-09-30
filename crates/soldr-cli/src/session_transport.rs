@@ -66,6 +66,22 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
             )))
         }
     };
+    // soldr#3401: a route already refused earlier in this build will be refused
+    // again, deterministically -- don't dial the broker just to print it again.
+    if let Ok(paths) = crate::core::SoldrPaths::new() {
+        if crate::route_refusal_sentinel::already_refused(
+            &paths,
+            crate::wrapper_target::read_build_session_id_env(),
+        ) {
+            return SessionHotPathOutcome::HardFail(io::Error::other(
+                crate::route_refusal::RouteRefusal {
+                    text: crate::route_refusal_sentinel::REPEAT_LINE.to_string(),
+                    fatal: true,
+                    repeat: true,
+                },
+            ));
+        }
+    }
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(err) => return SessionHotPathOutcome::HardFail(err),
@@ -598,7 +614,7 @@ where
                     let (wrapper, service) = crate::route_refusal::wrapper_and_service();
                     let wanted =
                         crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_VERSION;
-                    Err(io::Error::other(crate::route_refusal::describe_refusal(
+                    let text = crate::route_refusal::describe_refusal(
                         refused.code,
                         &refused.reason,
                         refused.retry_after_ms,
@@ -609,7 +625,14 @@ where
                             wanted_version: wanted,
                             service: service.as_deref(),
                         },
-                    )))
+                    );
+                    // soldr#3401: carry the refusal as a value so the dispatcher
+                    // can tell a deterministic policy refusal from a transient one.
+                    Err(io::Error::other(crate::route_refusal::RouteRefusal {
+                        text,
+                        fatal: crate::route_refusal::code_is_fatal(refused.code),
+                        repeat: false,
+                    }))
                 }
                 None => Err(io::Error::other("broker returned an empty HelloReply")),
             }?;

@@ -96,3 +96,40 @@ def test_called_process_error_carries_output_and_stderr(backend, tmp_path, monke
     assert err.output, "output must not be None -- that is the reported bug"
     assert named in err.output, f"the named cause must survive: {err.output!r}"
     assert err.stderr and named in err.stderr, f"stderr attr too: {err.stderr!r}"
+
+
+# soldr#3401: the hook must end with soldr's own summary, not a Python
+# traceback. `SystemExit(message)` prints only the message.
+def test_a_failing_build_ends_the_hook_with_a_message_not_a_traceback(
+    backend, monkeypatch
+):
+    named = "error: linking with `cc` failed: exit status: 1"
+
+    def failing(cmd, env):
+        raise subprocess.CalledProcessError(
+            3,
+            cmd,
+            output=backend._pep517_failure_payload(named, Path("/tmp/b.log"), True),
+            stderr=named,
+        )
+
+    monkeypatch.setattr(backend, "_prep_env", lambda *a, **k: {})
+    monkeypatch.setattr(backend, "_stats_mode", lambda env: "off")
+    monkeypatch.setattr(backend, "_run_pep517_streaming", failing)
+
+    with pytest.raises(SystemExit) as excinfo:
+        backend._maturin_pep517("build-wheel")
+
+    message = str(excinfo.value.code)
+    assert "exit status 3" in message, message
+    assert named in message, "the named cause must survive the boundary: " + message
+    assert "/tmp/b.log" in message.replace("\\", "/"), message
+    assert excinfo.value.__cause__ is None, "no chained CalledProcessError traceback"
+    assert excinfo.value.__suppress_context__
+
+
+def test_a_failure_message_without_a_payload_still_names_the_exit_status(backend):
+    exc = subprocess.CalledProcessError(9, ["soldr"], output=None)
+    assert backend._pep517_failure_message(exc) == (
+        "soldr: the PEP 517 build failed (exit status 9)."
+    )
