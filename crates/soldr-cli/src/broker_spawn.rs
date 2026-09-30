@@ -783,6 +783,7 @@ fn stage_broker_image(
         lease.check_fence().map_err(|error| error.to_string())?;
         return Ok(());
     }
+    crate::shim_materialize::require_relocatable(&source, "the stable broker image")?;
     let parent = target
         .parent()
         .ok_or_else(|| "stable broker path has no parent".to_string())?;

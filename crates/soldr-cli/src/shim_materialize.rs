@@ -55,6 +55,26 @@ pub(crate) fn soldr_binary_source() -> Result<PathBuf, SoldrError> {
     std::env::current_exe().map_err(SoldrError::from)
 }
 
+/// Refuse to copy `source` to a location where it cannot load its libraries
+/// (soldr#3403). A binary that names its bundled libraries relative to itself
+/// (`$ORIGIN` / `@loader_path`) aborts in the loader when copied elsewhere,
+/// before `main` and before any logging. Shims dodge that with a trampoline;
+/// the broker's stable image is a byte-for-byte copy, so it must not silently
+/// become a binary that cannot start.
+pub(crate) fn require_relocatable(source: &Path, destination_role: &str) -> Result<(), String> {
+    if soldr_core::self_relocate::exe_has_loader_path_reference(source) {
+        return Err(format!(
+            "{} names its shared libraries relative to its own location ($ORIGIN or \
+             @loader_path), so a copy staged as {destination_role} could not load them. This \
+             happens when a source build was repaired with bundled libraries (for example \
+             `pip install .` on a host with a system liblzma). Build with the libraries linked \
+             statically, or run the installed release binary (soldr#3403).",
+            source.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Point `target` at `source` with a `#!/bin/sh` trampoline instead of a
 /// hardlink, for sources that only run from their own directory (#1908).
 ///
@@ -517,6 +537,22 @@ mod tests {
         let source = tmp.path().join("soldr");
         std::fs::write(&source, bytes).unwrap();
         source
+    }
+
+    #[test]
+    fn a_position_dependent_source_is_refused_for_the_broker_image() {
+        let tmp = tempfile::tempdir().unwrap();
+        let elf = origin_runpath_elf_source(&tmp);
+        let error = require_relocatable(&elf, "the stable broker image")
+            .expect_err("an $ORIGIN rpath cannot be copied to the broker path");
+        assert!(
+            error.contains("$ORIGIN") && error.contains("broker image"),
+            "{error}"
+        );
+
+        let plain = tmp.path().join("plain");
+        std::fs::write(&plain, b"#!/bin/sh\n").unwrap();
+        assert!(require_relocatable(&plain, "the stable broker image").is_ok());
     }
 
     #[test]

@@ -267,6 +267,14 @@ pub fn exe_depends_on_bundled_wheel_libs(exe: &Path) -> bool {
         .any(|kind| grandparent.join(format!("{pkg}.{kind}")).is_dir())
 }
 
+/// The shared libraries an ELF executable needs at load time (`DT_NEEDED`), or
+/// `None` when `exe` is unreadable or not a dynamic ELF -- including every
+/// non-ELF platform binary. Lets a guard assert a build did not pick up a
+/// system library it should link statically (soldr#3403).
+pub fn exe_needed_libraries(exe: &Path) -> Option<Vec<String>> {
+    crate::elf_origin::elf_needed_libraries(&fs::read(exe).ok()?)
+}
+
 /// True when `exe` is position-dependent: it names a shared library
 /// relative to its own location, so copying or hardlinking it elsewhere
 /// strands that reference and dyld aborts it at exec.
