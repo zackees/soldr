@@ -199,6 +199,8 @@ fn a_target_whose_std_files_vanish_defeats_the_memo_and_fails_closed() {
     assert!(
         stderr.contains("target add") && stderr.contains("caller-selected"),
         "the error must give the recovery commands for a caller-selected home: {stderr}"
+    );
+}
 
 /// soldr#3452: a build launched from a subdirectory of a pinned repo (the
 /// Dylint layout: `dylints/<lint>/` under a root pin) is still a pinned build.
