@@ -75,7 +75,24 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
         .map(|(key, value)| SessionEnvVar { key, value })
         .collect();
 
-    match run_session_compile_for_service(&service_name, rustc_argv, cwd, env) {
+    let mut attempt =
+        run_session_compile_for_service(&service_name, rustc_argv, cwd.clone(), env.clone());
+    if let Err(err) = &attempt {
+        if relay_lost_before_output(err) {
+            // soldr#3377: the daemon went away before any output reached us, so
+            // nothing was printed twice and the compile can be asked for once
+            // more through the same broker route. Say so: a silent retry would
+            // hide daemon deaths.
+            eprintln!(
+                "soldr: {}; the daemon closed the compile before any output -- retrying once \
+                 (see `soldr logs paths` for the daemon log; soldr#3377)",
+                err.source
+            );
+            std::thread::sleep(Duration::from_millis(250));
+            attempt = run_session_compile_for_service(&service_name, rustc_argv, cwd, env);
+        }
+    }
+    match attempt {
         Ok(outcome) => {
             if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
                 eprintln!(
@@ -92,6 +109,15 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
         )),
         Err(err) => SessionHotPathOutcome::HardFail(err.source),
     }
+}
+
+/// Did the relay close before the terminal `Exit` frame and before any
+/// compiler output reached this process? Only then is a single retry safe.
+fn relay_lost_before_output(err: &SessionError) -> bool {
+    !err.output_started
+        && !err.broker_unreachable
+        && err.source.kind() == io::ErrorKind::UnexpectedEof
+        && err.source.to_string().contains("relay closed before Exit")
 }
 
 /// Ask the stable broker to materialize one route without starting a SESSION.
@@ -744,7 +770,10 @@ where
         if n == 0 {
             return Err(tag(
                 output_started,
-                io::Error::other("SESSION relay closed before Exit"),
+                io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "SESSION relay closed before Exit",
+                ),
             ));
         }
         buf.extend_from_slice(&chunk[..n]);
@@ -752,190 +781,5 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pre_output_error_is_attributed_without_output() {
-        let err = SessionError::pre_output(io::Error::other("connect refused"));
-        assert!(
-            !err.output_started,
-            "a setup failure must be identified as pre-output"
-        );
-    }
-
-    #[test]
-    fn compile_session_uses_only_the_serialized_client_environment() {
-        let start = compile_session_start(
-            &["rustc".into(), "--version".into()],
-            "/workspace".into(),
-            vec![running_process::broker::protocol_v2::SessionEnvVar {
-                key: "CLIENT_ONLY".into(),
-                value: "present".into(),
-            }],
-        );
-
-        assert!(start.clear_inherited_env);
-        assert_eq!(
-            start.environment_policy,
-            running_process::broker::protocol_v2::EnvironmentPolicy::Clear as i32
-        );
-        assert_eq!(start.env.len(), 1);
-        assert_eq!(start.env[0].key, "CLIENT_ONLY");
-    }
-
-    #[test]
-    fn busy_class_is_bounded_and_missing_endpoints_are_concrete() {
-        assert!(broker_connect_is_busy(
-            &io::Error::from_raw_os_error(231),
-            Duration::from_millis(500)
-        ));
-        assert!(!broker_connect_is_busy(
-            &io::Error::new(io::ErrorKind::NotFound, "absent"),
-            Duration::ZERO
-        ));
-        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-            assert!(broker_connect_is_busy(
-                &io::Error::from_raw_os_error(2),
-                Duration::from_millis(1)
-            ));
-            assert!(!broker_connect_is_busy(
-                &io::Error::from_raw_os_error(2),
-                Duration::from_millis(51)
-            ));
-        }
-    }
-
-    #[test]
-    fn hello_retry_is_limited_to_pre_reply_disconnects() {
-        assert!(broker_hello_retryable(&io::Error::other(
-            "broker closed before Hello reply"
-        )));
-        assert!(broker_hello_retryable(&io::Error::new(
-            io::ErrorKind::ConnectionReset,
-            "replaced broker"
-        )));
-        assert!(!broker_hello_retryable(&io::Error::other(
-            "broker refused the daemon route"
-        )));
-        assert!(!broker_hello_retryable(&io::Error::new(
-            io::ErrorKind::TimedOut,
-            "route acquisition ceiling"
-        )));
-    }
-
-    #[test]
-    fn relayed_diagnostic_suppresses_the_silent_fault_annotation() {
-        assert!(mark_relayed_output(
-            b"compiler terminated by a Unix signal\n"
-        ));
-        assert!(crate::exit_guard::spoke());
-        assert!(!crate::exit_guard::needs_annotation(
-            -1,
-            crate::exit_guard::spoke()
-        ));
-    }
-
-    #[test]
-    fn accepted_relay_that_never_negotiates_is_bounded() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        runtime.block_on(async {
-            let (mut client, _server) = tokio::io::duplex(64);
-            let error = read_negotiated_with_deadlines(
-                &mut client,
-                1,
-                crate::broker_deadlines::BrokerDeadlines {
-                    busy_budget: Duration::from_millis(10),
-                    first_response: Duration::from_millis(20),
-                    progress_silence: Duration::from_millis(20),
-                    route_ceiling: Duration::from_secs(1),
-                },
-            )
-            .await
-            .expect_err("a silent relay must not wait forever");
-            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-            let text = error.to_string();
-            assert!(text.contains("first-response deadline"), "{text}");
-            assert!(text.contains("SOLDR_BROKER_FIRST_RESPONSE_MS"), "{text}");
-        });
-    }
-
-    #[test]
-    fn continuous_progress_is_still_bounded_by_route_ceiling() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        runtime.block_on(async {
-            let (mut client, mut server) = tokio::io::duplex(4096);
-            let writer = tokio::spawn(async move {
-                let mut elapsed_ms = 1_u64;
-                loop {
-                    let progress = crate::broker_server::RouteProgress {
-                        stage: "probe".into(),
-                        attempt: 3,
-                        elapsed_ms,
-                        latest_result: "daemon still starting".into(),
-                        retry_after_ms: 0,
-                    };
-                    let frame = Frame {
-                        envelope_version: running_process::broker::protocol::PROTOCOL_VERSION,
-                        kind: FrameKind::Event as i32,
-                        payload_protocol: crate::broker_server::ROUTE_PROGRESS_PAYLOAD_PROTOCOL,
-                        payload: progress.encode_to_vec(),
-                        request_id: 2476,
-                        payload_encoding: PayloadEncoding::None as i32,
-                        deadline_unix_ms: 0,
-                        traceparent: String::new(),
-                        tracestate: String::new(),
-                    };
-                    let bytes = encode_framed(&frame).expect("encode progress");
-                    if server.write_all(&bytes).await.is_err() {
-                        break;
-                    }
-                    elapsed_ms += 5;
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-            });
-            let error = read_negotiated_with_deadlines(
-                &mut client,
-                2476,
-                crate::broker_deadlines::BrokerDeadlines {
-                    busy_budget: Duration::from_millis(100),
-                    first_response: Duration::from_millis(200),
-                    // 40x the 5ms progress cadence: a contended runner's late
-                    // scheduler wake must never turn the expected *ceiling*
-                    // timeout into a *silence* timeout (four Windows-lane
-                    // failures on 2026-08-16 with the old 20ms budget).
-                    progress_silence: Duration::from_millis(200),
-                    route_ceiling: Duration::from_millis(400),
-                },
-            )
-            .await
-            .expect_err("progress must not defeat the absolute ceiling");
-            writer.abort();
-            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-            assert!(error.to_string().contains("route acquisition ceiling"));
-        });
-    }
-
-    #[test]
-    fn compile_service_that_never_publishes_is_bounded() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        runtime.block_on(async {
-            let (mut client, _server) = tokio::io::duplex(64);
-            let err =
-                pump_session_output_with_timeout(&mut client, std::time::Duration::from_millis(20))
-                    .await
-                    .expect_err("a silent compile service must time out");
-            assert_eq!(err.source.kind(), io::ErrorKind::TimedOut);
-            assert!(!err.output_started);
-        });
-    }
-}
+#[path = "session_transport_tests.rs"]
+mod tests;

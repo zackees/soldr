@@ -516,6 +516,9 @@ async fn run_async_recording(
             ),
         );
     };
+    // soldr#3377: let running compiles finish before the process goes away,
+    // so their wrappers get an `Exit` frame instead of a closed stream.
+    drain_inflight_compiles(&paths, "graceful-shutdown").await;
     shutdown_phase("shutdown-phase-maintenance");
     // A destructive pass that already acquired the root maintenance lease is
     // allowed to finish. In particular, await its spawn_blocking deletion
@@ -555,6 +558,48 @@ async fn run_async_recording(
     };
     append_lifecycle_event(&paths, event);
     Ok(())
+}
+
+/// Longest a graceful shutdown waits for running compiles. Kept well under
+/// the shutdown watchdog's grace so a hung compile cannot wedge teardown.
+const SHUTDOWN_COMPILE_DRAIN: Duration = Duration::from_secs(60);
+
+/// Wait (bounded) for in-flight compiles, then record any that will be cut.
+async fn drain_inflight_compiles(paths: &SoldrPaths, reason: &str) {
+    let deadline = std::time::Instant::now() + SHUTDOWN_COMPILE_DRAIN;
+    let waiting = crate::daemon::inflight_compiles::count();
+    if waiting > 0 {
+        eprintln!(
+            "soldr-daemon: {reason}: waiting up to {}s for {waiting} in-flight compile(s)",
+            SHUTDOWN_COMPILE_DRAIN.as_secs()
+        );
+    }
+    while crate::daemon::inflight_compiles::count() > 0 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    record_compiles_cut(paths, reason);
+}
+
+/// Name the compiles a shutdown is about to cut (soldr#3377): each wrapper
+/// sees "SESSION relay closed before Exit", and without this the daemon log
+/// gave no hint why.
+fn record_compiles_cut(paths: &SoldrPaths, reason: &str) {
+    let cut = crate::daemon::inflight_compiles::snapshot();
+    if cut.is_empty() {
+        return;
+    }
+    let units: Vec<String> = cut
+        .iter()
+        .take(8)
+        .map(|c| c.crate_name.clone().unwrap_or_else(|| format!("#{}", c.id)))
+        .collect();
+    eprintln!(
+        "soldr-daemon: {reason}: cutting {} in-flight compile(s) (e.g. {}); their wrappers \
+         will report 'SESSION relay closed before Exit' (soldr#3377)",
+        cut.len(),
+        units.join(", ")
+    );
+    crate::daemon::lifecycle::append_lifecycle_event(paths, "shutdown-cut-compiles");
 }
 
 /// SIGTERM's fast-exit path (soldr#3059). Never returns.
@@ -630,6 +675,7 @@ async fn run_async_recording(
 /// that file (via the lifecycle event referencing it) needed a marker and
 /// these do not.
 fn fast_exit_on_signal(paths: &SoldrPaths, signal_name: &str) -> ! {
+    record_compiles_cut(paths, signal_name);
     crate::daemon::lifecycle::append_lifecycle_event(paths, "died-signal-fast");
     eprintln!(
         "soldr-daemon: {signal_name} received (pid {pid}); taking the fast-exit path \
