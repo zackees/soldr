@@ -64,6 +64,7 @@ pub mod ipc_peer;
 pub(crate) mod kill_decisions;
 pub mod lifecycle;
 pub mod maintenance;
+pub(crate) mod other_generations;
 pub mod protocol;
 /// soldr#3038 / soldr#3057 — optional `SOLDR_DAEMON_RSS_CEILING_BYTES`
 /// watchdog: samples this process's own resident set on a short interval
