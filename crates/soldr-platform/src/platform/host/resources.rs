@@ -13,7 +13,7 @@ use std::path::Path;
 ///
 /// `available_physical_memory_bytes()` is the OS-API counterpart of
 /// `/proc/meminfo`'s `MemAvailable` on hosts that have no procfs: Windows
-/// `ullAvailPhys`, macOS `vm_stat` reclaimable pages, and `None` on Linux,
+/// `ullAvailPhys`, macOS reclaimable pages (`host_statistics64`), and `None` on Linux,
 /// whose answer is [`HostResourceSnapshot::system_available_bytes`].
 pub use crate::platform_imp::host::resources::{
     available_physical_memory_bytes, cgroup_v2_dir, commit_charge_mb, physical_cores,
