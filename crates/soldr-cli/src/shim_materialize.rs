@@ -486,6 +486,52 @@ mod tests {
         source
     }
 
+    // A minimal 64-bit LE ELF whose DT_RUNPATH is `$ORIGIN/../soldr.libs` --
+    // what maturin's repair writes for a bundled liblzma (soldr#3403).
+    fn origin_runpath_elf_source(tmp: &tempfile::TempDir) -> PathBuf {
+        let rpath = b"$ORIGIN/../soldr.libs\0";
+        let (dyn_offset, dyn_size) = (64u64 + 2 * 56, 3 * 16u64);
+        let strtab_offset = dyn_offset + dyn_size;
+        let total = strtab_offset + rpath.len() as u64;
+        let base = 0x40_0000u64;
+        let mut bytes = b"\x7fELF\x02\x01\x01".to_vec();
+        bytes.resize(16, 0);
+        for (value, width) in [(3u64, 2), (62, 2), (1, 4), (0, 8), (64, 8), (0, 8), (0, 4)] {
+            bytes.extend_from_slice(&value.to_le_bytes()[..width]);
+        }
+        for (value, width) in [(64u64, 2), (56, 2), (2, 2), (0, 6)] {
+            bytes.extend_from_slice(&value.to_le_bytes()[..width]);
+        }
+        for (kind, offset, size) in [(1u32, 0u64, total), (2, dyn_offset, dyn_size)] {
+            bytes.extend_from_slice(&kind.to_le_bytes());
+            bytes.extend_from_slice(&5u32.to_le_bytes());
+            for field in [offset, base + offset, base + offset, size, size, 8] {
+                bytes.extend_from_slice(&field.to_le_bytes());
+            }
+        }
+        for (tag, value) in [(5u64, base + strtab_offset), (29, 0), (0, 0)] {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(rpath);
+        let source = tmp.path().join("soldr");
+        std::fs::write(&source, bytes).unwrap();
+        source
+    }
+
+    #[test]
+    fn elf_with_an_origin_runpath_gets_a_trampoline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = origin_runpath_elf_source(&tmp);
+        let target = tmp.path().join("shims").join("rustc");
+
+        let result = materialize_executable(&source, &target).unwrap();
+        assert_eq!(result.link_mode, LINK_MODE_TRAMPOLINE);
+        assert!(std::fs::read_to_string(&target)
+            .unwrap()
+            .starts_with("#!/bin/sh"));
+    }
+
     // #1908: the guard belongs to materialize_executable, so every writer
     // inherits it. Before this, rustc_wrapper_shim_binary and friends
     // hardlinked the Mach-O straight into the shim dir and dyld aborted it
