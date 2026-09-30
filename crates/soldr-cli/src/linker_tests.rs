@@ -10,6 +10,40 @@ const MAC_X64: &str = "x86_64-apple-darwin";
 const MAC_ARM: &str = "aarch64-apple-darwin";
 const WIN_MSVC: &str = "x86_64-pc-windows-msvc";
 const WIN_GNU: &str = "x86_64-pc-windows-gnu";
+fn fake_clang() -> &'static Path {
+    Path::new("/managed/llvm/bin/clang")
+}
+
+/// soldr#3430: the shim execs the resolved absolute clang and never a bare
+/// `clang` looked up from whatever search path the link happens to run under.
+#[test]
+fn linux_driver_shim_execs_an_absolute_clang_never_a_bare_one() {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+    let mut injection = LinkerInjection::clang_with_fuse("lld");
+    materialize_linker_driver_shim(&paths, LINUX, &mut injection, Some(fake_clang())).unwrap();
+    let body = std::fs::read_to_string(injection.linker.unwrap()).unwrap();
+    assert!(body.contains("exec '/managed/llvm/bin/clang' "), "{body}");
+    assert!(!body.contains("exec clang"), "{body}");
+
+    let mut unresolved = LinkerInjection::clang_with_fuse("lld");
+    let error = materialize_linker_driver_shim(&paths, LINUX, &mut unresolved, None)
+        .expect_err("a Unix shim without a resolved clang must not render");
+    assert!(error.to_string().contains("resolved clang"), "{error}");
+}
+
+#[test]
+fn missing_clang_error_names_clang_the_asset_and_the_override() {
+    let text = crate::linker_shim::missing_clang_error_text("offline");
+    assert!(text.contains("clang") && text.contains("llvm-"), "{text}");
+    assert!(
+        text.contains("SOLDR_LLVM_DIR") && text.contains("offline"),
+        "{text}"
+    );
+}
 
 fn assert_apple_fast_linker(injection: &LinkerInjection, triple: &str) {
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::MacOs {
@@ -219,7 +253,7 @@ fn linux_driver_shim_preserves_build_rustflags_and_is_content_addressed() {
     let paths = SoldrPaths::with_root(temp.path().to_path_buf());
     let mut injection = LinkerInjection::clang_with_ld_path("/managed/reld with space");
 
-    materialize_linker_driver_shim(&paths, LINUX, &mut injection).unwrap();
+    materialize_linker_driver_shim(&paths, LINUX, &mut injection, Some(fake_clang())).unwrap();
 
     assert!(injection.rustflags.is_none());
     let path = PathBuf::from(injection.linker.as_deref().unwrap());
@@ -229,7 +263,7 @@ fn linux_driver_shim_preserves_build_rustflags_and_is_content_addressed() {
 
     let first_path = path;
     let mut different = LinkerInjection::clang_with_fuse("lld");
-    materialize_linker_driver_shim(&paths, LINUX, &mut different).unwrap();
+    materialize_linker_driver_shim(&paths, LINUX, &mut different, Some(fake_clang())).unwrap();
     assert_ne!(PathBuf::from(different.linker.unwrap()), first_path);
     assert!(different.rustflags.is_none());
 }
@@ -253,7 +287,7 @@ fn linker_driver_shim_forwards_the_driver_argument_and_linker_argv() {
 
     let paths = SoldrPaths::with_root(temp.path().join("soldr root"));
     let mut injection = LinkerInjection::clang_with_ld_path("/managed/reld with space");
-    materialize_linker_driver_shim(&paths, LINUX, &mut injection).unwrap();
+    materialize_linker_driver_shim(&paths, LINUX, &mut injection, Some(&clang)).unwrap();
     let status = Command::new(injection.linker.unwrap())
         .args(["first object.o", "-o", "output file"])
         .env("PATH", &fake_bin)
@@ -300,7 +334,7 @@ fn apple_reld_driver_argument_moves_into_a_linker_shim() {
     let mut injection = resolve_for_target(LinkerChoice::Reld, MAC_ARM).unwrap();
     inject_resolved_reld(&mut injection, Path::new("/managed/reld")).unwrap();
 
-    materialize_linker_driver_shim(&paths, MAC_ARM, &mut injection).unwrap();
+    materialize_linker_driver_shim(&paths, MAC_ARM, &mut injection, Some(fake_clang())).unwrap();
 
     assert!(injection.rustflags.is_none());
     let path = PathBuf::from(injection.linker.as_deref().unwrap());

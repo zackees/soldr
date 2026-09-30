@@ -107,7 +107,9 @@ impl Pep517LinkerState {
     }
 }
 
-pub use crate::linker_shim::{inject_resolved_reld, materialize_linker_driver_shim};
+pub use crate::linker_shim::{
+    inject_resolved_reld, materialize_linker_driver_shim, materialize_linker_driver_shim_resolving,
+};
 
 impl LinkerInjection {
     fn none() -> Self {
@@ -354,7 +356,7 @@ pub async fn apply_pep517_override(
             .map_err(reld_fetch_error)?;
         inject_resolved_reld(&mut injection, &reld)?;
     }
-    materialize_linker_driver_shim(paths, target, &mut injection)?;
+    materialize_linker_driver_shim_resolving(paths, target, &mut injection).await?;
     let prefix = cargo_target_env_prefix(target);
     let linker_key = format!("CARGO_TARGET_{prefix}_LINKER");
     let rustflags_key = format!("CARGO_TARGET_{prefix}_RUSTFLAGS");

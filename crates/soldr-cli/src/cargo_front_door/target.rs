@@ -152,7 +152,7 @@ pub(super) async fn apply_linker_override(
             .map_err(linker::reld_fetch_error)?;
         linker::inject_resolved_reld(&mut injection, &reld)?;
     }
-    linker::materialize_linker_driver_shim(paths, &target, &mut injection)?;
+    linker::materialize_linker_driver_shim_resolving(paths, &target, &mut injection).await?;
     let prefix = linker::cargo_target_env_prefix(&target);
     let linker_key = format!("CARGO_TARGET_{prefix}_LINKER");
     let rustflags_key = format!("CARGO_TARGET_{prefix}_RUSTFLAGS");
