@@ -102,6 +102,16 @@ pub(crate) fn register(unit_key: Option<String>, crate_name: Option<String>) -> 
     InflightGuard { id }
 }
 
+/// How many compiles are registered right now. The idle watchdog reads this so
+/// a daemon that is busy compiling is never mistaken for an idle one
+/// (soldr#3377).
+pub(crate) fn count() -> usize {
+    REGISTRY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len()
+}
+
 /// Snapshot every compile currently registered, oldest first. Never holds
 /// the lock across I/O -- the lock is released before this function
 /// returns, well before any caller writes the result to disk.
@@ -145,6 +155,18 @@ mod tests {
     /// on the total length of `snapshot()` or on it being empty -- another
     /// test's entries may be alive concurrently. Each test uses its own
     /// unique unit-key string and filters `snapshot()` down to just those.
+
+    #[test]
+    fn count_grows_while_a_compile_is_registered_and_shrinks_on_drop() {
+        // Other tests register concurrently, so assert only the direction of
+        // change this test itself causes.
+        let guard = register(Some("t-count/1".to_string()), None);
+        assert!(count() >= 1, "a registered compile must be counted");
+        drop(guard);
+        assert!(!snapshot()
+            .iter()
+            .any(|c| c.unit_key.as_deref() == Some("t-count/1")));
+    }
 
     #[test]
     fn register_then_snapshot_lists_the_unit_and_drop_removes_it() {
