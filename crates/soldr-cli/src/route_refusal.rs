@@ -23,6 +23,42 @@ pub(crate) fn refusal_is_fatal(kind: RefusalKind) -> bool {
     )
 }
 
+/// The wire error code as a fatal/transient decision, for callers that only
+/// hold the raw `i32` from the reply.
+pub(crate) fn code_is_fatal(code: i32) -> bool {
+    let error_code = ErrorCode::try_from(code).unwrap_or(ErrorCode::Unspecified);
+    refusal_is_fatal(RefusalKind::from_code(error_code))
+}
+
+/// A broker route refusal carried through the `io::Error` chain as a value, not
+/// a flattened string (soldr#3401), so the dispatcher can tell a deterministic
+/// policy refusal from a transient failure and report it once per build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RouteRefusal {
+    /// The explanation to show the user.
+    pub(crate) text: String,
+    /// No retry can fix it: stop the build's remaining dials.
+    pub(crate) fatal: bool,
+    /// This build already reported the full block; `text` is the one-line
+    /// pointer back to it.
+    pub(crate) repeat: bool,
+}
+
+impl std::fmt::Display for RouteRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl std::error::Error for RouteRefusal {}
+
+impl RouteRefusal {
+    /// The refusal inside `error`, if it carries one.
+    pub(crate) fn from_io(error: &std::io::Error) -> Option<&RouteRefusal> {
+        error.get_ref()?.downcast_ref::<RouteRefusal>()
+    }
+}
+
 /// What the client knows about itself and the route it dialed.
 pub(crate) struct RefusalContext<'a> {
     pub wrapper: &'a str,
@@ -138,5 +174,19 @@ mod tests {
         );
         assert!(text.contains("retry_after_ms=250"), "{text}");
         assert!(!text.contains("not retryable"), "{text}");
+    }
+
+    #[test]
+    fn a_refusal_survives_the_io_error_chain_as_a_value() {
+        let refusal = RouteRefusal {
+            text: "block".into(),
+            fatal: code_is_fatal(ErrorCode::ErrorVersionBlocked as i32),
+            repeat: false,
+        };
+        let error = std::io::Error::other(refusal.clone());
+        assert_eq!(RouteRefusal::from_io(&error), Some(&refusal));
+        assert!(RouteRefusal::from_io(&std::io::Error::other("plain")).is_none());
+        assert!(!code_is_fatal(ErrorCode::ErrorRateLimited as i32));
+        assert!(code_is_fatal(ErrorCode::ErrorVersionBlocked as i32));
     }
 }

@@ -1019,6 +1019,14 @@ def _pep517_failure_payload(
     return "\n".join(parts)
 
 
+def _pep517_failure_message(exc: "subprocess.CalledProcessError") -> str:
+    """The text a failing PEP 517 hook ends with (soldr#3401): the payload the
+    streaming layer built (named cause, log path) plus the child's exit status."""
+    payload = exc.output if isinstance(exc.output, str) and exc.output else ""
+    header = f"soldr: the PEP 517 build failed (exit status {exc.returncode})."
+    return f"{header}\n{payload}" if payload else header
+
+
 def _open_pep517_log(
     cmd: "list[str]", env: "dict[str, str]"
 ) -> "tuple[Path | None, BinaryIO | None]":
@@ -1323,6 +1331,16 @@ def _maturin_pep517(
             "`soldr status` to inspect the zccache daemon. Set "
             f"{_PEP517_IDLE_TIMEOUT_ENV}=<secs> to adjust (0 disables)."
         ) from exc
+    except subprocess.CalledProcessError as exc:
+        if session_id is not None:
+            _session_command("session-end", env, "--id", session_id)
+        # soldr#3401: the build already relayed its diagnosis to stderr. Ending
+        # the hook with a bare exception makes the frontend print a Python
+        # traceback that buries the one line that matters. `SystemExit` with a
+        # message prints just the message and exits 1; pyproject-hooks does not
+        # catch it, and pip and uv show the hook's stderr. The payload keeps the
+        # named cause and the full-log path (soldr#1999 rule 2).
+        raise SystemExit(_pep517_failure_message(exc)) from None
     except Exception:
         if session_id is not None:
             _session_command("session-end", env, "--id", session_id)
