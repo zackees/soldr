@@ -375,6 +375,8 @@ pub(crate) async fn run_cargo_front_door(
         path_dirs.push(guard.path.clone());
         command.env(crate::shim_dir::SOLDR_CHILD_SHIMS_ACTIVE_ENV_VAR, "1");
     }
+    // soldr#3452: a nested `cargo` must still see RUSTUP_TOOLCHAIN.
+    path_dirs.extend(crate::cargo_toolchain_shim::shim_dir_for(&command, &paths, &cargo)?);
     path_dirs.push(cargo_bin_dir);
     path_dirs.extend(extra_bin_dirs);
     command.env(

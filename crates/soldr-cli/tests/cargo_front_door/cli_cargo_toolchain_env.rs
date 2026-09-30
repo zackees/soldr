@@ -26,14 +26,18 @@ fn install_env_recording_cargo(out: &Path, workspace: &Path) -> std::path::PathB
         let escaped = metadata.replace('"', "\\\"");
         format!(
             "@echo off\n<nul set /p=%RUSTUP_TOOLCHAIN%>\"{}\"\n\
+             <nul set /p=%PATH%>\"{}\"\n\
              if \"%1\"==\"metadata\" echo {escaped}\n",
-            out.display()
+            out.display(),
+            out.with_extension("path").display()
         )
     } else {
         format!(
             "#!/bin/sh\nprintf '%s' \"${{RUSTUP_TOOLCHAIN-<unset>}}\" > '{}'\n\
+             printf '%s' \"$PATH\" > '{}'\n\
              if [ \"$1\" = metadata ]; then printf '%s\\n' '{metadata}'; fi\n",
-            out.display()
+            out.display(),
+            out.with_extension("path").display()
         )
     };
     write_fake_script(&cargo, &body);
@@ -41,6 +45,18 @@ fn install_env_recording_cargo(out: &Path, workspace: &Path) -> std::path::PathB
 }
 
 fn recorded_toolchain(caller_value: Option<&str>, verb: &str, subdir: Option<&str>) -> String {
+    let recorded = front_door_run(caller_value, verb, subdir);
+    fs::read_to_string(&recorded).expect("the fake cargo must have recorded its environment")
+}
+
+/// Run the front door once against the recording fake cargo and return the file
+/// the fake cargo wrote its `RUSTUP_TOOLCHAIN` to; its search path is recorded
+/// beside it with the extension `path`.
+fn front_door_run(
+    caller_value: Option<&str>,
+    verb: &str,
+    subdir: Option<&str>,
+) -> std::path::PathBuf {
     let workspace = unique_temp_dir("cargo-toolchain-env");
     let soldr_root = workspace.join("soldr-root");
     let rustup_home = workspace.join("rustup-home");
@@ -96,7 +112,7 @@ fn recorded_toolchain(caller_value: Option<&str>, verb: &str, subdir: Option<&st
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    fs::read_to_string(&recorded).expect("the fake cargo must have recorded its environment")
+    recorded
 }
 
 /// The pinned channel reaches the child for the verbs that run rustc and a
@@ -211,5 +227,43 @@ fn a_pin_in_an_ancestor_directory_is_exported_to_the_cargo_child() {
     assert!(
         seen.trim().starts_with("1.94.1"),
         "a subdirectory build must export the ancestor's pinned channel, saw {seen:?}"
+    );
+}
+
+/// soldr#3452 / #3394: a tool that runs `env -u RUSTUP_TOOLCHAIN cargo build`
+/// from a temporary directory (`dylint_testing`) reaches whichever `cargo` comes
+/// first on the child's search path. Soldr puts the real toolchain cargo there,
+/// which is not rustup's proxy and so never re-exports the variable; the
+/// driver's build script then died with "environment variable not found:
+/// RUSTUP_TOOLCHAIN". A shim in front of it must restore the variable and reach
+/// the real cargo.
+#[test]
+fn a_nested_cargo_on_the_child_search_path_still_sees_the_toolchain_after_env_u() {
+    let recorded = front_door_run(None, "build", None);
+    let search_path = fs::read_to_string(recorded.with_extension("path"))
+        .expect("the fake cargo must have recorded its search path");
+    let shim_dir = std::env::split_paths(&search_path)
+        .find(|dir| dir.components().any(|c| c.as_os_str() == "cargo-shims"))
+        .unwrap_or_else(|| {
+            panic!("no cargo shim directory on the child's search path: {search_path}")
+        });
+    let windows = matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    );
+    let shim = shim_dir.join(if windows { "cargo.cmd" } else { "cargo" });
+    assert!(shim.is_file(), "missing shim {}", shim.display());
+
+    fs::remove_file(&recorded).expect("clear the recorded value");
+    let status = std::process::Command::new(&shim)
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .arg("build")
+        .status()
+        .expect("run the shim");
+    assert!(status.success());
+    let seen = fs::read_to_string(&recorded).expect("the real cargo ran behind the shim");
+    assert!(
+        seen.trim().starts_with("1.94.1"),
+        "the shim must restore the pinned toolchain for a nested cargo, saw {seen:?}"
     );
 }
