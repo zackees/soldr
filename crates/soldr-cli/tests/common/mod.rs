@@ -1543,6 +1543,24 @@ pub(crate) fn seed_fake_toolchain_dir(
         b"manifest-version = '2'\n",
     )
     .expect("seed fake channel manifest");
+    // soldr#3376: readiness reads the standard-library files, not just the
+    // `components` claim, so a fake toolchain needs them for the host and for
+    // the targets these fixtures declare.
+    let host = soldr_cli::core::TargetTriple::host()
+        .expect("detect test host triple")
+        .triple();
+    for (triple, with_std) in [
+        (host.as_str(), true),
+        ("wasm32-unknown-unknown", false),
+        ("x86_64-unknown-linux-musl", false),
+    ] {
+        let lib = rustlib.join(triple).join("lib");
+        fs::create_dir_all(&lib).expect("create fake target lib dir");
+        fs::write(lib.join("libcore-0123456789abcdef.rlib"), b"core").expect("seed fake libcore");
+        if with_std {
+            fs::write(lib.join("libstd-0123456789abcdef.rlib"), b"std").expect("seed fake libstd");
+        }
+    }
     toolchain_dir.to_path_buf()
 }
 
