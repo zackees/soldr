@@ -170,18 +170,7 @@ fn probe_links_map(
     // through a rustup proxy, and in managed CI the pinned toolchain is
     // not the user's default, so carry the explicit channel across or
     // rustup reports that no default toolchain is configured.
-    if let Some(toolchain) = std::env::var_os("RUSTUP_TOOLCHAIN") {
-        if !toolchain.is_empty() {
-            command.env("RUSTUP_TOOLCHAIN", toolchain);
-        }
-    } else if let Ok(manifest) = crate::core::read_rust_toolchain_manifest(workspace_root) {
-        if let Some(channel) = manifest.channel {
-            let channel = channel.trim();
-            if !channel.is_empty() {
-                command.env("RUSTUP_TOOLCHAIN", channel);
-            }
-        }
-    }
+    crate::toolchain_dir_name::carry_toolchain_into_probe(&mut command, workspace_root);
     // Never re-enter soldr from a probe.
     command.env_remove("RUSTC_WRAPPER");
     command.env_remove("RUSTC_WORKSPACE_WRAPPER");
