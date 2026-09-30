@@ -507,9 +507,12 @@ async fn real_rustc_hit_survives_full_and_ci_save_load_relocation() {
         let restored_stats = warm_service.inner.stats().await.unwrap_or_else(|error| {
             panic!("read {} restored service stats: {error}", profile.as_str())
         });
+        // zccache 1.15.0 (#1652) loads the depgraph after readiness, so only
+        // the artifact index is guaranteed at start; a compile waits for the
+        // depgraph load, which is checked after the hit below.
         assert!(
-            restored_stats.dep_graph_contexts > 0 && restored_stats.artifact_count > 0,
-            "{} restore must load depgraph and artifact state: {restored_stats:?}",
+            restored_stats.artifact_count > 0,
+            "{} restore must load artifact state: {restored_stats:?}",
             profile.as_str()
         );
         let restored = warm_service
@@ -532,6 +535,14 @@ async fn real_rustc_hit_survives_full_and_ci_save_load_relocation() {
             restored.cache_outcome,
             1,
             "{} restored compile must report Hit",
+            profile.as_str()
+        );
+        let loaded_stats = warm_service.inner.stats().await.unwrap_or_else(|error| {
+            panic!("read {} post-hit service stats: {error}", profile.as_str())
+        });
+        assert!(
+            loaded_stats.dep_graph_contexts > 0,
+            "{} restore must load depgraph state: {loaded_stats:?}",
             profile.as_str()
         );
         warm_service
