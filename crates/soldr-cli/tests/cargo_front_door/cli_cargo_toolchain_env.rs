@@ -40,7 +40,7 @@ fn install_env_recording_cargo(out: &Path, workspace: &Path) -> std::path::PathB
     cargo
 }
 
-fn recorded_toolchain(caller_value: Option<&str>, verb: &str) -> String {
+fn recorded_toolchain(caller_value: Option<&str>, verb: &str, subdir: Option<&str>) -> String {
     let workspace = unique_temp_dir("cargo-toolchain-env");
     let soldr_root = workspace.join("soldr-root");
     let rustup_home = workspace.join("rustup-home");
@@ -65,10 +65,18 @@ fn recorded_toolchain(caller_value: Option<&str>, verb: &str) -> String {
         "[toolchain]\nchannel = \"1.94.1\"\nprofile = \"minimal\"\n",
     );
 
+    let cwd = match subdir {
+        Some(subdir) => {
+            let nested = workspace.join(subdir);
+            fs::create_dir_all(&nested).expect("create nested working directory");
+            nested
+        }
+        None => workspace.clone(),
+    };
     let mut command = isolated_soldr_command();
     command
         .args(["--no-cache", "cargo", verb])
-        .current_dir(&workspace)
+        .current_dir(&cwd)
         .env("SOLDR_CACHE_DIR", &soldr_root)
         .env_remove("SOLDR_ROOT")
         .env("RUSTUP_HOME", &rustup_home)
@@ -96,7 +104,7 @@ fn recorded_toolchain(caller_value: Option<&str>, verb: &str) -> String {
 #[test]
 fn manifest_channel_reaches_the_cargo_child_for_test_and_build() {
     for verb in ["test", "build"] {
-        let seen = recorded_toolchain(None, verb);
+        let seen = recorded_toolchain(None, verb, None);
         assert!(
             seen.trim().starts_with("1.94.1"),
             "`soldr cargo {verb}` must export the pinned channel, saw {seen:?}"
@@ -106,7 +114,7 @@ fn manifest_channel_reaches_the_cargo_child_for_test_and_build() {
 
 #[test]
 fn a_caller_set_toolchain_is_honored_not_overwritten() {
-    let seen = recorded_toolchain(Some("caller-choice"), "test");
+    let seen = recorded_toolchain(Some("caller-choice"), "test", None);
     assert_eq!(seen.trim(), "caller-choice");
 }
 
@@ -191,5 +199,17 @@ fn a_target_whose_std_files_vanish_defeats_the_memo_and_fails_closed() {
     assert!(
         stderr.contains("target add") && stderr.contains("caller-selected"),
         "the error must give the recovery commands for a caller-selected home: {stderr}"
+    );
+}
+
+/// soldr#3452: a build launched from a subdirectory of a pinned repo (the
+/// Dylint layout: `dylints/<lint>/` under a root pin) is still a pinned build.
+/// Reading only the current directory exported nothing for it.
+#[test]
+fn a_pin_in_an_ancestor_directory_is_exported_to_the_cargo_child() {
+    let seen = recorded_toolchain(None, "test", Some("dylints/ban_something"));
+    assert!(
+        seen.trim().starts_with("1.94.1"),
+        "a subdirectory build must export the ancestor's pinned channel, saw {seen:?}"
     );
 }

@@ -257,7 +257,21 @@ pub(crate) fn fixtures_dir() -> PathBuf {
 pub(crate) fn isolated_soldr_command() -> Command {
     let mut command = Command::new(soldr_bin());
     scrub_outer_soldr_env(&mut command);
+    // soldr#3452: the front door finds a toolchain pin in any ancestor of its
+    // working directory, as rustup does. A test that leaves the cwd at its
+    // default (the crate directory) would therefore pick up this repository's
+    // own rust-toolchain.toml and try to prepare its real toolchain. Start in a
+    // directory with no pin above it; a test that needs a pin (or any other
+    // cwd) sets `current_dir` after this call and wins.
+    command.current_dir(pin_free_working_dir());
     command
+}
+
+/// An empty directory outside the repository, shared by every test in the
+/// process, so no `rust-toolchain.toml` exists in it or above it.
+pub(crate) fn pin_free_working_dir() -> PathBuf {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| unique_temp_dir("pin-free-cwd")).clone()
 }
 
 /// Ambient variables that can select a daemon route independently of the

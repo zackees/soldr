@@ -69,8 +69,8 @@ pub use toolchain_install_tripwire::{
     forbid_toolchain_install_tripwire, FORBID_TOOLCHAIN_INSTALL_ENV_VAR, TEST_RUSTUP_BIN_ENV_VAR,
 };
 pub use toolchain_manifest::{
-    read_rust_toolchain_manifest, PluginSpec, RustToolchainManifest, SoldrCookManifest,
-    SoldrManifestSection,
+    read_rust_toolchain_manifest, read_rust_toolchain_manifest_from_ancestors, PluginSpec,
+    RustToolchainManifest, SoldrCookManifest, SoldrManifestSection,
 };
 pub use toolchain_resolve::{
     apply_implicit_toolchain_homes, find_rust_toolchain_manifest, probe_toolchain_binary,
