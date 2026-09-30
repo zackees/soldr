@@ -77,6 +77,7 @@
       "binary": "cargo_front_door",
       "modules": [
         "cli_cargo_strip_failure",
+        "cli_cargo_toolchain_env",
         "cli_cargo_trampoline_workspace",
         "cli_cargo_zccache_mode",
         "cli_dispatch",
