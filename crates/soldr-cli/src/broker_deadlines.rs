@@ -33,6 +33,19 @@ pub(crate) struct BrokerDeadlines {
 }
 
 impl BrokerDeadlines {
+    /// The built-in budgets, ignoring the environment. Tests use this so a CI
+    /// override such as `SOLDR_BROKER_FIRST_RESPONSE_MS` cannot change what
+    /// they prove about the defaults.
+    #[cfg(test)]
+    pub(crate) fn defaults() -> Self {
+        Self {
+            busy_budget: Duration::from_millis(DEFAULT_BUSY_BUDGET_MS),
+            first_response: Duration::from_millis(DEFAULT_FIRST_RESPONSE_MS),
+            progress_silence: Duration::from_millis(DEFAULT_PROGRESS_SILENCE_MS),
+            route_ceiling: Duration::from_millis(DEFAULT_ROUTE_CEILING_MS),
+        }
+    }
+
     pub(crate) fn from_env() -> Self {
         Self {
             busy_budget: env_duration("SOLDR_BROKER_BUSY_BUDGET_MS", DEFAULT_BUSY_BUDGET_MS),

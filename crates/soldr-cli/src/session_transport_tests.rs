@@ -221,3 +221,85 @@ fn compile_service_that_never_publishes_is_bounded() {
         assert!(!err.output_started);
     });
 }
+
+/// A broker that has accepted the connection but answers `delay` after the
+/// Hello: the reply frame a busy-but-alive broker eventually sends.
+async fn late_negotiated_reply(mut server: tokio::io::DuplexStream, delay: Duration) {
+    use prost::Message as _;
+    use running_process::broker::protocol::{
+        hello_reply, Negotiated, PayloadEncoding, CONTROL_PAYLOAD_PROTOCOL,
+    };
+    tokio::time::sleep(delay).await;
+    let reply = HelloReply {
+        result: Some(hello_reply::Result::Negotiated(Negotiated {
+            backend_pipe: "late-pipe".to_string(),
+            daemon_version: "9.9.9".to_string(),
+            ..Default::default()
+        })),
+    };
+    let frame = Frame {
+        envelope_version: ENVELOPE_VERSION as u32,
+        kind: FrameKind::Response as i32,
+        payload_protocol: CONTROL_PAYLOAD_PROTOCOL,
+        payload: reply.encode_to_vec(),
+        request_id: 1,
+        payload_encoding: PayloadEncoding::None as i32,
+        ..Default::default()
+    };
+    let bytes = encode_framed(&frame).expect("encode reply");
+    server.write_all(&bytes).await.expect("write reply");
+    server.flush().await.expect("flush reply");
+    // Hold the stream open so EOF never races the client's read.
+    tokio::time::sleep(Duration::from_secs(60)).await;
+}
+
+/// soldr#3449: a broker that answers 3.4 s after the Hello -- what a loaded
+/// 4-vCPU Windows runner produced -- completes under the default budgets. Time
+/// is paused, so the wait costs nothing.
+#[test]
+fn a_busy_broker_answering_after_3_4_seconds_completes_under_the_defaults() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let (mut client, server) = tokio::io::duplex(4096);
+        tokio::spawn(late_negotiated_reply(server, Duration::from_millis(3400)));
+        let route = read_negotiated_with_deadlines(
+            &mut client,
+            1,
+            crate::broker_deadlines::BrokerDeadlines::defaults(),
+        )
+        .await
+        .expect("a busy broker must not be treated as dead");
+        assert_eq!(route.backend_pipe, "late-pipe");
+    });
+}
+
+/// The other half: a broker that never answers still fails, at the
+/// first-response deadline, well inside the route ceiling.
+#[test]
+fn a_broker_that_never_answers_still_fails_at_the_first_response_deadline() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let deadlines = crate::broker_deadlines::BrokerDeadlines::defaults();
+        let (mut client, _server) = tokio::io::duplex(64);
+        let started = tokio::time::Instant::now();
+        let error = read_negotiated_with_deadlines(&mut client, 1, deadlines)
+            .await
+            .expect_err("a silent broker must fail");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            error.to_string().contains("first-response deadline"),
+            "{error}"
+        );
+        let waited = started.elapsed();
+        assert!(waited >= deadlines.first_response, "{waited:?}");
+        assert!(waited < deadlines.route_ceiling, "{waited:?}");
+    });
+}
