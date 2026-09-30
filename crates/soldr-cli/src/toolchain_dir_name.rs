@@ -39,7 +39,8 @@ pub(crate) fn installed_toolchain_dir_name(rustup_home: &Path, toolchain: &str) 
 /// exports nothing.
 pub(crate) fn export_manifest_channel(command: &mut Command) {
     let manifest_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let Ok(manifest) = crate::core::read_rust_toolchain_manifest(&manifest_dir) else {
+    let Ok(manifest) = crate::core::read_rust_toolchain_manifest_from_ancestors(&manifest_dir)
+    else {
         return;
     };
     let channel = manifest.channel.as_deref().map(str::trim).unwrap_or("");

@@ -754,7 +754,7 @@ pub fn require_toolchain_pin(workspace_root: &Path) -> Result<(), SoldrError> {
 pub(crate) fn ensure_cargo_toolchain(explicit_channel: Option<&str>) -> Result<(), SoldrError> {
     crate::musl_host::warn_when_missing_prerequisites();
     let workspace_root = std::env::current_dir()?;
-    let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
+    let manifest = crate::core::read_rust_toolchain_manifest_from_ancestors(&workspace_root)?;
     let channel = explicit_channel
         .map(str::trim)
         .filter(|channel| !channel.is_empty())

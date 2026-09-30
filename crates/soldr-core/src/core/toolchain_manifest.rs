@@ -103,6 +103,20 @@ pub struct RustToolchainManifest {
     pub soldr: Option<SoldrManifestSection>,
 }
 
+/// [`read_rust_toolchain_manifest`], but resolved the way rustup and Cargo find
+/// a pin: the nearest `rust-toolchain.toml` in `start_dir` or any ancestor, not
+/// only in `start_dir` (soldr#3452). A build launched from a subdirectory of a
+/// pinned repo is still a pinned build; reading only the current directory
+/// exported no `RUSTUP_TOOLCHAIN` and prepared no toolchain for it.
+pub fn read_rust_toolchain_manifest_from_ancestors(
+    start_dir: &Path,
+) -> Result<RustToolchainManifest, SoldrError> {
+    match super::toolchain_resolve::find_rust_toolchain_manifest(start_dir) {
+        Some(path) => read_rust_toolchain_manifest(path.parent().unwrap_or(start_dir)),
+        None => Ok(RustToolchainManifest::default()),
+    }
+}
+
 /// Read `rust-toolchain.toml` from `workspace_root` (non-recursive — the
 /// caller is expected to already point at the directory containing the
 /// manifest, mirroring how cargo resolves the file). A missing file is
@@ -249,5 +263,58 @@ mod tests {
             PluginSpec::Version(value) => assert_eq!(value, "*"),
             other => panic!("cargo-deny should parse as Version(\"*\"), got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod ancestor_tests {
+    use super::*;
+
+    #[test]
+    fn the_nearest_ancestor_pin_is_read_from_a_subdirectory() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            root.path().join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"nightly-2026-05-28\"\n",
+        )
+        .expect("write pin");
+        let nested = root.path().join("dylints").join("lint_a");
+        std::fs::create_dir_all(&nested).expect("mkdir");
+
+        assert_eq!(
+            read_rust_toolchain_manifest(&nested)
+                .expect("cwd-only")
+                .channel,
+            None,
+            "the cwd-only reader does not see the parent pin"
+        );
+        assert_eq!(
+            read_rust_toolchain_manifest_from_ancestors(&nested)
+                .expect("ancestors")
+                .channel
+                .as_deref(),
+            Some("nightly-2026-05-28")
+        );
+
+        // A nearer pin wins over a farther one.
+        std::fs::write(
+            nested.join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"1.98.1\"\n",
+        )
+        .expect("write nearer pin");
+        assert_eq!(
+            read_rust_toolchain_manifest_from_ancestors(&nested)
+                .expect("nearest")
+                .channel
+                .as_deref(),
+            Some("1.98.1")
+        );
+    }
+
+    #[test]
+    fn no_pin_anywhere_is_the_default_manifest() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let manifest = read_rust_toolchain_manifest_from_ancestors(root.path()).expect("default");
+        assert_eq!(manifest.channel, None);
     }
 }
