@@ -639,6 +639,10 @@ mod root_ownership_diagnostic_tests {
         let paths = SoldrPaths::with_root(temp.path().join("root"));
         let msg = describe_root_ownership_conflict(&paths);
         assert!(msg.contains("no daemon route claim"), "{msg}");
+        // soldr#3456: and it must say how to get unstuck.
+        for remedy in ["SOLDR_CACHE_DIR", "soldr broker remove", "soldr status"] {
+            assert!(msg.contains(remedy), "missing {remedy}: {msg}");
+        }
     }
 }
 
