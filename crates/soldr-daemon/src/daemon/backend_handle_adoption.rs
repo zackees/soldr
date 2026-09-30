@@ -24,7 +24,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const BROKER_ROUTE_CLAIM_FILE: &str = "broker-route-claim.pb";
+pub(crate) const BROKER_ROUTE_CLAIM_FILE: &str = "broker-route-claim.pb";
 
 pub(crate) const CONTROL_FRAME_HEADER_BYTES: usize = 8;
 
@@ -539,7 +539,7 @@ pub(crate) fn read_broker_route_claim_owner_identity(
     read_claim_owner_identity_at(&broker_route_claim_path(paths))
 }
 
-fn read_claim_owner_identity_at(path: &Path) -> io::Result<Option<(u32, PathBuf)>> {
+pub(crate) fn read_claim_owner_identity_at(path: &Path) -> io::Result<Option<(u32, PathBuf)>> {
     use prost::Message as _;
 
     let bytes = match std::fs::read(path) {
