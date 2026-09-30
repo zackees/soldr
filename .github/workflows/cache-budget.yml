@@ -6,6 +6,8 @@
 # janitor with one set of rules:
 #
 # * push to any other branch -- the janitor runs on every push;
+# * the completion of a main CI run, which is when the new cache generation
+#   has been saved (soldr#3342);
 # * the six-hourly schedule and workflow_dispatch;
 # * pull_request `closed` -- delete that PR's own entries immediately. This
 #   is the one pull_request type a non-ci.yml workflow may declare
@@ -21,6 +23,13 @@ on:
       - main
   pull_request:
     types: [closed]
+  # soldr#3342: main's CI saves its new run-ID-suffixed Tier-2 cache generation
+  # *after* the janitor that ci.yml runs first, so the superseded generation
+  # survived until the next scheduled sweep. Sweep again once that run is done.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   schedule:
     - cron: '17 1,7,13,19 * * *'
   workflow_dispatch:

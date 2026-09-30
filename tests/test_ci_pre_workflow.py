@@ -107,6 +107,12 @@ def test_cache_budget_yml_is_a_thin_caller_with_one_janitor() -> None:
     # Every push except main (ci.yml's own push trigger covers main).
     assert triggers["push"] == {"branches-ignore": ["main"]}
     assert "schedule" in triggers and "workflow_dispatch" in triggers
+    # soldr#3342: sweep again after main's CI has saved its new cache generation.
+    assert triggers["workflow_run"] == {
+        "workflows": ["CI"],
+        "types": ["completed"],
+        "branches": ["main"],
+    }
     assert triggers["pull_request"] == {"types": ["closed"]}
     assert "concurrency" not in document, "the janitor job owns concurrency"
     jobs = document["jobs"]
