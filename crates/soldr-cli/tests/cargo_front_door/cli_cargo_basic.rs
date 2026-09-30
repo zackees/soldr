@@ -282,6 +282,9 @@ fn cargo_multicall_shim_routes_rustc_through_cargo_front_door() {
 
     let mut command = Command::new(&cargo_shim);
     common::scrub_outer_soldr_env(&mut command);
+    // soldr#3452: start where no toolchain pin exists above (the front door
+    // resolves a pin from any ancestor, like rustup).
+    command.current_dir(common::pin_free_working_dir());
     let output = command
         .args([
             "rustc",

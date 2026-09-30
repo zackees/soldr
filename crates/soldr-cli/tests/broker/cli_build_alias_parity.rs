@@ -84,6 +84,7 @@ fn soldr_build_invokes_real_cargo_build() {
             "/nonexistent/path/to/Cargo.toml",
         ])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .current_dir(common::pin_free_working_dir())
         .output()
         .expect("failed to run soldr build");
 
@@ -96,6 +97,7 @@ fn soldr_build_invokes_real_cargo_build() {
             "/nonexistent/path/to/Cargo.toml",
         ])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .current_dir(common::pin_free_working_dir())
         .output()
         .expect("failed to run soldr cargo build");
 

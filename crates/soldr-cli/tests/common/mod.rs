@@ -269,7 +269,7 @@ pub(crate) fn isolated_soldr_command() -> Command {
 
 /// An empty directory outside the repository, shared by every test in the
 /// process, so no `rust-toolchain.toml` exists in it or above it.
-fn pin_free_working_dir() -> PathBuf {
+pub(crate) fn pin_free_working_dir() -> PathBuf {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| unique_temp_dir("pin-free-cwd")).clone()
 }
