@@ -950,3 +950,34 @@ fn the_lld_requirement_follows_the_driver_argument_and_lld_must_be_reachable() {
         "lld on the search path"
     );
 }
+
+/// soldr#3430: CI runners have a clang without an lld and cannot fetch the
+/// managed LLVM. That must degrade to the old behavior (use the clang, warn),
+/// not fail with a message claiming no clang exists.
+#[test]
+fn an_unavailable_managed_llvm_falls_back_to_the_system_clang_with_a_warning() {
+    use crate::linker_shim::pick_after_managed_for_tests as pick;
+    let system = Some(PathBuf::from("/usr/bin/clang"));
+
+    let (clang, warning) = pick(system.clone(), Ok(PathBuf::from("/managed/clang"))).unwrap();
+    assert_eq!(
+        clang,
+        PathBuf::from("/managed/clang"),
+        "managed wins when available"
+    );
+    assert!(warning.is_none());
+
+    let (clang, warning) = pick(system, Err("catalogue offline".into())).unwrap();
+    assert_eq!(clang, PathBuf::from("/usr/bin/clang"));
+    let warning = warning.expect("the fallback must be visible");
+    assert!(
+        warning.contains("catalogue offline") && warning.contains("/usr/bin/clang"),
+        "{warning}"
+    );
+
+    assert_eq!(
+        pick(None, Err("catalogue offline".into())).unwrap_err(),
+        "catalogue offline",
+        "with neither, the fetch error is the cause"
+    );
+}

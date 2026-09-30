@@ -160,24 +160,55 @@ async fn resolve_driver_clang(
         }
     }
     let search = std::env::var_os("PATH");
-    if let Some(clang) = search
+    let system_clang = search
         .as_deref()
-        .and_then(|search| crate::exec_cmd::find_on_path("clang", search))
-    {
+        .and_then(|search| crate::exec_cmd::find_on_path("clang", search));
+    if let Some(clang) = &system_clang {
         // A system clang is enough unless the driver needs an lld it lacks.
-        if !needs_lld || lld_reachable(&clang, search.as_deref()) {
-            return Ok(clang);
+        if !needs_lld || lld_reachable(clang, search.as_deref()) {
+            return Ok(clang.clone());
         }
     }
-    let fetched = crate::fetch::ensure_llvm_toolchain(paths)
+    let managed = crate::fetch::ensure_llvm_toolchain(paths)
         .await
-        .map_err(|error| missing_clang_error(&error.to_string()))?;
-    clang_in(&fetched).ok_or_else(|| {
-        missing_clang_error(&format!(
-            "no clang in the fetched LLVM at {}",
-            fetched.display()
-        ))
-    })
+        .map_err(|error| error.to_string())
+        .and_then(|bin| {
+            clang_in(&bin)
+                .ok_or_else(|| format!("no clang in the fetched LLVM at {}", bin.display()))
+        });
+    match pick_after_managed(system_clang, managed) {
+        Ok((clang, warning)) => {
+            if let Some(warning) = warning {
+                eprintln!("{warning}");
+            }
+            Ok(clang)
+        }
+        Err(cause) => Err(missing_clang_error(&cause)),
+    }
+}
+
+/// The last step of resolution: the managed LLVM was wanted (there is no
+/// system clang, or it lacks an lld the driver needs). If it could not be
+/// provided, a system clang that exists is still used -- with a warning, since
+/// the link may then fail on the missing lld -- which is what happened before
+/// this resolution existed. Only having neither is an error (soldr#3430).
+fn pick_after_managed(
+    system_clang: Option<PathBuf>,
+    managed: Result<PathBuf, String>,
+) -> Result<(PathBuf, Option<String>), String> {
+    match (managed, system_clang) {
+        (Ok(clang), _) => Ok((clang, None)),
+        (Err(cause), Some(system)) => {
+            let warning = format!(
+                "soldr: warning: managed LLVM unavailable ({cause}); using the system clang at {} \
+                 although no lld was found next to it or on the search path, so the link may \
+                 fail with 'invalid linker name'",
+                system.display()
+            );
+            Ok((system, Some(warning)))
+        }
+        (Err(cause), None) => Err(cause),
+    }
 }
 
 fn clang_in(bin_dir: &Path) -> Option<PathBuf> {
@@ -267,4 +298,12 @@ pub(crate) fn driver_arg_needs_lld_for_tests(driver_arg: &str) -> bool {
 #[cfg(test)]
 pub(crate) fn lld_reachable_for_tests(clang: &Path, search: Option<&std::ffi::OsStr>) -> bool {
     lld_reachable(clang, search)
+}
+
+#[cfg(test)]
+pub(crate) fn pick_after_managed_for_tests(
+    system_clang: Option<PathBuf>,
+    managed: Result<PathBuf, String>,
+) -> Result<(PathBuf, Option<String>), String> {
+    pick_after_managed(system_clang, managed)
 }
