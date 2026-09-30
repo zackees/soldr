@@ -60,6 +60,12 @@ jobs:
     # and evaluates live state on its own, so it never queues behind a sweep.
     # On main/schedule a transient overage that a concurrent sweep is still
     # deleting can fail one run; the next run sees the converged state.
+    # soldr#3342: the post-main-CI `workflow_run` trigger exists to sweep after
+    # main's cache save. The verdict runs beside the janitor and reads the state
+    # from before its deletions land, so on that event it could only ever report
+    # the very overage the sweep is removing. The next main push, schedule or PR
+    # judges the converged state.
+    if: ${{ github.event_name != 'workflow_run' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     permissions:
