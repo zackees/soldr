@@ -7,10 +7,22 @@
 
 use std::time::Duration;
 
-const DEFAULT_FIRST_RESPONSE_MS: u64 = 2_000;
+/// A broker that has accepted the connection but has not answered yet is busy,
+/// not dead (soldr#3449): on a loaded 4-vCPU Windows runner the first reply was
+/// observed at 3.4 s. A dead broker is caught earlier, by a refused or closed
+/// connection, so this only bounds a hung one -- and must not be shorter than the
+/// silence budget that bounds a stalled one.
+const DEFAULT_FIRST_RESPONSE_MS: u64 = 10_000;
 const DEFAULT_PROGRESS_SILENCE_MS: u64 = 5_000;
 const DEFAULT_ROUTE_CEILING_MS: u64 = 120_000;
 const DEFAULT_BUSY_BUDGET_MS: u64 = 1_000;
+
+// soldr#3449: a 3.4 s first reply on a loaded runner is a busy broker, so the
+// first-response budget may not undercut the stalled-broker silence budget and
+// must stay inside the route ceiling.
+const _: () = assert!(DEFAULT_FIRST_RESPONSE_MS >= 4_000);
+const _: () = assert!(DEFAULT_FIRST_RESPONSE_MS >= DEFAULT_PROGRESS_SILENCE_MS);
+const _: () = assert!(DEFAULT_FIRST_RESPONSE_MS < DEFAULT_ROUTE_CEILING_MS);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BrokerDeadlines {
@@ -91,6 +103,15 @@ pub(crate) fn doctor_deadlines() -> Vec<DoctorBrokerDeadline> {
     .collect()
 }
 
+/// The tuning variable for a deadline class named by a timeout error.
+pub(crate) fn deadline_env_var(class: &str) -> &'static str {
+    match class {
+        "route acquisition ceiling" => "SOLDR_ROUTE_ACQUIRE_CEILING_MS",
+        "first-response deadline" => "SOLDR_BROKER_FIRST_RESPONSE_MS",
+        _ => "SOLDR_BROKER_PROGRESS_SILENCE_MS",
+    }
+}
+
 pub(crate) fn print_doctor_deadlines() {
     println!("\nbroker route deadlines:");
     for row in doctor_deadlines() {
@@ -109,4 +130,25 @@ fn env_duration(name: &str, default_ms: u64) -> Duration {
             .filter(|value| *value > 0)
             .unwrap_or(default_ms),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_deadline_class_names_its_tuning_variable() {
+        assert_eq!(
+            deadline_env_var("first-response deadline"),
+            "SOLDR_BROKER_FIRST_RESPONSE_MS"
+        );
+        assert_eq!(
+            deadline_env_var("route acquisition ceiling"),
+            "SOLDR_ROUTE_ACQUIRE_CEILING_MS"
+        );
+        assert_eq!(
+            deadline_env_var("progress-silence deadline"),
+            "SOLDR_BROKER_PROGRESS_SILENCE_MS"
+        );
+    }
 }

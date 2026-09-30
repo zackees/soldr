@@ -599,8 +599,10 @@ where
                 io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!(
-                        "broker {class} exceeded after {}ms",
-                        started.elapsed().as_millis()
+                        "broker {class} exceeded after {}ms (limit {}ms; raise {} if the broker is only busy)",
+                        started.elapsed().as_millis(),
+                        (deadline - started).as_millis(),
+                        crate::broker_deadlines::deadline_env_var(class),
                     ),
                 )
             });
@@ -842,7 +844,9 @@ mod tests {
             .await
             .expect_err("a silent relay must not wait forever");
             assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-            assert!(error.to_string().contains("first-response deadline"));
+            let text = error.to_string();
+            assert!(text.contains("first-response deadline"), "{text}");
+            assert!(text.contains("SOLDR_BROKER_FIRST_RESPONSE_MS"), "{text}");
         });
     }
 
