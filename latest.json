@@ -1,23 +1,23 @@
 {
   "schema_version": 2,
   "metadata": {
-    "generated_at": "2026-09-29T09:51:30Z",
-    "git_sha": "6833c53e025f60b4b88af62f2f580d386cd4d4d7",
+    "generated_at": "2026-09-30T09:47:45Z",
+    "git_sha": "084a0be0f383805d0b9341372a53b88bac19631c",
     "git_ref": "main",
     "repository": "zackees/soldr",
-    "run_url": "https://github.com/zackees/soldr/actions/runs/36551258820",
+    "run_url": "https://github.com/zackees/soldr/actions/runs/36697380450",
     "fixture": "medium",
     "soldr_version": "soldr 0.9.26",
     "rustc_version": "rustc 1.98.1 (48a229cea 2026-09-01)",
     "sccache_version": "sccache 0.7.7"
   },
   "canaries": {
-    "cargo-build-medium-cold": 65527,
-    "cargo-build-medium-warm": 523,
-    "cargo-build-medium-from-warm-zccache": 1847,
-    "cargo-check-medium-cross-verb": 1444,
-    "touch-no-change-medium-warm": 1958,
-    "worktree-share-medium-warm": 3656
+    "cargo-build-medium-cold": 66131,
+    "cargo-build-medium-warm": 527,
+    "cargo-build-medium-from-warm-zccache": 1646,
+    "cargo-check-medium-cross-verb": 1334,
+    "touch-no-change-medium-warm": 1648,
+    "worktree-share-medium-warm": 3348
   },
   "comparison": {
     "scenarios": [
@@ -62,7 +62,7 @@
       "tool": "bare",
       "tool_label": "Bare cargo",
       "command": "cargo build --release",
-      "wall_ms": 9404,
+      "wall_ms": 9253,
       "cache_bytes": 0,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
@@ -76,7 +76,7 @@
       "tool": "bare",
       "tool_label": "Bare cargo",
       "command": "cargo build --release",
-      "wall_ms": 9430,
+      "wall_ms": 8809,
       "cache_bytes": 0,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
@@ -90,7 +90,7 @@
       "tool": "bare",
       "tool_label": "Bare cargo",
       "command": "cargo build --release",
-      "wall_ms": 9507,
+      "wall_ms": 8783,
       "cache_bytes": 0,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
@@ -104,8 +104,8 @@
       "tool": "sccache",
       "tool_label": "sccache",
       "command": "RUSTC_WRAPPER=sccache cargo build --release",
-      "wall_ms": 10531,
-      "cache_bytes": 13454034,
+      "wall_ms": 9724,
+      "cache_bytes": 13454053,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
     },
@@ -118,7 +118,7 @@
       "tool": "sccache",
       "tool_label": "sccache",
       "command": "RUSTC_WRAPPER=sccache cargo build --release",
-      "wall_ms": 3208,
+      "wall_ms": 2839,
       "cache_bytes": 0,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
@@ -132,7 +132,7 @@
       "tool": "sccache",
       "tool_label": "sccache",
       "command": "RUSTC_WRAPPER=sccache cargo build --release",
-      "wall_ms": 10590,
+      "wall_ms": 9644,
       "cache_bytes": 0,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
@@ -146,8 +146,8 @@
       "tool": "soldr",
       "tool_label": "soldr",
       "command": "soldr cargo build --release",
-      "wall_ms": 12399,
-      "cache_bytes": 318544431,
+      "wall_ms": 13877,
+      "cache_bytes": 1125840152,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
     },
@@ -160,8 +160,8 @@
       "tool": "soldr",
       "tool_label": "soldr",
       "command": "soldr cargo build --release",
-      "wall_ms": 665,
-      "cache_bytes": 318832210,
+      "wall_ms": 647,
+      "cache_bytes": 1126135694,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
     },
@@ -174,8 +174,8 @@
       "tool": "soldr",
       "tool_label": "soldr",
       "command": "soldr cargo build --release",
-      "wall_ms": 3970,
-      "cache_bytes": 336646795,
+      "wall_ms": 3676,
+      "cache_bytes": 1143842949,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
     },
@@ -188,7 +188,7 @@
       "tool": "bare",
       "tool_label": "Bare cargo",
       "command": "cargo build --release",
-      "wall_ms": 10765,
+      "wall_ms": 9876,
       "cache_bytes": 0,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
@@ -202,7 +202,7 @@
       "tool": "bare",
       "tool_label": "Bare cargo",
       "command": "cargo build --release",
-      "wall_ms": 10517,
+      "wall_ms": 9841,
       "cache_bytes": 0,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
@@ -216,7 +216,7 @@
       "tool": "bare",
       "tool_label": "Bare cargo",
       "command": "cargo build --release",
-      "wall_ms": 10366,
+      "wall_ms": 9836,
       "cache_bytes": 0,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
@@ -230,7 +230,7 @@
       "tool": "sccache",
       "tool_label": "sccache",
       "command": "RUSTC_WRAPPER=sccache cargo build --release",
-      "wall_ms": 11675,
+      "wall_ms": 10925,
       "cache_bytes": 0,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
@@ -244,7 +244,7 @@
       "tool": "sccache",
       "tool_label": "sccache",
       "command": "RUSTC_WRAPPER=sccache cargo build --release",
-      "wall_ms": 3833,
+      "wall_ms": 3459,
       "cache_bytes": 0,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
@@ -258,7 +258,7 @@
       "tool": "sccache",
       "tool_label": "sccache",
       "command": "RUSTC_WRAPPER=sccache cargo build --release",
-      "wall_ms": 11760,
+      "wall_ms": 10955,
       "cache_bytes": 0,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
@@ -272,8 +272,8 @@
       "tool": "soldr",
       "tool_label": "soldr",
       "command": "soldr cargo build --release",
-      "wall_ms": 13493,
-      "cache_bytes": 328784904,
+      "wall_ms": 15807,
+      "cache_bytes": 1136097327,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
     },
@@ -286,8 +286,8 @@
       "tool": "soldr",
       "tool_label": "soldr",
       "command": "soldr cargo build --release",
-      "wall_ms": 870,
-      "cache_bytes": 329126035,
+      "wall_ms": 765,
+      "cache_bytes": 1136457743,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
     },
@@ -300,8 +300,8 @@
       "tool": "soldr",
       "tool_label": "soldr",
       "command": "soldr cargo build --release",
-      "wall_ms": 4172,
-      "cache_bytes": 347137915,
+      "wall_ms": 4089,
+      "cache_bytes": 1154462246,
       "cache_scope": "tool-isolated-after-measured-run",
       "project_path": "single-sample"
     }
