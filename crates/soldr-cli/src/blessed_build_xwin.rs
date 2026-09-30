@@ -28,9 +28,9 @@ fn xwin_msvc_cflags(cache_dir: &std::path::Path) -> String {
         cache_dir.join("sdk").join("include").join("winrt"),
         cache_dir.join("sdk").join("include").join("cppwinrt"),
     ];
-    candidates
+    let existing: Vec<std::path::PathBuf> = candidates.into_iter().filter(|p| p.is_dir()).collect();
+    let mut flags = existing
         .iter()
-        .filter(|p| p.is_dir())
         // No space between `/imsvc` and the path. clang-cl accepts
         // the `/imsvc<path>` joined form; the two-token `/imsvc <path>`
         // form gets mangled because cc-rs receives CFLAGS, splits on
@@ -40,7 +40,21 @@ fn xwin_msvc_cflags(cache_dir: &std::path::Path) -> String {
         // source file). soldr#1070 root cause.
         .map(|p| format!("/imsvc{}", p.display()))
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    // soldr#3415: code outside the SDK includes headers in the casing it was
+    // written in (`<BaseTsd.h>`), and the bundle stores one casing. A generated
+    // case-insensitive clang overlay resolves any spelling; anything it does not
+    // list falls through to the real file system. Best-effort: without it the
+    // include trees still work for their stored and aliased casings.
+    match crate::fetch::xwin_case_overlay::ensure_case_overlay(cache_dir, &existing) {
+        Ok(Some(overlay)) => flags.push_str(&format!(" -vfsoverlay {}", overlay.display())),
+        Ok(None) => {}
+        Err(error) => eprintln!(
+            "soldr build: could not write the SDK case-insensitive overlay ({error}); \
+             mixed-case #include spellings may not resolve"
+        ),
+    }
+    flags
 }
 
 /// Build the rustc lld-link + CRT flags and `-C link-arg=/LIBPATH:<path>`

@@ -370,6 +370,32 @@ fn xwin_cflags_emits_imsvc_for_present_dirs() {
 }
 
 #[test]
+fn xwin_cflags_adds_the_case_insensitive_overlay_once_headers_exist() {
+    // soldr#3415: with headers on disk the CFLAGS also carry a
+    // `-vfsoverlay <generated file>` so any include casing resolves; the flag
+    // names a file that exists and stays the same for the same headers.
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let root = tmp.path();
+    let shared = root.join("sdk").join("include").join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::write(shared.join("basetsd.h"), b"#pragma once\n").unwrap();
+
+    let cflags = xwin_msvc_cflags(root);
+    let (_, overlay) = cflags
+        .split_once(" -vfsoverlay ")
+        .unwrap_or_else(|| panic!("no -vfsoverlay in: {cflags}"));
+    assert!(
+        std::path::Path::new(overlay).is_file(),
+        "the overlay must exist: {overlay}"
+    );
+    assert_eq!(
+        cflags,
+        xwin_msvc_cflags(root),
+        "stable for the same headers"
+    );
+}
+
+#[test]
 fn xwin_cflags_empty_for_empty_cache() {
     // No subtrees present → empty cflags string. Caller can detect
     // this and skip the CFLAGS_<t> env var injection entirely.
