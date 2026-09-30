@@ -107,10 +107,10 @@ pub async fn materialize_linker_driver_shim_resolving(
     target: &str,
     injection: &mut LinkerInjection,
 ) -> Result<(), SoldrError> {
-    if shim_driver_arg(target, injection).is_none() || windows_host() {
+    let Some(driver_arg) = shim_driver_arg(target, injection) else {
         return materialize_linker_driver_shim(paths, target, injection, None);
-    }
-    let clang = resolve_driver_clang(paths).await?;
+    };
+    let clang = resolve_driver_clang(paths, driver_arg_needs_lld(driver_arg)).await?;
     materialize_linker_driver_shim(paths, target, injection, Some(&clang))
 }
 
@@ -118,7 +118,36 @@ fn windows_host() -> bool {
     crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
 }
 
-async fn resolve_driver_clang(paths: &crate::core::SoldrPaths) -> Result<PathBuf, SoldrError> {
+/// Does this driver argument make clang look for `lld`? (`-fuse-ld=lld`, the
+/// Fast path's fallback when reld is unavailable.) A `--ld-path=<reld>` argument
+/// names its own linker.
+fn driver_arg_needs_lld(driver_arg: &str) -> bool {
+    driver_arg.starts_with("-fuse-ld=lld")
+}
+
+/// Is an `lld` driver reachable from this `clang`: beside it, or on the search
+/// path? A system clang without one fails the link one step later with
+/// "invalid linker name in argument '-fuse-ld=lld'" (soldr#3430).
+fn lld_reachable(clang: &Path, search: Option<&std::ffi::OsStr>) -> bool {
+    const NAMES: [&str; 3] = ["ld.lld", "ld64.lld", "lld"];
+    let suffix = std::env::consts::EXE_SUFFIX;
+    let beside = clang.parent().is_some_and(|dir| {
+        NAMES
+            .iter()
+            .any(|name| dir.join(format!("{name}{suffix}")).is_file())
+    });
+    beside
+        || search.is_some_and(|search| {
+            NAMES
+                .iter()
+                .any(|name| crate::exec_cmd::find_on_path(name, search).is_some())
+        })
+}
+
+async fn resolve_driver_clang(
+    paths: &crate::core::SoldrPaths,
+    needs_lld: bool,
+) -> Result<PathBuf, SoldrError> {
     let managed_complete = paths
         .bin
         .join(format!("llvm-{}", crate::fetch::MANAGED_LLVM_VERSION))
@@ -130,20 +159,56 @@ async fn resolve_driver_clang(paths: &crate::core::SoldrPaths) -> Result<PathBuf
             }
         }
     }
-    if let Some(search) = std::env::var_os("PATH") {
-        if let Some(clang) = crate::exec_cmd::find_on_path("clang", &search) {
-            return Ok(clang);
+    let search = std::env::var_os("PATH");
+    let system_clang = search
+        .as_deref()
+        .and_then(|search| crate::exec_cmd::find_on_path("clang", search));
+    if let Some(clang) = &system_clang {
+        // A system clang is enough unless the driver needs an lld it lacks.
+        if !needs_lld || lld_reachable(clang, search.as_deref()) {
+            return Ok(clang.clone());
         }
     }
-    let fetched = crate::fetch::ensure_llvm_toolchain(paths)
+    let managed = crate::fetch::ensure_llvm_toolchain(paths)
         .await
-        .map_err(|error| missing_clang_error(&error.to_string()))?;
-    clang_in(&fetched).ok_or_else(|| {
-        missing_clang_error(&format!(
-            "no clang in the fetched LLVM at {}",
-            fetched.display()
-        ))
-    })
+        .map_err(|error| error.to_string())
+        .and_then(|bin| {
+            clang_in(&bin)
+                .ok_or_else(|| format!("no clang in the fetched LLVM at {}", bin.display()))
+        });
+    match pick_after_managed(system_clang, managed) {
+        Ok((clang, warning)) => {
+            if let Some(warning) = warning {
+                eprintln!("{warning}");
+            }
+            Ok(clang)
+        }
+        Err(cause) => Err(missing_clang_error(&cause)),
+    }
+}
+
+/// The last step of resolution: the managed LLVM was wanted (there is no
+/// system clang, or it lacks an lld the driver needs). If it could not be
+/// provided, a system clang that exists is still used -- with a warning, since
+/// the link may then fail on the missing lld -- which is what happened before
+/// this resolution existed. Only having neither is an error (soldr#3430).
+fn pick_after_managed(
+    system_clang: Option<PathBuf>,
+    managed: Result<PathBuf, String>,
+) -> Result<(PathBuf, Option<String>), String> {
+    match (managed, system_clang) {
+        (Ok(clang), _) => Ok((clang, None)),
+        (Err(cause), Some(system)) => {
+            let warning = format!(
+                "soldr: warning: managed LLVM unavailable ({cause}); using the system clang at {} \
+                 although no lld was found next to it or on the search path, so the link may \
+                 fail with 'invalid linker name'",
+                system.display()
+            );
+            Ok((system, Some(warning)))
+        }
+        (Err(cause), None) => Err(cause),
+    }
 }
 
 fn clang_in(bin_dir: &Path) -> Option<PathBuf> {
@@ -169,9 +234,6 @@ pub(crate) fn missing_clang_error_text(cause: &str) -> String {
 /// is never emitted, so a later search-path change cannot break it and the
 /// content digest covers the real driver.
 fn render_linker_driver_shim(clang: Option<&Path>, driver_arg: &str) -> Result<String, SoldrError> {
-    if windows_host() {
-        return Ok(render_windows_linker_driver_shim(driver_arg));
-    }
     let clang = clang.ok_or_else(|| {
         SoldrError::Other("internal: linker driver shim rendered without a resolved clang".into())
     })?;
@@ -181,6 +243,9 @@ fn render_linker_driver_shim(clang: Option<&Path>, driver_arg: &str) -> Result<S
             clang.display()
         ))
     })?;
+    if windows_host() {
+        return Ok(render_windows_linker_driver_shim(clang, driver_arg));
+    }
     Ok(format!(
         "#!/bin/sh\n# generated by soldr; content-addressed linker driver\nexec {} {} \"$@\"\n",
         shell_single_quote(clang),
@@ -188,13 +253,16 @@ fn render_linker_driver_shim(clang: Option<&Path>, driver_arg: &str) -> Result<S
     ))
 }
 
-pub(crate) fn render_windows_linker_driver_shim(driver_arg: &str) -> String {
+pub(crate) fn render_windows_linker_driver_shim(clang: &str, driver_arg: &str) -> String {
     // The generated values are one driver argument and cannot contain a
     // double quote (Windows paths cannot either). Quoting the whole argument
     // protects spaces and cmd metacharacters; doubling percent signs prevents
-    // environment-variable expansion before clang receives the value.
+    // environment-variable expansion before clang receives the value. The
+    // clang is an absolute path for the same reason the Unix shim's is
+    // (soldr#3430): a later search-path change cannot break it.
+    let clang = clang.replace('%', "%%");
     let escaped = driver_arg.replace('%', "%%");
-    format!("@echo off\r\nclang \"{escaped}\" %*\r\n")
+    format!("@echo off\r\n\"{clang}\" \"{escaped}\" %*\r\n")
 }
 
 fn shell_single_quote(value: &str) -> String {
@@ -220,4 +288,22 @@ pub(crate) fn write_content_addressed_shim(path: &Path, body: &str) -> Result<()
             Err(SoldrError::Io(error))
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn driver_arg_needs_lld_for_tests(driver_arg: &str) -> bool {
+    driver_arg_needs_lld(driver_arg)
+}
+
+#[cfg(test)]
+pub(crate) fn lld_reachable_for_tests(clang: &Path, search: Option<&std::ffi::OsStr>) -> bool {
+    lld_reachable(clang, search)
+}
+
+#[cfg(test)]
+pub(crate) fn pick_after_managed_for_tests(
+    system_clang: Option<PathBuf>,
+    managed: Result<PathBuf, String>,
+) -> Result<(PathBuf, Option<String>), String> {
+    pick_after_managed(system_clang, managed)
 }
