@@ -67,6 +67,7 @@ pub use toolchain_packaged::ensure_dylint_driver;
 /// soldr#1012 PR 5 — xwin-cache catalogue materialization for the
 /// blessed `*-pc-windows-msvc` cross-compile path.
 pub mod xwin_cache;
+mod xwin_header_names;
 // soldr#1064 Phase B — *-sys C library catalogue distribution.
 // Each module is a stub-until-ingested consumer modeled on
 // openssl_sysroot.rs. Once the soldr-toolchain forge dispatches
