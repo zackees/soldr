@@ -68,6 +68,12 @@ pub(crate) fn apply_installed_toolchain_dir_name(command: &mut Command) {
     }
 }
 
+/// The value `key` will have in `command`'s child: the command's own setting
+/// when it has one, the process environment otherwise; empty counts as unset.
+pub(crate) fn effective_command_env(command: &Command, key: &str) -> Option<OsString> {
+    effective_env(command, key)
+}
+
 fn effective_env(command: &Command, key: &str) -> Option<OsString> {
     let explicit = command
         .get_envs()

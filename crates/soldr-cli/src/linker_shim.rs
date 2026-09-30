@@ -201,7 +201,7 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn write_content_addressed_shim(path: &Path, body: &str) -> Result<(), SoldrError> {
+pub(crate) fn write_content_addressed_shim(path: &Path, body: &str) -> Result<(), SoldrError> {
     if std::fs::read_to_string(path).ok().as_deref() == Some(body) {
         return Ok(());
     }
