@@ -53,3 +53,27 @@ fn xz2_statically_links_lzma() {
          Declare it as `xz2 = {{ version = \"0.1\", features = [\"static\"] }}`."
     );
 }
+
+/// The manifest check above proves the feature is declared; this proves it
+/// worked on the binary this very build produced (soldr#3403). A source build
+/// on a host with a system liblzma is exactly where a dynamic link would slip
+/// in, and the resulting `NEEDED` entry is what auditwheel turns into a
+/// position-dependent `soldr.libs/` copy.
+///
+/// Non-ELF hosts answer `None` (Mach-O and PE carry no `DT_NEEDED`), so this
+/// binds only where the ELF failure mode exists, without a platform cfg.
+#[test]
+fn the_built_soldr_binary_does_not_need_a_shared_liblzma() {
+    let soldr = common::soldr_bin();
+    let Some(needed) = soldr_cli::self_relocate::exe_needed_libraries(&soldr) else {
+        return;
+    };
+    let lzma: Vec<&String> = needed.iter().filter(|name| name.contains("lzma")).collect();
+    assert!(
+        lzma.is_empty(),
+        "{} links liblzma dynamically ({lzma:?}); `xz2` must use the `static` feature so a \
+         source build matches the published wheel and needs no bundled soldr.libs. All NEEDED: \
+         {needed:?}",
+        soldr.display()
+    );
+}
