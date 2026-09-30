@@ -191,6 +191,14 @@ fn write_ready_toolchain(dir: &Path) {
         b"manifest-version = '2'\n",
     )
     .expect("write stub manifest");
+    // soldr#3376: a directory named for this host must carry its std files.
+    let lib = dir
+        .join("lib/rustlib")
+        .join(crate::pyo3_detect::host_triple())
+        .join("lib");
+    std::fs::create_dir_all(&lib).expect("create stub std dir");
+    std::fs::write(lib.join("libcore-0123456789abcdef.rlib"), b"core").expect("stub libcore");
+    std::fs::write(lib.join("libstd-0123456789abcdef.rlib"), b"std").expect("stub libstd");
 }
 
 fn stub_partial_toolchain(rustup_home: &Path, channel: &str) -> PathBuf {

@@ -194,6 +194,9 @@ case "${{1:-}}" in
         mkdir -p "$toolchain_dir/bin" "$toolchain_dir/lib/rustlib"
         : > "$toolchain_dir/bin/rustc"
         : > "$toolchain_dir/lib/rustlib/multirust-channel-manifest.toml"
+        mkdir -p "$toolchain_dir/lib/rustlib/{host}/lib"
+        : > "$toolchain_dir/lib/rustlib/{host}/lib/libcore-0123456789abcdef.rlib"
+        : > "$toolchain_dir/lib/rustlib/{host}/lib/libstd-0123456789abcdef.rlib"
         exit 0
         ;;
     esac
@@ -213,6 +216,7 @@ exit 87
 "#,
             log = log.display(),
             rustc = rustc.display(),
+            host = soldr_cli::pyo3_detect::host_triple(),
         ),
     );
     rustup

@@ -290,6 +290,7 @@ fn dylint_blessed_and_cargo_share_the_readiness_matrix() {
             ToolchainReadiness::Partial(crate::toolchain_readiness::MissingToolchainEvidence {
                 channel_manifest: true,
                 native_rustc: true,
+                host_std: false,
             }),
         ),
         (
@@ -300,6 +301,7 @@ fn dylint_blessed_and_cargo_share_the_readiness_matrix() {
             ToolchainReadiness::Partial(crate::toolchain_readiness::MissingToolchainEvidence {
                 channel_manifest: true,
                 native_rustc: false,
+                host_std: false,
             }),
         ),
         (
@@ -310,6 +312,7 @@ fn dylint_blessed_and_cargo_share_the_readiness_matrix() {
             ToolchainReadiness::Partial(crate::toolchain_readiness::MissingToolchainEvidence {
                 channel_manifest: false,
                 native_rustc: true,
+                host_std: false,
             }),
         ),
         (
@@ -320,12 +323,16 @@ fn dylint_blessed_and_cargo_share_the_readiness_matrix() {
             ToolchainReadiness::Partial(crate::toolchain_readiness::MissingToolchainEvidence {
                 channel_manifest: true,
                 native_rustc: true,
+                host_std: false,
             }),
         ),
         ("complete", true, true, true, ToolchainReadiness::Ready),
     ] {
         let _ = std::fs::remove_dir_all(&toolchain);
         std::fs::create_dir_all(&toolchain).expect("create toolchain dir");
+        // Host std is present in every row: the rows vary the base evidence,
+        // and the host-std case is exercised separately below.
+        write_fake_std(&toolchain, host, true);
         if manifest {
             std::fs::create_dir_all(toolchain.join("lib/rustlib")).expect("manifest parent");
             std::fs::write(
@@ -344,7 +351,6 @@ fn dylint_blessed_and_cargo_share_the_readiness_matrix() {
             std::fs::create_dir_all(path.parent().expect("components parent"))
                 .expect("components parent");
             std::fs::write(path, b"rustc\n").expect("components");
-            write_fake_std(&toolchain, host, true);
             write_fake_std(&toolchain, "wasm32-unknown-unknown", false);
         }
 
@@ -367,6 +373,27 @@ fn dylint_blessed_and_cargo_share_the_readiness_matrix() {
             "Cargo memo must require base Ready plus components for {name}"
         );
     }
+
+    // soldr#3376: base evidence and `components` all present, host std gone
+    // (a poisoned cache, an interrupted extraction). Every path must agree it is
+    // not ready, and cargo's memo must not accept it.
+    let host_std_dir = toolchain.join("lib/rustlib").join(host);
+    std::fs::remove_dir_all(&host_std_dir).expect("delete the host std files");
+    let expected_partial =
+        ToolchainReadiness::Partial(crate::toolchain_readiness::MissingToolchainEvidence {
+            channel_manifest: false,
+            native_rustc: false,
+            host_std: true,
+        });
+    assert_eq!(
+        probe_toolchain_state(&key.rustup_home, channel, host),
+        expected_partial
+    );
+    assert!(matches!(
+        dylint_toolchain_readiness_at(&key.rustup_home, channel),
+        DylintToolchainReadiness::Partial { .. }
+    ));
+    assert!(toolchain_identity(&key, &toolchain).is_none());
 
     let _ = std::fs::remove_dir_all(&toolchain);
     assert_eq!(

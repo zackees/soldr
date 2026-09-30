@@ -760,6 +760,79 @@ fn toolchain_ensure_runs_prepare_then_smoke_verify_in_json_mode() {
     );
 }
 
+/// soldr#3376: `components` still claims `rust-std-<target>`, rustup says "up
+/// to date", but the library files are gone. The smoke check must notice.
+#[test]
+fn toolchain_ensure_json_names_a_target_whose_std_files_are_missing() {
+    const TARGET: &str = "x86_64-unknown-linux-musl";
+    let workspace = unique_temp_dir("toolchain-ensure-missing-std");
+    seed_rust_toolchain_toml(
+        &workspace,
+        &format!("[toolchain]\nchannel = \"1.94.1\"\ntargets = [\"{TARGET}\"]\n"),
+    );
+    let rustup_log = workspace.join("rustup.log");
+    let cargo_log = workspace.join("cargo.log");
+    let rustup = install_logging_fake_rustup(&rustup_log);
+    let cargo =
+        install_logging_versioned_fake_cargo(&cargo_log, "cargo 1.94.1 (abc1234 2026-04-15)");
+
+    // A rustc that lives inside a real-shaped toolchain directory.
+    let toolchain = workspace.join("toolchains").join("1.94.1-fixture");
+    let bin = toolchain.join("bin");
+    let rustlib = toolchain.join("lib").join("rustlib");
+    std::fs::create_dir_all(&bin).expect("create toolchain bin");
+    std::fs::create_dir_all(&rustlib).expect("create toolchain rustlib");
+    std::fs::write(rustlib.join("components"), format!("rust-std-{TARGET}\n"))
+        .expect("write components claim");
+    let rustc = fake_script_path(&bin, "rustc");
+    let body = if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        "@echo off\necho rustc 1.94.1 (def5678 2026-04-15)\n"
+    } else {
+        "#!/bin/sh\necho 'rustc 1.94.1 (def5678 2026-04-15)'\n"
+    };
+    write_fake_script(&rustc, body);
+
+    let run = || {
+        let output = isolated_soldr_command()
+            .args(["toolchain", "ensure", "--json"])
+            .current_dir(&workspace)
+            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .env("SOLDR_TEST_CARGO_BIN", &cargo)
+            .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+            .output()
+            .expect("failed to run soldr toolchain ensure --json");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let parsed: Value = serde_json::from_str(&stdout)
+            .unwrap_or_else(|_| panic!("ensure --json stdout not JSON: {stdout}"));
+        (output.status.success(), parsed)
+    };
+
+    let (succeeded, parsed) = run();
+    assert_eq!(parsed["schema_version"], Value::from(1), "schema stays v1");
+    assert_eq!(parsed["smoke_verify"]["ok"], Value::from(false), "{parsed}");
+    assert_eq!(
+        parsed["smoke_verify"]["missing_std_targets"],
+        serde_json::json!([TARGET]),
+        "{parsed}"
+    );
+    assert!(!succeeded, "a toolchain with missing std must fail ensure");
+
+    // Restore the library and the same run passes.
+    let lib = rustlib.join(TARGET).join("lib");
+    std::fs::create_dir_all(&lib).expect("create target lib dir");
+    std::fs::write(lib.join("libcore-0123456789abcdef.rlib"), b"core").expect("libcore");
+    let (succeeded, parsed) = run();
+    assert_eq!(parsed["smoke_verify"]["ok"], Value::from(true), "{parsed}");
+    assert_eq!(
+        parsed["smoke_verify"]["missing_std_targets"],
+        serde_json::json!([])
+    );
+    assert!(succeeded);
+}
+
 #[test]
 fn toolchain_ensure_human_mode_succeeds_without_json() {
     let workspace = unique_temp_dir("toolchain-ensure-human");

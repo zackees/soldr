@@ -27,8 +27,9 @@
 //! ## Shared filesystem contract (soldr#2977)
 //!
 //! All callers classify a selected directory with the same evidence: `Missing`
-//! means the directory is absent; `Ready` requires both
-//! `lib/rustlib/multirust-channel-manifest.toml` and native `bin/rustc`; and
+//! means the directory is absent; `Ready` requires
+//! `lib/rustlib/multirust-channel-manifest.toml`, native `bin/rustc` and, for a
+//! directory named for this host, its `libcore`/`libstd` files (soldr#3376); and
 //! `Partial` means the directory exists but either or both files are absent.
 //! Cargo's preparation memo additionally requires and fingerprints its
 //! `lib/rustlib/components` manifest. A caller-selected `RUSTUP_HOME` is never
@@ -44,6 +45,10 @@ pub(crate) const TOOLCHAIN_CHANNEL_MANIFEST: &str = "lib/rustlib/multirust-chann
 pub(crate) struct MissingToolchainEvidence {
     pub(crate) channel_manifest: bool,
     pub(crate) native_rustc: bool,
+    /// The host `libcore`/`libstd` files are absent while the directory is
+    /// named for this host (soldr#3376): `components` still claims `rust-std`,
+    /// and rustup reports "up to date", but a build fails with `E0463`.
+    pub(crate) host_std: bool,
 }
 
 impl MissingToolchainEvidence {
@@ -54,6 +59,9 @@ impl MissingToolchainEvidence {
         }
         if self.native_rustc {
             paths.push("bin/rustc");
+        }
+        if self.host_std {
+            paths.push("lib/rustlib/<host>/lib/{libcore,libstd}-*.rlib");
         }
         paths
     }
@@ -87,6 +95,7 @@ pub(crate) fn classify(
     dir_exists: bool,
     channel_manifest_exists: bool,
     rustc_exists: bool,
+    host_std_exists: bool,
 ) -> ToolchainReadiness {
     if !dir_exists {
         return ToolchainReadiness::Missing;
@@ -94,8 +103,9 @@ pub(crate) fn classify(
     let missing = MissingToolchainEvidence {
         channel_manifest: !channel_manifest_exists,
         native_rustc: !rustc_exists,
+        host_std: !host_std_exists,
     };
-    if missing.channel_manifest || missing.native_rustc {
+    if missing.channel_manifest || missing.native_rustc || missing.host_std {
         ToolchainReadiness::Partial(missing)
     } else {
         ToolchainReadiness::Ready
@@ -119,10 +129,20 @@ pub(crate) fn native_rustc_path(toolchain_dir: &Path) -> PathBuf {
 pub(crate) fn classify_toolchain_dir(toolchain_dir: &Path) -> ToolchainReadiness {
     let channel_manifest = toolchain_dir.join(TOOLCHAIN_CHANNEL_MANIFEST);
     let rustc = native_rustc_path(toolchain_dir);
+    // A directory named for another host (or with no host suffix) is not judged
+    // against this host's standard library.
+    let host_std_exists = crate::toolchain_std_libs::host_of_toolchain_dir(
+        toolchain_dir,
+        crate::pyo3_detect::host_triple(),
+    )
+    .is_none_or(|host| {
+        crate::toolchain_std_libs::missing_std_triples(toolchain_dir, Some(&host), &[]).is_empty()
+    });
     classify(
         toolchain_dir.is_dir(),
         channel_manifest.is_file(),
         rustc.is_file(),
+        host_std_exists,
     )
 }
 
