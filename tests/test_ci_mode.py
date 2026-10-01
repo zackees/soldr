@@ -552,3 +552,9 @@ def test_one_selector_is_portable_to_every_fleet_identity(
         "minimal",
         SHA,
     )
+
+
+@pytest.mark.parametrize("job", ["setup-soldr-action", "cook-size-gate"])
+def test_full_smokes_receive_no_repository_secrets(job) -> None:
+    """Full validation runs untrusted candidates with only the read-only token."""
+    assert "secrets:" not in _job(job)

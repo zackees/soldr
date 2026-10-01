@@ -1431,7 +1431,6 @@ jobs:
     uses: ./.github/workflows/setup-soldr-action.yml
     with:
       source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
-    secrets: inherit
 
   cook-size-gate:
     name: Cook size gate
@@ -1440,7 +1439,6 @@ jobs:
     uses: ./.github/workflows/cook-size-gate.yml
     with:
       source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
-    secrets: inherit
 
   macos-recovery-replay:
     name: macOS Recovery replay
