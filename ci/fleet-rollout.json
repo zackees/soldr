@@ -66,7 +66,16 @@
     "main_full_control": "ci/fleet-evidence/soldr-main-vs-full-7c804.json",
     "main_full_control_scope": "One identical-source-tree cross-event control including causalchildren:14.85/208.1667 runner-minutes=7.1337%; CPU-weighted7.1932%. PR/repeatedhistorical cohorts notproven.",
     "bootstrap_merge_commit": "aa7cb6a7fc17c25eb4514611689df020eb86bda9",
-    "bootstrap_full_evidence": "ci/fleet-evidence/soldr-e1cd-bootstrap-full.json"
+    "bootstrap_full_evidence": "ci/fleet-evidence/soldr-e1cd-bootstrap-full.json",
+    "summary_candidate": "d9ddb3e76d71cc98bf4748b1b6cb79cec3ffe714",
+    "summary_minimal_run": "https://github.com/zackees/soldr/actions/runs/36926051991",
+    "summary_minimal_result": "success; checked uploaded report requires four successful jobs",
+    "summary_test_run": "https://github.com/zackees/soldr/actions/runs/36927895363",
+    "summary_test_result": "success; literal ci-test report verified all eight required outcomes and current candidate/labels",
+    "summary_label_removal_run": "https://github.com/zackees/soldr/actions/runs/36931121611",
+    "summary_label_removal_result": "success; checked uploaded minimal report with same candidate, no labels, four required outcomes",
+    "pr_full_control": "ci/fleet-evidence/soldr-pr-e1cd-minimal-vs-full.json",
+    "pr_full_control_scope": "One same-SHA opened/unlabeled versus ci-full control: 15.5333/199.9167 runner-minutes = 7.7699%; CPU-weighted 7.8178%. Repeated cohorts and later wiring acceptance remain unproved."
   },
   "completion_unproven": [
     "final reviewed merged consumer pins",
@@ -94,7 +103,18 @@
     },
     "merge_commit": "7ed0e26b739c635781ba8d2eab0e24eaf450e3dd",
     "full_run": "https://github.com/zackees/bosn/actions/runs/36921972900",
-    "full_result": "success on exact candidate 58687f4fb17c499416abb9f56ec3f56d1491ae1b; all 12 jobs successful, including both hosted macOS wheel smokes"
+    "full_result": "success on exact candidate 58687f4fb17c499416abb9f56ec3f56d1491ae1b; all 12 jobs successful, including both hosted macOS wheel smokes",
+    "engine_prerequisites": {
+      "local_commit": "1b3303dc171e782e24d6f8ebe34deb4eff3c407f",
+      "scope": "Reviewed deterministic Act OCI package/archive, bounded owned engine lifecycle, private planning queries and Docker store identity binding; unpublished. Daemon-only runtime source exists; two primary review findings are being fixed before actual Docker execution.",
+      "evidence": "171 library tests passed after archive assembly. Root independently passed four archive and five engine identity tests. Real Act 0.2.88 listing ignored source/HOME/XDG configuration and credentials. Synthetic lifecycle tests do not prove real Docker execution.",
+      "cleanup": "Previously completed scratch roots were trashed. Root cache /tmp/bosn-act-boundary-3344-owned remains intentionally active during runtime implementation; stop before cleanup.",
+      "pending_review_fixes": [
+        "Import and verify original pinned runner image alongside Act driver; archive graph tests now pass, runtime mapping still under implementation.",
+        "Durable exclusive execution claim before cleanup guard; duplicate runtime calls must leave active owner untouched."
+      ],
+      "latest_root_validation": "Seven engine tests, exact fractional timestamp durable reopen, 32 Act-filter tests and all-target service/registry Clippy passed before current claim changes. Five archive tests passed with original runner graph import and tamper refusal. Actual Docker execution remains unverified."
+    }
   },
   "latest_local_python_validation": {
     "passed": 2146,
@@ -106,15 +126,65 @@
     "fbuild": {
       "base_sha": "144635a843c9b1d61b4f9d98a987bb85f060137a",
       "checkout": "../soldr2-extern/fbuild-fleet",
-      "status": "research only; renderer and 36 focused tests passed",
-      "release_gap": "ARM-only macOS wheel advertises Intel compatibility; native release/import coverage incomplete",
-      "security_gap": "Labeled hardware PR source can execute on persistent self-hosted hardware without current-author permission guard"
+      "status": "Local unpushed generator/adapter commit 38e912497feade55ad1ea3cfab3d63621d547c72 atop reviewed wheel correction b3e24c8; 42 focused tests passed. Independent review and all live native/cost/Bosn proofs remain pending.",
+      "release_gap": "Separate Intel 10.12 and ARM 11.0 wheel tags corrected locally; live candidate wheel execution remains incomplete",
+      "security_gap": "Labeled hardware PR source can execute on persistent self-hosted hardware without current-author permission guard",
+      "local_commit": "b3e24c8119f2aea99a5106d97cdbb3bb455b8e35"
     },
     "FastLED": {
       "base_sha": "ec0a0f35efd439a6d12c3ab68e92082869268a07",
       "checkout": "../soldr2-extern/fastled-fleet",
-      "status": "research only; existing full/native/release gates partly implemented",
-      "remaining": "Permission-aware selector, literal ci-test, trusted split-workflow summary, complete full inventory, separate PR/master cost and memory/runtime overlap proof"
+      "status": "Reviewed unpublished Blink DLL runtime smoke; 15 focused fixtures passed, actual FastLED runtime and performance proof pending",
+      "remaining": "Permission-aware selector, literal ci-test, trusted split-workflow summary, complete full inventory, separate PR/master cost and memory/runtime overlap proof",
+      "local_commit": "94b463472cc31b7f0ff7585cef1455b813187766"
+    },
+    "kernal-api": {
+      "base_sha": "29957376d4858e4106a42b35aeb24239fba0e5d6",
+      "checkout": "../soldr2-extern/kernal-api-fleet",
+      "status": "Research only; 37 Python guards passed",
+      "remaining": "Shared trusted policy, Bosn execution, exact artifact native proof, protection, immutable pins and event cost acceptance"
+    },
+    "FastLED-cli": {
+      "base_sha": "bb1d619c1d64194198f9c68ac852fc79e6a01d9e",
+      "checkout": "../soldr2-extern/fastled-cli-fleet",
+      "status": "Research only; 18 focused guards passed",
+      "remaining": "Reduce routine six-platform lint through preserved tiers; shared trusted policy, Bosn, shipped-wheel execution, protection and cost acceptance"
+    },
+    "mimalloc-pprof": {
+      "base_sha": "c2263d150de1c36379c0163d0591d965fd580cdf",
+      "checkout": "../soldr2-extern/mimalloc-fleet",
+      "status": "Research only; 78 tests and 24 subtests passed; prior v1.0.1 pilot verified without new publication",
+      "remaining": "Shared selector/summary, immutable pins, 65-job release inventory preservation, Windows ARM native execution, protection, Bosn and whole-event cost acceptance"
+    },
+    "setup_soldr_checkpoint": {
+      "base_sha": "0f223ac68e97fccaaeab026ef1861e5bf73639ac",
+      "local_commit": "e40072c968d6f61b9c4216f428d99d6efef5aa09",
+      "status": "Unpushed source checkpoint; 75 implementation tests and 35 independent review tests passed, but primary review found three HIGH issues now assigned for fixes. ARM musl execution explicitly missing and blocks full acceptance; no live full/native/cost/Bosn proof.",
+      "review_findings": [
+        "Candidate-controlled coverage contracts can delete blocked cells; use trusted base policy contracts.",
+        "Merge-group cleanup can execute candidate scripts with actions write; restrict to trusted merged-main cleanup.",
+        "Standalone release-lane dispatch can run unmerged candidate code in default runtime cache scope; prerequisite immutable merged-main verification required."
+      ]
     }
-  }
+  },
+  "local_shared_prerequisites": [
+    {
+      "checkout": "../soldr2-extern/soldr-release-execution",
+      "commit": "d701b1ddaaaaa4e6a772308e9ec7307bd2cf7ce8",
+      "scope": "Windows wheel and GNU ARM64 release execution gates, including force-PyPI recovery; no live artifact execution yet",
+      "verification": "Primary review clean; worker 159 focused tests, root 82 focused tests passed; unpublished."
+    },
+    {
+      "checkout": "../soldr2-extern/soldr-cost-linked",
+      "commit": "ee6280cdf6dcff9b0e6c5e52cab3edfb1414ba9c",
+      "scope": "Explicit branch-push/PR-synchronize receipts with all attempts and per-event cost; historical operator attestations cannot satisfy acceptance",
+      "verification": "Primary review clean; root 17 tests and 15 subtests passed; direct-root 120-second heuristic remains explicitly disclosed; unpublished."
+    },
+    {
+      "checkout": "../soldr2-extern/soldr-trusted-gate",
+      "commit": "2415e6d482af6bcd5975da6849eb06425b60e344",
+      "scope": "Policy provenance prerequisite only; no required trusted merge check or GitHub App installed",
+      "verification": "Nonrecursive tree bypass reproduced RED and fixed; 21 tests passed and primary review clean. Authentic API input and independently chosen reviewed revision remain caller responsibilities."
+    }
+  ]
 }
