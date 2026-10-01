@@ -1,33 +1,13 @@
 #!/usr/bin/env python3
-"""Select PR-only CI jobs while keeping ci.yml as the sole PR entry point."""
+"""Identify documentation-only PRs for the cheap routine lint status."""
 
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import json
 import os
 import subprocess
 from pathlib import Path, PurePosixPath
-
-POLICIES = {
-    "run_setup_soldr": (
-        "action.yml",
-        "install.sh",
-        "rust-toolchain.toml",
-        "Cargo.toml",
-        "Cargo.lock",
-        ".github/actions/setup-soldr/**",
-        ".github/workflows/setup-soldr-action.yml",
-    ),
-    "run_cook_size_gate": (
-        "crates/soldr-cli/src/cook.rs",
-        "crates/soldr-cache/src/cache_lib/strip_target.rs",
-        "crates/soldr-cache/**",
-        ".github/workflows/cook-size-gate.yml",
-        "tests/test_cook_size_gate_workflow.py",
-    ),
-}
 
 
 def normalized(path: str) -> str:
@@ -47,24 +27,15 @@ def is_docs_only_path(path: str) -> bool:
     )
 
 
-def matches(path: str, patterns: tuple[str, ...]) -> bool:
-    return any(fnmatch.fnmatchcase(normalized(path), pattern) for pattern in patterns)
-
-
 def select(event_name: str, changed_paths: list[str]) -> dict[str, str]:
     """Return stable string outputs for job-level GitHub expressions."""
 
-    if event_name != "pull_request" or not changed_paths:
-        return {"docs_only": "false", **dict.fromkeys(POLICIES, "false")}
-    return {
-        "docs_only": str(
-            all(is_docs_only_path(path) for path in changed_paths)
-        ).lower(),
-        **{
-            name: str(any(matches(path, patterns) for path in changed_paths)).lower()
-            for name, patterns in POLICIES.items()
-        },
-    }
+    docs_only = (
+        event_name == "pull_request"
+        and bool(changed_paths)
+        and all(is_docs_only_path(path) for path in changed_paths)
+    )
+    return {"docs_only": str(docs_only).lower()}
 
 
 def pull_request_paths(event: dict[str, object]) -> list[str]:

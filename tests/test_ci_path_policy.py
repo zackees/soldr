@@ -14,12 +14,10 @@ def test_docs_only_pr_skips_expensive_jobs() -> None:
     outputs = MODULE.select("pull_request", ["README.md", "docs/API.md"])
     assert outputs == {
         "docs_only": "true",
-        "run_setup_soldr": "false",
-        "run_cook_size_gate": "false",
     }
 
 
-def test_retained_pr_signals_keep_their_former_path_selection() -> None:
+def test_smoke_paths_do_not_emit_obsolete_job_selectors() -> None:
     outputs = MODULE.select(
         "pull_request",
         [
@@ -27,6 +25,4 @@ def test_retained_pr_signals_keep_their_former_path_selection() -> None:
             "action.yml",
         ],
     )
-    assert outputs["docs_only"] == "false"
-    assert outputs["run_setup_soldr"] == "true"
-    assert outputs["run_cook_size_gate"] == "true"
+    assert outputs == {"docs_only": "false"}

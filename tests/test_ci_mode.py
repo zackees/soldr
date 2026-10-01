@@ -304,7 +304,7 @@ def test_full_overrides_platform_and_wheel_path_policies() -> None:
 def test_expensive_smokes_run_only_in_full_mode_on_candidate_sha() -> None:
     for name in ("setup-soldr-action", "cook-size-gate"):
         job = _job(name)
-        assert "needs: ci-mode" in job
+        assert "needs: [ci-mode, build-linux-x64]" in job
         assert "needs.ci-mode.outputs.mode == 'full'" in job
         assert "source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}" in job
         workflow = (ROOT / ".github" / "workflows" / f"{name}.yml").read_text()

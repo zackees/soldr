@@ -103,8 +103,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.select.outputs.docs_only }}
-      run_setup_soldr: ${{ steps.select.outputs.run_setup_soldr }}
-      run_cook_size_gate: ${{ steps.select.outputs.run_cook_size_gate }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -1420,7 +1418,7 @@ jobs:
   # required by Full coverage; routine events never allocate these runners.
   setup-soldr-action:
     name: Setup soldr action smoke
-    needs: ci-mode
+    needs: [ci-mode, build-linux-x64]
     if: ${{ needs.ci-mode.outputs.mode == 'full' }}
     uses: ./.github/workflows/setup-soldr-action.yml
     with:
@@ -1429,7 +1427,7 @@ jobs:
 
   cook-size-gate:
     name: Cook size gate
-    needs: ci-mode
+    needs: [ci-mode, build-linux-x64]
     if: ${{ needs.ci-mode.outputs.mode == 'full' }}
     uses: ./.github/workflows/cook-size-gate.yml
     with:
