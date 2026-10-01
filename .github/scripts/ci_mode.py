@@ -17,19 +17,56 @@ from pathlib import Path
 SELECTOR_SCHEMA = "fleet-ci-mode/v1"
 
 
+def label_aliases_from_adapter(adapter: dict[str, object]) -> dict[str, str]:
+    """Map reviewed legacy controls onto literal fleet labels, never downgrade."""
+    schema = adapter.get("schema_version")
+    aliases = adapter.get("label_aliases")
+    if (
+        not isinstance(schema, int)
+        or isinstance(schema, bool)
+        or schema != 1
+        or not isinstance(aliases, dict)
+    ):
+        raise ValueError(
+            "selector adapter requires integer schema_version 1 and label_aliases"
+        )
+    for alias, target in aliases.items():
+        if (
+            not isinstance(alias, str)
+            or not alias.strip()
+            or alias in {"ci-test", "ci-full"}
+            or not isinstance(target, str)
+            or target not in {"ci-test", "ci-full"}
+        ):
+            raise ValueError(
+                "label aliases must map legacy names to ci-test or ci-full"
+            )
+    return aliases
+
+
 def select_mode(
     event_name: str,
     event: dict[str, object],
     candidate_sha: str,
     *,
     author_permission: str | None = None,
+    label_aliases: dict[str, str] | None = None,
 ) -> tuple[str, str]:
+    aliases = label_aliases_from_adapter(
+        {"schema_version": 1, "label_aliases": label_aliases or {}}
+    )
     if event_name == "workflow_dispatch":
         if not re.fullmatch(r"[0-9a-fA-F]{40}", candidate_sha):
             raise ValueError(
                 "workflow_dispatch requires a full 40-character candidate SHA"
             )
         return "full", candidate_sha.lower()
+    if event_name == "merge_group":
+        group = event.get("merge_group")
+        sha = group.get("head_sha") if isinstance(group, dict) else None
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+            raise ValueError("merge_group head SHA is missing or invalid")
+        return "full", sha.lower()
     if event_name == "pull_request":
         pr = event.get("pull_request")
         if not isinstance(pr, dict):
@@ -40,7 +77,11 @@ def select_mode(
             raise ValueError("pull_request head SHA is missing or invalid")
         labels = pr.get("labels")
         names = (
-            {label.get("name") for label in labels if isinstance(label, dict)}
+            {
+                aliases.get(label["name"], label["name"])
+                for label in labels
+                if isinstance(label, dict) and isinstance(label.get("name"), str)
+            }
             if isinstance(labels, list)
             else set()
         )
@@ -136,6 +177,7 @@ def main() -> int:
     parser.add_argument("--event-name", default=os.environ.get("GITHUB_EVENT_NAME", ""))
     parser.add_argument("--event-path", default=os.environ.get("GITHUB_EVENT_PATH", ""))
     parser.add_argument("--candidate-sha", default="")
+    parser.add_argument("--adapter", type=Path)
     parser.add_argument("--checked-out-sha", required=True)
     parser.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))
     args = parser.parse_args()
@@ -149,8 +191,19 @@ def main() -> int:
         if args.event_name == "pull_request"
         else None
     )
+    adapter = (
+        json.loads(args.adapter.read_text(encoding="utf-8")) if args.adapter else None
+    )
+    if args.adapter and not isinstance(adapter, dict):
+        raise ValueError("selector adapter must be an object")
     mode, sha = select_mode(
-        args.event_name, event, args.candidate_sha, author_permission=permission
+        args.event_name,
+        event,
+        args.candidate_sha,
+        author_permission=permission,
+        label_aliases=(
+            label_aliases_from_adapter(adapter) if adapter is not None else None
+        ),
     )
     verify_checkout(sha, args.checked_out_sha)
     if not args.github_output:

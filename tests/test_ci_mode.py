@@ -559,3 +559,48 @@ def test_one_selector_is_portable_to_every_fleet_identity(
 def test_full_smokes_receive_no_repository_secrets(job) -> None:
     """Full validation runs untrusted candidates with only the read-only token."""
     assert "secrets:" not in _job(job)
+
+
+def test_merge_queue_keeps_full_validation_on_exact_group_identity():
+    event = {"merge_group": {"head_sha": SHA}}
+    assert MODE.select_mode("merge_group", event, "") == ("full", SHA)
+    with pytest.raises(ValueError, match="merge_group"):
+        MODE.select_mode("merge_group", {"merge_group": {"head_sha": "main"}}, "")
+
+
+@pytest.mark.parametrize(
+    "alias, canonical, mode",
+    [("ci:full", "ci-full", "full"), ("ci-windows", "ci-test", "test")],
+)
+def test_reviewed_adapter_aliases_use_common_selection(alias, canonical, mode):
+    event = {"pull_request": {"head": {"sha": SHA}, "labels": [{"name": alias}]}}
+    assert MODE.select_mode(
+        "pull_request",
+        event,
+        "",
+        author_permission="write",
+        label_aliases={alias: canonical},
+    ) == (mode, SHA)
+    assert MODE.select_mode(
+        "pull_request",
+        event,
+        "",
+        author_permission="read",
+        label_aliases={alias: canonical},
+    ) == ("full", SHA)
+
+
+@pytest.mark.parametrize(
+    "adapter",
+    [
+        {},
+        {"schema_version": True, "label_aliases": {}},
+        {"schema_version": 1.0, "label_aliases": {}},
+        {"schema_version": 1, "label_aliases": {"ci-full": "ci-test"}},
+        {"schema_version": 1, "label_aliases": {"legacy": "minimal"}},
+        {"schema_version": 1, "label_aliases": {"": "ci-full"}},
+    ],
+)
+def test_invalid_selector_adapter_cannot_override_literal_contract(adapter):
+    with pytest.raises(ValueError):
+        MODE.label_aliases_from_adapter(adapter)

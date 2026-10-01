@@ -36,6 +36,15 @@ time; association, fork status, prior contributions, and bot identity confer
 no trust. Unknown permission remains visible and selects full. Main/master
 changes never imply publication.
 
+Repositories migrating legacy controls may pass `--adapter <selector.json>`
+with integer `schema_version: 1` and `label_aliases`, mapping legacy names only
+to `ci-test` or `ci-full`. Literal fleet labels cannot be redefined or downgraded.
+For example, clud retains `ci:full` as an alias of `ci-full` and maps `ci-windows`
+to its Linux/Windows extended tier. The Python API accepts the validated mapping
+as the `label_aliases` keyword on `select_mode`. Merge queues select full using
+the exact `merge_group.head_sha`; their compute is reported as a separate
+`merge_group` event by the shared cost collector, never hidden in PR/main ratios.
+
 Each adapter must still declare nonempty test-tier cells and its complete
 platform, architecture, toolchain, ABI, board, artifact, and native-execution
 coverage. Every required full cell must succeed on one candidate identity;
@@ -71,3 +80,7 @@ conformance. The selector tests alone do not satisfy those requirements. Each
 repository must record same-SHA label add/remove runs, complete `ci-full` PR and
 exact-SHA dispatch proof, external-author proof, and separate PR/default-branch
 whole-event cost measurements before its rollout can be declared complete.
+
+[The rollout record](../ci/fleet-rollout.json) records repository-isolated
+Sol/low ownership, concrete evidence, root integration decisions, and remaining
+proofs. It is a checkpoint, not a claim that any unmerged consumer is complete.

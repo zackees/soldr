@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "issue": "https://github.com/zackees/soldr/issues/3345",
+  "checkpoint": "2026-10-01",
+  "coordination": {
+    "owner": "root",
+    "shared_contract_and_release": "serial",
+    "implementation_delegation": "explicitly authorized by user",
+    "publication_performed": false
+  },
+  "workers": [
+    {
+      "task": "fleet_zccache",
+      "model": "gpt-6.1-sol",
+      "reasoning_effort": "low",
+      "repository": "zackees/zccache",
+      "checkout": "../soldr2-extern/zccache-fleet",
+      "base_sha": "34c4cd27bbf9ea8b3acb649babbaf7c45aa7692f",
+      "ownership": "zccache workflows/adapters/tests/docs only",
+      "evidence": "18 focused conformance cases passed; broad CI-script checks in progress; final merged shared-policy pin and live proofs pending"
+    },
+    {
+      "task": "fleet_clud",
+      "model": "gpt-6.1-sol",
+      "reasoning_effort": "low",
+      "repository": "zackees/clud",
+      "checkout": "../soldr2-extern/clud-fleet",
+      "base_sha": "c541ce024c4f73849fcba609abcf156f18991c37",
+      "ownership": "clud workflows/adapters/tests/docs only",
+      "local_commit": "bce895fad6868da75b98d4608efa217b2fa896d4",
+      "evidence": "Actual local Act static RED run act-d0464a8f140d-20; merged policy pin and GREEN mandatory checks pending; old wrapper does not prove nested Docker ownership"
+    },
+    {
+      "task": "fleet_bosn",
+      "model": "gpt-6.1-sol",
+      "reasoning_effort": "low",
+      "repository": "zackees/bosn",
+      "checkout": "../soldr2-extern/bosn-act",
+      "base_sha": "c8ac849c78cd75fa63143ce47d97eedb4e6270cd",
+      "ownership": "Act registry intent/state transactions and tests; service/runtime remain serial integration",
+      "evidence": "Seven Act registry tests plus existing foundation tests and Clippy passed; recovery-before-removal identity regression still being added",
+      "scope_decision": {
+        "reason": "Whole runner crosses durable container ownership, daemon authentication/recovery, frozen snapshots and job reporting; unsafe as one low-effort implementation slice",
+        "resolution": "Retained requested Sol/low; split registry slice, with root approving persistence/runtime boundaries before integration"
+      }
+    }
+  ],
+  "reference_evidence": {
+    "merged_pr": "https://github.com/zackees/soldr/pull/3510",
+    "merge_sha": "7c804a94f6871f994fbd2e9ae29d4585ec37fc5d",
+    "full_pr_candidate": "3001a30d553a54d0e1469d4f54138f4704cab92b",
+    "full_pr_run": "https://github.com/zackees/soldr/actions/runs/36910066178",
+    "full_pr_result": "success",
+    "same_candidate_main_dispatch": "https://github.com/zackees/soldr/actions/runs/36915175888",
+    "dispatch_result": "pending at checkpoint",
+    "summary_pr": "https://github.com/zackees/soldr/pull/3515"
+  },
+  "completion_unproven": [
+    "final reviewed merged consumer pins",
+    "consumer local GREEN and Bosn-owned full execution",
+    "all native/version/platform full proofs",
+    "same-SHA ci-test/ci-full add/remove live evidence",
+    "unlabeled external-author live coverage and security audit",
+    "default-branch stable summary and preserved required protection",
+    "separate whole-event PR/main cost ratios with queue costs disclosed",
+    "normalized release directive/retry/pilot acceptance",
+    "reviewed merged consumer PRs and cleanup"
+  ]
+}

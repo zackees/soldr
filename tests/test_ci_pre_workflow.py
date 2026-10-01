@@ -47,6 +47,18 @@ def test_ci_pre_installs_nothing_and_is_fast() -> None:
         assert checkouts[0]["with"]["sparse-checkout"], job_id
 
 
+def test_cache_control_never_executes_pr_authored_helper_with_write_token() -> None:
+    for job in _load("ci-pre.yml")["jobs"].values():
+        checkout = next(
+            step for step in job["steps"] if "checkout" in step.get("uses", "")
+        )
+        assert (
+            checkout["with"].get("ref")
+            == "${{ github.event.pull_request.base.sha || github.sha }}"
+        )
+        assert checkout["with"]["persist-credentials"] is False
+
+
 def test_the_janitor_is_one_repo_wide_uncancelled_sweep() -> None:
     janitor = _load("ci-pre.yml")["jobs"]["cache-janitor"]
     assert janitor["concurrency"] == {

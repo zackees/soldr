@@ -107,6 +107,13 @@ def test_unknown_mode_fails_clearly():
         check(passing(), mode="")
 
 
+def test_merge_queue_requires_full_selected_coverage():
+    assert check(passing(), event_name="merge_group") == []
+    assert "merge queue requires full CI" in check(
+        passing(), event_name="merge_group", mode="minimal"
+    )
+
+
 def test_test_adapter_must_add_real_jobs_beyond_minimal():
     declaration = adapter()
     declaration["test_jobs"] = ["lint", "host"]

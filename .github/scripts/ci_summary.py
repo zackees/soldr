@@ -74,7 +74,7 @@ def summary_failures(
     selected_sha: str,
 ) -> list[str]:
     failures = []
-    if event_name not in ("pull_request", "push", "workflow_dispatch"):
+    if event_name not in ("pull_request", "push", "workflow_dispatch", "merge_group"):
         failures.append("missing or unsupported event")
     if (
         event_name == "pull_request"
@@ -84,6 +84,8 @@ def summary_failures(
         failures.append("external or unresolved author requires full CI")
     if event_name == "workflow_dispatch" and mode != "full":
         failures.append("candidate dispatch requires full CI")
+    if event_name == "merge_group" and mode != "full":
+        failures.append("merge queue requires full CI")
     jobs = required_jobs(adapter, full, mode, docs_only)
     failures += COVERAGE["coverage_failures"](
         {"schema_version": 1, "required_jobs": sorted(jobs), "targets": []},
