@@ -213,14 +213,24 @@ def test_workflows_with_no_filters_at_all_is_an_error(mod, tmp_path):
     assert mod.main(["--workflows", str(workflows), "--root", str(tmp_path)]) == 1
 
 
-def test_the_cache_crate_is_watched_where_it_now_lives(mod):
-    # The specific regression, pinned by name so a future move is noticed.
-    for name in ("cook-size-gate.yml",):
-        text = (REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        patterns = mod.path_filters(text)
-        assert any(p.startswith("crates/soldr-cache/") for p in patterns), (
-            f"{name} no longer watches the cache crate: {patterns}"
-        )
-        assert not any("soldr-cli/src/cache_lib" in p for p in patterns), (
-            f"{name} still watches the pre-#1490 cache_lib location"
-        )
+def test_cache_gate_has_no_path_filter_and_is_required_in_full_ci(mod):
+    # #3344 moved this expensive gate from path-scoped pushes to every
+    # full candidate. A stale path must never hide cache-crate validation.
+    import yaml
+
+    text = (REPO_ROOT / ".github/workflows/cook-size-gate.yml").read_text(
+        encoding="utf-8"
+    )
+    assert mod.path_filters(text) == []
+    workflow = yaml.safe_load(text)
+    triggers = workflow.get("on", workflow.get(True))
+    assert "push" not in triggers
+    assert "workflow_call" in triggers
+    canonical = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    )
+    job = canonical["jobs"]["cook-size-gate"]
+    assert job["uses"] == "./.github/workflows/cook-size-gate.yml"
+    assert job["if"] == "${{ needs.ci-mode.outputs.mode == 'full' }}"
+    assert job["with"]["source_ref"] == "${{ needs.ci-mode.outputs.checkout_sha }}"
+    assert "cook-size-gate" in canonical["jobs"]["full-coverage"]["needs"]
