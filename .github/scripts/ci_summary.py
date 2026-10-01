@@ -101,6 +101,36 @@ def summary_failures(
     return sorted(set(failures))
 
 
+def current_selection_failures(
+    event: dict | None,
+    *,
+    mode: str,
+    selected_sha: str,
+    permission: str,
+    aliases: dict[str, str],
+) -> list[str]:
+    """A rerun may exceed today's requested tier, but cannot undercut it."""
+    if event is None:
+        return ["current PR metadata is unavailable"]
+    try:
+        current_mode, current_sha = SELECTOR["select_mode"](
+            "pull_request",
+            event,
+            "",
+            author_permission=permission,
+            label_aliases=aliases,
+        )
+    except (ValueError, TypeError, KeyError):
+        return ["current PR selection is invalid"]
+    failures = []
+    if selected_sha.lower() != current_sha:
+        failures.append("selected candidate is not the current PR head")
+    ranks = {"minimal": 0, "test": 1, "full": 2}
+    if ranks.get(mode, -1) < ranks[current_mode]:
+        failures.append(f"current PR requires {current_mode} CI; cached mode is {mode}")
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adapter", type=Path, required=True)
@@ -120,6 +150,8 @@ def main() -> int:
         "selected_sha": os.environ.get("SELECTED_SHA", ""),
     }
     selector_permission = inputs["author_permission"]
+    current_event = None
+    current_failures = []
     if inputs["event_name"] == "pull_request":
         # A failed-job rerun can reuse ci-mode's outputs from an earlier
         # attempt. The merge decision must use permission at summary time.
@@ -129,8 +161,8 @@ def main() -> int:
                     encoding="utf-8"
                 )
             )
-            permission = (
-                SELECTOR["lookup_author_permission"](
+            current_event = (
+                SELECTOR["lookup_current_pull_request"](
                     event,
                     os.environ.get("GITHUB_REPOSITORY", ""),
                     os.environ.get("GITHUB_TOKEN", ""),
@@ -138,11 +170,35 @@ def main() -> int:
                 if isinstance(event, dict)
                 else None
             )
+            permission = (
+                SELECTOR["lookup_author_permission"](
+                    current_event,
+                    os.environ.get("GITHUB_REPOSITORY", ""),
+                    os.environ.get("GITHUB_TOKEN", ""),
+                )
+                if current_event is not None
+                else None
+            )
         except (OSError, ValueError):
             permission = None
         inputs["author_permission"] = permission or "unknown"
     try:
+        if inputs["event_name"] == "pull_request":
+            aliases = SELECTOR["label_aliases_from_adapter"](
+                {
+                    "schema_version": adapter.get("schema_version"),
+                    "label_aliases": adapter.get("label_aliases", {}),
+                }
+            )
+            current_failures = current_selection_failures(
+                current_event,
+                mode=inputs["mode"],
+                selected_sha=inputs["selected_sha"],
+                permission=inputs["author_permission"],
+                aliases=aliases,
+            )
         failures = summary_failures(adapter, full, needs, **inputs)
+        failures += current_failures
         jobs = sorted(required_jobs(adapter, full, inputs["mode"], inputs["docs_only"]))
     except (ValueError, TypeError, KeyError) as error:
         failures, jobs = [f"invalid CI contract or selection: {error}"], []
@@ -150,6 +206,16 @@ def main() -> int:
         "schema": SCHEMA,
         **inputs,
         "selector_author_permission": selector_permission,
+        "current_pr_head": (
+            current_event["pull_request"].get("head", {}).get("sha")
+            if current_event is not None
+            else None
+        ),
+        "current_pr_labels": (
+            [label["name"] for label in current_event["pull_request"]["labels"]]
+            if current_event is not None
+            else None
+        ),
         "adapter_sha256": hashlib.sha256(adapter_raw).hexdigest(),
         "manifest_sha256": hashlib.sha256(full_raw).hexdigest(),
         "required_jobs": jobs,

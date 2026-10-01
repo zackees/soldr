@@ -194,7 +194,13 @@ def test_rerun_summary_rechecks_permission_instead_of_cached_write(
 ):
     report_path = cli_environment(tmp_path, monkeypatch)
     event_path = tmp_path / "event.json"
-    event = {"pull_request": {"user": {"login": "author"}}}
+    event = {
+        "pull_request": {
+            "user": {"login": "author"},
+            "head": {"sha": SHA},
+            "labels": [],
+        }
+    }
     event_path.write_text(json.dumps(event))
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
@@ -208,8 +214,9 @@ def test_rerun_summary_rechecks_permission_instead_of_cached_write(
         queries.append((payload, repository, token))
         return permission
 
-    monkeypatch.setattr(
-        SUMMARY, "SELECTOR", {"lookup_author_permission": lookup}, raising=False
+    monkeypatch.setitem(SUMMARY.SELECTOR, "lookup_author_permission", lookup)
+    monkeypatch.setitem(
+        SUMMARY.SELECTOR, "lookup_current_pull_request", lambda *_: event
     )
     assert SUMMARY.main() == exit_code
     assert queries == [(event, "o/r", "test-token")]
@@ -232,3 +239,60 @@ def test_extended_tier_overrides_docs_only_skip_for_its_required_host():
     for name in ("lint", "build-linux-x64"):
         assert "needs.ci-mode.outputs.mode != 'minimal'" in jobs[name]["if"]
     assert "needs.ci-mode.outputs.mode == 'minimal'" in jobs["lint-docs"]["if"]
+
+
+@pytest.mark.parametrize("label", ["ci-test", "ci-full"])
+def test_rerun_cannot_reuse_minimal_after_current_labels_require_more(label):
+    event = {"pull_request": {"head": {"sha": SHA}, "labels": [{"name": label}]}}
+    assert SUMMARY.current_selection_failures(
+        event, mode="minimal", selected_sha=SHA, permission="admin", aliases={}
+    )
+
+
+def test_current_head_and_legacy_labels_are_authoritative():
+    event = {"pull_request": {"head": {"sha": "b" * 40}, "labels": []}}
+    assert SUMMARY.current_selection_failures(
+        event, mode="full", selected_sha=SHA, permission="admin", aliases={}
+    )
+    event["pull_request"]["head"]["sha"] = SHA
+    event["pull_request"]["labels"] = [{"name": "ci:full"}]
+    assert SUMMARY.current_selection_failures(
+        event,
+        mode="test",
+        selected_sha=SHA,
+        permission="admin",
+        aliases={"ci:full": "ci-full"},
+    )
+
+
+def test_missing_current_metadata_fails_even_when_cached_full_is_green():
+    assert SUMMARY.current_selection_failures(
+        None, mode="full", selected_sha=SHA, permission="admin", aliases={}
+    )
+
+
+def test_cli_rerun_uses_live_labels_instead_of_original_event(tmp_path, monkeypatch):
+    report_path = cli_environment(tmp_path, monkeypatch)
+    original = {"pull_request": {"head": {"sha": SHA}, "labels": []}}
+    current = {"pull_request": {"head": {"sha": SHA}, "labels": [{"name": "ci-full"}]}}
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(original))
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("CI_MODE", "minimal")
+    monkeypatch.setenv("SELECTED_SHA", SHA)
+    monkeypatch.setitem(
+        SUMMARY.SELECTOR, "lookup_current_pull_request", lambda *_: current
+    )
+    permission_inputs = []
+
+    def permission(payload, *_):
+        permission_inputs.append(payload)
+        return "admin"
+
+    monkeypatch.setitem(SUMMARY.SELECTOR, "lookup_author_permission", permission)
+    assert SUMMARY.main() == 1
+    assert permission_inputs == [current]
+    assert (
+        "current PR requires full CI; cached mode is minimal"
+        in json.loads(report_path.read_text())["failures"]
+    )

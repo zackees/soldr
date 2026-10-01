@@ -604,3 +604,44 @@ def test_reviewed_adapter_aliases_use_common_selection(alias, canonical, mode):
 def test_invalid_selector_adapter_cannot_override_literal_contract(adapter):
     with pytest.raises(ValueError):
         MODE.label_aliases_from_adapter(adapter)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["valid", "stale", "wrong-base", "wrong-number", "bad-labels", "closed"]
+)
+def test_current_pr_lookup_binds_fresh_metadata_to_original_scope(
+    monkeypatch, mutation
+):
+    original = {"number": 12, "pull_request": {"base": {"repo": {"full_name": "o/r"}}}}
+    data = {
+        "number": 12,
+        "state": "open",
+        "head": {"sha": SHA},
+        "base": {"repo": {"full_name": "o/r"}},
+        "labels": [{"name": "ci-full"}],
+    }
+    if mutation == "wrong-base":
+        data["base"]["repo"]["full_name"] = "other/repo"
+    elif mutation == "wrong-number":
+        data["number"] = 13
+    elif mutation == "bad-labels":
+        data["labels"] = [{}]
+    elif mutation == "closed":
+        data["state"] = "closed"
+    requests = []
+
+    def respond(request, timeout):
+        requests.append(request.full_url)
+        response = io.BytesIO(json.dumps(data).encode())
+        response.headers = {"Date": "Thu, 01 Oct 2026 17:00:00 GMT"}
+        return response
+
+    monkeypatch.setattr(MODE.urllib.request, "urlopen", respond)
+    monkeypatch.setattr(
+        MODE.time, "time", lambda: 1790874000 + (61 if mutation == "stale" else 5)
+    )
+    result = MODE.lookup_current_pull_request(original, "o/r", "test-token")
+    assert requests == ["https://api.github.com/repos/o/r/pulls/12"]
+    assert result == (
+        {"number": 12, "pull_request": data} if mutation == "valid" else None
+    )

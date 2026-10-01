@@ -167,6 +167,67 @@ def lookup_author_permission(event: dict, repository: str, token: str) -> str | 
         return None
 
 
+def lookup_current_pull_request(
+    event: dict, repository: str, token: str
+) -> dict | None:
+    """Fetch current labels and head, scoped to the original base and PR number."""
+    pr = event.get("pull_request")
+    number = event.get("number")
+    base = pr.get("base") if isinstance(pr, dict) else None
+    base = base.get("repo") if isinstance(base, dict) else None
+    if (
+        not token
+        or not re.fullmatch(r"[\w.-]+/[\w.-]+", repository)
+        or not isinstance(number, int)
+        or isinstance(number, bool)
+        or number <= 0
+        or not isinstance(base, dict)
+        or base.get("full_name") != repository
+    ):
+        return None
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repository}/pulls/{number}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Cache-Control": "no-cache",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.load(response)
+            age = (
+                time.time()
+                - parsedate_to_datetime(response.headers.get("Date", "")).timestamp()
+            )
+            if not isinstance(data, dict) or not 0 <= age <= 60:
+                return None
+            current_base = data.get("base")
+            current_base = (
+                current_base.get("repo") if isinstance(current_base, dict) else None
+            )
+            labels = data.get("labels")
+            if (
+                data.get("number") != number
+                or not isinstance(current_base, dict)
+                or current_base.get("full_name") != repository
+                or data.get("state") != "open"
+                or not isinstance(labels, list)
+                or any(
+                    not isinstance(label, dict)
+                    or not isinstance(label.get("name"), str)
+                    for label in labels
+                )
+            ):
+                return None
+            current_event = {"number": number, "pull_request": data}
+            select_mode("pull_request", current_event, "")
+            return current_event
+    except (urllib.error.URLError, OSError, ValueError, TypeError, OverflowError):
+        return None
+
+
 def verify_checkout(expected_sha: str, checked_out_sha: str) -> None:
     if checked_out_sha.lower() != expected_sha:
         raise ValueError(f"checked out {checked_out_sha}, expected {expected_sha}")
