@@ -1,8 +1,25 @@
 # CI modes
 
-The `CI` workflow selects one mode for each event. An ordinary pull request or
+The `CI` workflow selects one mode for each event. An ordinary maintainer pull request or
 push to `main` runs `Lint` and the Linux x64 prescribed host validation
 (`soldr ci-test`). The Linux host job is not the whole platform matrix.
+
+
+A PR author without effective `write`, `maintain`, or `admin` permission on
+the base repository receives full tests without a label. Permission is queried
+anew on each run; unavailable, malformed, stale, or mismatched responses choose
+full. Fork origin, association strings, prior contributions, and bot identity
+do not grant trust. Label removal cannot downgrade an external author. The
+selector reports `author_permission` and `selector_schema=fleet-ci-mode/v1`,
+and executes from the trusted base SHA rather than the PR helper. GitHub maps
+maintain to the API's write permission; custom role names alone grant nothing.
+See [GitHub's permission API](https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user).
+
+External PRs must not merge until `Full coverage` proves every required cell
+succeeded on their candidate. Live external-PR proof, stable summary branch
+protection, and shared fleet adoption are tracked in
+[setup-soldr#523](https://github.com/zackees/setup-soldr/issues/523). External
+full runs are reported separately from the trusted routine compute budget.
 
 Add the `ci-test` label to run the extended Linux x64 target E2E cell and
 the macOS ARM64 archive replay on a hosted `macos-15` runner. Remove it to
@@ -18,9 +35,9 @@ target in `ci/canonical-targets.json` and the platform smoke jobs. `Full
 coverage` fails when a required job is skipped, failed, cancelled, or missing.
 It also rejects a supported target with no execution job. Full mode replays
 the macOS x64 archive on hosted `macos-15-intel` and the ARM64 archive on
-hosted `macos-15`. These runner allocations occur only for explicit labels
-or exact-SHA release validation; ordinary unlabeled PR and main runs remain
-Mac-free.
+hosted `macos-15`. These runner allocations occur for explicit labels, external-author full
+validation, or exact-SHA release validation. Trusted unlabeled PRs and main
+runs remain Mac-free.
 
 For a release candidate, dispatch `CI` with `candidate_sha` set to its full
 40-character commit SHA. The mode job checks out and verifies that SHA, then

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import re
 from pathlib import Path
@@ -165,15 +166,30 @@ def test_full_mode_overrides_old_fast_build_policy() -> None:
 def test_label_changes_recompute_mode_on_same_head_sha() -> None:
     labels = [{"name": "fast-build"}]
     event = {"pull_request": {"head": {"sha": SHA}, "labels": labels}}
-    assert MODE.select_mode("pull_request", event, "") == ("minimal", SHA)
+    assert MODE.select_mode("pull_request", event, "", author_permission="write") == (
+        "minimal",
+        SHA,
+    )
     labels.append({"name": "ci-test"})
-    assert MODE.select_mode("pull_request", event, "") == ("test", SHA)
+    assert MODE.select_mode("pull_request", event, "", author_permission="write") == (
+        "test",
+        SHA,
+    )
     labels.append({"name": "ci-full"})
-    assert MODE.select_mode("pull_request", event, "") == ("full", SHA)
+    assert MODE.select_mode("pull_request", event, "", author_permission="write") == (
+        "full",
+        SHA,
+    )
     labels.pop()
-    assert MODE.select_mode("pull_request", event, "") == ("test", SHA)
+    assert MODE.select_mode("pull_request", event, "", author_permission="write") == (
+        "test",
+        SHA,
+    )
     labels.pop()
-    assert MODE.select_mode("pull_request", event, "") == ("minimal", SHA)
+    assert MODE.select_mode("pull_request", event, "", author_permission="write") == (
+        "minimal",
+        SHA,
+    )
 
 
 def test_ci_test_adds_the_linux_x64_e2e_cell_without_the_full_matrix() -> None:
@@ -299,3 +315,165 @@ def test_full_overrides_platform_and_wheel_path_policies() -> None:
     assert wheel.decide_wheel_lane(
         event_name="pull_request", changed_paths=["README.md"], full=True
     ).run
+
+
+@pytest.mark.parametrize("permission", ["read", "triage", "none", None, "unknown"])
+@pytest.mark.parametrize("association", ["CONTRIBUTOR", "MEMBER", "OWNER"])
+def test_external_author_is_full_without_labels(permission, association) -> None:
+    event = {
+        "pull_request": {
+            "head": {"sha": SHA},
+            "labels": [],
+            "author_association": association,
+        }
+    }
+    assert MODE.select_mode(
+        "pull_request", event, "", author_permission=permission
+    ) == ("full", SHA)
+
+
+@pytest.mark.parametrize("permission", ["write", "maintain", "admin"])
+def test_effective_writer_keeps_minimal_even_from_a_fork(permission) -> None:
+    event = {
+        "pull_request": {
+            "head": {"sha": SHA, "repo": {"fork": True}},
+            "labels": [],
+            "author_association": "NONE",
+        }
+    }
+    assert MODE.select_mode(
+        "pull_request", event, "", author_permission=permission
+    ) == ("minimal", SHA)
+
+
+def test_external_label_removal_and_revoked_permission_cannot_downgrade() -> None:
+    labels = [{"name": "ci-full"}]
+    event = {"pull_request": {"head": {"sha": SHA}, "labels": labels}}
+    assert MODE.select_mode("pull_request", event, "", author_permission="read") == (
+        "full",
+        SHA,
+    )
+    labels.clear()
+    assert MODE.select_mode("pull_request", event, "", author_permission="read") == (
+        "full",
+        SHA,
+    )
+    assert MODE.select_mode("pull_request", event, "", author_permission="write") == (
+        "minimal",
+        SHA,
+    )
+    assert MODE.select_mode("pull_request", event, "", author_permission=None) == (
+        "full",
+        SHA,
+    )
+
+
+@pytest.mark.parametrize("age", [61, 3600, -60])
+def test_stale_or_future_permission_response_is_unknown(age) -> None:
+    data = {"permission": "admin", "user": {"login": "writer"}}
+    assert (
+        MODE.permission_from_response(
+            data,
+            login="writer",
+            response_date="Thu, 01 Oct 2026 17:00:00 GMT",
+            now=1790874000 + age,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("permission", ["admin", "write", "read", "none"])
+def test_fresh_matching_permission_response_is_accepted(permission) -> None:
+    assert (
+        MODE.permission_from_response(
+            {"permission": permission, "user": {"login": "Writer"}},
+            login="writer",
+            response_date="Thu, 01 Oct 2026 17:00:00 GMT",
+            now=1790874005,
+        )
+        == permission
+    )
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"permission": "admin", "user": {"login": "different"}},
+        {"permission": ["admin"], "user": {"login": "writer"}},
+        {"permission": "custom-admin", "user": {"login": "writer"}},
+        {"permission": "admin"},
+    ],
+)
+def test_mismatched_or_malformed_permission_response_is_unknown(data) -> None:
+    assert (
+        MODE.permission_from_response(
+            data,
+            login="writer",
+            response_date="Thu, 01 Oct 2026 17:00:00 GMT",
+            now=1790874005,
+        )
+        is None
+    )
+
+
+def test_selector_executes_trusted_base_source_with_read_only_token() -> None:
+    job = _job("ci-mode")
+    assert "ref: ${{ github.event.pull_request.base.sha || github.sha }}" in job
+    assert "python3 .ci-selector/.github/scripts/ci_mode.py" in job
+    assert "GITHUB_TOKEN: ${{ github.token }}" in job
+    assert "permissions:\n  contents: read" in WORKFLOW.read_text()
+    assert "pull_request_target:" not in WORKFLOW.read_text()
+
+
+def test_live_lookup_is_bound_to_base_repo_and_requests_fresh_data(monkeypatch) -> None:
+    event = {
+        "pull_request": {
+            "base": {"repo": {"full_name": "o/r"}},
+            "user": {"login": "writer"},
+        }
+    }
+    requests = []
+
+    def respond(request, timeout):
+        requests.append((request, timeout))
+        response = io.BytesIO(
+            json.dumps({"permission": "write", "user": {"login": "writer"}}).encode()
+        )
+        response.headers = {"Date": "Thu, 01 Oct 2026 17:00:00 GMT"}
+        return response
+
+    monkeypatch.setattr(MODE.urllib.request, "urlopen", respond)
+    monkeypatch.setattr(MODE.time, "time", lambda: 1790874005)
+    assert MODE.lookup_author_permission(event, "o/r", "test-token") == "write"
+    assert MODE.lookup_author_permission(event, "o/r", "test-token") == "write"
+    assert len(requests) == 2  # reruns never reuse a prior decision
+    request, timeout = requests[0]
+    assert (
+        request.full_url
+        == "https://api.github.com/repos/o/r/collaborators/writer/permission"
+    )
+    assert request.get_header("Cache-control") == "no-cache"
+    assert timeout == 20
+    assert MODE.lookup_author_permission(event, "different/repo", "test-token") is None
+    assert len(requests) == 2
+
+
+def test_permission_api_failure_is_unknown_and_selects_full(monkeypatch) -> None:
+    event = {
+        "pull_request": {
+            "head": {"sha": SHA},
+            "labels": [],
+            "base": {"repo": {"full_name": "o/r"}},
+            "user": {"login": "dependabot[bot]", "type": "Bot"},
+        }
+    }
+
+    def unavailable(*_args, **_kwargs):
+        raise MODE.urllib.error.URLError("permission unavailable")
+
+    monkeypatch.setattr(MODE.urllib.request, "urlopen", unavailable)
+    permission = MODE.lookup_author_permission(event, "o/r", "test-token")
+    assert permission is None
+    assert MODE.select_mode(
+        "pull_request", event, "", author_permission=permission
+    ) == ("full", SHA)
