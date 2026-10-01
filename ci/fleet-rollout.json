@@ -81,7 +81,7 @@
     "checkout": "../soldr2-extern/bosn-act-runtime",
     "local_commit": "58687f4fb17c499416abb9f56ec3f56d1491ae1b",
     "scope": "Typed daemon registry bridge only; actual engine runtime remains unimplemented",
-    "evidence": "Missing bridge RED to GREEN actual actor-channel durable reply/duplicate rollback/reopen; all156 service tests and19 Act/daemonCLI tests pass. Six baselineClippy failures reproduced/fixed; servicealltargets-Dwarnings pass. Oneprimaryreview clean. Ownedcache notrunning and trashed; sourcecheckoutclean. ci-full requested, liveproofpending.",
+    "evidence": "Actual actor-channel durable reply, duplicate rollback and reopen passed; 156 service tests and 19 Act/daemon CLI tests passed. Six baseline Clippy failures reproduced and fixed; service all-targets Clippy with warnings denied passed. Primary review clean. Owned cache stopped and trashed. PR #321 validated and merged; actual engine execution remains unimplemented.",
     "pr": "https://github.com/zackees/bosn/pull/321",
     "parallel_cli_slice": {
       "worker": "fleet_bosn",
@@ -89,6 +89,30 @@
       "reasoning_effort": "low",
       "ownership": "Only crates/bosn-service/src/bin/bosn.rs and src/bin/bosn/act.rs",
       "evidence": "3baselineCLIwarnings RED toGREEN;15Act+4daemonCLI cases pass;12reconciletruthcases and10invalidCLIrefusals preserve safety; root integrated serially"
+    },
+    "merge_commit": "7ed0e26b739c635781ba8d2eab0e24eaf450e3dd",
+    "full_run": "https://github.com/zackees/bosn/actions/runs/36921972900",
+    "full_result": "success on exact candidate 58687f4fb17c499416abb9f56ec3f56d1491ae1b; all 12 jobs successful, including both hosted macOS wheel smokes"
+  },
+  "latest_local_python_validation": {
+    "passed": 2146,
+    "skipped": 3,
+    "subtests_passed": 21,
+    "scope": "Soldr tests, .github/scripts, setup-soldr action and ci on prepared summary wiring"
+  },
+  "fresh_research": {
+    "fbuild": {
+      "base_sha": "144635a843c9b1d61b4f9d98a987bb85f060137a",
+      "checkout": "../soldr2-extern/fbuild-fleet",
+      "status": "research only; renderer and 36 focused tests passed",
+      "release_gap": "ARM-only macOS wheel advertises Intel compatibility; native release/import coverage incomplete",
+      "security_gap": "Labeled hardware PR source can execute on persistent self-hosted hardware without current-author permission guard"
+    },
+    "FastLED": {
+      "base_sha": "ec0a0f35efd439a6d12c3ab68e92082869268a07",
+      "checkout": "../soldr2-extern/fastled-fleet",
+      "status": "research only; existing full/native/release gates partly implemented",
+      "remaining": "Permission-aware selector, literal ci-test, trusted split-workflow summary, complete full inventory, separate PR/master cost and memory/runtime overlap proof"
     }
   }
 }
