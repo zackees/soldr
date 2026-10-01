@@ -36,6 +36,15 @@ time; association, fork status, prior contributions, and bot identity confer
 no trust. Unknown permission remains visible and selects full. Main/master
 changes never imply publication.
 
+Repositories migrating legacy controls may pass `--adapter <selector.json>`
+with integer `schema_version: 1` and `label_aliases`, mapping legacy names only
+to `ci-test` or `ci-full`. Literal fleet labels cannot be redefined or downgraded.
+For example, clud retains `ci:full` as an alias of `ci-full` and maps `ci-windows`
+to its Linux/Windows extended tier. The Python API accepts the validated mapping
+as the `label_aliases` keyword on `select_mode`. Merge queues select full using
+the exact `merge_group.head_sha`; their compute is reported as a separate
+`merge_group` event by the shared cost collector, never hidden in PR/main ratios.
+
 Each adapter must still declare nonempty test-tier cells and its complete
 platform, architecture, toolchain, ABI, board, artifact, and native-execution
 coverage. Every required full cell must succeed on one candidate identity;
@@ -44,10 +53,44 @@ stable summary context and require it in branch protection after its existence
 on the default branch is proven. Source checks and local unit tests are not
 live coverage evidence.
 
-Remaining shared-mechanism work includes portable coverage and whole-event cost
-interfaces, issue-driven release directives, retry/frozen-artifact behavior,
+The shared merge summary is `.github/scripts/ci_summary.py`, pinned alongside
+`ci_full_coverage.py`. Call it with `--adapter <summary-contract.json>
+--full-contract <coverage-contract.json> --report <summary.json>`. Its adapter
+declares integer `schema_version: 1` and nonempty unique job ID lists named
+`minimal_jobs`, `docs_jobs`, and `test_jobs` (the extra test cells).
+The test tier must add jobs beyond minimal. Tier declarations cannot substitute
+the shared policy prerequisites `ci-mode`, `path-selection`, or `full-coverage`
+for tests; consumer adapters use those normalized policy job IDs. Supply the
+real GitHub `needs` object in `CI_NEEDS_JSON`, and selection in `CI_MODE`,
+`DOCS_ONLY`, `AUTHOR_PERMISSION`, `GITHUB_EVENT_NAME`, `EXPECTED_SHA`, and
+`SELECTED_SHA`.
+For PRs the summary independently fetches current labels/head and rechecks
+the current author's permission using `GITHUB_EVENT_PATH`, `GITHUB_REPOSITORY`, and the read-only `GITHUB_TOKEN`;
+the earlier selector output cannot authorize a failed-job rerun after access
+was revoked or labels require a stronger tier. Missing current metadata and
+a changed head fail closed, including cached full runs. Legacy aliases may be
+declared in the summary adapter's optional `label_aliases` map. The `fleet-ci-summary/v1` report fails closed on unknown modes,
+unsuccessful selected cells, candidate drift, incomplete full execution, or an
+external PR downgraded below full. Consumers must include every declared job
+as a direct dependency of their always-running summary.
+
+The helper is staged before Soldr workflow integration. Consumers must load
+helpers and reviewed contracts from a trusted policy revision, never execute
+candidate-controlled policy or fall back to it when trusted files are missing.
+The workflow that invokes the helper also needs trusted enforcement: a stable
+status name alone cannot prove that trusted code produced it. This staging
+change does not claim external-workflow tampering resistance or protected
+branch enforcement.
+
+Remaining shared-mechanism work includes fleet adoption of these helpers and
+the whole-event cost interface, issue-driven release directives and
+retry/frozen-artifact behavior,
 Bosn-owned Act execution, consumer pins and adapters, and cross-repository live
 conformance. The selector tests alone do not satisfy those requirements. Each
 repository must record same-SHA label add/remove runs, complete `ci-full` PR and
 exact-SHA dispatch proof, external-author proof, and separate PR/default-branch
 whole-event cost measurements before its rollout can be declared complete.
+
+[The rollout record](../ci/fleet-rollout.json) records repository-isolated
+Sol/low ownership, concrete evidence, root integration decisions, and remaining
+proofs. It is a checkpoint, not a claim that any unmerged consumer is complete.

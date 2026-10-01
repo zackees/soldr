@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "minimal_jobs": ["lint", "build-linux-x64"],
+  "docs_jobs": ["lint-docs"],
+  "test_jobs": ["e2e-linux-x64", "e2e-cross-bootstrap-soldr", "e2e-macos-arm64-build", "e2e-macos-arm64"]
+}

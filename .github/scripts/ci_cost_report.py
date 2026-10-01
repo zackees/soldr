@@ -38,7 +38,7 @@ from datetime import datetime
 
 PAGE_SIZE = 100
 EVENT_WINDOW_SECONDS = 120
-EVENTS = ("push", "pull_request", "workflow_dispatch")
+EVENTS = ("push", "pull_request", "workflow_dispatch", "merge_group")
 
 
 class GhAPI:

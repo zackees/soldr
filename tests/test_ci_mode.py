@@ -558,3 +558,89 @@ def test_one_selector_is_portable_to_every_fleet_identity(
 def test_full_smokes_receive_no_repository_secrets(job) -> None:
     """Full validation runs untrusted candidates with only the read-only token."""
     assert "secrets:" not in _job(job)
+
+
+def test_merge_queue_keeps_full_validation_on_exact_group_identity():
+    event = {"merge_group": {"head_sha": SHA}}
+    assert MODE.select_mode("merge_group", event, "") == ("full", SHA)
+    with pytest.raises(ValueError, match="merge_group"):
+        MODE.select_mode("merge_group", {"merge_group": {"head_sha": "main"}}, "")
+
+
+@pytest.mark.parametrize(
+    "alias, canonical, mode",
+    [("ci:full", "ci-full", "full"), ("ci-windows", "ci-test", "test")],
+)
+def test_reviewed_adapter_aliases_use_common_selection(alias, canonical, mode):
+    event = {"pull_request": {"head": {"sha": SHA}, "labels": [{"name": alias}]}}
+    assert MODE.select_mode(
+        "pull_request",
+        event,
+        "",
+        author_permission="write",
+        label_aliases={alias: canonical},
+    ) == (mode, SHA)
+    assert MODE.select_mode(
+        "pull_request",
+        event,
+        "",
+        author_permission="read",
+        label_aliases={alias: canonical},
+    ) == ("full", SHA)
+
+
+@pytest.mark.parametrize(
+    "adapter",
+    [
+        {},
+        {"schema_version": True, "label_aliases": {}},
+        {"schema_version": 1.0, "label_aliases": {}},
+        {"schema_version": 1, "label_aliases": {"ci-full": "ci-test"}},
+        {"schema_version": 1, "label_aliases": {"legacy": "minimal"}},
+        {"schema_version": 1, "label_aliases": {"": "ci-full"}},
+    ],
+)
+def test_invalid_selector_adapter_cannot_override_literal_contract(adapter):
+    with pytest.raises(ValueError):
+        MODE.label_aliases_from_adapter(adapter)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["valid", "stale", "wrong-base", "wrong-number", "bad-labels", "closed"]
+)
+def test_current_pr_lookup_binds_fresh_metadata_to_original_scope(
+    monkeypatch, mutation
+):
+    original = {"number": 12, "pull_request": {"base": {"repo": {"full_name": "o/r"}}}}
+    data = {
+        "number": 12,
+        "state": "open",
+        "head": {"sha": SHA},
+        "base": {"repo": {"full_name": "o/r"}},
+        "labels": [{"name": "ci-full"}],
+    }
+    if mutation == "wrong-base":
+        data["base"]["repo"]["full_name"] = "other/repo"
+    elif mutation == "wrong-number":
+        data["number"] = 13
+    elif mutation == "bad-labels":
+        data["labels"] = [{}]
+    elif mutation == "closed":
+        data["state"] = "closed"
+    requests = []
+
+    def respond(request, timeout):
+        requests.append(request.full_url)
+        response = io.BytesIO(json.dumps(data).encode())
+        response.headers = {"Date": "Thu, 01 Oct 2026 17:00:00 GMT"}
+        return response
+
+    monkeypatch.setattr(MODE.urllib.request, "urlopen", respond)
+    monkeypatch.setattr(
+        MODE.time, "time", lambda: 1790874000 + (61 if mutation == "stale" else 5)
+    )
+    result = MODE.lookup_current_pull_request(original, "o/r", "test-token")
+    assert requests == ["https://api.github.com/repos/o/r/pulls/12"]
+    assert result == (
+        {"number": 12, "pull_request": data} if mutation == "valid" else None
+    )

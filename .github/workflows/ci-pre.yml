@@ -41,6 +41,9 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          # A same-repository author can lose write access before a rerun.
+          # Cache control always executes reviewed base code on PR events.
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           sparse-checkout: |
             .github/scripts/check_cache_budget.py
@@ -74,6 +77,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           sparse-checkout: |
             .github/scripts/check_cache_budget.py

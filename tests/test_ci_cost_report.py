@@ -91,6 +91,20 @@ class FakeAPI:  # pylint: disable=too-few-public-methods
 
 
 class CostReportTests(unittest.TestCase):
+    def test_merge_queue_cost_is_a_disclosed_separate_event(self):
+        m = load_report()
+        api = FakeAPI(
+            {1: [run(1, "a", event="merge_group"), run(2, "a", event="push")]},
+            {
+                (1, 1, 1): [job(11, "2026-01-01T00:00:00Z", "2026-01-01T00:02:00Z")],
+                (2, 1, 1): [job(21, "2026-01-01T00:00:00Z", "2026-01-01T00:10:00Z")],
+            },
+        )
+        report = m.collect_sha(api, "o/r", "a", "merge_group")
+        self.assertEqual(report["event"], "merge_group")
+        self.assertEqual(report["runner_minutes"], 2)
+        self.assertEqual([item["id"] for item in report["included_runs"]], [1])
+
     def test_skipped_jobs_do_not_allocate_runner_time(self):
         m = load_report()
         api = FakeAPI(
