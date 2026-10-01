@@ -91,7 +91,7 @@
   "serial_runtime_integration": {
     "checkout": "../soldr2-extern/bosn-act-runtime",
     "local_commit": "58687f4fb17c499416abb9f56ec3f56d1491ae1b",
-    "scope": "Typed daemon registry bridge only; actual engine runtime remains unimplemented",
+    "scope": "Merged typed daemon registry bridge; unpublished private engine runtime now implemented and reviewed. Public Act run/report, startup reconciliation and actual workflow proof remain pending.",
     "evidence": "Actual actor-channel durable reply, duplicate rollback and reopen passed; 156 service tests and 19 Act/daemon CLI tests passed. Six baseline Clippy failures reproduced and fixed; service all-targets Clippy with warnings denied passed. Primary review clean. Owned cache stopped and trashed. PR #321 validated and merged; actual engine execution remains unimplemented.",
     "pr": "https://github.com/zackees/bosn/pull/321",
     "parallel_cli_slice": {
@@ -105,15 +105,12 @@
     "full_run": "https://github.com/zackees/bosn/actions/runs/36921972900",
     "full_result": "success on exact candidate 58687f4fb17c499416abb9f56ec3f56d1491ae1b; all 12 jobs successful, including both hosted macOS wheel smokes",
     "engine_prerequisites": {
-      "local_commit": "1b3303dc171e782e24d6f8ebe34deb4eff3c407f",
-      "scope": "Reviewed deterministic Act OCI package/archive, bounded owned engine lifecycle, private planning queries and Docker store identity binding; unpublished. Daemon-only runtime source exists; two primary review findings are being fixed before actual Docker execution.",
-      "evidence": "171 library tests passed after archive assembly. Root independently passed four archive and five engine identity tests. Real Act 0.2.88 listing ignored source/HOME/XDG configuration and credentials. Synthetic lifecycle tests do not prove real Docker execution.",
+      "local_commit": "b46b8df",
+      "scope": "Reviewed private engine execution with verified runner import, durable exclusive claims and owner-only cleanup; unpublished.",
+      "evidence": "181 service library tests, 13 lifecycle tests, 17 synthetic actor fault modes and all-target Clippy passed. Same-primary source review closed all HIGH findings. Real Docker probe prepared but not executed; two MEDIUM probe harness findings are being fixed.",
       "cleanup": "Previously completed scratch roots were trashed. Root cache /tmp/bosn-act-boundary-3344-owned remains intentionally active during runtime implementation; stop before cleanup.",
-      "pending_review_fixes": [
-        "Import and verify original pinned runner image alongside Act driver; archive graph tests now pass, runtime mapping still under implementation.",
-        "Durable exclusive execution claim before cleanup guard; duplicate runtime calls must leave active owner untouched."
-      ],
-      "latest_root_validation": "Seven engine tests, exact fractional timestamp durable reopen, 32 Act-filter tests and all-target service/registry Clippy passed before current claim changes. Five archive tests passed with original runner graph import and tamper refusal. Actual Docker execution remains unverified."
+      "pending_review_fixes": [],
+      "latest_root_validation": "Official Act 0.2.88 binary and all six pinned runner layers hash verified; pinned Docker 29.7.2 image pulled. Acquisition is not execution evidence."
     }
   },
   "latest_local_python_validation": {
@@ -126,10 +123,10 @@
     "fbuild": {
       "base_sha": "144635a843c9b1d61b4f9d98a987bb85f060137a",
       "checkout": "../soldr2-extern/fbuild-fleet",
-      "status": "Local unpushed generator/adapter commit 38e912497feade55ad1ea3cfab3d63621d547c72 atop reviewed wheel correction b3e24c8; 42 focused tests passed. Independent review and all live native/cost/Bosn proofs remain pending.",
+      "status": "Unpushed generator/adapter and ancestry fixes; 50 focused tests passed. Trusted contract bootstrap, review and live native/cost/Bosn proofs remain pending.",
       "release_gap": "Separate Intel 10.12 and ARM 11.0 wheel tags corrected locally; live candidate wheel execution remains incomplete",
       "security_gap": "Labeled hardware PR source can execute on persistent self-hosted hardware without current-author permission guard",
-      "local_commit": "b3e24c8119f2aea99a5106d97cdbb3bb455b8e35"
+      "local_commit": "b483c8e11969ebf754398d8f1966e9fe4fca0284"
     },
     "FastLED": {
       "base_sha": "ec0a0f35efd439a6d12c3ab68e92082869268a07",
@@ -158,13 +155,9 @@
     },
     "setup_soldr_checkpoint": {
       "base_sha": "0f223ac68e97fccaaeab026ef1861e5bf73639ac",
-      "local_commit": "e40072c968d6f61b9c4216f428d99d6efef5aa09",
-      "status": "Unpushed source checkpoint; 75 implementation tests and 35 independent review tests passed, but primary review found three HIGH issues now assigned for fixes. ARM musl execution explicitly missing and blocks full acceptance; no live full/native/cost/Bosn proof.",
-      "review_findings": [
-        "Candidate-controlled coverage contracts can delete blocked cells; use trusted base policy contracts.",
-        "Merge-group cleanup can execute candidate scripts with actions write; restrict to trusted merged-main cleanup.",
-        "Standalone release-lane dispatch can run unmerged candidate code in default runtime cache scope; prerequisite immutable merged-main verification required."
-      ]
+      "local_commit": "4f313692a84e2724cdae5880718a54bff888290c",
+      "status": "Unpushed source checkpoint; 79 tests and actionlint passed. Same-primary review closed three HIGH findings. Trusted baseline lacks new contracts and deliberately refuses activation until a separate reviewed bootstrap is merged. ARM musl and live native/cost/Bosn evidence remain pending.",
+      "review_findings": []
     }
   },
   "local_shared_prerequisites": [
@@ -182,9 +175,17 @@
     },
     {
       "checkout": "../soldr2-extern/soldr-trusted-gate",
-      "commit": "2415e6d482af6bcd5975da6849eb06425b60e344",
-      "scope": "Policy provenance prerequisite only; no required trusted merge check or GitHub App installed",
-      "verification": "Nonrecursive tree bypass reproduced RED and fixed; 21 tests passed and primary review clean. Authentic API input and independently chosen reviewed revision remain caller responsibilities."
+      "commit": "2d960fa3bc8855dc13822e224ac969402fd77279",
+      "scope": "Policy provenance and immutable merged-candidate prerequisites; no required trusted merge check or GitHub App installed",
+      "verification": "140 combined tests passed; primary review clean. Exact-head local gate passed 31 checks and hosted lint/Linux CI succeeded in run 36937499758 before squash merge. Real GitHub API read verified response shapes and merged ancestry.",
+      "merged_pr": "https://github.com/zackees/soldr/pull/3527",
+      "merge_sha": "71798ea382fd96dab619f28e60efdcb91019f2f2"
     }
-  ]
+  ],
+  "preloop_inputs": {
+    "root": "/tmp/preloop-verified-3345.6wenqR",
+    "cli": "0.33.7",
+    "golden_sha256": "618f7970217f039ff92d9c0d4aa03c580f8108f6b2c417d6e0f8a4bfa1d96a4d",
+    "scope": "Official CLI, runner, SmolVM binary and golden digest verified. Golden lacks a checksum asset; verification used GitHub asset digest. Extracted guest distribution has 276 recorded confined symlink conversions. No VM or comparison execution yet."
+  }
 }
