@@ -59,3 +59,20 @@ References: [branch protection API](https://docs.github.com/en/rest/branches/bra
 [installation tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app),
 [environment restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments),
 and [webhook events and signatures](https://docs.github.com/en/webhooks/webhook-events-and-payloads).
+
+Default-ref candidate dispatch uses the shared `ci_candidate.py` prerequisite
+from a separately reviewed immutable helper revision, before any candidate
+code runs. It reads the authoritative repository/default branch, pins the
+observed default commit for the compare request, and requires the candidate to
+be the merge base with `behind` or `identical` status. An associated merged PR
+must identify that exact candidate as its head or merge commit. The original
+candidate stays selected; the helper never substitutes today's default head.
+The same check supports `main` and `master`. API/read failures refuse execution.
+
+This prerequisite also applies when `GITHUB_TOKEN` is read-only or an action's
+cache-save option is disabled: candidate code can still access the Actions
+runtime cache token on a default-ref dispatch. Unmerged candidates belong in a
+real PR-ref run. The prerequisite does not authorize publication, authenticate
+candidate-authored workflow code, install required-check protection, or prove
+any platform coverage. Consumers must bootstrap reviewed policy contracts
+separately and never fall back to candidate-owned contracts when they are absent.
