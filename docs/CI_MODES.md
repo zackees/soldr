@@ -113,8 +113,10 @@ documentation-only, and extended-test jobs; full mode additionally checks the
 canonical target contract and `Full coverage`. Every selected job must finish
 successfully on the selected candidate identity. An unresolved/external PR
 author cannot use a minimal or test summary, and a dispatch requires full mode.
-The summary repeats the permission lookup from the real event payload, including
-failed-job reruns that reuse earlier selector outputs. Revoked or unresolved
+The summary fetches fresh current PR labels/head and repeats the permission
+lookup, including failed-job reruns that reuse earlier selector outputs.
+A former head, missing current metadata, or coverage below current labels fails
+closed, even when the old jobs passed. Revoked or unresolved
 write access refuses a minimal/test merge result; rerun the complete workflow
 to schedule full validation. Reports retain both permission observations.
 The summary uploads an attempt-specific `fleet-ci-summary/v1` diagnostic report
@@ -135,3 +137,15 @@ candidate's helper/configuration. This prevents a same-repository author whose
 write access was revoked from executing PR-authored cache-control code with
 the janitor's write token. Fork janitor skips and read-only test tokens remain
 in force; this does not replace the remaining full external-graph security audit.
+
+Path classification, full-coverage enforcement, and the merge summary execute
+helpers and contracts checked out from the reviewed PR base SHA. Candidate
+source is checked out separately for compilation and path diffs. Missing trusted
+helpers fail; there is no candidate-policy fallback. A changed coverage contract
+must be reviewed and deployed into the trusted policy before it becomes the
+mandatory support contract.
+
+This protects policy execution within the reviewed workflow. A stable status
+name alone does not prove trusted execution when the workflow itself is PR
+controlled. Trusted workflow enforcement and live external-author security
+proof remain required before claiming protected merge enforcement.
