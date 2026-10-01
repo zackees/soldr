@@ -17,7 +17,10 @@ from the candidate checked out by CI. The dispatch must have the workflow's
 ``CI full <candidate_sha>`` run title. Cross-event controls are reported as
 such, never disguised as pre/post samples of one event.
 
-Only ``gh api`` read calls are made. Supply anchor run IDs when a SHA was used
+Only ``gh api`` read calls are made.
+Chained ``workflow_run`` costs require the versioned ``ci-cost-parent-v1``
+receipt in their run title; absent or conflicting attribution fails closed. A
+matching SHA or timestamp alone never establishes a causal relationship. Supply anchor run IDs when a SHA was used
 for multiple PR label transitions; the report refuses to merge event waves
 more than two minutes apart without them. The output is JSON so the inputs,
 included and excluded runs, attempts, jobs, and arithmetic remain inspectable. Wall time
@@ -46,16 +49,44 @@ class GhAPI:
         return json.loads(subprocess.check_output(cmd, text=True))
 
 
+def parse_parent_receipt(title, run_id):
+    match = re.fullmatch(r"ci-cost-parent-v1=([1-9][0-9]*)", title or "")
+    if not match:
+        raise ValueError(f"run {run_id} has no unambiguous parent receipt")
+    return int(match.group(1))
+
+
 def pages(api, endpoint, key, params=None):
     """Fetch all pages, including the final page after a full page of 100."""
-    page = 1
+    page, observed = 1, 0
+    expected = None
+    identifiers = set()
     while True:
         data = api.get(
             endpoint, {**(params or {}), "per_page": PAGE_SIZE, "page": page}
         )
+        count = data.get("total_count")
+        if type(count) is not int or count < 0:
+            raise ValueError(f"{endpoint}: missing or invalid total_count")
+        if key == "workflow_runs" and count >= 1000:
+            raise ValueError(
+                f"{endpoint}: search reaches GitHub's 1000-run limit; narrow the time range"
+            )
+        if expected is not None and count != expected:
+            raise ValueError(f"{endpoint}: inventory changed during pagination; retry")
+        expected = count
         items = data[key]
+        for item in items:
+            if item["id"] in identifiers:
+                raise ValueError(f"{endpoint}: duplicate paginated ID; retry")
+            identifiers.add(item["id"])
+        observed += len(items)
         yield from items
         if len(items) < PAGE_SIZE:
+            if observed != expected:
+                raise ValueError(
+                    f"{endpoint}: incomplete inventory ({observed}/{expected})"
+                )
             break
         page += 1
 
@@ -94,20 +125,35 @@ def collect_sha(api, repo, sha, event, *, weights=None, anchor_run_id=None):
         run = api.get(f"repos/{repo}/actions/runs/{anchor_run_id}")
         if (
             run.get("event") != event
-            or run.get("name") != "CI"
+            or str(run.get("path", "")).split("@", 1)[0] != ".github/workflows/ci.yml"
             or run.get("display_title", "").lower() != f"CI full {sha}".lower()
         ):
             raise ValueError(
                 f"anchor run {anchor_run_id} is not CI full for candidate {sha}"
             )
-        runs = [run]
-        event_runs = runs
+        source_sha = run["head_sha"]
+        discovered = list(
+            pages(
+                api,
+                f"repos/{repo}/actions/runs",
+                "workflow_runs",
+                {"head_sha": source_sha},
+            )
+        )
+        runs = list(
+            {
+                item["id"]: item
+                for item in [*discovered, run]
+                if item["head_sha"] == source_sha
+            }.values()
+        )
+        event_runs = [run]
     else:
         endpoint = f"repos/{repo}/actions/runs"
         runs = list(pages(api, endpoint, "workflow_runs", {"head_sha": sha}))
-        event_runs = [
-            run for run in runs if run["head_sha"] == sha and run["event"] == event
-        ]
+        source_sha = sha
+        runs = [run for run in runs if run["head_sha"] == source_sha]
+        event_runs = [run for run in runs if run["event"] == event]
     anchor_time = None
     if anchor_run_id is not None:
         anchors = [run for run in event_runs if run["id"] == anchor_run_id]
@@ -122,11 +168,59 @@ def collect_sha(api, repo, sha, event, *, weights=None, anchor_run_id=None):
             raise ValueError(
                 f"multiple {event} event waves at {sha}; supply an anchor run ID"
             )
+    roots = [
+        run
+        for run in event_runs
+        if anchor_time is None
+        or event == "workflow_dispatch"
+        or abs((parse_time(run["created_at"]) - anchor_time).total_seconds())
+        <= EVENT_WINDOW_SECONDS
+    ]
+    if not roots:
+        raise ValueError(f"no {event} workflow runs for {sha}")
+    selected = {run["id"] for run in roots}
+    # A workflow_run executes the default branch workflow, so its head SHA
+    # can differ from the triggering run. Search by event/time, not head_sha.
+    descendants = list(
+        pages(
+            api,
+            f"repos/{repo}/actions/runs",
+            "workflow_runs",
+            {
+                "event": "workflow_run",
+                "created": ">=" + min(run["created_at"] for run in roots),
+            },
+        )
+    )
+    earliest = min(parse_time(run["created_at"]) for run in roots)
+    descendants = [
+        run
+        for run in descendants
+        if run["event"] == "workflow_run" and parse_time(run["created_at"]) >= earliest
+    ]
+    runs = list({run["id"]: run for run in [*runs, *descendants]}.values())
+    parents = {
+        run["id"]: parse_parent_receipt(run.get("display_title"), run["id"])
+        for run in runs
+        if run["event"] == "workflow_run"
+    }
+    # Receipts provide causation, not just a shared SHA or timestamp. Include
+    # transitive descendants even hours after the direct event's anchor.
+    while True:
+        children = {child for child, parent in parents.items() if parent in selected}
+        expanded = selected | children
+        if expanded == selected:
+            break
+        selected = expanded
     included, excluded, jobs_out = [], [], []
     total_seconds = weighted_seconds = 0
     unknown_weights = []
     for run in sorted(runs, key=lambda item: item["id"]):
-        if event != "workflow_dispatch" and run["head_sha"] != sha:
+        if (
+            event != "workflow_dispatch"
+            and run["event"] != "workflow_run"
+            and run["head_sha"] != sha
+        ):
             continue  # Defensive against an API filter regression.
         info = {
             key: run.get(key)
@@ -144,16 +238,20 @@ def collect_sha(api, repo, sha, event, *, weights=None, anchor_run_id=None):
                 "run_attempt",
             )
         }
-        if run["event"] != event:
-            excluded.append({**info, "reason": f"event={run['event']}"})
+        if run["id"] not in selected:
+            reason = (
+                f"parent-run={parents[run['id']]} outside-event-wave"
+                if run["id"] in parents
+                else (
+                    "outside-anchor-window"
+                    if run["event"] == event
+                    else f"event={run['event']}"
+                )
+            )
+            excluded.append({**info, "reason": reason})
             continue
-        if (
-            anchor_time is not None
-            and abs((parse_time(run["created_at"]) - anchor_time).total_seconds())
-            > EVENT_WINDOW_SECONDS
-        ):
-            excluded.append({**info, "reason": "outside-anchor-window"})
-            continue
+        if run["id"] in parents:
+            info["trigger_run_id"] = parents[run["id"]]
         if run["status"] != "completed":
             raise ValueError(
                 f"run {run['id']} is not completed; rerun after it finishes"

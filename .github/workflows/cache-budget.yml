@@ -15,6 +15,9 @@
 #   it can never become a required check on an open PR.
 
 name: Cache Budget
+# Versioned causal receipt for whole-event compute accounting. The Actions
+# API exposes this title even when the default branch SHA advances mid-run.
+run-name: ${{ github.event_name == 'workflow_run' && format('ci-cost-parent-v1={0}', github.event.workflow_run.id) || 'Cache Budget' }}
 
 on:
   push:

@@ -49,3 +49,18 @@ Manual npm recovery is partial publication and requires `candidate_sha` and
 `full_ci_run_id` too. A completed main-workflow full run must prove that exact
 candidate, and the immutable recovery tag must resolve to the tested SHA before
 npm publication. A missing, skipped, failed, or stale full gate refuses recovery.
+
+The cost collector groups direct PR/main runs by SHA and explicit event-wave
+anchor, then follows versioned `ci-cost-parent-v1=<run-id>` receipts in chained
+workflow run titles. These parent IDs come from GitHub's `workflow_run` payload;
+matching SHAs or timestamps alone do not establish attribution. Chained jobs
+can finish much later or run a newer default-branch SHA and still belong to the
+original event. Missing receipts or pending selected runs refuse a cost report,
+so older runs without causal receipts cannot silently count as a complete
+whole-event measurement. Direct and chained jobs include every attempt; skipped
+jobs consume zero runner time. Run the collector after the expected workflow
+graph has completed and review its included/excluded run inventory.
+
+The collector also checks API `total_count` against its paginated inventory and
+refuses searches at [GitHub's 1,000-result limit](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository).
+A truncated or changing inventory cannot support a budget claim.

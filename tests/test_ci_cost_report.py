@@ -23,6 +23,7 @@ def run(
     workflow=10,
     created_at="2026-01-01T00:00:00Z",
     display_title=None,
+    parent_run_id=None,
 ):
     return {
         "id": run_id,
@@ -30,13 +31,18 @@ def run(
         "event": event,
         "workflow_id": workflow,
         "name": "CI",
+        "path": ".github/workflows/ci.yml",
         "run_attempt": attempts,
         "status": "completed",
         "conclusion": "success",
         "html_url": f"https://example.test/runs/{run_id}",
         "created_at": created_at,
         "display_title": display_title
-        or (f"CI full {sha}" if event == "workflow_dispatch" else "CI"),
+        or (
+            f"ci-cost-parent-v1={parent_run_id}"
+            if parent_run_id
+            else f"CI full {sha}" if event == "workflow_dispatch" else "CI"
+        ),
     }
 
 
@@ -59,7 +65,10 @@ class FakeAPI:  # pylint: disable=too-few-public-methods
         self.calls.append((endpoint, params))
         page = int((params or {}).get("page", 1))
         if endpoint.endswith("/actions/runs"):
-            return {"workflow_runs": self.runs.get(page, [])}
+            return {
+                "workflow_runs": self.runs.get(page, []),
+                "total_count": sum(len(batch) for batch in self.runs.values()),
+            }
         if "/attempts/" not in endpoint:
             run_id = int(endpoint.rsplit("/", 1)[1])
             return next(
@@ -70,7 +79,14 @@ class FakeAPI:  # pylint: disable=too-few-public-methods
             )
         run_id = int(endpoint.split("/runs/")[1].split("/")[0])
         attempt = int(endpoint.split("/attempts/")[1].split("/")[0])
-        return {"jobs": self.jobs.get((run_id, attempt, page), [])}
+        return {
+            "jobs": self.jobs.get((run_id, attempt, page), []),
+            "total_count": sum(
+                len(batch)
+                for (rid, att, _), batch in self.jobs.items()
+                if rid == run_id and att == attempt
+            ),
+        }
 
 
 class CostReportTests(unittest.TestCase):
@@ -97,6 +113,110 @@ class CostReportTests(unittest.TestCase):
         self.assertEqual(report["unknown_weight_job_ids"], [])
         self.assertEqual(report["jobs"][0]["seconds"], 0)
         self.assertEqual(report["jobs"][0]["conclusion"], "skipped")
+
+    def test_dispatch_matches_workflow_path_even_when_name_is_run_title(self):
+        m = load_report()
+        candidate = "a" * 40
+        anchor = run(1, candidate, event="workflow_dispatch")
+        anchor["name"] = anchor["display_title"]
+        api = FakeAPI({1: [anchor]}, {})
+        report = m.collect_sha(
+            api, "o/r", candidate, "workflow_dispatch", anchor_run_id=1
+        )
+        self.assertEqual(report["included_runs"][0]["id"], 1)
+        anchor["path"] = ".github/workflows/spoof.yml"
+        with self.assertRaisesRegex(ValueError, "CI full"):
+            m.collect_sha(api, "o/r", candidate, "workflow_dispatch", anchor_run_id=1)
+
+    def test_workflow_run_descendants_are_counted_outside_anchor_window(self):
+        m = load_report()
+        api = FakeAPI(
+            {
+                1: [
+                    run(1, "a"),
+                    run(
+                        2,
+                        "b",
+                        event="workflow_run",
+                        parent_run_id=1,
+                        created_at="2026-01-01T01:00:00Z",
+                    ),
+                    run(
+                        3,
+                        "c",
+                        event="workflow_run",
+                        parent_run_id=2,
+                        created_at="2026-01-01T02:00:00Z",
+                    ),
+                    run(
+                        4,
+                        "d",
+                        event="workflow_run",
+                        parent_run_id=99,
+                        created_at="2026-01-01T03:00:00Z",
+                    ),
+                ]
+            },
+            {
+                (i, 1, 1): [job(i * 10, "2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z")]
+                for i in range(1, 5)
+            },
+        )
+        report = m.collect_sha(api, "o/r", "a", "push", anchor_run_id=1)
+        self.assertEqual(report["runner_minutes"], 3)
+        self.assertEqual([r["id"] for r in report["included_runs"]], [1, 2, 3])
+        self.assertEqual(report["included_runs"][2]["trigger_run_id"], 2)
+        self.assertIn("parent", report["excluded_runs"][0]["reason"])
+
+    def test_unattributed_workflow_run_refuses_a_budget_claim(self):
+        m = load_report()
+        api = FakeAPI({1: [run(1, "a"), run(2, "a", event="workflow_run")]}, {})
+        with self.assertRaisesRegex(ValueError, "parent receipt"):
+            m.collect_sha(api, "o/r", "a", "push")
+
+    def test_parent_receipt_is_strict_and_versioned(self):
+        m = load_report()
+        self.assertEqual(m.parse_parent_receipt("ci-cost-parent-v1=123", 2), 123)
+        for title in (
+            None,
+            "Cache Budget",
+            "ci-cost-parent-v1=0",
+            "ci-cost-parent-v2=123",
+        ):
+            with self.assertRaisesRegex(ValueError, "parent receipt"):
+                m.parse_parent_receipt(title, 2)
+        workflow = SCRIPT.parents[1] / "workflows" / "cache-budget.yml"
+        text = workflow.read_text()
+        self.assertIn("run-name:", text)
+        self.assertIn(
+            "format('ci-cost-parent-v1={0}', github.event.workflow_run.id)", text
+        )
+
+    def test_selected_pending_descendant_prevents_partial_total(self):
+        m = load_report()
+        child = run(2, "different", event="workflow_run", parent_run_id=1)
+        child["status"] = "in_progress"
+        api = FakeAPI({1: [run(1, "a"), child]}, {})
+        with self.assertRaisesRegex(ValueError, "not completed"):
+            m.collect_sha(api, "o/r", "a", "push")
+
+    def test_search_limit_and_truncated_inventory_refuse_cost_reports(self):
+        m = load_report()
+
+        class TruncatedAPI:
+            def __init__(self, count):
+                self.count = count
+
+            def get(self, endpoint, params=None):
+                return {"total_count": self.count, "workflow_runs": [run(1, "a")]}
+
+        for count, message in (
+            (1000, "1000-run limit"),
+            (1001, "1000-run limit"),
+            (2, "incomplete inventory"),
+        ):
+            with self.assertRaisesRegex(ValueError, message):
+                m.collect_sha(TruncatedAPI(count), "o/r", "a", "push")
 
     def test_repeated_label_runs_on_one_sha_need_an_anchor(self):
         m = load_report()
@@ -168,7 +288,15 @@ class CostReportTests(unittest.TestCase):
             [(2, "event=workflow_dispatch")],
         )
         self.assertEqual(
-            len([c for c in api.calls if c[0].endswith("/actions/runs")]), 2
+            len(
+                [
+                    c
+                    for c in api.calls
+                    if c[0].endswith("/actions/runs")
+                    and c[1].get("event") != "workflow_run"
+                ]
+            ),
+            2,
         )
         self.assertTrue(
             any("/attempts/1/jobs" in c[0] and c[1]["page"] == 2 for c in api.calls)
