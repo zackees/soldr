@@ -74,6 +74,30 @@ class FakeAPI:  # pylint: disable=too-few-public-methods
 
 
 class CostReportTests(unittest.TestCase):
+    def test_skipped_jobs_do_not_allocate_runner_time(self):
+        m = load_report()
+        api = FakeAPI(
+            {1: [run(1, "a")]},
+            {
+                (1, 1, 1): [
+                    job(
+                        11,
+                        "2026-01-01T00:00:00Z",
+                        "2026-01-01T00:05:00Z",
+                        "skipped",
+                        labels=["macos-15"],
+                    ),
+                    job(12, "2026-01-01T00:00:00Z", "2026-01-01T00:02:00Z"),
+                ]
+            },
+        )
+        report = m.collect_sha(api, "o/r", "a", "push", weights={"ubuntu-latest": 4})
+        self.assertEqual(report["runner_minutes"], 2)
+        self.assertEqual(report["weighted_runner_minutes_known"], 8)
+        self.assertEqual(report["unknown_weight_job_ids"], [])
+        self.assertEqual(report["jobs"][0]["seconds"], 0)
+        self.assertEqual(report["jobs"][0]["conclusion"], "skipped")
+
     def test_repeated_label_runs_on_one_sha_need_an_anchor(self):
         m = load_report()
         api = FakeAPI(
