@@ -192,9 +192,9 @@ def test_manifest_budget_is_self_consistent() -> None:
         for prefix_b, family_b in owned_prefixes:
             if family_a == family_b:
                 continue
-            assert not prefix_b.startswith(prefix_a), (
-                f"{prefix_a!r} ({family_a}) is a prefix of {prefix_b!r} ({family_b})"
-            )
+            assert not prefix_b.startswith(
+                prefix_a
+            ), f"{prefix_a!r} ({family_a}) is a prefix of {prefix_b!r} ({family_b})"
 
 
 # --------------------------------------------------------------------------
@@ -1238,3 +1238,27 @@ def test_real_manifest_declares_evict_only_for_the_safe_families() -> None:
         # soldr#3458: only the newest main store generation is ever restored.
         "zccache-unit": "newest",
     }
+
+
+@pytest.mark.parametrize("kind", ["buildcache", "cargoregistry"])
+def test_action_store_retires_only_replaced_main_lock(kind):
+    current, old, toolchain = "a" * 16, "b" * 16, "c" * 16
+
+    def key(lock, shape="linux-x64"):
+        if kind == "buildcache":
+            return f"setup-soldr-buildcache-v2-{shape}-{toolchain}-{lock}"
+        return f"setup-soldr-cargoregistry-v1-{shape}-{lock}-{toolchain}"
+
+    entries = guard.normalize_entries(
+        [
+            entry(key(old), 400),
+            entry(key(current), 500),
+            entry(key(old, "windows-x64"), 600),
+            entry("setup-soldr-buildcache-v99-unknown", 700),
+            entry(key(old).replace(toolchain, "d" * 16), 800),
+            entry(key(old) + "-job-namespace", 900),
+        ]
+    )
+    assert guard.prune_candidates(entries, current) == [entries[0]]
+    assert guard.prune_candidates(entries, None) == []
+    assert guard.prune_candidates(entries[:1], current) == []
