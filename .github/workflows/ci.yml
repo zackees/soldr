@@ -1261,6 +1261,7 @@ jobs:
       CI_MODE: ${{ needs.ci-mode.outputs.mode }}
       DOCS_ONLY: ${{ needs.path-selection.outputs.docs_only }}
       AUTHOR_PERMISSION: ${{ needs.ci-mode.outputs.author_permission }}
+      GITHUB_TOKEN: ${{ github.token }}
       EXPECTED_SHA: ${{ inputs.candidate_sha || github.event.pull_request.head.sha || github.sha }}
       SELECTED_SHA: ${{ needs.ci-mode.outputs.checkout_sha }}
     steps:
