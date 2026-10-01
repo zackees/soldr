@@ -1,8 +1,27 @@
 # CI modes
 
-The `CI` workflow selects one mode for each event. An ordinary pull request or
+The `CI` workflow selects one mode for each event. An ordinary maintainer pull request or
 push to `main` runs `Lint` and the Linux x64 prescribed host validation
 (`soldr ci-test`). The Linux host job is not the whole platform matrix.
+
+
+A PR author without effective `write`, `maintain`, or `admin` permission on
+the base repository receives full tests without a label. Permission is queried
+anew on each run; unavailable, malformed, stale, or mismatched responses choose
+full. Fork origin, association strings, prior contributions, and bot identity
+do not grant trust. Label removal cannot downgrade an external author. The
+selector reports `author_permission` and `selector_schema=fleet-ci-mode/v1`,
+and executes from the trusted base SHA rather than the PR helper. The shared
+selector interface and remaining adoption work are described in
+[the fleet contract](FLEET_CI_CONTRACT.md). GitHub maps
+maintain to the API's write permission; custom role names alone grant nothing.
+See [GitHub's permission API](https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user).
+
+External PRs must not merge until `Full coverage` proves every required cell
+succeeded on their candidate. Live external-PR proof, stable summary branch
+protection, and shared fleet adoption are tracked in
+[setup-soldr#523](https://github.com/zackees/setup-soldr/issues/523). External
+full runs are reported separately from the trusted routine compute budget.
 
 Add the `ci-test` label to run the extended Linux x64 target E2E cell and
 the macOS ARM64 archive replay on a hosted `macos-15` runner. Remove it to
@@ -18,9 +37,9 @@ target in `ci/canonical-targets.json` and the platform smoke jobs. `Full
 coverage` fails when a required job is skipped, failed, cancelled, or missing.
 It also rejects a supported target with no execution job. Full mode replays
 the macOS x64 archive on hosted `macos-15-intel` and the ARM64 archive on
-hosted `macos-15`. These runner allocations occur only for explicit labels
-or exact-SHA release validation; ordinary unlabeled PR and main runs remain
-Mac-free.
+hosted `macos-15`. These runner allocations occur for explicit labels, external-author full
+validation, or exact-SHA release validation. Trusted unlabeled PRs and main
+runs remain Mac-free.
 
 For a release candidate, dispatch `CI` with `candidate_sha` set to its full
 40-character commit SHA. The mode job checks out and verifies that SHA, then
@@ -64,3 +83,26 @@ graph has completed and review its included/excluded run inventory.
 The collector also checks API `total_count` against its paginated inventory and
 refuses searches at [GitHub's 1,000-result limit](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository).
 A truncated or changing inventory cannot support a budget claim.
+
+Setup Soldr Action smoke and Cook Size Gate are required full-mode jobs. They
+check out the same candidate SHA as the target matrix and no longer run on
+ordinary PR or main events. Explicit manual smoke dispatches remain available;
+full validation, rather than each main push, seeds their base-branch caches.
+
+
+The `Full coverage` job emits a `fleet-ci-coverage/v1` JSON artifact for each
+run attempt, with the candidate SHA, selected SHA, manifest SHA-256, required
+job IDs, outcomes, and failures. Wrong or missing candidate identity refuses
+coverage even if every supplied job state says success. Failed coverage reports
+remain diagnostic artifacts; they do not authorize publication.
+
+Other fleet repositories can pin and execute the same `ci_full_coverage.py`
+helper with `--contract <adapter.json> --expected-sha <candidate>
+--selected-sha <selector-output> --report <coverage.json>`, and supply their
+GitHub `needs` object in `CI_NEEDS_JSON`. A portable adapter declares
+`schema_version: 1`, a nonempty unique `required_jobs` list, and `targets` with
+`triple` (an opaque target identity) plus `ci.build_job` and `ci.run_job`. A
+declared target without an execution job fails, including documented exceptions.
+The adapter replaces Soldr's smoke-job defaults; its complete test inventory
+must be reviewed and proven by live runs. Consumer rollout remains under
+[soldr#3345](https://github.com/zackees/soldr/issues/3345).

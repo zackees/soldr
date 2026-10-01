@@ -2,22 +2,12 @@ name: Setup Soldr Action
 
 on:
   workflow_call:
-  # Run on main pushes too so the dogfood zccache gets saved at the base
-  # branch scope (refs/heads/main). GitHub Actions caches are scoped per ref:
-  # a PR run can read caches from its base branch but cannot read other PRs'
-  # caches. Without a push:main trigger every PR starts cold because nothing
-  # has ever populated the prefix at the base scope. See issue #249.
-  push:
-    branches:
-      - main
-    paths:
-      - action.yml
-      - install.sh
-      - rust-toolchain.toml
-      - Cargo.toml
-      - Cargo.lock
-      - .github/actions/setup-soldr/**
-      - .github/workflows/setup-soldr-action.yml
+    inputs:
+      source_ref:
+        description: Exact candidate SHA selected by canonical CI
+        required: true
+        type: string
+  # Full CI owns automatic invocation; manual smoke runs remain available.
   workflow_dispatch:
 
 permissions:
@@ -60,6 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          ref: ${{ inputs.source_ref || github.sha }}
           submodules: recursive
 
       - name: Enlarge swap (OOM headroom)

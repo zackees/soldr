@@ -7,11 +7,22 @@ import argparse
 import json
 import os
 import re
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from email.utils import parsedate_to_datetime
 from pathlib import Path
+
+SELECTOR_SCHEMA = "fleet-ci-mode/v1"
 
 
 def select_mode(
-    event_name: str, event: dict[str, object], candidate_sha: str
+    event_name: str,
+    event: dict[str, object],
+    candidate_sha: str,
+    *,
+    author_permission: str | None = None,
 ) -> tuple[str, str]:
     if event_name == "workflow_dispatch":
         if not re.fullmatch(r"[0-9a-fA-F]{40}", candidate_sha):
@@ -35,10 +46,9 @@ def select_mode(
         )
         mode = (
             "full"
-            if "ci-full" in names
-            else "test"
-            if "ci-test" in names
-            else "minimal"
+            if author_permission not in {"write", "maintain", "admin"}
+            or "ci-full" in names
+            else "test" if "ci-test" in names else "minimal"
         )
         return mode, sha.lower()
     if event_name == "push":
@@ -47,6 +57,73 @@ def select_mode(
             raise ValueError("push commit SHA is missing or invalid")
         return "minimal", sha.lower()
     raise ValueError(f"unsupported CI event: {event_name}")
+
+
+def permission_from_response(
+    data: dict, *, login: str, response_date: str, now: float
+) -> str | None:
+    """Bind a fresh permission response to the queried author, never association."""
+    try:
+        age = now - parsedate_to_datetime(response_date).timestamp()
+    except (ValueError, TypeError, OverflowError):
+        return None
+    user = data.get("user")
+    if (
+        not 0 <= age <= 60
+        or not isinstance(user, dict)
+        or str(user.get("login", "")).casefold() != login.casefold()
+    ):
+        return None
+    permission = data.get("permission")
+    return (
+        permission
+        if isinstance(permission, str)
+        and permission in {"admin", "write", "read", "none"}
+        else None
+    )
+
+
+def lookup_author_permission(event: dict, repository: str, token: str) -> str | None:
+    """Read effective base-repo permission anew on every run, including reruns."""
+    pr = event.get("pull_request")
+    if not isinstance(pr, dict):
+        return None
+    base = pr.get("base")
+    base = base.get("repo") if isinstance(base, dict) else None
+    user = pr.get("user")
+    login = user.get("login") if isinstance(user, dict) else None
+    if (
+        not token
+        or not re.fullmatch(r"[\w.-]+/[\w.-]+", repository)
+        or not isinstance(base, dict)
+        or base.get("full_name") != repository
+        or not isinstance(login, str)
+        or not login
+    ):
+        return None
+    author = urllib.parse.quote(login, safe="")
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repository}/collaborators/{author}/permission",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Cache-Control": "no-cache",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.load(response)
+            if not isinstance(data, dict):
+                return None
+            return permission_from_response(
+                data,
+                login=login,
+                response_date=response.headers.get("Date", ""),
+                now=time.time(),
+            )
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
 
 
 def verify_checkout(expected_sha: str, checked_out_sha: str) -> None:
@@ -63,13 +140,29 @@ def main() -> int:
     parser.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))
     args = parser.parse_args()
     event = json.loads(Path(args.event_path).read_text(encoding="utf-8"))
-    mode, sha = select_mode(args.event_name, event, args.candidate_sha)
+    permission = (
+        lookup_author_permission(
+            event,
+            os.environ.get("GITHUB_REPOSITORY", ""),
+            os.environ.get("GITHUB_TOKEN", ""),
+        )
+        if args.event_name == "pull_request"
+        else None
+    )
+    mode, sha = select_mode(
+        args.event_name, event, args.candidate_sha, author_permission=permission
+    )
     verify_checkout(sha, args.checked_out_sha)
     if not args.github_output:
         raise ValueError("GITHUB_OUTPUT is required")
     with Path(args.github_output).open("a", encoding="utf-8") as output:
         output.write(f"mode={mode}\ncheckout_sha={sha}\n")
-    print(f"CI mode: {mode}; checked out SHA: {sha}")
+        output.write(f"selector_schema={SELECTOR_SCHEMA}\n")
+        output.write(f"author_permission={permission or 'unknown'}\n")
+    print(
+        f"CI mode: {mode}; checked out SHA: {sha}; "
+        f"author permission: {permission or 'unknown'}"
+    )
     return 0
 
 

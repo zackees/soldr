@@ -83,10 +83,17 @@ jobs:
     outputs:
       mode: ${{ steps.mode.outputs.mode }}
       checkout_sha: ${{ steps.mode.outputs.checkout_sha }}
+      author_permission: ${{ steps.mode.outputs.author_permission }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ inputs.candidate_sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      # The selector executes base-repository code, never the PR helper.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: .ci-selector
           persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -95,7 +102,8 @@ jobs:
         id: mode
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-        run: python3 .github/scripts/ci_mode.py --candidate-sha "$CANDIDATE_SHA" --checked-out-sha "$(git rev-parse HEAD)"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 .ci-selector/.github/scripts/ci_mode.py --candidate-sha "$CANDIDATE_SHA" --checked-out-sha "$(git rev-parse HEAD)"
 
   path-selection:
     name: CI path selection
@@ -103,8 +111,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.select.outputs.docs_only }}
-      run_setup_soldr: ${{ steps.select.outputs.run_setup_soldr }}
-      run_cook_size_gate: ${{ steps.select.outputs.run_cook_size_gate }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -122,8 +128,8 @@ jobs:
   # toolchain and platform fan-out that they cannot affect (soldr#3318).
   lint-docs:
     name: Lint
-    needs: path-selection
-    if: ${{ needs.path-selection.outputs.docs_only == 'true' }}
+    needs: [ci-mode, path-selection]
+    if: ${{ needs.ci-mode.outputs.mode != 'full' && needs.path-selection.outputs.docs_only == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -132,7 +138,7 @@ jobs:
   lint:
     name: Lint
     needs: [ci-mode, path-selection]
-    if: ${{ needs.path-selection.outputs.docs_only != 'true' }}
+    if: ${{ needs.ci-mode.outputs.mode == 'full' || needs.path-selection.outputs.docs_only != 'true' }}
     # Run on every push to main AND on every PR — without this PRs slip
     # in unformatted code that breaks main's Lint job on merge. Repeated
     # 4 times in late 2026-06 (#1111/#1114/#1115/#1120 fallout), each
@@ -545,7 +551,7 @@ jobs:
     # No `if:` guard: every downstream job hangs off this one, so it must
     # run on workflow_dispatch as well as on main pushes and PRs.
     needs: [ci-mode, path-selection, lint]
-    if: ${{ always() && needs.path-selection.outputs.docs_only != 'true' && needs.lint.result == 'success' }}
+    if: ${{ always() && (needs.ci-mode.outputs.mode == 'full' || needs.path-selection.outputs.docs_only != 'true') && needs.lint.result == 'success' }}
     uses: ./.github/workflows/_build-and-test.yml
     with:
       runner: ubuntu-24.04
@@ -1416,22 +1422,23 @@ jobs:
           uv run --no-project --python 3.13 python \
             ci/reld_live_fetch_probe.py --soldr-bin dist/package/soldr
 
-  # Former standalone PR signals. The reusable workflows retain their
-  # push/main, schedule, and manual operational surfaces; canonical CI owns
-  # their PR selection so no second PR workflow can become a required check.
+  # Expensive smoke gates belong to the full candidate graph. Both are
+  # required by Full coverage; routine events never allocate these runners.
   setup-soldr-action:
     name: Setup soldr action smoke
-    needs: path-selection
-    if: ${{ needs.path-selection.outputs.run_setup_soldr == 'true' }}
+    needs: [ci-mode, build-linux-x64]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' }}
     uses: ./.github/workflows/setup-soldr-action.yml
-    secrets: inherit
+    with:
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
 
   cook-size-gate:
     name: Cook size gate
-    needs: path-selection
-    if: ${{ needs.path-selection.outputs.run_cook_size_gate == 'true' }}
+    needs: [ci-mode, build-linux-x64]
+    if: ${{ needs.ci-mode.outputs.mode == 'full' }}
     uses: ./.github/workflows/cook-size-gate.yml
-    secrets: inherit
+    with:
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
 
   macos-recovery-replay:
     name: macOS Recovery replay
@@ -1495,12 +1502,14 @@ jobs:
 
   full-coverage:
     name: Full coverage
-    needs: [ci-mode, lint, build-linux-x64, pep517-daemon-smoke, e2e-linux-x64, windows-e2e-policy, e2e-cross-bootstrap-soldr, e2e-linux-x64-gnu-build, e2e-linux-arm64-build, e2e-linux-arm64, e2e-linux-x64-musl-build, e2e-linux-x64-musl, e2e-linux-arm64-musl-build, e2e-linux-arm64-musl, e2e-macos-x64-build, e2e-macos-x64, e2e-macos-arm64-build, e2e-macos-arm64, e2e-windows-x64-build, e2e-windows-x64, e2e-windows-x64-gnu-build, e2e-windows-x64-gnu, e2e-windows-arm64-build, e2e-windows-arm64, wheel-cross-policy, wheel-cross-verify]
+    needs: [ci-mode, lint, build-linux-x64, pep517-daemon-smoke, e2e-linux-x64, windows-e2e-policy, e2e-cross-bootstrap-soldr, e2e-linux-x64-gnu-build, e2e-linux-arm64-build, e2e-linux-arm64, e2e-linux-x64-musl-build, e2e-linux-x64-musl, e2e-linux-arm64-musl-build, e2e-linux-arm64-musl, e2e-macos-x64-build, e2e-macos-x64, e2e-macos-arm64-build, e2e-macos-arm64, e2e-windows-x64-build, e2e-windows-x64, e2e-windows-x64-gnu-build, e2e-windows-x64-gnu, e2e-windows-arm64-build, e2e-windows-arm64, wheel-cross-policy, wheel-cross-verify, setup-soldr-action, cook-size-gate]
     if: ${{ always() && needs.ci-mode.outputs.mode == 'full' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       CI_NEEDS_JSON: ${{ toJSON(needs) }}
+      EXPECTED_SHA: ${{ inputs.candidate_sha || github.event.pull_request.head.sha || github.sha }}
+      SELECTED_SHA: ${{ needs.ci-mode.outputs.checkout_sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -1509,7 +1518,15 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.13"
-      - run: python3 .github/scripts/ci_full_coverage.py
+      - run: python3 .github/scripts/ci_full_coverage.py --expected-sha "$EXPECTED_SHA" --selected-sha "$SELECTED_SHA" --report "$RUNNER_TEMP/full-coverage.json"
+      - name: Upload candidate-bound full coverage report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-full-coverage-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/full-coverage.json
+          retention-days: 7
+          if-no-files-found: warn
 
   cancel-on-bootstrap-failure:
     name: Cancel run (bootstrap soldr failed)
