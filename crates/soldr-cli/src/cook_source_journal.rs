@@ -259,7 +259,7 @@ fn git_dir_at(dir: &Path) -> Option<PathBuf> {
 }
 
 fn journal_paths(dir: &Path, root: &Path) -> (PathBuf, PathBuf) {
-    let digest = Sha256::digest(path_bytes(root));
+    let digest = Sha256::digest(root.to_string_lossy().as_bytes());
     let name: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
     (
         dir.join(format!("{name}.{JOURNAL_EXT}")),
@@ -286,7 +286,7 @@ fn write_journal(
     root: &Path,
     snapshot: &ProjectSourceSnapshot,
 ) -> Result<(), SoldrError> {
-    let bytes = encode(root, snapshot);
+    let bytes = encode(root, snapshot)?;
     let tmp = journal.with_extension("journal.tmp");
     {
         let mut file = File::create(&tmp).map_err(|e| io_err("create cook journal", &tmp, e))?;
@@ -310,15 +310,14 @@ fn remove_journal(journal: &Path) -> Result<(), SoldrError> {
     }
 }
 
+/// Best-effort directory fsync so the rename/unlink is durable. Opening a
+/// directory fails harmlessly where the OS does not support it.
 fn sync_parent(path: &Path) {
-    #[cfg(unix)]
     if let Some(parent) = path.parent() {
         if let Ok(dir) = File::open(parent) {
             let _ = dir.sync_all();
         }
     }
-    #[cfg(not(unix))]
-    let _ = path;
 }
 
 fn io_err(what: &str, path: &Path, error: std::io::Error) -> SoldrError {
@@ -328,26 +327,13 @@ fn io_err(what: &str, path: &Path, error: std::io::Error) -> SoldrError {
     ))
 }
 
-#[cfg(unix)]
-fn path_bytes(path: &Path) -> Vec<u8> {
-    use std::os::unix::ffi::OsStrExt;
-    path.as_os_str().as_bytes().to_vec()
-}
-
-#[cfg(not(unix))]
-fn path_bytes(path: &Path) -> Vec<u8> {
-    path.to_string_lossy().into_owned().into_bytes()
-}
-
-#[cfg(unix)]
-fn bytes_path(bytes: &[u8]) -> Option<PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
-    Some(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
-}
-
-#[cfg(not(unix))]
-fn bytes_path(bytes: &[u8]) -> Option<PathBuf> {
-    std::str::from_utf8(bytes).ok().map(PathBuf::from)
+fn path_str(path: &Path) -> Result<&str, SoldrError> {
+    path.to_str().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "soldr cook: refusing to cook in place: non-UTF-8 path {} cannot be journaled (zackees/soldr#3518)",
+            path.display()
+        ))
+    })
 }
 
 fn put(out: &mut Vec<u8>, chunk: &[u8]) {
@@ -356,18 +342,18 @@ fn put(out: &mut Vec<u8>, chunk: &[u8]) {
 }
 
 /// `MAGIC | root | count | (rel, bytes)* | sha256(everything before) | TRAILER`.
-pub(crate) fn encode(root: &Path, snapshot: &ProjectSourceSnapshot) -> Vec<u8> {
+pub(crate) fn encode(root: &Path, snapshot: &ProjectSourceSnapshot) -> Result<Vec<u8>, SoldrError> {
     let mut out = MAGIC.to_vec();
-    put(&mut out, &path_bytes(root));
+    put(&mut out, path_str(root)?.as_bytes());
     out.extend_from_slice(&(snapshot.files.len() as u64).to_le_bytes());
     for (rel, bytes) in &snapshot.files {
-        put(&mut out, &path_bytes(rel));
+        put(&mut out, path_str(rel)?.as_bytes());
         put(&mut out, bytes);
     }
     let digest = Sha256::digest(&out);
     out.extend_from_slice(&digest);
     out.extend_from_slice(TRAILER);
-    out
+    Ok(out)
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<(PathBuf, ProjectSourceSnapshot), &'static str> {
@@ -383,6 +369,12 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<(PathBuf, ProjectSourceSnapshot), &
         return Err("checksum mismatch");
     }
     decode_body(&body[MAGIC.len()..])
+}
+
+fn utf8_path(bytes: &[u8]) -> Result<PathBuf, &'static str> {
+    std::str::from_utf8(bytes)
+        .map(PathBuf::from)
+        .map_err(|_| "non-UTF-8 path")
 }
 
 fn decode_body(mut cursor: &[u8]) -> Result<(PathBuf, ProjectSourceSnapshot), &'static str> {
@@ -404,11 +396,11 @@ fn decode_body(mut cursor: &[u8]) -> Result<(PathBuf, ProjectSourceSnapshot), &'
         let value = u64::from_le_bytes(head.try_into().map_err(|_| "truncated")?);
         usize::try_from(value).map_err(|_| "oversized length")
     }
-    let root = bytes_path(chunk(&mut cursor)?).ok_or("non-UTF-8 root")?;
+    let root = utf8_path(chunk(&mut cursor)?)?;
     let count = u64_at(&mut cursor)?;
     let mut files = Vec::with_capacity(count.min(1 << 16));
     for _ in 0..count {
-        let rel = bytes_path(chunk(&mut cursor)?).ok_or("non-UTF-8 path")?;
+        let rel = utf8_path(chunk(&mut cursor)?)?;
         if rel.is_absolute()
             || rel
                 .components()

@@ -206,7 +206,7 @@ fn journal_codec_round_trips_and_rejects_tampering() {
             (PathBuf::from("Cargo.toml"), Vec::new()),
         ],
     };
-    let bytes = encode(Path::new("/work/tree"), &snapshot);
+    let bytes = encode(Path::new("/work/tree"), &snapshot).unwrap();
     let (root, decoded) = decode(&bytes).unwrap();
     assert_eq!(root, PathBuf::from("/work/tree"));
     assert_eq!(decoded.files, snapshot.files);
@@ -214,5 +214,5 @@ fn journal_codec_round_trips_and_rejects_tampering() {
     let escaping = ProjectSourceSnapshot {
         files: vec![(PathBuf::from("../outside.rs"), Vec::new())],
     };
-    assert!(decode(&encode(Path::new("/w"), &escaping)).is_err());
+    assert!(decode(&encode(Path::new("/w"), &escaping).unwrap()).is_err());
 }
