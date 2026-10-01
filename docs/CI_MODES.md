@@ -11,7 +11,9 @@ anew on each run; unavailable, malformed, stale, or mismatched responses choose
 full. Fork origin, association strings, prior contributions, and bot identity
 do not grant trust. Label removal cannot downgrade an external author. The
 selector reports `author_permission` and `selector_schema=fleet-ci-mode/v1`,
-and executes from the trusted base SHA rather than the PR helper. GitHub maps
+and executes from the trusted base SHA rather than the PR helper. The shared
+selector interface and remaining adoption work are described in
+[the fleet contract](FLEET_CI_CONTRACT.md). GitHub maps
 maintain to the API's write permission; custom role names alone grant nothing.
 See [GitHub's permission API](https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user).
 

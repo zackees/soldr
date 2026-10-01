@@ -477,3 +477,56 @@ def test_permission_api_failure_is_unknown_and_selects_full(monkeypatch) -> None
     assert MODE.select_mode(
         "pull_request", event, "", author_permission=permission
     ) == ("full", SHA)
+
+
+@pytest.mark.parametrize(
+    "repository",
+    [
+        "zackees/soldr",
+        "zackees/zccache",
+        "FastLED/fbuild",
+        "zackees/clud",
+        "zackees/mimalloc-pprof",
+        "zackees/bosn",
+        "zackees/kernal-api",
+        "FastLED/cli",
+        "FastLED/FastLED",
+    ],
+)
+def test_one_selector_is_portable_to_every_fleet_identity(
+    repository, monkeypatch
+) -> None:
+    event = {
+        "pull_request": {
+            "head": {"sha": SHA},
+            "labels": [],
+            "base": {"repo": {"full_name": repository}},
+            "user": {"login": "contributor"},
+        }
+    }
+    requested = []
+
+    def respond(request, timeout):
+        requested.append(request.full_url)
+        response = io.BytesIO(
+            json.dumps(
+                {"permission": "read", "user": {"login": "contributor"}}
+            ).encode()
+        )
+        response.headers = {"Date": "Thu, 01 Oct 2026 17:00:00 GMT"}
+        return response
+
+    monkeypatch.setattr(MODE.urllib.request, "urlopen", respond)
+    monkeypatch.setattr(MODE.time, "time", lambda: 1790874005)
+    permission = MODE.lookup_author_permission(event, repository, "test-token")
+    assert requested == [
+        f"https://api.github.com/repos/{repository}/collaborators/contributor/permission"
+    ]
+    assert MODE.SELECTOR_SCHEMA == "fleet-ci-mode/v1"
+    assert MODE.select_mode(
+        "pull_request", event, "", author_permission=permission
+    ) == ("full", SHA)
+    assert MODE.select_mode("pull_request", event, "", author_permission="write") == (
+        "minimal",
+        SHA,
+    )
