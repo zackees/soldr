@@ -70,7 +70,6 @@ def test_unrelated_pull_request_skips_the_lane() -> None:
         changed_paths=[
             "README.md",
             "crates/soldr-cache/src/lib.rs",
-            ".github/workflows/release-auto.yml",
         ],
     )
     assert not decision.run, decision.reason
@@ -134,7 +133,9 @@ def test_ci_lane_runs_the_verb_and_both_checks() -> None:
     runs = "\n".join(str(step.get("run", "")) for step in steps)
 
     # The verb under test, in the grammar it now has.
-    assert "wheel --release --target" in runs
+    assert "prepare_release_wheel.py" in runs
+    assert '--driver-dir "$RUNNER_TEMP/soldr-bin"' in runs
+    assert '--expected-version "${version#soldr }"' in runs
     # The bytes check, not just the name check.
     assert "verify_wheel_glibc.py" in runs
     assert "--max-glibc" in runs
@@ -144,6 +145,20 @@ def test_ci_lane_runs_the_verb_and_both_checks() -> None:
     )
     assert tag_step.get("shell") == "python"
     assert "EXPECTED_TAG" in tag_step["env"]
+    smoke = next(
+        step for step in steps if "Smoke the release helper" in step.get("name", "")
+    )
+    assert smoke["if"] == "matrix.target == 'x86_64-unknown-linux-gnu'"
+    assert "smoke_release_wheel.py" in smoke["run"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [".github/workflows/release-auto.yml", ".github/scripts/prepare_release_wheel.py"],
+)
+def test_release_wheel_changes_select_canary(path: str) -> None:
+    """#3436: a change to the shipping path must select its wheel canary."""
+    assert policy.decide_wheel_lane(event_name="pull_request", changed_paths=[path]).run
 
 
 def test_policy_script_emits_a_json_matrix(tmp_path: Path) -> None:

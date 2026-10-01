@@ -27,6 +27,18 @@ For a release candidate, dispatch `CI` with `candidate_sha` set to its full
 passes it to every checkout and cross-build caller. A release process must wait
 for a successful `Full coverage` result on that same SHA before publication.
 
+The GNU/Linux wheel verification cells canary the release wheel helper with
+`soldr wheel --release --target <triple> --locked --strip --target-dir target
+--out dist`. Both x64 host and ARM64 cross wheels must pass the manylinux tag
+and GLIBC 2.17 byte checks; the host wheel also passes the release installation
+smoke test. This validates the release build path without publishing. Wheel
+provisioning belongs to Soldr; the helper does not source-build Maturin or use
+setup-soldr's `target-wheel-hook` for GNU/Linux. The project's `auditwheel =
+"check"` policy remains authoritative, and these steps build wheels only, not
+sdists. Native ARM64 musl retains its explicit native builder: the catalogue
+compiler is x86_64-hosted and cannot execute on that runner (see
+[soldr#3435](https://github.com/zackees/soldr/issues/3435)).
+
 The normal `Lint` and `Linux x64` status names remain stable for branch
 protection. A full run additionally reports `Full coverage`. The runner-minute
 budget in [soldr#3344](https://github.com/zackees/soldr/issues/3344) is for all

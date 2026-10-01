@@ -205,7 +205,7 @@ jobs:
           save-cache: ${{ env.ACT && 'true' || 'auto' }}
           cook-delta: false
           enable: true
-          version: 0.9.25
+          version: 0.9.27
           toolchain: 1.98.1
           cross-targets: ${{ matrix.setup_target }}
           linker: platform-default
@@ -564,7 +564,10 @@ jobs:
         run: uv run --no-project --python 3.13 .github/scripts/package_release_archive.py --version "${{ needs.prepare.outputs.version }}" --target "${{ matrix.target }}" --runner-os "$RUNNER_OS" --package-dir dist/symbols --label symbols --allow-empty
 
       # ── Wheel build (soldr-driven, Linux) ──
-      - name: Build wheel through setup-soldr target environment
+      # GNU wheels use the bootstrap driver's blessed wheel surface (#3436).
+      # Darwin/Windows retain the existing release helper; native ARM64 musl
+      # remains below until the catalogue host support in #3435 is available.
+      - name: Build wheel through Soldr
         if: ${{ !contains(matrix.target, 'unknown-linux-musl') }}
         shell: bash
         env:

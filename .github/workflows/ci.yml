@@ -599,7 +599,7 @@ jobs:
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every
           # build, so the next build recompiles the world. See
           # tests/test_setup_soldr_version_pins.py.
-          version: 0.9.25
+          version: 0.9.27
           toolchain: 1.98.1
           # soldr#2451: `cache: false` does not gate setup-soldr's soldr-mini /
           # solo-toolchain / build-cache layers, so these lanes still restored a
@@ -1208,6 +1208,11 @@ jobs:
       # `soldr maturin ...` execution path, which resolves the managed
       # maturin). Pre-installing one would hide a regression in that ladder.
 
+      - name: Setup uv for release wheel canary
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
+
       - name: Build the wheel through `soldr wheel`
         shell: bash
         run: |
@@ -1222,8 +1227,13 @@ jobs:
           # ran and mounted the catalogue sysroot that creates the floor.
           #
           # allow-release: the release profile is precisely what is under test here -- a manylinux tag is only claimed on a release cross build, so a cheaper profile would verify a wheel in a shape soldr never claims a floor for (soldr#1981 second criterion).
-          "$driver" wheel --release --target "${{ matrix.target }}" \
-            --out dist
+          # Canary the exact release helper, including --locked, --strip,
+          # output selection and version validation (#3436), without publish.
+          version="$("$driver" --version)"
+          uv run --no-project --python 3.13 .github/scripts/prepare_release_wheel.py \
+            --target "${{ matrix.target }}" --runner-os Linux \
+            --expected-version "${version#soldr }" \
+            --driver-dir "$RUNNER_TEMP/soldr-bin"
 
       - name: Assert the wheel filename carries the expected tags
         shell: python
@@ -1278,6 +1288,15 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/verify_wheel_glibc.py \
             --max-glibc "${{ matrix.max_glibc }}" dist/*.whl
+
+      - name: Smoke the release helper's host wheel
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$("$RUNNER_TEMP/soldr-bin/soldr" --version)"
+          uv run --no-project --python 3.13 .github/scripts/smoke_release_wheel.py \
+            --expected-version "${version#soldr }"
 
       - name: Upload the wheel for inspection
         if: always()
