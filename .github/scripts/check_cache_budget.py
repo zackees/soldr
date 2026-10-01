@@ -964,12 +964,15 @@ def enforcement_mode(event_name: str, ref: str) -> str:
 
     * `pull_request`: pre-existing repository state is not the PR's fault, so
       it is reported as a warning; only the PR's own contribution fails.
-    * a push to any branch but main: the janitor just swept; report, exit 0.
-    * main, schedule, workflow_dispatch and local runs (no event): hard fail.
+    * a push or workflow_dispatch on any branch but main: report, exit 0. A
+      push there follows a janitor sweep; a dispatch there is a PR's
+      exact-SHA "CI full" validation (zackees/ci.yml#166: #3510's full run
+      failed on main's pre-existing overage, which that PR did not cause).
+    * main, schedule, a dispatch on main, and local runs (no event): hard fail.
     """
     if event_name == "pull_request":
         return "pr"
-    if event_name == "push" and ref != "refs/heads/main":
+    if event_name in ("push", "workflow_dispatch") and ref != "refs/heads/main":
         return "warn"
     return "fail"
 

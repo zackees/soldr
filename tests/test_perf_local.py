@@ -108,6 +108,10 @@ def test_bosn_workspace_test_hands_off_from_bootstrap_to_source() -> None:
             "soldr-cli",
             "--bin",
             "soldr",
+            "-p",
+            "soldr-nextest-wrapper",
+            "--bin",
+            "soldr-nextest-wrapper",
         ],
         [
             "/opt/soldr-bootstrap/bin/soldr",
@@ -118,7 +122,12 @@ def test_bosn_workspace_test_hands_off_from_bootstrap_to_source() -> None:
         ],
         ["/opt/soldr-bootstrap/bin/soldr", "broker", "remove"],
         ["/target/debug/soldr", "daemon", "start"],
-        ["/target/debug/soldr", "cargo", "test", "--workspace"],
+        [
+            "sh",
+            "-c",
+            '"/target/debug/soldr" cargo nextest run --no-fail-fast --workspace'
+            ' --lib --tests && "/target/debug/soldr" cargo test --workspace --doc',
+        ],
         [
             "/target/debug/soldr",
             "cache",
@@ -129,8 +138,11 @@ def test_bosn_workspace_test_hands_off_from_bootstrap_to_source() -> None:
         ["/target/debug/soldr", "broker", "remove"],
     ]
     validation = plan[4]
-    assert validation.env["SOLDR_RUSTC_WRAPPER"] == "/target/debug/soldr"
     assert validation.env["CARGO_TARGET_DIR"] == "/target"
+    # CI's ci-test lane unsets the image's job caps (zackees/ci.yml#168).
+    assert set(validation.unset) == {"CARGO_BUILD_JOBS", "SOLDR_JOBS"}
+    # ...and the image's dev-loop profile overrides, for CI parity (#172).
+    assert validation.unset_prefixes == ("CARGO_PROFILE_",)
 
 
 def test_bosn_workspace_test_cleans_up_source_route_after_validation_failure(

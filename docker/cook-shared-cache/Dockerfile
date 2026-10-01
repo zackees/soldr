@@ -35,11 +35,11 @@
 # its CI checkout path, so soldr rejects it as non-relocatable and builds
 # cargo-dylint from source. Trixie keeps the runner compatible with both
 # that upstream probe and the resulting host-local binary.
-FROM rust:1.98.1-trixie
+FROM rust:1.98.1-trixie@sha256:a8a5f0a1e5fe7dfe1d352591e4a1c7dd2c08fd70475cae872cf3458ba0df0546
 
 # Keep the local Python half on the same pinned uv used by the native-wheel
 # Docker harness. It lives in the image rather than the persistent venv.
-COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.9.18@sha256:5713fa8217f92b80223bc83aac7db36ec80a84437dbc0d04bbc659cae030d8c9 /uv /uvx /usr/local/bin/
 
 # Build tools needed by the soldr-cli workspace and the integration
 # tests (linker, pkg-config, git for origin-URL probes in PRs 2/3).
@@ -107,6 +107,13 @@ RUN python3 -m venv /opt/soldr-bootstrap \
 # amalgamation-admission policy.
 ENV SOLDR_CACHE_DIR="/root/.soldr/bootstrap-v${SOLDR_BOOTSTRAP_VERSION}"
 ENV PATH="/opt/soldr-bootstrap/bin:${PATH}"
+# bosn runs every task as `sh -lc`, and a Debian login shell's /etc/profile
+# overwrites PATH, dropping the ENV above and the base image's
+# /usr/local/cargo/bin (rustup). soldr's tests then failed 59 times with
+# "failed to invoke rustup which cargo" (zackees/ci.yml#172). Login shells
+# source /etc/profile.d, so restate the image's PATH there.
+RUN printf 'export PATH="/opt/soldr-bootstrap/bin:/usr/local/cargo/bin:$PATH"\n' \
+        > /etc/profile.d/soldr-image-path.sh
 
 # CARGO_HOME explicit so the `soldr-perf-cargo-home` named volume mount
 # point is unambiguous. Without this the path depends on the base
@@ -171,6 +178,12 @@ WORKDIR /work
 # `cargo test` runs are no-ops for these gated tests; only `docker run`
 # with this image enables them.
 ENV SOLDR_COOK_DOCKER_HARNESS=1
+
+# zackees/ci.yml#168 (GATE-005), soldr#3516: soldr's test suite refuses to run
+# on a developer host (.github/scripts/nextest_wrapper.sh), where a leaked test
+# daemon once claimed the real ~/.soldr root and wedged every soldr build on
+# the machine. This image is the isolated environment the suite may run in.
+ENV SOLDR_TEST_ISOLATED=1
 
 # Default command is a help message; the runner overrides with the
 # actual `cargo test` invocation.

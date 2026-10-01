@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from conftest import load_script_module
+from conftest import lint_lane_text, load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "check_nextest_bare_cargo.py"
@@ -33,5 +33,6 @@ def test_lint_job_runs_the_ripgrep_guard() -> None:
     )
     assert "apt-get install --no-install-recommends -y ripgrep" in workflow
     assert workflow.index("Install ripgrep") < workflow.index(
-        "check_nextest_bare_cargo.py"
+        "ci/local_gate.py --lane lint"
     )
+    assert "check_nextest_bare_cargo.py" in lint_lane_text()

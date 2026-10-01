@@ -328,6 +328,35 @@ branch, not a second working tree.
 - **Always report the merge URL**: The final user-facing summary must include the PR URL the user should open to review and merge the work.
 - **Fallback if PR creation is blocked**: If the GitHub integration cannot open the PR directly, the agent must still push the branch and provide the exact GitHub URL the user needs to open or complete the PR manually.
 
+## Local Gate Rule (zackees/ci.yml#166, #168)
+
+**Every PR head must pass the local gate before it is pushed.** CI's first job
+(`ci-mode`) fails a PR whose head commit lacks a tree-bound `Local-Gate:`
+trailer, and every other job needs `ci-mode`.
+
+```bash
+git commit ...                       # the gate attests a committed, clean tree
+uvx --from git+https://github.com/zackees/ci.yml@<CI_LINT_REF> ci-lint local-gate run
+git push                             # (--force-with-lease if the branch was already pushed)
+```
+
+`<CI_LINT_REF>` is the constant in `ci/local_gate.py`. `local-gate run` runs
+`ci/local_gate.py` (lanes `lint` = the remote Lint job exactly, `rust` =
+`soldr lint rust`, `tests` = the test suite in bosn), and on success amends
+HEAD's message with the trailer. Install the pre-push hook once per clone with
+`... ci-lint local-gate install-hook`.
+
+- **Add Lint checks to `ci/local_gate.py`, never as a step in ci.yml's Lint
+  job.** The Lint job runs `ci/local_gate.py --lane lint` and nothing else;
+  `ci-lint local-gate lint` (a check in that lane) fails anything else.
+- **Never run soldr's test suite on the host.** It starts soldr daemons and
+  touches soldr state roots. A leaked fixture once claimed the real
+  `~/.soldr` root and wedged every soldr build on the machine (soldr#3516).
+  The nextest run-wrapper refuses unless `CI=true` or `SOLDR_TEST_ISOLATED=1`,
+  which only the bosn image sets. Run the suite with
+  `bosn run --task test` (the gate's `tests` lane). Do not set the marker on
+  a host to get around the refusal.
+
 ## Agent Code-Smell Reporting Rule (issue #2741)
 
 **Significant code smells get an issue, not a shrug.** When you find code where

@@ -162,7 +162,7 @@ jobs:
 
       - name: Install rustup 1.98.1 to ~/.rustup (if not cached)
         if: steps.rustup_cache.outputs.cache-hit != 'true'
-        run: rustup toolchain install 1.98.1 --profile minimal --no-self-update
+        run: rustup toolchain install 1.98.1 --profile minimal --no-self-update  # ci-lint: allow RUST-001 bootstrap: pre-seeds ~/.rustup before setup-soldr puts soldr on PATH (soldr#1340)
 
       # zackees/ci.yml#6: an immutable download shared with main -- a PR
       # restores main's entry but never saves its own copy.

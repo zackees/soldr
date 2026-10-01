@@ -42,7 +42,9 @@ def run(
         or (
             f"ci-cost-parent-v1={parent_run_id}"
             if parent_run_id
-            else f"CI full {sha}" if event == "workflow_dispatch" else "CI"
+            else f"CI full {sha}"
+            if event == "workflow_dispatch"
+            else "CI"
         ),
     }
 

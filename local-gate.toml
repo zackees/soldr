@@ -1,0 +1,29 @@
+# soldr's local gate (zackees/ci.yml#166, #168, GATE-001..005).
+#
+# Before every push, from a clean, committed tree:
+#
+#   uvx --from git+https://github.com/zackees/ci.yml@052f27afa101e07d7714d27a1bb98904a26f37ef ci-lint local-gate run
+#
+# runs `run` below and, on success, stamps HEAD with a tree-bound
+# `Local-Gate:` trailer. CI's `ci-mode` job (`verify`) fails a PR whose head
+# lacks it, and every other job needs `ci-mode`. Install the matching
+# pre-push hook once per clone with `... ci-lint local-gate install-hook`.
+[gate]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py"]
+# The remote Lint job runs `ci/local_gate.py --lane lint` and nothing else.
+mirrors = ["ci.yml:lint"]
+setup-steps = ["Enlarge swap (OOM headroom)", "Install ripgrep"]
+verify = "ci.yml:ci-mode"
+# ci-pre must not wait on anything (zackees/ci.yml#23); path-selection only
+# computes outputs and runs beside ci-mode rather than after it.
+verify-exempt = ["ci-pre", "path-selection"]
+mode = "enforce"
+
+# zackees/ci.yml#168 (GATE-005), soldr#3516: soldr's tests start soldr
+# daemons and touch soldr state roots, so they never run on a developer host.
+# The nextest run-wrapper refuses unless CI=true or the marker is set; the
+# bosn image sets the marker; the gate's `tests` lane runs the suite there.
+[gate.isolation]
+marker = "SOLDR_TEST_ISOLATED"
+runner = ["bosn", "run", "--task", "test"]
+guard = ".github/scripts/nextest_wrapper.sh"
