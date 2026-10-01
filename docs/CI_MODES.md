@@ -106,3 +106,22 @@ declared target without an execution job fails, including documented exceptions.
 The adapter replaces Soldr's smoke-job defaults; its complete test inventory
 must be reviewed and proven by live runs. Consumer rollout remains under
 [soldr#3345](https://github.com/zackees/soldr/issues/3345).
+
+`CI summary` is the stable merge context and runs with `always()` after the
+selector and required cells. It checks `ci/summary-contract.json` for minimal,
+documentation-only, and extended-test jobs; full mode additionally checks the
+canonical target contract and `Full coverage`. Every selected job must finish
+successfully on the selected candidate identity. An unresolved/external PR
+author cannot use a minimal or test summary, and a dispatch requires full mode.
+The summary uploads an attempt-specific `fleet-ci-summary/v1` diagnostic report
+with both contract digests, identity, permission class, outcomes, and failures.
+
+Both `ci-test` and `ci-full` override documentation-only host/lint skips, so the
+extended tier can actually execute its declared extra tests. Minimal docs-only
+PRs require the documentation lint and a successful path-selection decision.
+Informational reld probes remain advisory and are not declared merge gates.
+
+Branch protection must require `CI summary` only after a successful default-
+branch run proves the context exists. The repository currently has no required
+checks; shipping the summary alone does not prove protected enforcement or the
+fleet's external-author security and live-run acceptance criteria.

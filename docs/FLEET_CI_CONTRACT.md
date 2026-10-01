@@ -44,8 +44,21 @@ stable summary context and require it in branch protection after its existence
 on the default branch is proven. Source checks and local unit tests are not
 live coverage evidence.
 
-Remaining shared-mechanism work includes portable coverage and whole-event cost
-interfaces, issue-driven release directives, retry/frozen-artifact behavior,
+The shared merge summary is `.github/scripts/ci_summary.py`, pinned alongside
+`ci_full_coverage.py`. Call it with `--adapter <summary-contract.json>
+--full-contract <coverage-contract.json> --report <summary.json>`. Its adapter
+declares integer `schema_version: 1` and nonempty unique job ID lists named
+`minimal_jobs`, `docs_jobs`, and `test_jobs` (the extra test cells). Supply the
+real GitHub `needs` object in `CI_NEEDS_JSON`, and selection in `CI_MODE`,
+`DOCS_ONLY`, `AUTHOR_PERMISSION`, `GITHUB_EVENT_NAME`, `EXPECTED_SHA`, and
+`SELECTED_SHA`. The `fleet-ci-summary/v1` report fails closed on unknown modes,
+unsuccessful selected cells, candidate drift, incomplete full execution, or an
+external PR downgraded below full. Consumers must include every declared job
+as a direct dependency of their always-running summary.
+
+Remaining shared-mechanism work includes fleet adoption of these helpers and
+the whole-event cost interface, issue-driven release directives and
+retry/frozen-artifact behavior,
 Bosn-owned Act execution, consumer pins and adapters, and cross-repository live
 conformance. The selector tests alone do not satisfy those requirements. Each
 repository must record same-SHA label add/remove runs, complete `ci-full` PR and

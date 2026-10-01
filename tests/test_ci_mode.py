@@ -97,6 +97,7 @@ def test_minimal_jobs_and_full_jobs_have_explicit_dependencies() -> None:
     )
     assert scheduled == set(full_jobs) | {
         "ci-mode",
+        "ci-summary",
         "lint",
         "build-linux-x64",
         "e2e-linux-x64",
@@ -334,9 +335,9 @@ def test_expensive_smokes_run_only_in_full_mode_on_candidate_sha() -> None:
 
 
 def test_full_mode_overrides_documentation_only_skip() -> None:
-    assert "needs.ci-mode.outputs.mode != 'full'" in _job("lint-docs")
+    assert "needs.ci-mode.outputs.mode == 'minimal'" in _job("lint-docs")
     for name in ("lint", "build-linux-x64"):
-        assert "needs.ci-mode.outputs.mode == 'full'" in _job(name)
+        assert "needs.ci-mode.outputs.mode != 'minimal'" in _job(name)
 
 
 @pytest.mark.parametrize("permission", ["read", "triage", "none", None, "unknown"])
