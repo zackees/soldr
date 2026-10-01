@@ -254,6 +254,9 @@ impl SoldrBackendLauncher {
             );
         }
         let mut command = std::process::Command::new(&binary_path);
+        // soldr#3516: keep the daemon under the broker's own HOME. Applied
+        // first so the route's `SOLDR_*` labels and root below still win.
+        command.envs(crate::broker_spawn::daemon_home_identity_env());
         let daemon_env = crate::daemon::service_definition::daemon_env_from_labels(
             &request.service_definition.labels,
         )

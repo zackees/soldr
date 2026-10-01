@@ -16,10 +16,51 @@ if ! command -v uv &> /dev/null; then
   fi
 fi
 
+# soldr#3519: where the dev-tool environment lives. `uv venv --no-project`
+# ignores UV_PROJECT_ENVIRONMENT and always writes `.venv` in the working
+# directory, so a container (whose image sets UV_PROJECT_ENVIRONMENT=/venv)
+# running this script against a bind-mounted checkout wrote a root-owned
+# `.venv` into the host tree, pointing at a container-only interpreter, and
+# every host `uv` invocation in that checkout then failed with "Permission
+# denied". Honor UV_PROJECT_ENVIRONMENT explicitly; `./lint`'s and `./test`'s
+# `uv run --no-sync` already resolve the project environment from it.
+VENV_DIR="${UV_PROJECT_ENVIRONMENT:-.venv}"
+
+in_container() {
+  [ -f /.dockerenv ] || [ -f /run/.containerenv ] || [ -n "${container:-}" ]
+}
+
+if [ -z "${UV_PROJECT_ENVIRONMENT:-}" ] && in_container; then
+  echo "error: ./install is running inside a container without UV_PROJECT_ENVIRONMENT." >&2
+  echo "       It would write .venv into $(pwd), which is usually the host's bind-mounted" >&2
+  echo "       checkout, leaving a root-owned env that breaks every host uv run (soldr#3519)." >&2
+  echo "       Remedy: export UV_PROJECT_ENVIRONMENT=/venv (the soldr images set it)." >&2
+  exit 1
+fi
+
+if [ -z "${UV_PROJECT_ENVIRONMENT:-}" ] && { [ -e .venv ] || [ -L .venv ]; }; then
+  # A .venv this user cannot own or use was written by someone else (a
+  # container's root, or another account). uv would fail on it with an opaque
+  # "failed to canonicalize path ... Permission denied"; say what happened.
+  if [ ! -O .venv ]; then
+    echo "error: $(pwd)/.venv is owned by another user (soldr#3519)." >&2
+    echo "       A container or another account wrote it into this checkout." >&2
+    echo "       Remedy: remove it (sudo rm -rf .venv), or work from a clean sister" >&2
+    echo "       worktree, then re-run ./install." >&2
+    exit 1
+  fi
+  if [ -e .venv/bin ] && [ ! -x .venv/bin/python ]; then
+    echo "error: $(pwd)/.venv/bin/python does not resolve to an interpreter this host can run" >&2
+    echo "       (soldr#3519: typically a container wrote it, pointing into /root/.local)." >&2
+    echo "       Remedy: rm -rf .venv (sudo if needed), then re-run ./install." >&2
+    exit 1
+  fi
+fi
+
 # Keep lint tools on a supported interpreter while Python 3.14 typeshed
 # support in the pinned mypy release is incomplete.
-uv venv --python 3.13 --allow-existing --no-project
-uv pip install \
+uv venv "$VENV_DIR" --python 3.13 --allow-existing --no-project
+uv pip install --python "$VENV_DIR" \
   "maturin>=1.7,<2" \
   "pillow==11.3.0" \
   "pytest>=8.0" \

@@ -344,8 +344,59 @@ impl BrokerHomeGuard {
 
 impl Drop for BrokerHomeGuard {
     fn drop(&mut self) {
+        // soldr#3516: `broker stop` retains daemon routes by design
+        // (soldr#2549), so a fixture that ran `daemon start` (or any routed
+        // compile) and only stopped the broker left its daemon behind as an
+        // orphan. Stop the routed generation first, then the broker, then
+        // hard-reap whatever still survives. This runs during unwinding too,
+        // so a panicking test cannot orphan its daemon either.
+        stop_fixture_daemon_route(&self.cache_root, &self.home_root);
         stop_fixture_broker(&self.cache_root, &self.home_root);
+        reap_fixture_daemon(&self.cache_root, &[&self.cache_root, &self.home_root]);
     }
+}
+
+/// True when `path` lies under one of `roots` (compared both as given and
+/// canonicalized, so a symlinked temp dir such as macOS `/var` still matches).
+pub(crate) fn path_is_under_any(path: &Path, roots: &[&Path]) -> bool {
+    roots.iter().any(|root| {
+        path.starts_with(root) || fs::canonicalize(root).is_ok_and(|real| path.starts_with(real))
+    })
+}
+
+/// soldr#3516: terminate the daemon recorded in `cache_root`'s route claim if
+/// it is still alive after a graceful stop. Only a process whose image lives
+/// under one of `fixture_roots` is ever signalled, so a recycled PID or a
+/// claim naming a real daemon can never turn into authority to kill it.
+pub(crate) fn reap_fixture_daemon(cache_root: &Path, fixture_roots: &[&Path]) {
+    use soldr_platform::process::{inspect, terminate};
+    use std::time::{Duration, Instant};
+
+    let Some(pid) = route_claim::route_claim_pid(cache_root) else {
+        return;
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while inspect::is_alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !inspect::is_alive(pid) {
+        return;
+    }
+    let Some(exe) = inspect::executable_path(pid) else {
+        return;
+    };
+    if !path_is_under_any(&exe, fixture_roots) {
+        eprintln!(
+            "fixture reap: route claim PID {pid} runs {} outside the fixture; not signalling it",
+            exe.display()
+        );
+        return;
+    }
+    eprintln!(
+        "fixture reap: daemon PID {pid} ({}) survived daemon/broker stop; terminating it",
+        exe.display()
+    );
+    terminate::terminate_pid(pid);
 }
 
 pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
@@ -436,7 +487,15 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         // suppresses the child's own relocation. Scrub both so the test
         // binary behaves like a fresh top-level invocation.
         .env_remove("SOLDR_ORIGINAL_EXE")
-        .env_remove("SOLDR_RELOCATED_EXE");
+        .env_remove("SOLDR_RELOCATED_EXE")
+        // soldr#3516: a fixture's HOME must decide every per-user location.
+        // An ambient XDG base dir would place the fixture broker's service
+        // definitions and staged daemon images in the developer's real
+        // config tree even under a throwaway HOME. A test that needs one sets
+        // it after this helper.
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_CACHE_HOME");
     for name in OUTER_ROUTE_ENV_VARS {
         command.env_remove(name);
     }
