@@ -152,22 +152,29 @@ async fn resolve_driver_clang(
         .bin
         .join(format!("llvm-{}", crate::fetch::MANAGED_LLVM_VERSION))
         .join(".complete");
-    if managed_complete.is_file() || std::env::var_os("SOLDR_LLVM_DIR").is_some() {
-        if let Ok(bin) = crate::fetch::ensure_llvm_toolchain(paths).await {
-            if let Some(clang) = clang_in(&bin) {
-                return Ok(clang);
-            }
-        }
-    }
     let search = std::env::var_os("PATH");
     let system_clang = search
         .as_deref()
         .and_then(|search| crate::exec_cmd::find_on_path("clang", search));
-    if let Some(clang) = &system_clang {
-        // A system clang is enough unless the driver needs an lld it lacks.
-        if !needs_lld || lld_reachable(clang, search.as_deref()) {
-            return Ok(clang.clone());
+    // A system clang is enough unless the driver needs an lld it lacks.
+    let usable_system_clang = system_clang
+        .as_ref()
+        .filter(|clang| !needs_lld || lld_reachable(clang, search.as_deref()))
+        .cloned();
+    if managed_complete.is_file() || std::env::var_os("SOLDR_LLVM_DIR").is_some() {
+        if let Ok(bin) = crate::fetch::ensure_llvm_toolchain(paths).await {
+            if let Some(clang) = clang_in(&bin) {
+                return Ok(prefer_host_wrapper_clang(
+                    clang,
+                    usable_system_clang,
+                    linux_host(),
+                    managed_clang_finds_host_runtime,
+                ));
+            }
         }
+    }
+    if let Some(clang) = usable_system_clang {
+        return Ok(clang);
     }
     let managed = crate::fetch::ensure_llvm_toolchain(paths)
         .await
@@ -185,6 +192,54 @@ async fn resolve_driver_clang(
         }
         Err(cause) => Err(missing_clang_error(&cause)),
     }
+}
+
+fn linux_host() -> bool {
+    crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux
+}
+
+/// The host C runtime files a Linux link needs from the clang driver: the
+/// PIE startup object and the `libgcc_s` that Rust's `*-linux-gnu` std links.
+const HOST_RUNTIME_PROBES: [&str; 2] = ["Scrt1.o", "libgcc_s.so"];
+
+/// Keep the managed clang only when it can see the host's C runtime
+/// (soldr#3520). Soldr's managed LLVM is an unwrapped clang: it searches the
+/// FHS library directories and nothing else. On a host whose own compiler is
+/// a wrapper that injects the platform's library search paths at link time --
+/// the NixOS cc-wrapper, where `libgcc_s.so` and `Scrt1.o` exist only under
+/// `/nix/store/...` -- the managed driver cannot find them and every link
+/// fails (`reld: error: Couldn't find library gcc_s`). There the system clang
+/// (the wrapper) drives the link instead, as soldr 0.9.26's `exec clang` shim
+/// did; the linker argument (`--ld-path=<reld>` or `-fuse-ld=lld`) is
+/// unchanged. Linux hosts only: Windows and macOS keep the managed clang.
+fn prefer_host_wrapper_clang(
+    managed: PathBuf,
+    usable_system_clang: Option<PathBuf>,
+    linux_host: bool,
+    finds_host_runtime: impl FnOnce(&Path) -> bool,
+) -> PathBuf {
+    match usable_system_clang {
+        Some(system) if linux_host && !finds_host_runtime(&managed) => system,
+        _ => managed,
+    }
+}
+
+/// Does `clang -print-file-name=<f>` resolve every [`HOST_RUNTIME_PROBES`]
+/// file? clang echoes the bare name back when its search paths lack the file.
+/// A clang that cannot be run counts as finding them, so a probe failure
+/// never changes the driver.
+fn managed_clang_finds_host_runtime(clang: &Path) -> bool {
+    HOST_RUNTIME_PROBES.iter().all(|file| {
+        let mut command = std::process::Command::new(clang);
+        command.arg(format!("-print-file-name={file}"));
+        crate::core::suppress_windows_console_window(&mut command);
+        match command.output() {
+            Ok(output) if output.status.success() => {
+                Path::new(String::from_utf8_lossy(&output.stdout).trim()).is_absolute()
+            }
+            _ => true,
+        }
+    })
 }
 
 /// The last step of resolution: the managed LLVM was wanted (there is no
@@ -307,3 +362,7 @@ pub(crate) fn pick_after_managed_for_tests(
 ) -> Result<(PathBuf, Option<String>), String> {
     pick_after_managed(system_clang, managed)
 }
+
+#[cfg(test)]
+#[path = "linker_shim_tests.rs"]
+mod tests;
