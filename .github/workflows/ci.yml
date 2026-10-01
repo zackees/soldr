@@ -83,10 +83,17 @@ jobs:
     outputs:
       mode: ${{ steps.mode.outputs.mode }}
       checkout_sha: ${{ steps.mode.outputs.checkout_sha }}
+      author_permission: ${{ steps.mode.outputs.author_permission }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ inputs.candidate_sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      # The selector executes base-repository code, never the PR helper.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: .ci-selector
           persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -95,7 +102,8 @@ jobs:
         id: mode
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-        run: python3 .github/scripts/ci_mode.py --candidate-sha "$CANDIDATE_SHA" --checked-out-sha "$(git rev-parse HEAD)"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 .ci-selector/.github/scripts/ci_mode.py --candidate-sha "$CANDIDATE_SHA" --checked-out-sha "$(git rev-parse HEAD)"
 
   path-selection:
     name: CI path selection

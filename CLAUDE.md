@@ -5,7 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > [!IMPORTANT]
 > Ordinary PR and `main` CI runs lint plus Linux x64 `soldr ci-test`. Add the
 > `ci-full` PR label for platform-sensitive or target/toolchain changes; release
-> candidates require full CI on the exact commit SHA. See [CI modes](docs/CI_MODES.md).
+> candidates require full CI on the exact commit SHA. Third-party PRs cannot
+> merge until `Full coverage` proves all required cells ran. See [CI modes](docs/CI_MODES.md).
 
 > [!IMPORTANT]
 > ## ⚡ Performance work → read [PERF.md](PERF.md) FIRST ⚡
