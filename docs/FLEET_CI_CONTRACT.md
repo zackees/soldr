@@ -63,7 +63,11 @@ the shared policy prerequisites `ci-mode`, `path-selection`, or `full-coverage`
 for tests; consumer adapters use those normalized policy job IDs. Supply the
 real GitHub `needs` object in `CI_NEEDS_JSON`, and selection in `CI_MODE`,
 `DOCS_ONLY`, `AUTHOR_PERMISSION`, `GITHUB_EVENT_NAME`, `EXPECTED_SHA`, and
-`SELECTED_SHA`. The `fleet-ci-summary/v1` report fails closed on unknown modes,
+`SELECTED_SHA`.
+For PRs the summary independently rechecks the event author's current permission
+using `GITHUB_EVENT_PATH`, `GITHUB_REPOSITORY`, and the read-only `GITHUB_TOKEN`;
+the earlier selector output cannot authorize a failed-job rerun after access
+was revoked. The `fleet-ci-summary/v1` report fails closed on unknown modes,
 unsuccessful selected cells, candidate drift, incomplete full execution, or an
 external PR downgraded below full. Consumers must include every declared job
 as a direct dependency of their always-running summary.
