@@ -600,6 +600,47 @@ def cook_lineage_candidates(
     return retired
 
 
+ACTION_BUILD_KEY = re.compile(
+    r"^(?P<shape>setup-soldr-buildcache-v2-[a-z0-9_]+-[a-z0-9_]+-[0-9a-f]{16})-"
+    r"(?P<lock>[0-9a-f]{16})$"
+)
+ACTION_REGISTRY_KEY = re.compile(
+    r"^(?P<platform>setup-soldr-cargoregistry-v1-[a-z0-9_]+-[a-z0-9_]+)-"
+    r"(?P<lock>[0-9a-f]{16})-(?P<toolchain>[0-9a-f]{16})$"
+)
+
+
+def action_store_lineage_candidates(
+    on_main: list[CacheEntry], current_main_lock: str | None
+) -> list[CacheEntry]:
+    """Retire replaced lock generations of recognized setup-action stores.
+
+    Keep every current-lock entry and every unique platform/toolchain shape.
+    Namespaced or unknown key formats are deliberately outside this policy.
+    Re-running an older lock can rebuild its store, as with cook lineage
+    retention; it must not accumulate indefinitely at main's expense.
+    """
+    if not current_main_lock:
+        return []
+    recognized: list[tuple[CacheEntry, str, str]] = []
+    for entry in on_main:
+        build = ACTION_BUILD_KEY.fullmatch(entry.key)
+        registry = ACTION_REGISTRY_KEY.fullmatch(entry.key)
+        if build:
+            recognized.append((entry, build["shape"], build["lock"]))
+        elif registry:
+            shape = f"{registry['platform']}-{registry['toolchain']}"
+            recognized.append((entry, shape, registry["lock"]))
+    current_shapes = {
+        shape for _, shape, lock in recognized if lock == current_main_lock
+    }
+    return [
+        entry
+        for entry, shape, lock in recognized
+        if lock != current_main_lock and shape in current_shapes
+    ]
+
+
 def perf_target_cache_candidates(on_main: list[CacheEntry]) -> list[CacheEntry]:
     """Retire obsolete perf target caches after the exact-source binary producer.
 
@@ -675,6 +716,7 @@ def prune_candidates(
                 candidates.append(entry)
 
     candidates.extend(cook_lineage_candidates(on_main, current_main_lock))
+    candidates.extend(action_store_lineage_candidates(on_main, current_main_lock))
     candidates.extend(perf_target_cache_candidates(on_main))
 
     return candidates
