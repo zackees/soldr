@@ -6,7 +6,8 @@
     "owner": "root",
     "shared_contract_and_release": "serial",
     "implementation_delegation": "explicitly authorized by user",
-    "publication_performed": false
+    "publication_performed": false,
+    "other_agent_boundary": "Active normalization agent checkout /home/niteris/dev/ci.yml excluded; reconcile consumer revisions before push"
   },
   "workers": [
     {
@@ -38,11 +39,14 @@
       "checkout": "../soldr2-extern/bosn-act",
       "base_sha": "c8ac849c78cd75fa63143ce47d97eedb4e6270cd",
       "ownership": "Act registry intent/state transactions and tests; service/runtime remain serial integration",
-      "evidence": "Seven Act registry tests plus existing foundation tests and Clippy passed; recovery-before-removal identity regression still being added",
+      "evidence": "10 Act lifecycle tests, 1 unit, 25 foundation and registry Clippy passed. Review found offset retirement could skip active engines; immutable keyset regression RED to GREEN, review clean. ci-full run 36918836897 passed all 12 allocated jobs including native Windows and Intel/ARM macOS wheel smoke. Registry prerequisite only; no isolated Act runtime execution yet.",
       "scope_decision": {
         "reason": "Whole runner crosses durable container ownership, daemon authentication/recovery, frozen snapshots and job reporting; unsafe as one low-effort implementation slice",
         "resolution": "Retained requested Sol/low; split registry slice, with root approving persistence/runtime boundaries before integration"
-      }
+      },
+      "local_commit": "23ff53cd0ae55a464e5ef6ff411f4b0d71f4fad1",
+      "merged_pr": "https://github.com/zackees/bosn/pull/318",
+      "merge_sha": "14f4b54a5644abc2e1309a0097a68b19a0330a7f"
     }
   ],
   "reference_evidence": {
@@ -52,8 +56,13 @@
     "full_pr_run": "https://github.com/zackees/soldr/actions/runs/36910066178",
     "full_pr_result": "success",
     "same_candidate_main_dispatch": "https://github.com/zackees/soldr/actions/runs/36915175888",
-    "dispatch_result": "pending at checkpoint",
-    "summary_pr": "https://github.com/zackees/soldr/pull/3515"
+    "dispatch_result": "success; verified candidate/selected SHA and manifest digest in ci/fleet-evidence/soldr-3001-full.json",
+    "summary_pr": "https://github.com/zackees/soldr/pull/3515",
+    "policy_bootstrap_pr": "https://github.com/zackees/soldr/pull/3517",
+    "bootstrap_minimal_run": "https://github.com/zackees/soldr/actions/runs/36918116920",
+    "bootstrap_minimal_result": "success",
+    "bootstrap_full_run": "https://github.com/zackees/soldr/actions/runs/36920078727",
+    "bootstrap_full_result": "pending at checkpoint"
   },
   "completion_unproven": [
     "final reviewed merged consumer pins",
@@ -65,5 +74,11 @@
     "separate whole-event PR/main cost ratios with queue costs disclosed",
     "normalized release directive/retry/pilot acceptance",
     "reviewed merged consumer PRs and cleanup"
-  ]
+  ],
+  "serial_runtime_integration": {
+    "checkout": "../soldr2-extern/bosn-act-runtime",
+    "local_commit": "d5bdaf48a55f483210b0f1d9cb63f53f3b42dcf3",
+    "scope": "Typed daemon registry bridge only; actual engine runtime remains unimplemented",
+    "evidence": "Missing bridge RED to GREEN actual actor-channel durable reply/duplicate rollback/reopen test. Service Clippy has three baseline errors, reproduced unchanged; lint not passed. No push."
+  }
 }
