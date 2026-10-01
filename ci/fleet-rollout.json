@@ -6,7 +6,8 @@
     "owner": "root",
     "shared_contract_and_release": "serial",
     "implementation_delegation": "explicitly authorized by user",
-    "publication_performed": false
+    "publication_performed": false,
+    "other_agent_boundary": "Active normalization agent checkout /home/niteris/dev/ci.yml is excluded; consumer revisions must be reconciled with its changes before push"
   },
   "workers": [
     {
@@ -17,7 +18,8 @@
       "checkout": "../soldr2-extern/zccache-fleet",
       "base_sha": "34c4cd27bbf9ea8b3acb649babbaf7c45aa7692f",
       "ownership": "zccache workflows/adapters/tests/docs only",
-      "evidence": "18 focused conformance cases passed; broad CI-script checks in progress; final merged shared-policy pin and live proofs pending"
+      "evidence": "906 CI-script tests passed; release wheel smoke pretag regressions passed; final merged shared-policy pin, root review and live proofs pending",
+      "local_commit": "ec6bf5e0da7b0a52e630c829a0ada001c8e94719"
     },
     {
       "task": "fleet_clud",
@@ -38,11 +40,12 @@
       "checkout": "../soldr2-extern/bosn-act",
       "base_sha": "c8ac849c78cd75fa63143ce47d97eedb4e6270cd",
       "ownership": "Act registry intent/state transactions and tests; service/runtime remain serial integration",
-      "evidence": "Seven Act registry tests plus existing foundation tests and Clippy passed; recovery-before-removal identity regression still being added",
+      "evidence": "9 Act lifecycle tests, 1 unit test, 25 foundation tests and Clippy passed; registry-only implementation, no actual Act runtime or nested-engine proof",
       "scope_decision": {
         "reason": "Whole runner crosses durable container ownership, daemon authentication/recovery, frozen snapshots and job reporting; unsafe as one low-effort implementation slice",
         "resolution": "Retained requested Sol/low; split registry slice, with root approving persistence/runtime boundaries before integration"
-      }
+      },
+      "local_commit": "66a9a3515957530f8ae9a08199b43c923fd487a4"
     }
   ],
   "reference_evidence": {
@@ -53,7 +56,8 @@
     "full_pr_result": "success",
     "same_candidate_main_dispatch": "https://github.com/zackees/soldr/actions/runs/36915175888",
     "dispatch_result": "pending at checkpoint",
-    "summary_pr": "https://github.com/zackees/soldr/pull/3515"
+    "summary_pr": "https://github.com/zackees/soldr/pull/3515",
+    "summary_staging": "Helpers and reviewed contracts land before trusted-base workflow wiring; draft #3515 is not yet a protected merge gate"
   },
   "completion_unproven": [
     "final reviewed merged consumer pins",

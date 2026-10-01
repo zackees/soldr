@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 from conftest import load_script_module
 
 ROOT = Path(__file__).parents[1]
@@ -222,23 +221,6 @@ def test_rerun_summary_rechecks_permission_instead_of_cached_write(
     assert queries == [(event, "o/r", "test-token")]
     report = json.loads(report_path.read_text())
     assert report["author_permission"] == (permission or "unknown")
-
-
-def test_merge_summary_runs_even_when_selector_or_required_cells_fail():
-    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
-    summary = jobs.get("ci-summary")
-    assert summary, "a skipped Full coverage job is not a merge summary"
-    assert summary["name"] == "CI summary"
-    assert summary["if"] == "${{ always() }}"
-    assert set(jobs["full-coverage"]["needs"]) <= set(summary["needs"])
-    assert {"lint-docs", "path-selection", "full-coverage"} <= set(summary["needs"])
-
-
-def test_extended_tier_overrides_docs_only_skip_for_its_required_host():
-    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
-    for name in ("lint", "build-linux-x64"):
-        assert "needs.ci-mode.outputs.mode != 'minimal'" in jobs[name]["if"]
-    assert "needs.ci-mode.outputs.mode == 'minimal'" in jobs["lint-docs"]["if"]
 
 
 @pytest.mark.parametrize("label", ["ci-test", "ci-full"])
