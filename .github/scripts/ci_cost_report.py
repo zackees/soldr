@@ -66,7 +66,7 @@ def pages(api, endpoint, key, params=None):
             endpoint, {**(params or {}), "per_page": PAGE_SIZE, "page": page}
         )
         count = data.get("total_count")
-        if type(count) is not int or count < 0:
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             raise ValueError(f"{endpoint}: missing or invalid total_count")
         if key == "workflow_runs" and count >= 1000:
             raise ValueError(

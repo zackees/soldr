@@ -3,6 +3,7 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 SCRIPT = Path(__file__).resolve().parents[1] / ".github/scripts/ci_cost_report.py"
 
@@ -203,20 +204,23 @@ class CostReportTests(unittest.TestCase):
     def test_search_limit_and_truncated_inventory_refuse_cost_reports(self):
         m = load_report()
 
-        class TruncatedAPI:
-            def __init__(self, count):
-                self.count = count
-
-            def get(self, endpoint, params=None):
-                return {"total_count": self.count, "workflow_runs": [run(1, "a")]}
-
         for count, message in (
             (1000, "1000-run limit"),
             (1001, "1000-run limit"),
             (2, "incomplete inventory"),
         ):
             with self.assertRaisesRegex(ValueError, message):
-                m.collect_sha(TruncatedAPI(count), "o/r", "a", "push")
+                m.collect_sha(
+                    SimpleNamespace(
+                        get=lambda endpoint, params=None, count=count: {
+                            "total_count": count,
+                            "workflow_runs": [run(1, "a")],
+                        }
+                    ),
+                    "o/r",
+                    "a",
+                    "push",
+                )
 
     def test_repeated_label_runs_on_one_sha_need_an_anchor(self):
         m = load_report()
