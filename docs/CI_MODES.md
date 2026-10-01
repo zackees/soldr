@@ -129,3 +129,9 @@ Branch protection must require `CI summary` only after a successful default-
 branch run proves the context exists. The repository currently has no required
 checks; shipping the summary alone does not prove protected enforcement or the
 fleet's external-author security and live-run acceptance criteria.
+
+Cache-control jobs check out the reviewed PR base revision, rather than the
+candidate's helper/configuration. This prevents a same-repository author whose
+write access was revoked from executing PR-authored cache-control code with
+the janitor's write token. Fork janitor skips and read-only test tokens remain
+in force; this does not replace the remaining full external-graph security audit.
