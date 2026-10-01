@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 COVERAGE = runpy.run_path(str(Path(__file__).with_name("ci_full_coverage.py")))
+SELECTOR = runpy.run_path(str(Path(__file__).with_name("ci_mode.py")))
 SCHEMA = "fleet-ci-summary/v1"
 
 
@@ -116,6 +117,28 @@ def main() -> int:
         "expected_sha": os.environ.get("EXPECTED_SHA", ""),
         "selected_sha": os.environ.get("SELECTED_SHA", ""),
     }
+    selector_permission = inputs["author_permission"]
+    if inputs["event_name"] == "pull_request":
+        # A failed-job rerun can reuse ci-mode's outputs from an earlier
+        # attempt. The merge decision must use permission at summary time.
+        try:
+            event = json.loads(
+                Path(os.environ.get("GITHUB_EVENT_PATH", "")).read_text(
+                    encoding="utf-8"
+                )
+            )
+            permission = (
+                SELECTOR["lookup_author_permission"](
+                    event,
+                    os.environ.get("GITHUB_REPOSITORY", ""),
+                    os.environ.get("GITHUB_TOKEN", ""),
+                )
+                if isinstance(event, dict)
+                else None
+            )
+        except (OSError, ValueError):
+            permission = None
+        inputs["author_permission"] = permission or "unknown"
     try:
         failures = summary_failures(adapter, full, needs, **inputs)
         jobs = sorted(required_jobs(adapter, full, inputs["mode"], inputs["docs_only"]))
@@ -124,6 +147,7 @@ def main() -> int:
     report = {
         "schema": SCHEMA,
         **inputs,
+        "selector_author_permission": selector_permission,
         "adapter_sha256": hashlib.sha256(adapter_raw).hexdigest(),
         "manifest_sha256": hashlib.sha256(full_raw).hexdigest(),
         "required_jobs": jobs,

@@ -113,6 +113,10 @@ documentation-only, and extended-test jobs; full mode additionally checks the
 canonical target contract and `Full coverage`. Every selected job must finish
 successfully on the selected candidate identity. An unresolved/external PR
 author cannot use a minimal or test summary, and a dispatch requires full mode.
+The summary repeats the permission lookup from the real event payload, including
+failed-job reruns that reuse earlier selector outputs. Revoked or unresolved
+write access refuses a minimal/test merge result; rerun the complete workflow
+to schedule full validation. Reports retain both permission observations.
 The summary uploads an attempt-specific `fleet-ci-summary/v1` diagnostic report
 with both contract digests, identity, permission class, outcomes, and failures.
 

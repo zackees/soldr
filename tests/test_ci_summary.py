@@ -138,7 +138,7 @@ def test_build_only_target_cannot_pass_summary():
     ) == ["board: no full-CI execution job"]
 
 
-def test_cli_failure_report_preserves_candidate_identity(tmp_path, monkeypatch):
+def cli_environment(tmp_path, monkeypatch):
     adapter_path = tmp_path / "adapter.json"
     manifest_path = tmp_path / "full.json"
     report_path = tmp_path / "summary.json"
@@ -166,12 +166,48 @@ def test_cli_failure_report_preserves_candidate_identity(tmp_path, monkeypatch):
             str(report_path),
         ],
     )
+    return report_path
+
+
+def test_cli_failure_report_preserves_candidate_identity(tmp_path, monkeypatch):
+    report_path = cli_environment(tmp_path, monkeypatch)
     assert SUMMARY.main() == 1
     report = json.loads(report_path.read_text())
     assert report["schema"] == "fleet-ci-summary/v1"
     assert report["expected_sha"] == SHA
     assert not report["success"]
     assert report["failures"]
+
+
+@pytest.mark.parametrize(
+    "permission, exit_code", [("read", 1), (None, 1), ("admin", 0)]
+)
+def test_rerun_summary_rechecks_permission_instead_of_cached_write(
+    tmp_path, monkeypatch, permission, exit_code
+):
+    report_path = cli_environment(tmp_path, monkeypatch)
+    event_path = tmp_path / "event.json"
+    event = {"pull_request": {"user": {"login": "author"}}}
+    event_path.write_text(json.dumps(event))
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("CI_MODE", "minimal")
+    monkeypatch.setenv("AUTHOR_PERMISSION", "write")
+    monkeypatch.setenv("SELECTED_SHA", SHA)
+    queries = []
+
+    def lookup(payload, repository, token):
+        queries.append((payload, repository, token))
+        return permission
+
+    monkeypatch.setattr(
+        SUMMARY, "SELECTOR", {"lookup_author_permission": lookup}, raising=False
+    )
+    assert SUMMARY.main() == exit_code
+    assert queries == [(event, "o/r", "test-token")]
+    report = json.loads(report_path.read_text())
+    assert report["author_permission"] == (permission or "unknown")
 
 
 def test_merge_summary_runs_even_when_selector_or_required_cells_fail():
