@@ -205,6 +205,10 @@ class CostReportTests(unittest.TestCase):
         m = load_report()
 
         for count, message in (
+            (None, "invalid total_count"),
+            (-1, "invalid total_count"),
+            (True, "invalid total_count"),
+            (1.0, "invalid total_count"),
             (1000, "1000-run limit"),
             (1001, "1000-run limit"),
             (2, "incomplete inventory"),
