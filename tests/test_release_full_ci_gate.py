@@ -148,4 +148,6 @@ def test_actual_recovery_publish_condition_requires_success(result: str) -> None
             prepare=SimpleNamespace(result="skipped"),
         ),
     }
+    # Expression is read only from this repository workflow, with no builtins.
+    # pylint: disable=eval-used
     assert eval(expression, {"__builtins__": {}}, context) is (result == "success")
