@@ -206,12 +206,14 @@ pub fn sweep_legacy_cache_roots(
                                     .to_str()
                                     .is_some_and(zccache::core::config::is_version_dir_name)
                             {
-                                retired.merge(&zccache::core::config::sweep_retired_version_store(
-                                    &entry.path(),
-                                    max_age,
-                                    now,
-                                    zccache::core::config::RetiredSweepMode::Pressure,
-                                ));
+                                retired.merge(
+                                    &zccache::core::config::sweep_retired_version_store_with_mode(
+                                        &entry.path(),
+                                        max_age,
+                                        now,
+                                        zccache::core::config::RetiredSweepMode::Pressure,
+                                    ),
+                                );
                             }
                         }
                         Err(_) => report.failed += 1,
@@ -222,13 +224,15 @@ pub fn sweep_legacy_cache_roots(
         }
     }
     if embedded_root.exists() {
-        retired.merge(&zccache::core::config::sweep_retired_version_stores_in(
-            &embedded_root,
-            &current_version,
-            max_age,
-            now,
-            zccache::core::config::RetiredSweepMode::Pressure,
-        ));
+        retired.merge(
+            &zccache::core::config::sweep_retired_version_stores_in_with_mode(
+                &embedded_root,
+                &current_version,
+                max_age,
+                now,
+                zccache::core::config::RetiredSweepMode::Pressure,
+            ),
+        );
     }
     report.removed += retired.stores_removed;
     report.failed += retired.failed;
