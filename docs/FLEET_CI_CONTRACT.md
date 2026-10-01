@@ -57,30 +57,13 @@ The shared merge summary is `.github/scripts/ci_summary.py`, pinned alongside
 `ci_full_coverage.py`. Call it with `--adapter <summary-contract.json>
 --full-contract <coverage-contract.json> --report <summary.json>`. Its adapter
 declares integer `schema_version: 1` and nonempty unique job ID lists named
-`minimal_jobs`, `docs_jobs`, and `test_jobs` (the extra test cells).
-The test tier must add jobs beyond minimal. Tier declarations cannot substitute
-the shared policy prerequisites `ci-mode`, `path-selection`, or `full-coverage`
-for tests; consumer adapters use those normalized policy job IDs. Supply the
+`minimal_jobs`, `docs_jobs`, and `test_jobs` (the extra test cells). Supply the
 real GitHub `needs` object in `CI_NEEDS_JSON`, and selection in `CI_MODE`,
 `DOCS_ONLY`, `AUTHOR_PERMISSION`, `GITHUB_EVENT_NAME`, `EXPECTED_SHA`, and
-`SELECTED_SHA`.
-For PRs the summary independently fetches current labels/head and rechecks
-the current author's permission using `GITHUB_EVENT_PATH`, `GITHUB_REPOSITORY`, and the read-only `GITHUB_TOKEN`;
-the earlier selector output cannot authorize a failed-job rerun after access
-was revoked or labels require a stronger tier. Missing current metadata and
-a changed head fail closed, including cached full runs. Legacy aliases may be
-declared in the summary adapter's optional `label_aliases` map. The `fleet-ci-summary/v1` report fails closed on unknown modes,
+`SELECTED_SHA`. The `fleet-ci-summary/v1` report fails closed on unknown modes,
 unsuccessful selected cells, candidate drift, incomplete full execution, or an
 external PR downgraded below full. Consumers must include every declared job
 as a direct dependency of their always-running summary.
-
-The helper is staged before Soldr workflow integration. Consumers must load
-helpers and reviewed contracts from a trusted policy revision, never execute
-candidate-controlled policy or fall back to it when trusted files are missing.
-The workflow that invokes the helper also needs trusted enforcement: a stable
-status name alone cannot prove that trusted code produced it. This staging
-change does not claim external-workflow tampering resistance or protected
-branch enforcement.
 
 Remaining shared-mechanism work includes fleet adoption of these helpers and
 the whole-event cost interface, issue-driven release directives and

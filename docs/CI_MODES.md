@@ -107,27 +107,21 @@ The adapter replaces Soldr's smoke-job defaults; its complete test inventory
 must be reviewed and proven by live runs. Consumer rollout remains under
 [soldr#3345](https://github.com/zackees/soldr/issues/3345).
 
-The shared `ci_summary.py` helper and `ci/summary-contract.json` are staged
-for a subsequent workflow integration. This change does not install a
-`CI summary` job or a new required branch-protection context. The integration
-must execute every policy helper and contract from the trusted PR base revision,
-with candidate checkout and identity verification separate. Missing trusted
-policy files must fail closed; candidate-code fallback is forbidden.
+`CI summary` is the stable merge context and runs with `always()` after the
+selector and required cells. It checks `ci/summary-contract.json` for minimal,
+documentation-only, and extended-test jobs; full mode additionally checks the
+canonical target contract and `Full coverage`. Every selected job must finish
+successfully on the selected candidate identity. An unresolved/external PR
+author cannot use a minimal or test summary, and a dispatch requires full mode.
+The summary uploads an attempt-specific `fleet-ci-summary/v1` diagnostic report
+with both contract digests, identity, permission class, outcomes, and failures.
 
-The helper independently reads fresh PR metadata and permission before accepting
-a result. Failed-job reruns cannot reuse a lower tier after labels change, or
-accept a former PR head. Missing metadata refuses even a cached full result.
-The diagnostic report retains current labels/head, both permission observations,
-contract digests, outcomes, and failures. A higher coverage tier may satisfy a
-lower current request after label removal.
+Both `ci-test` and `ci-full` override documentation-only host/lint skips, so the
+extended tier can actually execute its declared extra tests. Minimal docs-only
+PRs require the documentation lint and a successful path-selection decision.
+Informational reld probes remain advisory and are not declared merge gates.
 
-A required status name alone cannot prove which implementation produced it.
-The remaining security work includes trusted workflow enforcement and live
-external-author proof. The repository currently has no required checks; helper
-unit tests do not prove protected enforcement.
-
-Cache-control jobs check out the reviewed PR base revision, rather than the
-candidate's helper/configuration. This prevents a same-repository author whose
-write access was revoked from executing PR-authored cache-control code with
-the janitor's write token. Fork janitor skips and read-only test tokens remain
-in force; this does not replace the remaining full external-graph security audit.
+Branch protection must require `CI summary` only after a successful default-
+branch run proves the context exists. The repository currently has no required
+checks; shipping the summary alone does not prove protected enforcement or the
+fleet's external-author security and live-run acceptance criteria.
