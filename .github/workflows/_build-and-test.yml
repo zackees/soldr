@@ -209,11 +209,7 @@ jobs:
       # 0.9.16 (zccache 1.13.22) against a 1.14.14 store was 0 HIT / 381 MISS
       # on every run, a 139 s step. tests/test_bootstrap_zccache_pin.py fails
       # when Cargo.toml's zccache pin moves without this declaration.
-      # bootstrap-embeds-zccache: 1.14.14
-      # soldr 0.9.27 ingests zccache 1.15.0 (mimalloc-pprof#590, zccache#1791);
-      # no release embeds it until 0.9.27 ships. Move `version:` to 0.9.27, set
-      # the declaration above to 1.15.0 and drop this marker in the follow-up.
-      # bootstrap-zccache-pending: 1.15.0
+      # bootstrap-embeds-zccache: 1.15.0
       - name: Setup pinned soldr toolchain
         uses: zackees/setup-soldr@a07bab94f16124b5c6857b137a237a53a61e06d1
         with:
