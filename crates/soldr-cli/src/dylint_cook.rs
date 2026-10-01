@@ -277,6 +277,9 @@ pub(crate) async fn run(args: &[String], cache_enabled: bool) -> Result<i32, Sol
     // may be inside cargo-chef's in-place skeleton reconstruction even before
     // this invocation reaches its own snapshot.
     let source_lock = lock_workspace_source(&root)?;
+    // soldr#3518: never read, hash, or snapshot a tree a killed cook left as
+    // a cargo-chef skeleton.
+    crate::cook_source_journal::recover_stale_cook_journals(&root)?;
     let configured = configured_library_toolchain(&root)?;
     let requested = reconcile_toolchain(parsed.toolchain.as_deref(), configured.as_deref())?;
 
@@ -324,10 +327,11 @@ pub(crate) async fn run(args: &[String], cache_enabled: bool) -> Result<i32, Sol
 
     let recipe_dir = tempfile::tempdir()?;
     let recipe_path = recipe_dir.path().join("recipe.json");
-    let source_snapshot = crate::cook::snapshot_project_source(&root)?;
+    // soldr#3518: journaled to disk before chef's in-place reconstruction.
+    let source_guard = crate::cook_source_journal::CookSourceGuard::begin(&root)?;
     let result =
         run_check_shaped_cook(&recipe_path, &target_dir, &parsed, &plan, cache_enabled).await;
-    crate::cook::restore_project_source(&root, &source_snapshot).map_err(|error| {
+    source_guard.restore().map_err(|error| {
         SoldrError::Other(format!(
             "soldr dylint cook: failed to restore workspace sources: {error}"
         ))

@@ -262,6 +262,9 @@ pub(crate) async fn run_cook(args: &[String], cache_enabled: bool) -> Result<i32
     let cwd = std::env::current_dir()
         .map_err(|e| SoldrError::Other(format!("soldr cook: failed to read cwd: {e}")))?;
     let (ctx, _tempdir_guard) = build_cook_context(&cwd, &parsed)?;
+    // soldr#3518: undo a previous cook killed mid-skeleton before `prepare`
+    // reads (and hashes) the manifests.
+    crate::cook_source_journal::recover_stale_cook_journals(&ctx.manifest_dir)?;
 
     // soldr#3043: publish this cook's target scope to the cargo front door
     // before ANY phase runs. Phase 1 below is `cargo chef prepare`, whose argv
@@ -383,7 +386,9 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
     // compile-cache key for first-party crates (different `-C metadata` than a
     // warm run where cook's cache hits and the tree is pristine) — see
     // zackees/soldr#566, zackees/zccache#448.
-    let source_snapshot = snapshot_project_source(&ctx.manifest_dir)?;
+    // soldr#3518: the snapshot is journaled to disk (fsync) before chef
+    // mutates anything, so a killed cook is undone by the next invocation.
+    let source_guard = crate::cook_source_journal::CookSourceGuard::begin(&ctx.manifest_dir)?;
 
     // #621: skip-cook-when-warm. After Phase 1 (prepare) the recipe is
     // fully resolved. If a previous successful cook left a marker file
@@ -409,7 +414,7 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
         // Restore source before returning — same invariant as the
         // normal post-cook path (project tree must be pristine for
         // downstream cargo build).
-        restore_project_source(&ctx.manifest_dir, &source_snapshot)?;
+        source_guard.restore()?;
         return Ok(0);
     }
 
@@ -444,7 +449,7 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
     // so the tree is pristine for every subsequent build step (#566).
     // Restoration is a correctness boundary: never run the exact build or
     // persist/index a successful cook against cargo-chef's synthetic source.
-    restore_project_source(&ctx.manifest_dir, &source_snapshot)?;
+    source_guard.restore()?;
 
     let code = cook_result?;
     if code != 0 {
