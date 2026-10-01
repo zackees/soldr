@@ -751,9 +751,9 @@ def test_production_cross_workflows_do_not_select_legacy_backends() -> None:
             line for line in body.splitlines() if not line.lstrip().startswith("#")
         )
         for token in forbidden:
-            assert token not in executable, (
-                f"{path.relative_to(REPO_ROOT)} selects {token!r}"
-            )
+            assert (
+                token not in executable
+            ), f"{path.relative_to(REPO_ROOT)} selects {token!r}"
 
     cross_all_executable = "\n".join(
         line
@@ -960,7 +960,7 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_and_the_blessed_build() ->
     assert (
         "uses: zackees/setup-soldr@a07bab94f16124b5c6857b137a237a53a61e06d1" in release
     )
-    assert "version: 0.9.25" in release
+    assert "version: 0.9.27" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert "target-wheel-hook" in release
     # soldr#2469 step 2.2: the GitHub gate delegates both release lookup
@@ -1030,15 +1030,15 @@ def _matrix_binary_source_prepares_gnu_linux() -> bool:
     )
 
 
-def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> None:
-    """PEP 517 runs inside setup-soldr's prepared target environment."""
+def test_release_wheels_use_soldr_with_legacy_hooks_for_other_platforms() -> None:
+    """GNU uses soldr wheel; the legacy builders keep their prepared environment."""
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
 
     assert _matrix_binary_source_prepares_gnu_linux()
     assert (
         "uses: zackees/setup-soldr@a07bab94f16124b5c6857b137a237a53a61e06d1" in release
     )
-    assert "version: 0.9.25" in release
+    assert "version: 0.9.27" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert ".github/scripts/prepare_release_wheel.py" in release
     assert '--runner-os "$RUNNER_OS"' in release
@@ -1061,9 +1061,7 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
     assert "CC_aarch64_unknown_linux_musl: musl-gcc" in native_arm_musl
     assert ".github/scripts/native_release_build.py binary" in native_arm_musl
 
-    target_hook_wheel = _step_block(
-        release, "Build wheel through setup-soldr target environment"
-    )
+    target_hook_wheel = _step_block(release, "Build wheel through Soldr")
     assert (
         "if: ${{ !contains(matrix.target, 'unknown-linux-musl') }}" in target_hook_wheel
     )
@@ -1105,7 +1103,7 @@ def test_release_target_prepare_retries_transient_setup_failure() -> None:
     materialize = _step_block(
         release, "Materialize installed Soldr as release build driver"
     )
-    wheel = _step_block(release, "Build wheel through setup-soldr target environment")
+    wheel = _step_block(release, "Build wheel through Soldr")
 
     assert "continue-on-error: ${{ matrix.setup_target != '' }}" in setup
     assert (
@@ -1151,9 +1149,7 @@ def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
 
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     matrix = release.split("      matrix:\n", 1)[1].split("\n    steps:\n", 1)[0]
-    wheel_step = _step_block(
-        release, "Build wheel through setup-soldr target environment"
-    )
+    wheel_step = _step_block(release, "Build wheel through Soldr")
     wheel_smoke = _step_block(release, "Smoke test wheel")
 
     assert "build_driver:" not in matrix
