@@ -78,4 +78,4 @@ def test_isolated_suite_requires_a_bosn_that_does_not_reap_bursts() -> None:
     tests = {check.name: check for check in GATE.checks()}[
         "soldr tests (isolated, bosn)"
     ]
-    assert tests.min_version is not None and tests.min_version >= (0, 1, 5)
+    assert tests.min_version is not None and tests.min_version >= (0, 1, 6)

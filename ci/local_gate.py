@@ -557,9 +557,12 @@ def checks() -> list[Check]:
             ("bosn", "run", "--task", "test"),
             "tests",
             exclusive=True,
-            # zackees/bosn#317: older bosn reaps a task whose output outruns
-            # its event queue -- `ci-test`'s warning burst died at 390 s.
-            min_version=(0, 1, 5),
+            # zackees/bosn#317 (0.1.5): older bosn reaps a task whose output
+            # outruns its event queue -- `ci-test`'s warning burst died at
+            # 390 s. 0.1.6 (zackees/bosn#322): a stale socket in the default
+            # state dir is reclaimed instead of failing autostart, and a
+            # client/daemon version mismatch is reported instead of a reset.
+            min_version=(0, 1, 6),
         )
     ]
     return lint + rust + tests
