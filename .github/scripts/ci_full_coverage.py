@@ -29,7 +29,8 @@ EXTRA_REQUIRED = {
 def required_jobs(contract: dict[str, Any]) -> set[str]:
     declared = contract.get("required_jobs", list(EXTRA_REQUIRED))
     if "required_jobs" in contract and (
-        isinstance(contract.get("schema_version"), bool)
+        not isinstance(contract.get("schema_version"), int)
+        or isinstance(contract.get("schema_version"), bool)
         or contract.get("schema_version") != 1
     ):
         raise ValueError("portable coverage contract requires schema_version 1")
@@ -122,14 +123,12 @@ def main() -> int:
     raw = contract_path.read_bytes()
     contract = json.loads(raw)
     needs = json.loads(os.environ["CI_NEEDS_JSON"])
-    if args.contract and (
-        "required_jobs" not in contract
-        or not args.expected_sha
-        or not args.selected_sha
+    if args.contract and "required_jobs" not in contract:
+        raise ValueError("portable contract requires explicit required_jobs")
+    if (args.contract or args.report) and (
+        not args.expected_sha or not args.selected_sha
     ):
-        raise ValueError(
-            "portable contract requires required_jobs and both candidate SHAs"
-        )
+        raise ValueError("portable coverage and reports require both candidate SHAs")
     failures = coverage_failures(
         contract, needs, expected_sha=args.expected_sha, selected_sha=args.selected_sha
     )

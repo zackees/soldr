@@ -168,3 +168,20 @@ def test_duplicate_portable_target_identities_are_rejected():
     manifest["targets"].append(manifest["targets"][0].copy())
     with pytest.raises(ValueError, match="unique"):
         COVERAGE.required_jobs(manifest)
+
+
+@pytest.mark.parametrize("version", [1.0, True, "1", None, 2])
+def test_portable_schema_version_requires_integer_one(version):
+    manifest = contract()
+    manifest["schema_version"] = version
+    with pytest.raises(ValueError, match="schema_version 1"):
+        COVERAGE.required_jobs(manifest)
+
+
+def test_default_contract_report_requires_candidate_identity(tmp_path, monkeypatch):
+    report = tmp_path / "coverage.json"
+    monkeypatch.setenv("CI_NEEDS_JSON", "{}")
+    monkeypatch.setattr("sys.argv", ["coverage", "--report", str(report)])
+    with pytest.raises(ValueError, match="both candidate SHAs"):
+        COVERAGE.main()
+    assert not report.exists()
