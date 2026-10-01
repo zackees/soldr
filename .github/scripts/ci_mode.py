@@ -89,7 +89,9 @@ def select_mode(
             "full"
             if author_permission not in {"write", "maintain", "admin"}
             or "ci-full" in names
-            else "test" if "ci-test" in names else "minimal"
+            else "test"
+            if "ci-test" in names
+            else "minimal"
         )
         return mode, sha.lower()
     if event_name == "push":
