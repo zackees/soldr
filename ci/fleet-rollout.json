@@ -62,9 +62,11 @@
     "bootstrap_minimal_run": "https://github.com/zackees/soldr/actions/runs/36918116920",
     "bootstrap_minimal_result": "success",
     "bootstrap_full_run": "https://github.com/zackees/soldr/actions/runs/36920078727",
-    "bootstrap_full_result": "pending at checkpoint",
+    "bootstrap_full_result": "success on exact e1cd95f39aeea46489984f2eeb239d6a612c334f; 27 required coverage jobs passed",
     "main_full_control": "ci/fleet-evidence/soldr-main-vs-full-7c804.json",
-    "main_full_control_scope": "One identical-source-tree cross-event control including causalchildren:14.85/208.1667 runner-minutes=7.1337%; CPU-weighted7.1932%. PR/repeatedhistorical cohorts notproven."
+    "main_full_control_scope": "One identical-source-tree cross-event control including causalchildren:14.85/208.1667 runner-minutes=7.1337%; CPU-weighted7.1932%. PR/repeatedhistorical cohorts notproven.",
+    "bootstrap_merge_commit": "aa7cb6a7fc17c25eb4514611689df020eb86bda9",
+    "bootstrap_full_evidence": "ci/fleet-evidence/soldr-e1cd-bootstrap-full.json"
   },
   "completion_unproven": [
     "final reviewed merged consumer pins",
