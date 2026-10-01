@@ -85,7 +85,8 @@
         "cli_reentrancy_guard",
         "cli_reentrancy_guard_canary",
         "cli_toolchain_download_guard",
-        "cli_wrapper_perf"
+        "cli_wrapper_perf",
+        "fixture_daemon_isolation"
       ],
       "disposition": "native-linux-once",
       "reason": "These modules use subprocess fixtures for portable dispatch, policy, failure propagation, and source-fingerprint contracts rather than distinct target APIs."
