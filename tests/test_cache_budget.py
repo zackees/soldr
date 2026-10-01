@@ -474,7 +474,9 @@ def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
             "createdAt": "2026-09-23T01:00:00Z",
         },
         entry("v0-rust-bootstrap-soldr-linux-gnu-dev-abc", 402 * mib),
-        entry("v0-rust-wheel-cross-aarch64-unknown-linux-gnu-release-abc", 650 * mib),
+        # Above rust-cache-residual's 1.40 GiB allocation (402 + 1100 MiB):
+        # the family must not fit until the producer shrinks.
+        entry("v0-rust-wheel-cross-aarch64-unknown-linux-gnu-release-abc", 1100 * mib),
     ]
     entries = guard.normalize_entries(rows)
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -643,7 +645,8 @@ def test_3347_policy_is_not_green_when_a_family_truly_does_not_fit() -> None:
     # prune candidate, so it must stay red.
     entries = [
         (
-            guard.CacheEntry(e.key, e.ref, 700_000_000, e.id, e.created_at)
+            # Sized so the family exceeds its 1.40 GiB allocation (2026-10-01).
+            guard.CacheEntry(e.key, e.ref, 1_200_000_000, e.id, e.created_at)
             if e.key.startswith("v0-rust-wheel-cross-")
             else e
         )
