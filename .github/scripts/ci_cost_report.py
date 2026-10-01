@@ -164,9 +164,15 @@ def collect_sha(api, repo, sha, event, *, weights=None, anchor_run_id=None):
                 f"repos/{repo}/actions/runs/{run['id']}/attempts/{attempt}/jobs"
             )
             for job in pages(api, job_endpoint, "jobs"):
-                duration, timestamp_skew = seconds(
-                    job.get("started_at"), job.get("completed_at")
-                )
+                # Skipped jobs never allocate a runner. GitHub may still
+                # attach synthetic timestamps; retain their coverage outcome
+                # without charging that span or assigning a runner weight.
+                if job.get("conclusion") == "skipped":
+                    duration, timestamp_skew = 0, 0
+                else:
+                    duration, timestamp_skew = seconds(
+                        job.get("started_at"), job.get("completed_at")
+                    )
                 if duration is None and job.get("started_at"):
                     raise ValueError(f"job {job['id']} has no completion time")
                 duration = duration or 0
