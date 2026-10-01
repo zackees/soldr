@@ -310,15 +310,20 @@ This rule was set during the #1105 fix: the `rust-lld` LIB-injection feature was
 
 ## Working Location Rule
 
-**Do all soldr work directly in this repository checkout. No sibling clones, no
-git worktrees — not even under this repo.** Owner directive (2026-08-10):
-create a feature branch here and work on it in place; do not `git clone` a
-sibling copy (`../soldr-wt-*`, `../soldr2`, …) and do not `git worktree add` a
-linked tree. Sibling/worktree checkouts break the Docker Linux runner
-(`ci/perf_local.py` mounts *this* checkout root as `/repo`, so a tree outside it
-is invisible) and fragment the warm cargo/soldr volumes. Switch branches in
-place with `git checkout -b`; if another agent needs isolation, coordinate on a
-branch, not a second working tree.
+**Sister checkouts are allowed** (owner directive 2026-10-01, zackees/clud#1696;
+supersedes the 2026-08-10 "no sibling clones, no worktrees" rule). Work in this
+checkout, or in a git worktree under `../soldr-extern/<name>` when you need
+isolation from another agent's work or a clean tree (`git worktree add
+../soldr-extern/<name> -b <branch> origin/main`). Remove the worktree when the
+branch is merged.
+
+- **Know which runner sees which tree.** `ci/perf_local.py` mounts the
+  repository's shared git root read-only at `/repo`; a worktree *below* that
+  root is reachable with `docker exec -w`, a sister worktree under
+  `../soldr-extern` is not -- use `bosn run --task <t>` from the worktree
+  instead (bosn mounts the workspace it is run from).
+- **Never share one worktree between agents**, and never edit a checkout or
+  worktree another agent owns.
 
 ## Agent Completion Rules
 

@@ -511,14 +511,40 @@ def checks() -> list[Check]:
             slow=True,
         ),
     ]
-    # The host's own soldr lints and compiles the workspace: rustfmt, Clippy
-    # for the host and every declared target (soldr#3378), and every Dylint
-    # library. Using soldr as a tool on the host is safe; running soldr's
-    # *tests* there is not (below).
+    # ci-test's lint and dependency-policy stages, command for command
+    # (`soldr ci-test --explain-plan`), run by the host's own soldr. Using
+    # soldr as a tool on the host is safe; running soldr's *tests* there is
+    # not (the `tests` lane, below). Exactly CI's commands, no stricter: a
+    # broader `soldr lint deps` (full `cargo deny check`) fails on main for
+    # license/advisory policy CI does not enforce, and a gate main cannot
+    # pass attests nothing.
     rust = [
-        Check("soldr lint rust", ("soldr", "lint", "rust"), "rust", exclusive=True),
-        # cargo deny / audit / machete: ci-test's dependency-policy stages.
-        Check("soldr lint deps", ("soldr", "lint", "deps"), "rust", exclusive=True),
+        Check("rustfmt", ("soldr", "cargo", "fmt", "--all", "--", "--check"), "rust"),
+        Check("soldr lint ci", ("soldr", "lint", "ci"), "rust"),
+        Check("cargo deny (bans)", ("soldr", "cargo", "deny", "check", "bans"), "rust"),
+        Check("cargo audit", ("soldr", "cargo", "audit"), "rust"),
+        Check("cargo machete", ("soldr", "cargo", "machete"), "rust"),
+        Check(
+            "clippy",
+            (
+                "soldr",
+                "cargo",
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ),
+            "rust",
+            exclusive=True,
+        ),
+        Check(
+            "dylint",
+            ("soldr", "cargo", "dylint", "--all", "--", "--workspace", "--all-targets"),
+            "rust",
+            exclusive=True,
+        ),
     ]
     # zackees/ci.yml#168 (GATE-005), soldr#3516: soldr's test suite starts
     # soldr daemons and touches soldr state roots, so it never runs on the
