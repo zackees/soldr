@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -95,3 +96,58 @@ def test_release_gate_scripts_use_pinned_uv_after_setup() -> None:
         assert steps[gate_index]["run"].startswith(
             "uv run --no-project --python 3.13 python .github/scripts/release_full_ci_gate.py "
         )
+
+
+def test_npm_recovery_cannot_bypass_full_candidate_gate() -> None:
+    jobs = yaml.safe_load((ROOT / ".github/workflows/release-auto.yml").read_text())[
+        "jobs"
+    ]
+    assert "full_ci_gate" in jobs["publish-npm"]["needs"]
+    assert jobs["publish-npm"]["if"].startswith(
+        "always() && needs.full_ci_gate.result == 'success' &&"
+    )
+    gate_job = jobs["full_ci_gate"]
+    assert "always()" in gate_job["if"]
+    assert "inputs.npm_release_ref != ''" in gate_job["if"]
+    verifier = next(
+        step
+        for step in gate_job["steps"]
+        if step.get("name") == "Verify completed full CI run and required jobs"
+    )
+    assert "inputs.candidate_sha" in verifier["env"]["CANDIDATE_SHA"]
+    recovery_step = next(
+        step
+        for step in jobs["publish-npm"]["steps"]
+        if step.get("name") == "Verify npm recovery candidate source"
+    )
+    assert "--verify-candidate" in recovery_step["run"]
+    assert recovery_step["env"]["CANDIDATE_SHA"] == "${{ inputs.candidate_sha }}"
+    steps = jobs["publish-npm"]["steps"]
+    assert steps.index(recovery_step) < next(
+        i
+        for i, step in enumerate(steps)
+        if step.get("name") == "Publish package to npm"
+    )
+
+
+@pytest.mark.parametrize(
+    "result", ["", "skipped", "failure", "cancelled", "neutral", "success"]
+)
+def test_actual_recovery_publish_condition_requires_success(result: str) -> None:
+    jobs = yaml.safe_load((ROOT / ".github/workflows/release-auto.yml").read_text())[
+        "jobs"
+    ]
+    expression = jobs["publish-npm"]["if"].replace("&&", " and ").replace("||", " or ")
+    # Evaluate the actual workflow boolean expression with a recovery event;
+    # the skipped normal release graph must not authorize publication.
+    context = {
+        "always": lambda: True,
+        "inputs": SimpleNamespace(npm_release_ref="v1.2.3"),
+        "needs": SimpleNamespace(
+            full_ci_gate=SimpleNamespace(result=result),
+            prepare=SimpleNamespace(result="skipped"),
+        ),
+    }
+    # Expression is read only from this repository workflow, with no builtins.
+    # pylint: disable=eval-used
+    assert eval(expression, {"__builtins__": {}}, context) is (result == "success")
