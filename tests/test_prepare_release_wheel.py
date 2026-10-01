@@ -160,3 +160,42 @@ def test_workflow_invokes_preparation_script_instead_of_inline_wheel_policy() ->
     assert ".github/scripts/prepare_release_wheel.py" in workflow
     assert "cargo metadata returned no version for soldr-cli" not in workflow
     assert "setup-soldr wheel hook:" not in workflow
+
+
+@pytest.mark.parametrize(
+    "target", ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+)
+def test_manylinux_release_uses_blessed_wheel_without_setup_hook(
+    target: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#3436: execute the release helper, including its real command selection."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(wheel, "clean_wheel_outputs", lambda _root: None)
+    monkeypatch.setattr(
+        wheel, "validate_workspace_version", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        wheel.subprocess, "run", lambda command, **_kwargs: calls.append(command)
+    )
+    wheel.prepare_and_build(
+        target=target,
+        runner_os="Linux",
+        expected_version="v0.9.27",
+        wheel_hook="invalid hook must not be used",
+        repo_root=tmp_path,
+        driver_dir=tmp_path / "driver",
+    )
+    assert calls[-1] == [
+        str(tmp_path / "driver" / "soldr"),
+        "wheel",
+        "--release",
+        "--target",
+        target,
+        "--locked",
+        "--strip",
+        "--target-dir",
+        "target",
+        "--out",
+        "dist",
+    ]
+    assert not any(str(wheel.BUILD_SCRIPT) in command for command in calls)

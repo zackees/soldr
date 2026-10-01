@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""Prepare a release wheel build, then launch the pinned Maturin builder.
+"""Prepare a release wheel build, then launch the platform's wheel builder.
 
 The release workflow needs a clean wheel output directory, a metadata check
-against the candidate version, and the setup-soldr wheel-hook fallback before
-it invokes ``build_release_wheel.py``.  Keeping that policy in Python makes
-both its error paths and the runner-specific Soldr driver selection testable.
+against the candidate version. GNU/Linux uses ``soldr wheel``; other targets
+retain the setup-soldr hook and ``build_release_wheel.py``. Keeping that policy
+in Python makes its error paths and runner-specific driver selection testable.
 
 Usage (CI):
     python3 .github/scripts/prepare_release_wheel.py \
         --target x86_64-unknown-linux-gnu --runner-os Linux \
-        --expected-version v0.9.2 --wheel-hook "python -m build --wheel"
+        --expected-version v0.9.27
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -128,6 +129,23 @@ def builder_command(target: str, hook: str) -> list[str]:
     ]
 
 
+def blessed_wheel_command(driver: Path, target: str) -> list[str]:
+    """Use the blessed release surface with the existing packaging policy."""
+    return [
+        str(driver),
+        "wheel",
+        "--release",
+        "--target",
+        target,
+        "--locked",
+        "--strip",
+        "--target-dir",
+        "target",
+        "--out",
+        "dist",
+    ]
+
+
 def prepare_and_build(
     *,
     target: str,
@@ -137,7 +155,7 @@ def prepare_and_build(
     repo_root: Path,
     driver_dir: Path,
 ) -> None:
-    """Clean, validate, and launch Soldr's source-built Maturin wheel helper."""
+    """Clean, validate, and build through the target's release wheel surface."""
     driver = driver_path(runner_os, driver_dir)
     clean_wheel_outputs(repo_root)
     best_effort(
@@ -165,6 +183,15 @@ def prepare_and_build(
         cwd=repo_root,
     )
     validate_workspace_version(driver, expected_version, cwd=repo_root)
+    if target.endswith("-unknown-linux-gnu"):
+        subprocess.run(["uv", "python", "install", "3.13"], cwd=repo_root, check=True)
+        subprocess.run(
+            blessed_wheel_command(driver, target),
+            cwd=repo_root,
+            check=True,
+            env={**os.environ, "SOLDR_RELEASE_CI": "1"},
+        )
+        return
     hook = resolved_hook(wheel_hook)
     print(f"setup-soldr wheel hook: {hook}", flush=True)
     subprocess.run(["uv", "python", "install", "3.13"], cwd=repo_root, check=True)
