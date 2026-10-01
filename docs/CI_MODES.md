@@ -32,3 +32,8 @@ protection. A full run additionally reports `Full coverage`. The runner-minute
 budget in [soldr#3344](https://github.com/zackees/soldr/issues/3344) is for all
 workflows caused by the event; it needs Actions job-duration measurements and
 cannot be inferred from this workflow's job count.
+
+Manual npm recovery is partial publication and requires `candidate_sha` and
+`full_ci_run_id` too. A completed main-workflow full run must prove that exact
+candidate, and the immutable recovery tag must resolve to the tested SHA before
+npm publication. A missing, skipped, failed, or stale full gate refuses recovery.

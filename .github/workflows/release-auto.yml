@@ -20,7 +20,7 @@ on:
         type: boolean
         default: false
       npm_release_ref:
-        description: Publish only the npm package from this git ref (for manual release recovery).
+        description: Recover npm for an immutable tag; candidate_sha and full_ci_run_id are required.
         type: string
         default: ""
 permissions:
@@ -104,7 +104,7 @@ jobs:
   full_ci_gate:
     name: Verify exact-SHA full CI
     needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
+    if: always() && (needs.prepare.outputs.should_release == 'true' || inputs.npm_release_ref != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -113,7 +113,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: ${{ needs.prepare.outputs.commit_sha }}
+          ref: ${{ needs.prepare.outputs.commit_sha || inputs.candidate_sha }}
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.13"
@@ -124,7 +124,7 @@ jobs:
       - name: Verify completed full CI run and required jobs
         env:
           GH_TOKEN: ${{ github.token }}
-          CANDIDATE_SHA: ${{ needs.prepare.outputs.commit_sha }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.commit_sha || inputs.candidate_sha }}
           CI_RUN_ID: ${{ inputs.full_ci_run_id }}
         run: uv run --no-project --python 3.13 python .github/scripts/release_full_ci_gate.py --candidate-sha "$CANDIDATE_SHA" --ci-run-id "$CI_RUN_ID" --repository "$GITHUB_REPOSITORY"
 
@@ -1121,12 +1121,13 @@ jobs:
     name: Publish npm package
     needs:
       - prepare
+      - full_ci_gate
       - build
       - verify_github_release
       - publish-pypi
       - smoke_macos_arm64
       - release_execution_contract
-    if: always() && ((inputs.npm_release_ref != '' && needs.prepare.result == 'skipped') || (needs.release_execution_contract.result == 'success' && needs.smoke_macos_arm64.result == 'success' && needs.prepare.outputs.should_publish_npm == 'true' && needs.verify_github_release.result == 'success' && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped')))
+    if: always() && needs.full_ci_gate.result == 'success' && ((inputs.npm_release_ref != '' && needs.prepare.result == 'skipped') || (needs.release_execution_contract.result == 'success' && needs.smoke_macos_arm64.result == 'success' && needs.prepare.outputs.should_publish_npm == 'true' && needs.verify_github_release.result == 'success' && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped')))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release
@@ -1160,6 +1161,13 @@ jobs:
         with:
           enable-cache: false
 
+      # Partial recovery still requires the tested SHA. The tag checkout
+      # must resolve to that candidate before any package code is executed.
+      - name: Verify npm recovery candidate source
+        if: inputs.npm_release_ref != ''
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: uv run --no-project --python 3.13 python ../release-control/.github/scripts/release_full_ci_gate.py --verify-candidate --candidate-sha "$CANDIDATE_SHA"
       - name: Validate immutable npm recovery release
         if: github.event_name == 'workflow_dispatch' && inputs.npm_release_ref != ''
         env:
