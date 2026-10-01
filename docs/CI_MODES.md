@@ -64,3 +64,8 @@ graph has completed and review its included/excluded run inventory.
 The collector also checks API `total_count` against its paginated inventory and
 refuses searches at [GitHub's 1,000-result limit](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository).
 A truncated or changing inventory cannot support a budget claim.
+
+Setup Soldr Action smoke and Cook Size Gate are required full-mode jobs. They
+check out the same candidate SHA as the target matrix and no longer run on
+ordinary PR or main events. Explicit manual smoke dispatches remain available;
+full validation, rather than each main push, seeds their base-branch caches.

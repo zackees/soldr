@@ -24,14 +24,12 @@ name: Cook Size Gate
 
 on:
   workflow_call:
-  push:
-    branches: [main]
-    paths:
-      - 'crates/soldr-cli/src/cook.rs'
-      - 'crates/soldr-cache/src/cache_lib/strip_target.rs'
-      - 'crates/soldr-cache/**'
-      - '.github/workflows/cook-size-gate.yml'
-      - 'tests/test_cook_size_gate_workflow.py'
+    inputs:
+      source_ref:
+        description: Exact candidate SHA selected by canonical CI
+        required: true
+        type: string
+  # Full CI owns automatic invocation; manual smoke runs remain available.
   workflow_dispatch:
     inputs:
       max_compressed_mb:
@@ -69,6 +67,7 @@ jobs:
       - name: Checkout soldr
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          ref: ${{ inputs.source_ref || github.sha }}
           path: soldr
           submodules: recursive
 

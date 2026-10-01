@@ -51,7 +51,7 @@ def test_docs_only_pr_can_request_full_ci_without_duplicate_lint_status() -> Non
 def test_minimal_jobs_and_full_jobs_have_explicit_dependencies() -> None:
     for name in ("lint", "build-linux-x64"):
         assert "ci-mode" in _job(name)
-        assert "needs.ci-mode.outputs.mode == 'full'" not in _job(name)
+        assert "|| needs.path-selection.outputs.docs_only != 'true'" in _job(name)
     full_jobs = (
         "pep517-daemon-smoke",
         "windows-e2e-policy",
@@ -299,3 +299,25 @@ def test_full_overrides_platform_and_wheel_path_policies() -> None:
     assert wheel.decide_wheel_lane(
         event_name="pull_request", changed_paths=["README.md"], full=True
     ).run
+
+
+def test_expensive_smokes_run_only_in_full_mode_on_candidate_sha() -> None:
+    for name in ("setup-soldr-action", "cook-size-gate"):
+        job = _job(name)
+        assert "needs: ci-mode" in job
+        assert "needs.ci-mode.outputs.mode == 'full'" in job
+        assert "source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}" in job
+        workflow = (ROOT / ".github" / "workflows" / f"{name}.yml").read_text()
+        triggers = workflow.split("on:\n", 1)[1].split("permissions:", 1)[0]
+        assert "  push:" not in triggers
+        assert "  workflow_call:" in triggers
+        assert "source_ref:" in triggers
+        assert "ref: ${{ inputs.source_ref || github.sha }}" in workflow
+        assert name in COVERAGE.EXTRA_REQUIRED
+        assert name in _job("full-coverage").split("needs: ", 1)[1].split("\n", 1)[0]
+
+
+def test_full_mode_overrides_documentation_only_skip() -> None:
+    assert "needs.ci-mode.outputs.mode != 'full'" in _job("lint-docs")
+    for name in ("lint", "build-linux-x64"):
+        assert "needs.ci-mode.outputs.mode == 'full'" in _job(name)

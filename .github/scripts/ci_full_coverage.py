@@ -10,6 +10,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 EXTRA_REQUIRED = {
+    "setup-soldr-action",
+    "cook-size-gate",
     "lint",
     "build-linux-x64",
     "pep517-daemon-smoke",

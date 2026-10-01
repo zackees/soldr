@@ -122,8 +122,8 @@ jobs:
   # toolchain and platform fan-out that they cannot affect (soldr#3318).
   lint-docs:
     name: Lint
-    needs: path-selection
-    if: ${{ needs.path-selection.outputs.docs_only == 'true' }}
+    needs: [ci-mode, path-selection]
+    if: ${{ needs.ci-mode.outputs.mode != 'full' && needs.path-selection.outputs.docs_only == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -132,7 +132,7 @@ jobs:
   lint:
     name: Lint
     needs: [ci-mode, path-selection]
-    if: ${{ needs.path-selection.outputs.docs_only != 'true' }}
+    if: ${{ needs.ci-mode.outputs.mode == 'full' || needs.path-selection.outputs.docs_only != 'true' }}
     # Run on every push to main AND on every PR — without this PRs slip
     # in unformatted code that breaks main's Lint job on merge. Repeated
     # 4 times in late 2026-06 (#1111/#1114/#1115/#1120 fallout), each
@@ -545,7 +545,7 @@ jobs:
     # No `if:` guard: every downstream job hangs off this one, so it must
     # run on workflow_dispatch as well as on main pushes and PRs.
     needs: [ci-mode, path-selection, lint]
-    if: ${{ always() && needs.path-selection.outputs.docs_only != 'true' && needs.lint.result == 'success' }}
+    if: ${{ always() && (needs.ci-mode.outputs.mode == 'full' || needs.path-selection.outputs.docs_only != 'true') && needs.lint.result == 'success' }}
     uses: ./.github/workflows/_build-and-test.yml
     with:
       runner: ubuntu-24.04
@@ -1416,21 +1416,24 @@ jobs:
           uv run --no-project --python 3.13 python \
             ci/reld_live_fetch_probe.py --soldr-bin dist/package/soldr
 
-  # Former standalone PR signals. The reusable workflows retain their
-  # push/main, schedule, and manual operational surfaces; canonical CI owns
-  # their PR selection so no second PR workflow can become a required check.
+  # Expensive smoke gates belong to the full candidate graph. Both are
+  # required by Full coverage; routine events never allocate these runners.
   setup-soldr-action:
     name: Setup soldr action smoke
-    needs: path-selection
-    if: ${{ needs.path-selection.outputs.run_setup_soldr == 'true' }}
+    needs: ci-mode
+    if: ${{ needs.ci-mode.outputs.mode == 'full' }}
     uses: ./.github/workflows/setup-soldr-action.yml
+    with:
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
     secrets: inherit
 
   cook-size-gate:
     name: Cook size gate
-    needs: path-selection
-    if: ${{ needs.path-selection.outputs.run_cook_size_gate == 'true' }}
+    needs: ci-mode
+    if: ${{ needs.ci-mode.outputs.mode == 'full' }}
     uses: ./.github/workflows/cook-size-gate.yml
+    with:
+      source_ref: ${{ needs.ci-mode.outputs.checkout_sha }}
     secrets: inherit
 
   macos-recovery-replay:
@@ -1495,7 +1498,7 @@ jobs:
 
   full-coverage:
     name: Full coverage
-    needs: [ci-mode, lint, build-linux-x64, pep517-daemon-smoke, e2e-linux-x64, windows-e2e-policy, e2e-cross-bootstrap-soldr, e2e-linux-x64-gnu-build, e2e-linux-arm64-build, e2e-linux-arm64, e2e-linux-x64-musl-build, e2e-linux-x64-musl, e2e-linux-arm64-musl-build, e2e-linux-arm64-musl, e2e-macos-x64-build, e2e-macos-x64, e2e-macos-arm64-build, e2e-macos-arm64, e2e-windows-x64-build, e2e-windows-x64, e2e-windows-x64-gnu-build, e2e-windows-x64-gnu, e2e-windows-arm64-build, e2e-windows-arm64, wheel-cross-policy, wheel-cross-verify]
+    needs: [ci-mode, lint, build-linux-x64, pep517-daemon-smoke, e2e-linux-x64, windows-e2e-policy, e2e-cross-bootstrap-soldr, e2e-linux-x64-gnu-build, e2e-linux-arm64-build, e2e-linux-arm64, e2e-linux-x64-musl-build, e2e-linux-x64-musl, e2e-linux-arm64-musl-build, e2e-linux-arm64-musl, e2e-macos-x64-build, e2e-macos-x64, e2e-macos-arm64-build, e2e-macos-arm64, e2e-windows-x64-build, e2e-windows-x64, e2e-windows-x64-gnu-build, e2e-windows-x64-gnu, e2e-windows-arm64-build, e2e-windows-arm64, wheel-cross-policy, wheel-cross-verify, setup-soldr-action, cook-size-gate]
     if: ${{ always() && needs.ci-mode.outputs.mode == 'full' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
