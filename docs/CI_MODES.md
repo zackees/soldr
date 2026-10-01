@@ -88,3 +88,21 @@ Setup Soldr Action smoke and Cook Size Gate are required full-mode jobs. They
 check out the same candidate SHA as the target matrix and no longer run on
 ordinary PR or main events. Explicit manual smoke dispatches remain available;
 full validation, rather than each main push, seeds their base-branch caches.
+
+
+The `Full coverage` job emits a `fleet-ci-coverage/v1` JSON artifact for each
+run attempt, with the candidate SHA, selected SHA, manifest SHA-256, required
+job IDs, outcomes, and failures. Wrong or missing candidate identity refuses
+coverage even if every supplied job state says success. Failed coverage reports
+remain diagnostic artifacts; they do not authorize publication.
+
+Other fleet repositories can pin and execute the same `ci_full_coverage.py`
+helper with `--contract <adapter.json> --expected-sha <candidate>
+--selected-sha <selector-output> --report <coverage.json>`, and supply their
+GitHub `needs` object in `CI_NEEDS_JSON`. A portable adapter declares
+`schema_version: 1`, a nonempty unique `required_jobs` list, and `targets` with
+`triple` (an opaque target identity) plus `ci.build_job` and `ci.run_job`. A
+declared target without an execution job fails, including documented exceptions.
+The adapter replaces Soldr's smoke-job defaults; its complete test inventory
+must be reviewed and proven by live runs. Consumer rollout remains under
+[soldr#3345](https://github.com/zackees/soldr/issues/3345).
