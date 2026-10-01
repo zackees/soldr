@@ -11,7 +11,6 @@ import runpy
 from pathlib import Path
 from typing import Any, TypedDict
 
-ROOT = Path(__file__).resolve().parents[2]
 COVERAGE = runpy.run_path(str(Path(__file__).with_name("ci_full_coverage.py")))
 SCHEMA = "fleet-ci-summary/v1"
 
@@ -40,6 +39,11 @@ def required_jobs(
                 "targets": [],
             }
         )
+    policy_jobs = {"ci-mode", "path-selection", "full-coverage"}
+    if any(group & policy_jobs for group in groups.values()):
+        raise ValueError("tier jobs cannot name policy prerequisites")
+    if not groups["test_jobs"] - groups["minimal_jobs"]:
+        raise ValueError("test tier must add jobs beyond minimal")
     jobs = {"ci-mode", "path-selection"}
     if mode == "minimal":
         return jobs | groups["docs_jobs" if docs_only else "minimal_jobs"]

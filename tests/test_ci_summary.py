@@ -107,6 +107,21 @@ def test_unknown_mode_fails_clearly():
         check(passing(), mode="")
 
 
+def test_test_adapter_must_add_real_jobs_beyond_minimal():
+    declaration = adapter()
+    declaration["test_jobs"] = ["lint", "host"]
+    with pytest.raises(ValueError, match="test tier must add"):
+        SUMMARY.required_jobs(declaration, full_contract(), "test", False)
+
+
+@pytest.mark.parametrize("group", ["minimal_jobs", "docs_jobs", "test_jobs"])
+def test_policy_checks_cannot_masquerade_as_test_jobs(group):
+    declaration = adapter()
+    declaration[group] = ["ci-mode"]
+    with pytest.raises(ValueError, match="policy prerequisites"):
+        SUMMARY.required_jobs(declaration, full_contract(), "full", False)
+
+
 def test_build_only_target_cannot_pass_summary():
     contract = full_contract()
     contract["targets"][0]["ci"]["run_job"] = None

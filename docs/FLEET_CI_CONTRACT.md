@@ -48,7 +48,10 @@ The shared merge summary is `.github/scripts/ci_summary.py`, pinned alongside
 `ci_full_coverage.py`. Call it with `--adapter <summary-contract.json>
 --full-contract <coverage-contract.json> --report <summary.json>`. Its adapter
 declares integer `schema_version: 1` and nonempty unique job ID lists named
-`minimal_jobs`, `docs_jobs`, and `test_jobs` (the extra test cells). Supply the
+`minimal_jobs`, `docs_jobs`, and `test_jobs` (the extra test cells).
+The test tier must add jobs beyond minimal. Tier declarations cannot substitute
+the shared policy prerequisites `ci-mode`, `path-selection`, or `full-coverage`
+for tests; consumer adapters use those normalized policy job IDs. Supply the
 real GitHub `needs` object in `CI_NEEDS_JSON`, and selection in `CI_MODE`,
 `DOCS_ONLY`, `AUTHOR_PERMISSION`, `GITHUB_EVENT_NAME`, `EXPECTED_SHA`, and
 `SELECTED_SHA`. The `fleet-ci-summary/v1` report fails closed on unknown modes,
