@@ -105,12 +105,14 @@
     "full_run": "https://github.com/zackees/bosn/actions/runs/36921972900",
     "full_result": "success on exact candidate 58687f4fb17c499416abb9f56ec3f56d1491ae1b; all 12 jobs successful, including both hosted macOS wheel smokes",
     "engine_prerequisites": {
-      "local_commit": "b46b8df",
+      "local_commit": "cdf08c7",
       "scope": "Reviewed private engine execution with verified runner import, durable exclusive claims and owner-only cleanup; unpublished.",
       "evidence": "181 service library tests, 13 lifecycle tests, 17 synthetic actor fault modes and all-target Clippy passed. Same-primary source review closed all HIGH findings. Real Docker probe prepared but not executed; two MEDIUM probe harness findings are being fixed.",
       "cleanup": "Previously completed scratch roots were trashed. Root cache /tmp/bosn-act-boundary-3344-owned remains intentionally active during runtime implementation; stop before cleanup.",
-      "pending_review_fixes": [],
-      "latest_root_validation": "Official Act 0.2.88 binary and all six pinned runner layers hash verified; pinned Docker 29.7.2 image pulled. Acquisition is not execution evidence."
+      "pending_review_fixes": [
+        "Real Docker29 Descriptor has no synthetic config.digest annotation. Hash-verified raw manifest/config proof integration is being reviewed."
+      ],
+      "latest_root_validation": "Two actual ignored probe attempts failed closed: runner empty Volumes map rejection corrected with 38 tests and review; real Docker Descriptor config binding correction pending. No success/cancellation or fleet parity proof. No owned outer containers remain after failed attempts."
     }
   },
   "latest_local_python_validation": {
@@ -157,7 +159,10 @@
       "base_sha": "0f223ac68e97fccaaeab026ef1861e5bf73639ac",
       "local_commit": "4f313692a84e2724cdae5880718a54bff888290c",
       "status": "Unpushed source checkpoint; 79 tests and actionlint passed. Same-primary review closed three HIGH findings. Trusted baseline lacks new contracts and deliberately refuses activation until a separate reviewed bootstrap is merged. ARM musl and live native/cost/Bosn evidence remain pending.",
-      "review_findings": []
+      "review_findings": [],
+      "bootstrap_pr": "https://github.com/zackees/setup-soldr/pull/550",
+      "bootstrap_merge_sha": "d1c0009a7406a861b4acf77105e30e172765ac49",
+      "bootstrap_evidence": "Four policy/test/docs files only; 70 local Python tests and independent review passed. All eight hosted checks passed on exact9e898d907a58d6ab3ba7df39ccd5d3bd02530805 before squash merge. Activation not yet pinned or deployed."
     }
   },
   "local_shared_prerequisites": [
