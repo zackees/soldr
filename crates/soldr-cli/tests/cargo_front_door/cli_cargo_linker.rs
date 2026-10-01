@@ -56,10 +56,18 @@ fn log_has_any_cargo_target_env(log: &str) -> bool {
 /// Windows — the name rustc can spawn), so the fake must use that exact name;
 /// the `.cmd` from `fake_script_path` is deliberately invisible to it. The
 /// fake cargo never links, so the file is never executed.
+///
+/// A fake `clang` sits beside it: on Linux and macOS reld is driven through a
+/// clang driver shim, and since soldr#3477 the shim resolves clang when it is
+/// rendered. A host with no compiler on PATH (the macOS Recovery release-gate
+/// guest) otherwise fails before cargo runs with "the linker driver needs
+/// `clang`". Never executed either.
 fn install_fake_reld() -> PathBuf {
     let dir = unique_temp_dir("fake-reld");
-    let reld = dir.join(format!("reld{}", std::env::consts::EXE_SUFFIX));
-    write_fake_script(&reld, "#!/bin/sh\nexit 0\n");
+    for tool in ["reld", "clang"] {
+        let path = dir.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX));
+        write_fake_script(&path, "#!/bin/sh\nexit 0\n");
+    }
     dir
 }
 
