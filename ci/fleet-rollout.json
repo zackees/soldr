@@ -62,7 +62,9 @@
     "bootstrap_minimal_run": "https://github.com/zackees/soldr/actions/runs/36918116920",
     "bootstrap_minimal_result": "success",
     "bootstrap_full_run": "https://github.com/zackees/soldr/actions/runs/36920078727",
-    "bootstrap_full_result": "pending at checkpoint"
+    "bootstrap_full_result": "pending at checkpoint",
+    "main_full_control": "ci/fleet-evidence/soldr-main-vs-full-7c804.json",
+    "main_full_control_scope": "One identical-source-tree cross-event control including causalchildren:14.85/208.1667 runner-minutes=7.1337%; CPU-weighted7.1932%. PR/repeatedhistorical cohorts notproven."
   },
   "completion_unproven": [
     "final reviewed merged consumer pins",
@@ -77,8 +79,16 @@
   ],
   "serial_runtime_integration": {
     "checkout": "../soldr2-extern/bosn-act-runtime",
-    "local_commit": "d5bdaf48a55f483210b0f1d9cb63f53f3b42dcf3",
+    "local_commit": "58687f4fb17c499416abb9f56ec3f56d1491ae1b",
     "scope": "Typed daemon registry bridge only; actual engine runtime remains unimplemented",
-    "evidence": "Missing bridge RED to GREEN actual actor-channel durable reply/duplicate rollback/reopen test. Service Clippy has three baseline errors, reproduced unchanged; lint not passed. No push."
+    "evidence": "Missing bridge RED to GREEN actual actor-channel durable reply/duplicate rollback/reopen; all156 service tests and19 Act/daemonCLI tests pass. Six baselineClippy failures reproduced/fixed; servicealltargets-Dwarnings pass. Oneprimaryreview clean. Ownedcache notrunning and trashed; sourcecheckoutclean. ci-full requested, liveproofpending.",
+    "pr": "https://github.com/zackees/bosn/pull/321",
+    "parallel_cli_slice": {
+      "worker": "fleet_bosn",
+      "model": "gpt-6.1-sol",
+      "reasoning_effort": "low",
+      "ownership": "Only crates/bosn-service/src/bin/bosn.rs and src/bin/bosn/act.rs",
+      "evidence": "3baselineCLIwarnings RED toGREEN;15Act+4daemonCLI cases pass;12reconciletruthcases and10invalidCLIrefusals preserve safety; root integrated serially"
+    }
   }
 }
