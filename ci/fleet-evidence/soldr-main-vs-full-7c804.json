@@ -2,7 +2,43 @@
   "schema_version": 1,
   "source_tree_sha": "bb1e9bb7ba6983c4307d61ea37d0175ba25129db",
   "scope": "One ordinary main push versus one full-equivalent explicit dispatch of the identical source tree; not historical pre/post medians or PR proof",
-  "secondary_metrics": "Runner weights not supplied; no vCPU or billed-minute claim",
+  "secondary_metrics": {
+    "observed_at": "2026-10-01",
+    "runner_spec_source": "https://docs.github.com/en/actions/reference/runners/github-hosted-runners",
+    "price_model_source": "https://docs.github.com/en/billing/reference/actions-runner-pricing",
+    "cpu_weights": {
+      "ubuntu-24.04": 4,
+      "ubuntu-latest": 4,
+      "ubuntu-24.04-arm": 4,
+      "windows-11-arm": 4,
+      "windows-2025": 4,
+      "macos-15-intel": 4,
+      "macos-15": 3
+    },
+    "private_standard_rate_model_usd_per_minute": {
+      "ubuntu-24.04": 0.006,
+      "ubuntu-latest": 0.006,
+      "ubuntu-24.04-arm": 0.005,
+      "windows-11-arm": 0.01,
+      "windows-2025": 0.01,
+      "macos-15-intel": 0.062,
+      "macos-15": 0.062
+    },
+    "method": "vCPU=sum(seconds/60*CPU); price illustration=sum(ceil(seconds/60)*standard private OS rate/0.006). Skipped zero-time jobs excluded; every allocated label mapped.",
+    "billing_limit": "Standard public runners are free under documented policy; no actual invoice retrieved. Private standard-rate equivalents illustrate OS weighting, not charges for this public repository or its 4-CPU runner SKU.",
+    "totals": {
+      "baseline": {
+        "vcpu_minutes": 825.7833333333333,
+        "rounded_linux_rate_equivalent_minutes": 394.0
+      },
+      "post": {
+        "vcpu_minutes": 59.4,
+        "rounded_linux_rate_equivalent_minutes": 20.000000000000004
+      }
+    },
+    "vcpu_ratio": 0.07193170121298968,
+    "rounded_price_model_ratio": 0.05076142131979696
+  },
   "reproduce": [
     "uv",
     "run",
