@@ -12,6 +12,37 @@ SUMMARY = load_script_module(ROOT / ".github/scripts/ci_summary.py", "ci_summary
 SHA = "a" * 40
 
 
+@pytest.mark.parametrize("job", ["full-coverage", "ci-summary"])
+def test_enforcement_executes_reviewed_base_helpers_and_contracts(job):
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    checkout = next(
+        step for step in jobs[job]["steps"] if "checkout@" in step.get("uses", "")
+    )
+    assert (
+        checkout["with"]["ref"]
+        == "${{ github.event.pull_request.base.sha || github.sha }}"
+    )
+    assert checkout["with"]["persist-credentials"] is False
+
+
+def test_path_policy_is_trusted_but_runs_diff_in_candidate_checkout():
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    checkouts = [
+        step["with"]
+        for step in jobs["path-selection"]["steps"]
+        if "checkout@" in step.get("uses", "")
+    ]
+    assert any(
+        step.get("path") == ".ci-policy"
+        and step["ref"] == "${{ github.event.pull_request.base.sha || github.sha }}"
+        for step in checkouts
+    )
+    assert any(
+        ".ci-policy/.github/scripts/ci_path_policy.py" in step.get("run", "")
+        for step in jobs["path-selection"]["steps"]
+    )
+
+
 def adapter():
     return {
         "schema_version": 1,
