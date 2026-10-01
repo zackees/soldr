@@ -125,8 +125,9 @@ def test_bosn_workspace_test_hands_off_from_bootstrap_to_source() -> None:
         [
             "sh",
             "-c",
-            '"/target/debug/soldr" cargo nextest run --no-fail-fast --workspace'
-            ' --lib --tests && "/target/debug/soldr" cargo test --workspace --doc',
+            '"/target/debug/soldr" cargo test --workspace --doc'
+            ' && "/target/debug/soldr" cargo nextest run --no-fail-fast --workspace'
+            " --lib --tests",
         ],
         [
             "/target/debug/soldr",

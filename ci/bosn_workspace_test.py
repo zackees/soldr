@@ -75,6 +75,11 @@ def workspace_test_plan(*, target: Path, bootstrap: Path) -> list[Step]:
         # Dylint, dependency policy -- are host-safe and run on the host in
         # the local gate's `rust` lane (`soldr lint rust`, `soldr lint deps`);
         # only the tests start soldr daemons, so only they need isolation.
+        # Doctests first: nextest's integration tests relink target/debug/soldr
+        # (the bin under the test feature set) in place, after which a later
+        # compile runs through a different soldr image than the daemon
+        # started above, which refuses it ("root ownership is busy ... a
+        # different Soldr version or daemon image").
         # nextest, not a bare `cargo test --workspace`: libtest's shared
         # process let one panicking test poison a crate-wide env lock and fail
         # six unrelated tests, which nextest's process-per-test model cannot.
@@ -82,8 +87,8 @@ def workspace_test_plan(*, target: Path, bootstrap: Path) -> list[Step]:
             [
                 "sh",
                 "-c",
-                f'"{source_text}" cargo nextest run --no-fail-fast --workspace --lib --tests'
-                f' && "{source_text}" cargo test --workspace --doc',
+                f'"{source_text}" cargo test --workspace --doc'
+                f' && "{source_text}" cargo nextest run --no-fail-fast --workspace --lib --tests',
             ],
             base_env,
             unset=("CARGO_BUILD_JOBS", "SOLDR_JOBS"),
