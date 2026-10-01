@@ -30,9 +30,14 @@ fn is_project_source_file(name: &str) -> bool {
     name == "Cargo.toml" || name == "Cargo.lock" || name.ends_with(".rs")
 }
 
-/// Recurse `dir`, skipping `target/` and `.git/` at any depth, invoking `f`
-/// on every regular project-source file with its path relative to `base`.
-fn walk_project_source(
+/// Non-git workspaces keep the crash-safety journal of
+/// `cook_source_journal` here (zackees/soldr#3518); never snapshot it.
+pub(crate) const JOURNAL_DIR_NAME: &str = ".soldr-cook-journal";
+
+/// Recurse `dir`, skipping `target/`, `.git/` and the cook journal dir at any
+/// depth, invoking `f` on every regular project-source file with its path
+/// relative to `base`.
+pub(crate) fn walk_project_source(
     dir: &Path,
     base: &Path,
     f: &mut dyn FnMut(&Path, PathBuf),
@@ -44,7 +49,7 @@ fn walk_project_source(
         let name = name.to_string_lossy();
         let path = entry.path();
         if file_type.is_dir() {
-            if name.as_ref() == "target" || name.as_ref() == ".git" {
+            if matches!(name.as_ref(), "target" | ".git" | JOURNAL_DIR_NAME) {
                 continue;
             }
             walk_project_source(&path, base, f)?;
@@ -132,7 +137,9 @@ pub(crate) fn restore_project_source(
                 ))
             })?;
         }
-        std::fs::write(&dest, bytes).map_err(|e| {
+        // Durable: the crash-safety journal (soldr#3518) is retired right
+        // after this returns, so the originals must be on disk first.
+        write_synced(&dest, bytes).map_err(|e| {
             SoldrError::Other(format!(
                 "soldr cook: failed to restore {}: {e}",
                 dest.display()
@@ -140,4 +147,11 @@ pub(crate) fn restore_project_source(
         })?;
     }
     Ok(())
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
