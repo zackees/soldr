@@ -192,9 +192,9 @@ def test_manifest_budget_is_self_consistent() -> None:
         for prefix_b, family_b in owned_prefixes:
             if family_a == family_b:
                 continue
-            assert not prefix_b.startswith(
-                prefix_a
-            ), f"{prefix_a!r} ({family_a}) is a prefix of {prefix_b!r} ({family_b})"
+            assert not prefix_b.startswith(prefix_a), (
+                f"{prefix_a!r} ({family_a}) is a prefix of {prefix_b!r} ({family_b})"
+            )
 
 
 # --------------------------------------------------------------------------
@@ -987,10 +987,13 @@ def test_main_schedule_dispatch_and_local_runs_fail_when_over_budget(
     assert run_mode(manifest, listing, "--event-name", event, "--ref", ref) == 1
 
 
-def test_a_push_to_another_branch_warns(tmp_path, capsys) -> None:
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_a_push_or_dispatch_on_another_branch_warns(tmp_path, capsys, event) -> None:
+    # workflow_dispatch: a PR's exact-SHA "CI full" run on its feature branch
+    # (zackees/ci.yml#166, soldr#3510) must not fail on main's overage.
     manifest, listing = over_budget_listing(tmp_path)
     assert (
-        run_mode(manifest, listing, "--event-name", "push", "--ref", "refs/heads/topic")
+        run_mode(manifest, listing, "--event-name", event, "--ref", "refs/heads/topic")
         == 0
     )
     assert "::warning" in capsys.readouterr().out

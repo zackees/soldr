@@ -310,15 +310,20 @@ This rule was set during the #1105 fix: the `rust-lld` LIB-injection feature was
 
 ## Working Location Rule
 
-**Do all soldr work directly in this repository checkout. No sibling clones, no
-git worktrees — not even under this repo.** Owner directive (2026-08-10):
-create a feature branch here and work on it in place; do not `git clone` a
-sibling copy (`../soldr-wt-*`, `../soldr2`, …) and do not `git worktree add` a
-linked tree. Sibling/worktree checkouts break the Docker Linux runner
-(`ci/perf_local.py` mounts *this* checkout root as `/repo`, so a tree outside it
-is invisible) and fragment the warm cargo/soldr volumes. Switch branches in
-place with `git checkout -b`; if another agent needs isolation, coordinate on a
-branch, not a second working tree.
+**Sister checkouts are allowed** (owner directive 2026-10-01, zackees/clud#1696;
+supersedes the 2026-08-10 "no sibling clones, no worktrees" rule). Work in this
+checkout, or in a git worktree under `../soldr-extern/<name>` when you need
+isolation from another agent's work or a clean tree (`git worktree add
+../soldr-extern/<name> -b <branch> origin/main`). Remove the worktree when the
+branch is merged.
+
+- **Know which runner sees which tree.** `ci/perf_local.py` mounts the
+  repository's shared git root read-only at `/repo`; a worktree *below* that
+  root is reachable with `docker exec -w`, a sister worktree under
+  `../soldr-extern` is not -- use `bosn run --task <t>` from the worktree
+  instead (bosn mounts the workspace it is run from).
+- **Never share one worktree between agents**, and never edit a checkout or
+  worktree another agent owns.
 
 ## Agent Completion Rules
 
@@ -327,6 +332,35 @@ branch, not a second working tree.
 - **Open a pull request**: The agent must create a PR for the branch when permissions allow.
 - **Always report the merge URL**: The final user-facing summary must include the PR URL the user should open to review and merge the work.
 - **Fallback if PR creation is blocked**: If the GitHub integration cannot open the PR directly, the agent must still push the branch and provide the exact GitHub URL the user needs to open or complete the PR manually.
+
+## Local Gate Rule (zackees/ci.yml#166, #168)
+
+**Every PR head must pass the local gate before it is pushed.** CI's first job
+(`ci-mode`) fails a PR whose head commit lacks a tree-bound `Local-Gate:`
+trailer, and every other job needs `ci-mode`.
+
+```bash
+git commit ...                       # the gate attests a committed, clean tree
+uvx --from git+https://github.com/zackees/ci.yml@<CI_LINT_REF> ci-lint local-gate run
+git push                             # (--force-with-lease if the branch was already pushed)
+```
+
+`<CI_LINT_REF>` is the constant in `ci/local_gate.py`. `local-gate run` runs
+`ci/local_gate.py` (lanes `lint` = the remote Lint job exactly, `rust` =
+`soldr lint rust`, `tests` = the test suite in bosn), and on success amends
+HEAD's message with the trailer. Install the pre-push hook once per clone with
+`... ci-lint local-gate install-hook`.
+
+- **Add Lint checks to `ci/local_gate.py`, never as a step in ci.yml's Lint
+  job.** The Lint job runs `ci/local_gate.py --lane lint` and nothing else;
+  `ci-lint local-gate lint` (a check in that lane) fails anything else.
+- **Never run soldr's test suite on the host.** It starts soldr daemons and
+  touches soldr state roots. A leaked fixture once claimed the real
+  `~/.soldr` root and wedged every soldr build on the machine (soldr#3516).
+  The nextest run-wrapper refuses unless `CI=true` or `SOLDR_TEST_ISOLATED=1`,
+  which only the bosn image sets. Run the suite with
+  `bosn run --task test` (the gate's `tests` lane). Do not set the marker on
+  a host to get around the refusal.
 
 ## Agent Code-Smell Reporting Rule (issue #2741)
 

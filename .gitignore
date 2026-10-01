@@ -88,6 +88,11 @@ target/
 /.cargo/.global-cache
 /.cargo/.package-cache
 /.cargo/.package-cache-mutate
+# cargo-audit / cargo-deny advisory databases under the same CARGO_HOME, written
+# by the local gate's rust lane (zackees/ci.yml#166).
+/.cargo/advisory-db
+/.cargo/advisory-db..lock
+/.cargo/advisory-dbs/
 
 # Same caches, one level down. Every dylint crate carries its own
 # `.cargo/config.toml` (it selects the `dylint-link` linker), and running its

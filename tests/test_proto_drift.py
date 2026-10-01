@@ -12,6 +12,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+from conftest import lint_lane_text
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".github" / "scripts" / "check_proto_drift.py"
 
@@ -230,5 +232,5 @@ def test_cross_repo_entries_name_where_the_type_lives() -> None:
 
 
 def test_ci_runs_the_drift_check() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    workflow = lint_lane_text()
     assert "check_proto_drift.py" in workflow

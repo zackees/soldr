@@ -152,8 +152,8 @@ jobs:
           if (-not (Test-Path $env:CARGO_HOME)) { throw "missing CARGO_HOME" }
           if (-not (Test-Path $env:RUSTUP_HOME)) { throw "missing RUSTUP_HOME" }
           soldr version --json
-          cargo --version
-          rustc --version
+          cargo --version  # ci-lint: allow RUST-001 smoke test: verifies soldr's cargo shim resolves
+          rustc --version  # ci-lint: allow RUST-001 smoke test: verifies soldr's rustc shim resolves
 
       - name: Verify cache isolation
         shell: pwsh

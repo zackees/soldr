@@ -751,7 +751,7 @@ jobs:
           export SOLDR_RELEASE_DRIVER="$SOLDR_BIN"
           python -m pip install --upgrade pip
           python .github/scripts/install_soldr_maturin.py
-          maturin build --profile ci-release --out dist
+          maturin build --profile ci-release --out dist  # ci-lint: allow RUST-001 the soldr-wrapped maturin from install_soldr_maturin.py, driven by the packaged soldr under test
 
       - name: Run downstream PEP 517 daemon smoke
         if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup && inputs.target_execution != 'x86_64-recovery' }}

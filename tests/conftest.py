@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -60,6 +61,26 @@ def load_script_module(path: str | Path, name: str | None = None) -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def lint_lane_text() -> str:
+    """What the remote Lint job runs, as text (zackees/ci.yml#166).
+
+    The Lint job runs exactly `ci/local_gate.py --lane lint` (GATE-001), so
+    "CI runs check X" now means "X is a lint-lane check of the local gate".
+    Returns each lint-lane check's name and shell-joined argv, one per line,
+    after asserting that ci.yml's Lint job still invokes that lane.
+    """
+
+    root = Path(__file__).resolve().parent.parent
+    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "python ci/local_gate.py --lane lint" in workflow
+    gate = load_script_module(root / "ci" / "local_gate.py", "soldr_local_gate")
+    return "\n".join(
+        f"{check.name}: {shlex.join(check.argv)}"
+        for check in gate.checks()
+        if check.lane == "lint"
+    )
 
 
 def write_collected_recovery_summary(base: Path, lines: list[str]) -> Path:
