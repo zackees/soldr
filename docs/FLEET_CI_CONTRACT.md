@@ -64,10 +64,14 @@ for tests; consumer adapters use those normalized policy job IDs. Supply the
 real GitHub `needs` object in `CI_NEEDS_JSON`, and selection in `CI_MODE`,
 `DOCS_ONLY`, `AUTHOR_PERMISSION`, `GITHUB_EVENT_NAME`, `EXPECTED_SHA`, and
 `SELECTED_SHA`.
-For PRs the summary independently rechecks the event author's current permission
+For PRs the summary independently fetches current labels/head and rechecks
+the current author's permission
 using `GITHUB_EVENT_PATH`, `GITHUB_REPOSITORY`, and the read-only `GITHUB_TOKEN`;
 the earlier selector output cannot authorize a failed-job rerun after access
-was revoked. The `fleet-ci-summary/v1` report fails closed on unknown modes,
+was revoked or labels require a stronger tier. Missing current metadata and
+a changed head fail closed, including cached full runs. Legacy aliases may be
+declared in the summary adapter's optional `label_aliases` map.
+The `fleet-ci-summary/v1` report fails closed on unknown modes,
 unsuccessful selected cells, candidate drift, incomplete full execution, or an
 external PR downgraded below full. Consumers must include every declared job
 as a direct dependency of their always-running summary.
