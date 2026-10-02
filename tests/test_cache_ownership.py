@@ -37,7 +37,6 @@ MANIFEST = REPO_ROOT / "ci" / "cache-ownership.json"
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 
 CACHE_ACTION = "actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809"
-RUST_CACHE = "Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32"
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 COOK_ACTION = "zackees/setup-soldr/cook@a07bab94f16124b5c6857b137a237a53a61e06d1"
 
@@ -308,9 +307,10 @@ def _cook_workflow(cook_first: bool) -> str:
           flags: --profile ci-nextest --workspace
 """
     broad = f"""      - name: Restore cargo + target caches
-        uses: {RUST_CACHE}
+        uses: {CACHE_ACTION}
         with:
-          shared-key: seeded
+          path: target
+          key: seeded
 """
     ordered = cook + broad if cook_first else broad + cook
     return f"""

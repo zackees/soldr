@@ -68,7 +68,7 @@ correctly.
 
 | Repo | share-generics | incremental | Verdict |
 |---|---|---|---|
-| **soldr** | Dev + `ci-bootstrap` (opt 0) + `ci-release`/`ci-nextest` (opt 1) get it by default. Shipped `release` is `lto = "thin"` + `codegen-units = 1` — forcing it there trades runtime perf for compile time. | Dev default-on; CI gets `CARGO_INCREMENTAL=0` via Swatinem/rust-cache. | No change |
+| **soldr** | Dev + `ci-bootstrap` (opt 0) + `ci-release`/`ci-nextest` (opt 1) get it by default. Shipped `release` is `lto = "thin"` + `codegen-units = 1` — forcing it there trades runtime perf for compile time. | Dev default-on; CI no longer gets `CARGO_INCREMENTAL=0` from Swatinem/rust-cache (banned with no exceptions, CACHE-025, 2026-10-02). | No change |
 | **zccache** | 19-crate workspace, but dev (opt 0) is default-on, so the classic big-workspace win is already banked. | Dev default-on; bench workflows pin `CARGO_INCREMENTAL: "0"`. | No change |
 | **clud** | Dev default-on. | zccache excludes `-C incremental` from its cache key, so incremental doesn't fragment the shared cache. | No change |
 | **running-process** | 9-crate workspace; dev default-on. | `ci/reproducible.py` correctly forces `CARGO_INCREMENTAL=0` (incremental artifacts are not stable across runs). | No change |

@@ -120,7 +120,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: zackees/ci.yml
-          ref: c87f1a2b88c07037d5c10a8e8ff27dd25895eab9
+          ref: acde655080acb24bcdb70b153b3790474b958379
           path: .ci-lint
           persist-credentials: false
           sparse-checkout: ci_lint
@@ -513,32 +513,13 @@ jobs:
           # same-run artifact can replace that lane's local source build.
           key: bootstrap-soldr-blessed-linux-gnu-dev-v1${{ env.PR_CACHE_TAG }}-${{ needs.ci-mode.outputs.checkout_sha }}
 
-      # soldr#3016, narrowed by soldr#3047: the ONLY lane that still keeps a
-      # Swatinem/rust-cache as a named `cook-unreachable-lane` exception after
-      # soldr#2996 made `soldr cook` the only durable cache. (The sibling
-      # exception, `_ci-target-run.yml`'s pep517 wheel cache, was retired
-      # outright in soldr#3047 rather than kept.) Cook cannot
-      # reach this step and no cook change can fix that: the build below runs
-      # bare `cargo build` with RUSTC_WRAPPER emptied, and this job has no
-      # setup-soldr step at all -- it is the job that BUILDS soldr, so handing
-      # it a soldr to run cook with would reintroduce the prebuilt-binary
-      # coupling soldr#2451 forbids.
-      #
-      # Deleting it costs ~5 min per commit on the critical path of every
-      # darwin/MSVC cross lane, for no cache in return. Recorded by name in
-      # ci/cache-ownership.json under `cook-unreachable-lane` rather than left
-      # to look like an oversight.
-      - name: Restore cargo + target caches for bootstrap build
-        if: steps.bootstrap_cache.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2  # ci-lint: allow CACHE-025 bootstrap: this job builds soldr with bare cargo before any soldr exists (cook-unreachable-lane, soldr#3016/#3047)
-        with:
-          # soldr#3047 -- PRs restore from `main` and no longer write their
-          # own copy; without this each family carried one entry per open PR.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          # Keep profile products isolated: prescribed host validation and
-          # this shared source driver both use Cargo's dev profile.
-          shared-key: bootstrap-soldr-linux-gnu-dev-v1
-
+      # No dependency cache for this build. soldr#3016/#3047 kept a
+      # Swatinem/rust-cache here as the last `cook-unreachable-lane`
+      # exception; zackees/ci.yml CACHE-025 bans it with no exceptions
+      # (maintainer decision 2026-10-02), so the bootstrap driver now builds
+      # uncached on a binary-cache miss. Cook still cannot reach it: the build
+      # runs bare `cargo build` with RUSTC_WRAPPER emptied and the job has no
+      # setup-soldr step (soldr#2451).
       - name: Build bootstrap soldr
         if: steps.bootstrap_cache.outputs.cache-hit != 'true'
         shell: bash
@@ -568,12 +549,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
-
-      # soldr#3347: identify the surviving rust-cache producer paths before
-      # choosing a trim. This is read-only and runs before rust-cache's post job.
-      - name: Inventory bootstrap rust-cache inputs
-        if: steps.bootstrap_cache.outputs.cache-hit != 'true'
-        run: bash .github/scripts/cache_path_inventory.sh x86_64-unknown-linux-gnu
 
   # soldr#1051 / #1038: all cross-builds go through the consolidated
   # _ci-cross-build-linux.yml workflow on ubuntu-24.04. Each pair

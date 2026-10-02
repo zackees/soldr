@@ -227,17 +227,12 @@ In [`.github/workflows/ci.yml`](../.github/workflows/ci.yml):
 - The heavy cache-producing CI workflow therefore *does* run on
   `pull_request`; that is the only way a feature branch gets coverage.
 - `Swatinem/rust-cache` is banned fleet-wide (zackees/ci.yml#209, ci-lint
-  `CACHE-025`) except on a job that builds soldr with bare cargo before any
-  soldr exists, marked by a same-line
-  `# ci-lint: allow CACHE-025 bootstrap: <reason>`. It survives in exactly one
-  ordinary CI lane, `ci.yml`'s bootstrap driver build (soldr#3047 removed it
-  from every other lane, soldr#3121 retired `_bootstrap-e2e.yml`'s, and
-  zackees/ci.yml#209 retired `ci.yml`'s wheel-cross build's, which has a
-  soldr). The manual experiment workflows keep it only on their bare-cargo
-  soldr builds (`baseline-zero-deps.yml`'s `bootstrap-soldr`,
-  `parent-cache-bench.yml`, `perf-cold-warm.yml`), budgeted under
-  `experiment-lanes`; `tests/test_ci_cache_key_scheme.py` pins that list. The
-  ordinary lane sets
+  `CACHE-025`) with **no exceptions** (zackees/ci.yml, maintainer decision
+  2026-10-02): no same-line allow comment, no ci.toml `[[exceptions]]` entry.
+  The last uses -- `ci.yml`'s bootstrap driver build and the bare-cargo soldr
+  builds in `baseline-zero-deps.yml`, `parent-cache-bench.yml` and
+  `perf-cold-warm.yml` -- were removed; those builds now run uncached on a
+  binary-cache miss. `tests/test_ci_cache_key_scheme.py` pins the absence.
   `save-if: ${{ github.ref == 'refs/heads/main' }}`, so a PR run restores
   whatever `main` last wrote and never saves its own branch-scoped copy — the
   opposite of the `shared-key:`-only, no-`save-if:` posture this repo used to
@@ -293,8 +288,9 @@ every time. An `actions/cache` step now persists it:
 
 ### Cache key scheme (soldr#1978 item 6)
 
-Where a rust-cache namespace still exists, it is keyed on **(profile,
-target)**, not on the job:
+No rust-cache namespace survives (CACHE-025, no exceptions since
+2026-10-02). While they existed they were keyed on **(profile, target)**, not
+on the job:
 
 ```
 shared-key: ws-<profile>-<target>
@@ -313,8 +309,8 @@ soldr#3047 deleted the step rather than re-key it; the successor is the
 Tier-2 per-unit object store (soldr#3041), not another shared-key namespace
 (soldr#3043's workflow-level `soldr cook` step was retired by soldr#3396), and
 `tests/test_ci_cache_key_scheme.py` now pins the namespace's *absence*. The
-surviving `ws-release-*` pair lives in `baseline-zero-deps.yml`, where one
-job populates and the next restores inside a cache-experiment workflow.
+last `ws-release-*` namespace, in `baseline-zero-deps.yml`, went with the
+CACHE-025 no-exceptions decision.
 
 Two constraints make this less mechanical than it looks:
 
@@ -360,11 +356,12 @@ The fix has two parts. First, stop writing what does not need to exist:
 `cross-build-rust-cache`, `build-and-test-rust-cache`, `ci-pep517-rust-cache`,
 and `target-run-pep517-rust-cache` are retired outright (their `setup-soldr
 cook` or plain "run uncached" replacements are cheaper than a rust-cache
-entry every PR pays for and few ever hit). What's left is one surviving
+entry every PR pays for and few ever hit). The one surviving
 `cook-unreachable-lane` exception — `ci.yml`'s bootstrap driver build, which
 runs bare `cargo build` with `RUSTC_WRAPPER` emptied and has no setup-soldr
-step, because it is the job that *builds* soldr and handing it a soldr to
-cook with would reintroduce the prebuilt-binary coupling soldr#2451 forbids.
+step — was retired too when CACHE-025 dropped its exceptions (zackees/ci.yml,
+maintainer decision 2026-10-02): that build now runs uncached on a
+binary-cache miss, and the `cook-unreachable-lane` tier is gone.
 Second, gate what remains to `main`-only saves (see [How This Repo Is
 Wired](#how-this-repo-is-wired) above) so a PR restores but never writes.
 
@@ -373,14 +370,15 @@ is not the same guarantee as "under the ceiling forever." `ci/cache-ownership.js
 carries a top-level `budget` map: one entry per producer family, each with a
 `key_prefixes` list, a `max_bytes` allocation, and the family's measured
 live-on-`main` size. Every allocation is `>=` that measured size, and the
-family allocations sum to exactly 9 GiB (`total_max_bytes`). The gate's hard
-ceiling, `fail_total_bytes`, is set to 9.5 GiB (10,200,547,328 bytes) — half
-a GiB of headroom above the 9 GiB family total, so a family that is briefly
+family allocations sum to exactly `total_max_bytes` (9 GiB when this was
+written; 8.5 GiB since the `rust-cache-residual` family was retired with the
+last Swatinem producer). The gate's hard ceiling, `fail_total_bytes`, is set
+to 9.5 GiB (10,200,547,328 bytes) — headroom above the family total, so a family that is briefly
 over its own allocation does not fail the whole gate before the next prune
 sweep can catch up. GitHub does not publish which byte-multiple its
 documented "10 GB" is: 9.5 GiB sits under the binary reading (10,737,418,240)
 but 2% over the decimal one (10,000,000,000), which is why the enforced
-allocation that every family is sized against is the 9 GiB
+allocation that every family is sized against is
 `total_max_bytes` — that one is under the ceiling on either reading:
 
 | Family | Allocation | Covers |
@@ -389,7 +387,7 @@ allocation that every family is sized against is the 9 GiB
 | `bootstrap-driver-binary` | 0.15 GiB | the per-commit-SHA bootstrap driver |
 | `cook-layer` | 2.0 GiB | `setup-soldr/cook` archives for the cross lanes |
 | `dylint-foundation` | 0.8 GiB | the ci-test Dylint foundation + analysis trees |
-| `rust-cache-residual` | 1.4 GiB | the three `Swatinem/rust-cache` producers left after this PR |
+| `rust-cache-residual` | 1.4 GiB | the three `Swatinem/rust-cache` producers left after this PR (retired 2026-10-02: CACHE-025, no exceptions) |
 | `setup-soldr-action-stores` | 1.0 GiB | per-unit zccache stores + the action's own registry slice |
 | `experiment-lanes` | 0.45 GiB | workflows where the cache is the subject under test |
 | `zccache-unit` | 2.0 GiB | reserved for the Tier-2 object store soldr#3041 persists |

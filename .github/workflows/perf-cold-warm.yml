@@ -8,8 +8,8 @@ name: Soldr Cold/Warm Bench
 # Three jobs:
 #
 # 1. `build-soldr` — master, builds soldr once and uploads it as an
-#    artifact. Layered actions/cache + Swatinem/rust-cache so the
-#    second dispatch on the same soldr commit is nearly free. The
+#    artifact. An exact-source actions/cache of the binary makes the
+#    second dispatch on the same soldr commit nearly free. The
 #    perf matrix has to keep working when soldr itself is broken
 #    or absent on a new platform, so this step uses bare cargo (not
 #    `soldr cargo`).
@@ -99,27 +99,10 @@ jobs:
           path: target/release/soldr
           key: soldr-bin-linux-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock') }}
 
-      # Layer 2: cache cargo intermediates so a cache-miss rebuild
-      # is incremental. Soldr itself is deliberately NOT used to
-      # build soldr — perf must keep working when soldr is broken.
-      - name: Restore cargo intermediates
-        if: steps.soldr-bin-cache.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2  # ci-lint: allow CACHE-025 bootstrap: build-soldr builds soldr with bare cargo before any soldr exists (perf must survive a broken soldr)
-        with:
-          # soldr#1978 item 6 deliberately does NOT re-key this onto the
-          # `ws-<profile>-<target>` scheme used by the ordinary CI lanes.
-          # Two reasons, both load-bearing:
-          #   1. `purge-demo-caches` deletes every repo cache whose key
-          #      *contains* `${DEMO_CACHE_SUFFIX}` (= `perf-cold-warm`,
-          #      :67/:151). Renaming this key off that substring silently
-          #      stops it being purged, breaking the cold guarantee; giving a
-          #      shared CI key that substring would let a perf dispatch
-          #      delete every ordinary lane's cache.
-          #   2. This is a measurement lane. Its namespace must stay private
-          #      so ordinary CI cannot change what is on disk when a run
-          #      starts.
-          shared-key: perf-cold-warm-build-soldr-linux
-
+      # No cargo-intermediates layer: CACHE-025 bans Swatinem/rust-cache with no exceptions (zackees/ci.yml, maintainer decision 2026-10-02).
+      # A binary-cache miss rebuilds soldr uncached. Soldr itself is
+      # deliberately NOT used to build soldr -- perf must keep working when
+      # soldr is broken.
       - name: Build soldr (release)
         if: steps.soldr-bin-cache.outputs.cache-hit != 'true'
         run: cargo build --release -p soldr-cli  # ci-lint: allow RUST-001 bootstrap: builds soldr from source before any soldr exists in this job

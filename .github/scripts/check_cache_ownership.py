@@ -168,7 +168,6 @@ PERSISTING_ACTIONS: dict[str, str] = {
     "actions/cache/save": "actions/cache",
     "actions/upload-artifact": "actions/upload-artifact",
     "actions/download-artifact": "actions/download-artifact",
-    "swatinem/rust-cache": "Swatinem/rust-cache",
     "zackees/setup-soldr/cook": "setup-soldr/cook",
 }
 
@@ -189,9 +188,7 @@ SETUP_SOLDR_LAYERS: tuple[str, ...] = (
 
 # Mechanisms that persist across runs and can therefore be *reused* by a later
 # build. Artifact upload/download is excluded on purpose: it is run-keyed.
-DURABLE_MECHANISMS: frozenset[str] = frozenset(
-    {"actions/cache", "Swatinem/rust-cache", "setup-soldr/cook"}
-)
+DURABLE_MECHANISMS: frozenset[str] = frozenset({"actions/cache", "setup-soldr/cook"})
 
 ARTIFACT_MECHANISMS: frozenset[str] = frozenset(
     {"actions/upload-artifact", "actions/download-artifact"}
@@ -712,14 +709,11 @@ def banned_product_problems(steps: list[PersistedStep]) -> list[str]:
 def is_broad_target_restore(step: PersistedStep) -> bool:
     """Does this step restore the whole cargo target directory?
 
-    `Swatinem/rust-cache` always does (it takes no path input and owns
-    `target/` plus the cargo home). `actions/cache` does when its path names
-    the target directory itself rather than a slice of it. setup-soldr's
+    `actions/cache` does when its path names the target directory itself
+    rather than a slice of it. setup-soldr's
     `target-cache` in `full` mode does too -- `thin` is the dependency-scoped
     slice and is fine.
     """
-    if step.mechanism == "Swatinem/rust-cache":
-        return True
     if step.mechanism == "setup-soldr:target-cache":
         return "full" in step.text.lower()
     if step.mechanism != "actions/cache":
