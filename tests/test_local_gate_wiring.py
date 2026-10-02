@@ -61,13 +61,22 @@ def test_attested_skip_is_declared_and_wired() -> None:
     assert "\n    branches:\n      - main\n" in workflow
 
 
-def test_the_test_suite_only_runs_isolated_locally() -> None:
+def test_the_test_suite_only_runs_isolated_locally(monkeypatch) -> None:
+    monkeypatch.delenv("SOLDR_LOCAL_GATE_BOSN", raising=False)
     lanes = {check.name: check for check in GATE.checks()}
     tests = lanes["soldr tests (isolated, bosn)"]
     assert tests.argv == ("bosn", "run", "--task", "test")
     for check in GATE.checks():
         if check.lane != "tests":
             assert "nextest" not in check.argv and "ci-test" not in check.argv, check
+
+
+def test_source_bosn_override_keeps_isolation_and_version_gate(monkeypatch) -> None:
+    monkeypatch.setenv("SOLDR_LOCAL_GATE_BOSN", "/owned/bosn-native")
+    check = next(check for check in GATE.checks() if check.lane == "tests")
+    assert check.argv == ("/owned/bosn-native", "run", "--task", "test")
+    assert check.min_version == (0, 1, 6)
+    assert check.exclusive
 
 
 @dataclass(frozen=True)
