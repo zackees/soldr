@@ -17,9 +17,15 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
+class EnvVar:
+    name: str
+    value: str
+
+
+@dataclass(frozen=True)
 class Step:
     argv: list[str]
-    env: dict[str, str]
+    env: tuple[EnvVar, ...]
     # Variables removed from the inherited environment (the image's
     # CARGO_BUILD_JOBS cap, which CI's ci-test lane also unsets).
     unset: tuple[str, ...] = ()
@@ -39,7 +45,7 @@ def workspace_test_plan(*, target: Path, bootstrap: Path) -> list[Step]:
     """Return the ordered bootstrap-to-source validation handoff."""
     source = target / "debug" / "soldr"
     source_text = container_path(source)
-    base_env = {"CARGO_TARGET_DIR": container_path(target)}
+    base_env = (EnvVar("CARGO_TARGET_DIR", container_path(target)),)
     return [
         Step(
             [
@@ -65,10 +71,10 @@ def workspace_test_plan(*, target: Path, bootstrap: Path) -> list[Step]:
                 "--shutdown-timeout-seconds",
                 "30",
             ],
-            {},
+            (),
         ),
-        Step([container_path(bootstrap), "broker", "remove"], {}),
-        Step([source_text, "daemon", "start"], {}),
+        Step([container_path(bootstrap), "broker", "remove"], ()),
+        Step([source_text, "daemon", "start"], ()),
         # zackees/ci.yml#168/#172: exactly the two *test* stages of the frozen
         # DAG CI's build-linux-x64 lane runs (`soldr ci-test --explain-plan`:
         # `nextest` and `doctests`). Its lint stages -- rustfmt, Clippy,
@@ -96,9 +102,9 @@ def workspace_test_plan(*, target: Path, bootstrap: Path) -> list[Step]:
         ),
         Step(
             [source_text, "cache", "shutdown", "--shutdown-timeout-seconds", "30"],
-            {},
+            (),
         ),
-        Step([source_text, "broker", "remove"], {}),
+        Step([source_text, "broker", "remove"], ()),
     ]
 
 
@@ -108,7 +114,7 @@ def run_step(step: Step, *, repo: Path) -> None:
         env.pop(name, None)
     for name in [n for n in env if n.startswith(step.unset_prefixes)]:
         env.pop(name)
-    env.update(step.env)
+    env.update((var.name, var.value) for var in step.env)
     subprocess.run(step.argv, cwd=repo, env=env, check=True)
 
 

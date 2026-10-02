@@ -11,7 +11,9 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tempfile
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -51,26 +53,45 @@ def test_the_test_suite_only_runs_isolated_locally() -> None:
             assert "nextest" not in check.argv and "ci-test" not in check.argv, check
 
 
-def _wrapper(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    clean = {
+@dataclass(frozen=True)
+class WrapperRun:
+    returncode: int
+    stderr: str
+    stdout: str
+
+
+def _wrapper(**extra: str) -> WrapperRun:
+    """Run the nextest wrapper with stderr captured through a file, not a
+    pipe (zackees/ci.yml PY-003)."""
+    env = {
         k: v for k, v in os.environ.items() if k not in ("CI", "SOLDR_TEST_ISOLATED")
     }
-    return subprocess.run(
-        ["sh", str(WRAPPER), "true"],
-        env={**clean, **env, "SOLDR_NEXTEST_NATIVE_WRAPPER": "/bin/true"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    env.update(extra)
+    env["SOLDR_NEXTEST_NATIVE_WRAPPER"] = "/bin/true"
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        proc = subprocess.run(
+            ["sh", str(WRAPPER), "true"],
+            env=env,
+            stdout=out,
+            stderr=err,
+            check=False,
+        )
+        out.seek(0)
+        err.seek(0)
+        return WrapperRun(
+            proc.returncode,
+            err.read().decode("utf-8", errors="replace"),
+            out.read().decode("utf-8", errors="replace"),
+        )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the nextest run-wrapper is Unix-only")
 def test_isolation_guard_refuses_a_developer_host() -> None:
-    refused = _wrapper({})
+    refused = _wrapper()
     assert refused.returncode != 0
     assert "bosn run --task test" in refused.stderr
-    assert _wrapper({"CI": "true"}).returncode == 0
-    assert _wrapper({"SOLDR_TEST_ISOLATED": "1"}).returncode == 0
+    assert _wrapper(CI="true").returncode == 0
+    assert _wrapper(SOLDR_TEST_ISOLATED="1").returncode == 0
 
 
 def test_isolated_suite_requires_a_bosn_that_does_not_reap_bursts() -> None:

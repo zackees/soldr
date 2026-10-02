@@ -139,7 +139,9 @@ def test_bosn_workspace_test_hands_off_from_bootstrap_to_source() -> None:
         ["/target/debug/soldr", "broker", "remove"],
     ]
     validation = plan[4]
-    assert validation.env["CARGO_TARGET_DIR"] == "/target"
+    assert [(v.name, v.value) for v in validation.env] == [
+        ("CARGO_TARGET_DIR", "/target")
+    ]
     # CI's ci-test lane unsets the image's job caps (zackees/ci.yml#168).
     assert set(validation.unset) == {"CARGO_BUILD_JOBS", "SOLDR_JOBS"}
     # ...and the image's dev-loop profile overrides, for CI parity (#172).
