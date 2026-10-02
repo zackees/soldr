@@ -473,10 +473,10 @@ def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
             **entry("stable-cook-v2-x86_64-unknown-linux-gnu-" + "b" * 64, 650 * mib),
             "createdAt": "2026-09-23T01:00:00Z",
         },
-        entry("v0-rust-bootstrap-soldr-linux-gnu-dev-abc", 402 * mib),
-        # Above rust-cache-residual's 1.40 GiB allocation (402 + 1100 MiB):
-        # the family must not fit until the producer shrinks.
-        entry("v0-rust-wheel-cross-aarch64-unknown-linux-gnu-release-abc", 1100 * mib),
+        # Above rust-cache-residual's 0.50 GiB allocation (zackees/ci.yml#209
+        # left only the bootstrap producer): the family must not fit until the
+        # producer shrinks.
+        entry("v0-rust-bootstrap-soldr-linux-gnu-dev-abc", 700 * mib),
     ]
     entries = guard.normalize_entries(rows)
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -500,8 +500,8 @@ def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
     shrunk = [
         (
             e
-            if not e.key.startswith("v0-rust-wheel-cross-")
-            else guard.CacheEntry(e.key, e.ref, 560 * mib)
+            if not e.key.startswith("v0-rust-bootstrap-soldr-linux-gnu-dev-")
+            else guard.CacheEntry(e.key, e.ref, 360 * mib)
         )
         for e in effective
     ]
@@ -645,9 +645,9 @@ def test_3347_policy_is_not_green_when_a_family_truly_does_not_fit() -> None:
     # prune candidate, so it must stay red.
     entries = [
         (
-            # Sized so the family exceeds its 1.40 GiB allocation (2026-10-01).
-            guard.CacheEntry(e.key, e.ref, 1_200_000_000, e.id, e.created_at)
-            if e.key.startswith("v0-rust-wheel-cross-")
+            # Sized so the family exceeds its 0.50 GiB allocation (zackees/ci.yml#209).
+            guard.CacheEntry(e.key, e.ref, 600_000_000, e.id, e.created_at)
+            if e.key.startswith("v0-rust-bootstrap-soldr-linux-gnu-dev-")
             else e
         )
         for e in lineage_entries()

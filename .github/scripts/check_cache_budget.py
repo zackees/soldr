@@ -174,6 +174,10 @@ RETIRED_PREFIXES: tuple[str, ...] = (
     # perf reruns while the registry saved only cold-build fetch time. No
     # current workflow writes this namespace.
     "v0-rust-perf-registry-soldr-",
+    # `wheel-cross-<target>-release-v1` in ci.yml's wheel-cross-verify lane.
+    # Retired by zackees/ci.yml#209 (CACHE-025): the lane runs the shared
+    # bootstrap soldr, so the bootstrap exception does not cover it.
+    "v0-rust-wheel-cross-",
 )
 
 

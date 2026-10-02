@@ -226,13 +226,18 @@ In [`.github/workflows/ci.yml`](../.github/workflows/ci.yml):
   PR ran the whole sweep twice.
 - The heavy cache-producing CI workflow therefore *does* run on
   `pull_request`; that is the only way a feature branch gets coverage.
-- `Swatinem/rust-cache` survives in exactly three ordinary CI lanes
-  (soldr#3047 removed it from every other one): `_bootstrap-e2e.yml`, `ci.yml`'s
-  bootstrap driver build, and `ci.yml`'s wheel-cross build. The
-  cache-experiment workflows (`baseline-zero-deps.yml`,
-  `parent-cache-bench.yml`, `perf-matrix.yml`) keep their own rust-cache steps
-  because the cache is the subject under test there; they are budgeted under
-  `experiment-lanes` rather than gated. Each of the three ordinary lanes sets
+- `Swatinem/rust-cache` is banned fleet-wide (zackees/ci.yml#209, ci-lint
+  `CACHE-025`) except on a job that builds soldr with bare cargo before any
+  soldr exists, marked by a same-line
+  `# ci-lint: allow CACHE-025 bootstrap: <reason>`. It survives in exactly one
+  ordinary CI lane, `ci.yml`'s bootstrap driver build (soldr#3047 removed it
+  from every other lane, soldr#3121 retired `_bootstrap-e2e.yml`'s, and
+  zackees/ci.yml#209 retired `ci.yml`'s wheel-cross build's, which has a
+  soldr). The manual experiment workflows keep it only on their bare-cargo
+  soldr builds (`baseline-zero-deps.yml`'s `bootstrap-soldr`,
+  `parent-cache-bench.yml`, `perf-cold-warm.yml`), budgeted under
+  `experiment-lanes`; `tests/test_ci_cache_key_scheme.py` pins that list. The
+  ordinary lane sets
   `save-if: ${{ github.ref == 'refs/heads/main' }}`, so a PR run restores
   whatever `main` last wrote and never saves its own branch-scoped copy — the
   opposite of the `shared-key:`-only, no-`save-if:` posture this repo used to
