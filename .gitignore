@@ -203,3 +203,5 @@ act-run-*.log
 # own Cargo workspace with no `.git/` of its own, so the lock lands beside the
 # manifest instead. It holds no state (soldr#3042).
 .soldr-dylint-cook.lock
+# zackees/ci.yml#196: the local gate's per-run worktree nonce
+.gate-nonce

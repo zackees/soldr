@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -113,6 +114,12 @@ class Check:
     # Oldest version of argv[0] that runs this check correctly, read from
     # `<tool> --version`; an older tool fails fast with an upgrade hint.
     min_version: tuple[int, ...] | None = None
+    # zackees/ci.yml#196 (candidate GATE-009): prove the isolated runner saw
+    # THIS worktree. bosn can reuse a warm container still bound to another
+    # checkout (zackees/bosn#314) -- once it ran a sibling session's tree and
+    # this gate would have attested it. A fresh nonce is written to
+    # NONCE_FILE; the runner must echo it back from its /repo.
+    tree_nonce: bool = False
 
 
 def _base_ref() -> str:
@@ -660,6 +667,7 @@ def checks() -> list[Check]:
             # state dir is reclaimed instead of failing autostart, and a
             # client/daemon version mismatch is reported instead of a reset.
             min_version=(0, 1, 6),
+            tree_nonce=True,
         )
     ]
     return lint + rust + cross + tests
@@ -713,7 +721,36 @@ def tool_version(tool: str) -> tuple[int, ...] | None:
     return tuple(int(part) for part in match.groups()) if match else None
 
 
+NONCE_FILE = ".gate-nonce"
+NONCE_MARKER = "gate-nonce: "
+
+
 def _run(check: Check) -> Result:
+    if not check.tree_nonce:
+        return _run_plain(check)
+    nonce = secrets.token_hex(16)
+    path = ROOT / NONCE_FILE
+    path.write_text(nonce + "\n", encoding="utf-8")
+    try:
+        result = _run_plain(check)
+    finally:
+        path.unlink(missing_ok=True)
+    if f"{NONCE_MARKER}{nonce}" in result.output:
+        return result
+    seen = [ln for ln in result.output.splitlines() if ln.startswith(NONCE_MARKER)]
+    return Result(
+        check,
+        result.code or 1,
+        result.seconds,
+        result.output + f"\nlocal gate: the isolated runner did not see this worktree "
+        f"(expected {NONCE_MARKER}{nonce}, saw {seen[-1] if seen else 'no nonce'}). "
+        "It ran another checkout's tree -- zackees/bosn#314, zackees/ci.yml#196. "
+        "Stop or remove the bosn setup container bound to the other worktree, "
+        "or wait for it, then rerun.",
+    )
+
+
+def _run_plain(check: Check) -> Result:
     start = time.monotonic()
     tool = shutil.which(check.argv[0])
     if tool is None:
