@@ -105,11 +105,24 @@
     "full_run": "https://github.com/zackees/bosn/actions/runs/36921972900",
     "full_result": "success on exact candidate 58687f4fb17c499416abb9f56ec3f56d1491ae1b; all 12 jobs successful, including both hosted macOS wheel smokes",
     "engine_prerequisites": {
-      "local_commit": "070a9eed70435ecc277ffa48f54d7d8fe91b1640",
+      "local_commit": "2cd8be4d3cfead2a8112743c331fec8daeea1b29",
       "scope": "Unpublished private runtime with frozen creation profiles and actual pre-admission startup cleanup. Public run/report, exact adapter graph producer and whole fleet workflow validation remain pending.",
       "evidence": "Immutable v3 creation profiles, historical init-command verification and startup registry fencing implemented. Root four-crate Rust lib/integration suite, 13 engine, five runtime and eight probe tests passed; service Clippy and workspace formatting passed. Startup fence: 199 service tests passed, three ignored; independent primary review clean. Actual startup Docker recovery passed as recorded below. Public commands and fleet workflow graph remain pending.",
       "cleanup": "Worker scratch caches stopped and trashed; root-owned compile caches remain intentionally active until runtime work is finished. Private input/evidence bundle retained. No foreign engine or checkout touched.",
-      "pending_review_fixes": [],
+      "pending_review_fixes": [
+        "Ordinary container creation-profile checkpoint is uncommitted. Primary review found that named-volume reuse must verify local-driver options and actual mountpoint, not name and driver alone; correction and repeat review pending."
+      ],
+      "sterile_act_queries": {
+        "commit": "2cd8be4d3cfead2a8112743c331fec8daeea1b29",
+        "result": "18 CLI tests and Clippy passed; same primary review clean.",
+        "controls": "Explicit ACT_DISABLE_VERSION_CHECK=1 and empty GITHUB_TOKEN secret entry suppress the pinned Act version lookup and gh credential fallback.",
+        "scope": "No exact matrix graph, offline confinement or native execution proof."
+      },
+      "source_cache_inputs": {
+        "commit": "7afd7ef",
+        "result": "Dynamic uv cache keys include Rust, Python, backend and declared toolchain inputs; offline lock check and primary review passed.",
+        "scope": "Actual fresh source-wheel task remains pending."
+      },
       "latest_root_validation": "Actual v3 probe 13 passed in 163.16 seconds at runtime 634a84a: exact-SHA/repository assertion succeeded; genuine nested cancellation observed and reaped. Both exact engine IDs absent afterward. Compact checked receipt ci/fleet-evidence/bosn-private-act-634a84a.json includes frozen profiles, resource peaks and effective mounts. Startup fence 917c516 was added afterward and is not claimed by this probe. Actual startup through Service::serve passed in3.49s at48edd11: stale claimed engine removed before authenticated ping; durablev3 record Terminal/Interrupted/noexecution. Receipt ci/fleet-evidence/bosn-private-startup-48edd11.json. Full four-crate suite, Clippy, formatting and primaryreview passed.",
       "declared_python_task": {
         "candidate": "2762cf3",
@@ -117,7 +130,7 @@
         "reason": "Native CLI and audited Python wheel built and installed; repeated clean-wheel build fails to locate OpenSSL names rewritten by earlier repair.",
         "owned_state": "/tmp/bosn-act-localgate-3345-owned",
         "next_work": "Fix repeated wheel build artifact isolation and rerun declared task. Do not skip audit or source installation.",
-        "cleanup": "Task terminal; exact owned container idle, retained for read-only artifact diagnosis. Cache volumes retained; foreign resources untouched.",
+        "cleanup": "Task terminal; both owned task daemons and exact owned container stopped. Container and cache volumes retained for diagnosis and scoped retry; foreign resources untouched.",
         "reviewed_fix_commit": "a870557c4a3fd6d068d1ae99e9a59d1a23fc77d0",
         "fix_tests": "26 backend/native-boundary tests passed; primary review clean. Actual fresh repeated wheel task not yet passed.",
         "fresh_attempt": {
