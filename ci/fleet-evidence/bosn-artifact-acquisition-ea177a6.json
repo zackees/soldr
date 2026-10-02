@@ -31,5 +31,10 @@
     "whole fleet workflows",
     "native foreign-platform coverage",
     "GitHub source authority"
-  ]
+  ],
+  "additional_validation": {
+    "four_crate_lib_and_integration_suite": "Passed; terminal exit 0 in64.49s. Service lib209passed/5ignored. Explicit network test separately passed as recorded.",
+    "service_clippy": "--locked --lib --tests -Dwarnings passed",
+    "workspace_formatting": "soldr cargo fmt --all -- --check passed"
+  }
 }
