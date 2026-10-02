@@ -185,3 +185,14 @@ cmd = "cd /repo && CARGO_TARGET_DIR=/target/dylint-ws /opt/soldr-bootstrap/bin/s
 [task.small-tool-stderr-cli]
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --lib -- hydrate_rustc_version rustc_identity_ all_section_dumps_failing dylint_link_validation_tests::"
+
+# NixOS gcc-only host: the host `cc` drives a Linux link when no clang can see
+# the C runtime -- unit tests for the selection and the shim body.
+[task.linker-host-cc]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --lib linker_shim::"
+
+# A project's `.cargo/config.toml` dir is never exported as CARGO_HOME.
+[task.cargo-home-config-dir]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-core --lib toolchain_resolve; a=$?; CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test toolchain_env -E 'test(/^cli_toolchain_home_boundary::/)'; b=$?; exit $((a | b))"
