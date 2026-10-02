@@ -133,6 +133,40 @@ def test_docs_gate_requires_successful_path_selection_and_docs_lint():
     assert check(needs, docs_only=True)
 
 
+def test_attested_routine_head_requires_canonical_gate_and_candidate():
+    needs = {
+        job: {"result": "success"} for job in ["ci-mode", "path-selection", "docs-lint"]
+    }
+    assert check(needs, mode="minimal", author_permission="write", trusted=True) == []
+    assert check(
+        needs,
+        mode="minimal",
+        author_permission="write",
+        trusted=True,
+        selected_sha="b" * 40,
+    )
+    needs["ci-mode"] = {"result": "failure"}
+    assert check(needs, mode="minimal", author_permission="write", trusted=True)
+
+
+@pytest.mark.parametrize("mode", ["test", "full"])
+def test_attestation_cannot_replace_requested_execution(mode):
+    assert "attested skip is limited to a writer's minimal PR" in check(
+        passing(), mode=mode, author_permission="write", trusted=True
+    )
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch", "merge_group"])
+def test_attestation_cannot_replace_non_pr_execution(event):
+    assert "attested skip is limited to a writer's minimal PR" in check(
+        passing(),
+        mode="minimal",
+        event_name=event,
+        author_permission="write",
+        trusted=True,
+    )
+
+
 def test_unknown_mode_fails_clearly():
     with pytest.raises(ValueError, match="unknown CI mode"):
         check(passing(), mode="")
