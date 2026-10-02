@@ -339,6 +339,20 @@ branch is merged.
 (`ci-mode`) fails a PR whose head commit lacks a tree-bound `Local-Gate:`
 trailer, and every other job needs `ci-mode`.
 
+**Attested PRs skip the remote quick gate (zackees/ci.yml#190, GATE-008).**
+When the head is attested and in policy, `ci-mode` outputs `trusted=true`
+and the remote `Lint` and `Linux x64` jobs skip, because they would rerun
+exactly what the gate just ran. The policy is `[gate.trust]` in
+`local-gate.toml`, read from the PR's base. These still run remotely:
+- a change to `local-gate.toml`, `ci/local_gate.py`, `ci.yml`,
+  `_build-and-test.yml`, the actions they use, or a declared surface script;
+- a `ci-full` label, a fork, or an author without write access;
+- the 1-in-10 audit sample.
+
+Every push to `main` runs the jobs for real, and a release candidate runs
+full CI on its exact SHA. A remote failure on an attested head is a gate
+gap: fix the gate, don't just rerun.
+
 ```bash
 git commit ...                       # the gate attests a committed, clean tree
 uvx --from git+https://github.com/zackees/ci.yml@<CI_LINT_REF> ci-lint local-gate run

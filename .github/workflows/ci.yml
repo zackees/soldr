@@ -84,14 +84,19 @@ jobs:
       mode: ${{ steps.mode.outputs.mode }}
       checkout_sha: ${{ steps.mode.outputs.checkout_sha }}
       author_permission: ${{ steps.mode.outputs.author_permission }}
+      # zackees/ci.yml#190 (GATE-008): 'true' only for an attested PR head
+      # inside local-gate.toml's [gate.trust] policy; Lint and Linux x64
+      # then skip. Never 'true' on push/dispatch.
+      trusted: ${{ steps.gate.outputs.trusted }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ inputs.candidate_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-          # Depth 2: a GitHub "Update branch" merge head is accepted through
-          # its attested first parent (ci-lint local-gate verify).
-          fetch-depth: 2
+          # Full history: GATE-008 reads the base commit's local-gate.toml
+          # and diffs the PR from its merge base; GATE-003 accepts a GitHub
+          # "Update branch" merge head through its attested first parent.
+          fetch-depth: 0
       # The selector executes base-repository code, never the PR helper.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -110,12 +115,13 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: zackees/ci.yml
-          ref: f56e397d9b4ba2d2eaf120c4b04484f9f5a6b15e
+          ref: 756b5c0b9feda73ae6daf535ed8039a2ff11673e
           path: .ci-lint
           persist-credentials: false
           sparse-checkout: ci_lint
       - name: Local gate attestation
-        run: PYTHONPATH=.ci-lint python3 -m ci_lint local-gate verify --repo .
+        id: gate
+        run: PYTHONPATH=.ci-lint python3 -m ci_lint local-gate verify --repo . --trust --github-output
       - name: Select mode and verify checkout
         id: mode
         env:
@@ -147,16 +153,16 @@ jobs:
   lint-docs:
     name: Lint
     needs: [ci-mode, path-selection]
-    if: ${{ needs.ci-mode.outputs.mode != 'full' && needs.path-selection.outputs.docs_only == 'true' }}
+    if: ${{ needs.ci-mode.outputs.mode != 'full' && (needs.path-selection.outputs.docs_only == 'true' || needs.ci-mode.outputs.trusted == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - run: echo "documentation-only change — canonical CI Lint satisfied"
+      - run: echo "documentation-only change or attested head (GATE-008, see CI mode) — canonical CI Lint satisfied"
 
   lint:
     name: Lint
     needs: [ci-mode, path-selection]
-    if: ${{ needs.ci-mode.outputs.mode == 'full' || needs.path-selection.outputs.docs_only != 'true' }}
+    if: ${{ (needs.ci-mode.outputs.mode == 'full' || needs.path-selection.outputs.docs_only != 'true') && needs.ci-mode.outputs.trusted != 'true' }}
     # Run on every push to main AND on every PR — without this PRs slip
     # in unformatted code that breaks main's Lint job on merge. Repeated
     # 4 times in late 2026-06 (#1111/#1114/#1115/#1120 fallout), each
@@ -265,7 +271,7 @@ jobs:
     # No `if:` guard: every downstream job hangs off this one, so it must
     # run on workflow_dispatch as well as on main pushes and PRs.
     needs: [ci-mode, path-selection, lint]
-    if: ${{ always() && (needs.ci-mode.outputs.mode == 'full' || needs.path-selection.outputs.docs_only != 'true') && needs.lint.result == 'success' }}
+    if: ${{ always() && (needs.ci-mode.outputs.mode == 'full' || needs.path-selection.outputs.docs_only != 'true') && needs.lint.result == 'success' && needs.ci-mode.outputs.trusted != 'true' }}
     uses: ./.github/workflows/_build-and-test.yml
     with:
       runner: ubuntu-24.04

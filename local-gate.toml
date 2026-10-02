@@ -2,7 +2,7 @@
 #
 # Before every push, from a clean, committed tree:
 #
-#   uvx --from git+https://github.com/zackees/ci.yml@f56e397d9b4ba2d2eaf120c4b04484f9f5a6b15e ci-lint local-gate run
+#   uvx --from git+https://github.com/zackees/ci.yml@756b5c0b9feda73ae6daf535ed8039a2ff11673e ci-lint local-gate run
 #
 # runs `run` below and, on success, stamps HEAD with a tree-bound
 # `Local-Gate:` trailer. CI's `ci-mode` job (`verify`) fails a PR whose head
@@ -83,4 +83,41 @@ exclude = [
 keep = [
   "tests/fixtures/**", "src/soldr/_bundle_bins.py", ".github/scripts/nextest*",
   "ci/bosn_workspace_test.py",
+]
+
+# zackees/ci.yml#190 (GATE-008, pilot #189): an attested PR head skips the
+# remote Lint and Linux x64 jobs -- they would rerun exactly what the gate
+# just ran, at ~14 min of PR latency. CI's ci-mode job decides with
+# `ci-lint local-gate verify --trust`, from THIS file as committed on the
+# PR's base. It fails closed: a fork or non-writer author, a `ci-full`
+# label, a head not attested for its exact tree, a trailer missing a lane,
+# a change to any surface below (or to this file, ci/local_gate.py, ci.yml,
+# _build-and-test.yml and the local actions they use), or the 1-in-10
+# audit sample all run the jobs as before. Pushes to main always run them
+# (the post-merge catch); the release candidate's full run is the last.
+[gate.trust]
+mode = "enforce"
+skip = ["ci.yml:lint", "ci.yml:build-linux-x64"]
+# Linux x64 is not a pure mirror: its `soldr ci-test` DAG is the rust
+# (fmt/Clippy/Dylint), ci-lint (dependency policy) and tests (nextest +
+# doctests, bosn) lanes; the CI-only probes below run on every main push.
+covered-by = { "ci.yml:build-linux-x64" = ["rust", "ci-lint", "tests"] }
+# Scripts only the skipped jobs run: a change to one can only be validated
+# remotely.
+surfaces = [
+  ".github/scripts/setup_ci_swap.sh",
+  ".github/scripts/analyze_compile_journal.py",
+  ".github/scripts/check_compile_fallbacks.py",
+  ".github/scripts/check_pr_cache_keys.py",
+  ".github/scripts/check_third_party_compiles.py",
+  ".github/scripts/check_toolchain_homes.py",
+  ".github/scripts/dylint_toolchain_channel.py",
+  ".github/scripts/fit_memory_estimate.py",
+  ".github/scripts/index_build_logs.py",
+  ".github/scripts/install_ci_cargo_guard.py",
+  ".github/scripts/measure_zccache_working_set.py",
+  ".github/scripts/report_dylint_tree_size.py",
+  ".github/scripts/ci_mode.py",
+  "ci/check_linked_libs.py",
+  "ci/check_zccache_feature_graph.py",
 ]
