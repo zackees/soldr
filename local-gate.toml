@@ -2,7 +2,7 @@
 #
 # Before every push, from a clean, committed tree:
 #
-#   uvx --from git+https://github.com/zackees/ci.yml@052f27afa101e07d7714d27a1bb98904a26f37ef ci-lint local-gate run
+#   uvx --from git+https://github.com/zackees/ci.yml@f56e397d9b4ba2d2eaf120c4b04484f9f5a6b15e ci-lint local-gate run
 #
 # runs `run` below and, on success, stamps HEAD with a tree-bound
 # `Local-Gate:` trailer. CI's `ci-mode` job (`verify`) fails a PR whose head
@@ -27,3 +27,60 @@ mode = "enforce"
 marker = "SOLDR_TEST_ISOLATED"
 runner = ["bosn", "run", "--task", "test"]
 guard = ".github/scripts/nextest_wrapper.sh"
+
+# zackees/ci.yml#177 (GATE-007): the gate as cacheable lanes, split along
+# input boundaries. A lane is skipped when its inputs -- the commit tree minus
+# `exclude`, plus `keep` and the mandatory inputs (this file,
+# ci/local_gate.py, Cargo.lock, rust-toolchain.toml) -- match a recorded pass.
+# Exclusions must be evidence-based: replay history with
+# `ci-lint local-gate lanes --simulate N`, and never exclude a path a lane
+# might read. Measured traps: the Rust crates `include_str!`
+# src/soldr/_bundle_bins.py, crates/*/benchmarks/*.md and tests/fixtures/**,
+# so `**/*.py`, `**/*.md` and `tests/**` are NOT safe Rust exclusions.
+
+# Python linters: only Python sources and their configs.
+[gate.lanes.py-static]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "py-static"]
+tools = ["uv"]
+exclude = [
+  "crates/**", "dylints/**", "_vender/**", "Cargo.toml", "Cargo.lock", "docs/**", "*.md", "*.png", "contracts/**",
+  "docker/**", "bosn.toml", ".github/workflows/**", "examples/**", "perf/**",
+  # Data files: the linters read only Python and their own configs.
+  "**/*.json", "**/*.yml", "**/*.yaml", "**/*.rs",
+]
+
+# Repository-scanning guards and the Python tests: they read everything.
+[gate.lanes.guards]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "guards"]
+tools = ["uv", "node"]
+
+# soldr lint ci + dependency policy: seconds; reads CI surfaces and lockfiles.
+[gate.lanes.ci-lint]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "ci-lint"]
+tools = ["soldr"]
+
+# rustfmt, Clippy, Dylint: the Rust world.
+[gate.lanes.rust]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "rust"]
+tools = ["soldr"]
+env = ["SOLDR_LINKER"]
+exclude = [
+  "docs/**", "*.md", "*.png", "contracts/**", "bench/**", "perf/**", "examples/**",
+  "tests/**", "docker/**", "bosn.toml", ".github/**", "ci/**", "tools/**", "scripts/**", ".claude/**",
+  "src/**", "install", "install.sh", "lint", "test", "clean", "package.json", "uv.lock",
+]
+keep = ["tests/fixtures/**", "src/soldr/_bundle_bins.py"]
+
+# The test suite, in bosn: the Rust world plus the harness it runs under.
+[gate.lanes.tests]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "tests"]
+tools = ["bosn"]
+exclude = [
+  "docs/**", "*.md", "*.png", "contracts/**", "bench/**", "perf/**", "examples/**",
+  "tests/**", ".github/**", "ci/**", "tools/**", "scripts/**", ".claude/**",
+  "src/**", "install", "install.sh", "lint", "test", "clean", "package.json", "uv.lock",
+]
+keep = [
+  "tests/fixtures/**", "src/soldr/_bundle_bins.py", ".github/scripts/nextest*",
+  "ci/bosn_workspace_test.py",
+]

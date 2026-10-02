@@ -16,12 +16,18 @@ wrapper, which runs it on a clean tree and stamps HEAD with a tree-bound
 
 Lanes:
 
-- `lint`: every check the remote `Lint` job runs. The Lint job runs exactly
-  `ci/local_gate.py --lane lint` and nothing else (GATE-001), so this list
-  is the single source of truth for it.
-- `rust`: `soldr lint rust` on the host -- rustfmt, Clippy for the host and
-  every declared target, and every Dylint library. Local only (the remote
-  `build-linux-x64` job runs the same stages inside `soldr ci-test`).
+- `lint` = `py-static` + `guards`: every check the remote `Lint` job runs.
+  The Lint job runs exactly `ci/local_gate.py --lane lint` and nothing else
+  (GATE-001), so this list is the single source of truth for it.
+  `py-static` (ruff, flake8, isort, format, pylint, mypy) reads only Python;
+  `guards` (repository-scanning guard scripts, the Python tests) read
+  everything. They are separate lanes so the gate can cache them separately
+  (GATE-007, zackees/ci.yml#177).
+- `ci-lint`: `soldr lint ci` and dependency policy (deny bans, audit,
+  machete) -- seconds, CI surfaces and lockfiles.
+- `rust`: rustfmt, Clippy and Dylint -- ci-test's own commands, run by the
+  host's soldr. Local only (the remote `build-linux-x64` job runs the same
+  stages inside `soldr ci-test`).
 - `tests`: soldr's own test suite, in bosn's isolated container
   (`bosn run --task test`), never on the host (GATE-005, soldr#3516).
 
@@ -40,6 +46,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -49,7 +56,14 @@ ROOT = Path(__file__).resolve().parent.parent
 # The zackees/ci.yml commit whose ci_lint this repository uses. ci.yml's
 # `ci-mode` job checks out the same SHA; tests/test_local_gate.py keeps the
 # two in step.
-CI_LINT_REF = "052f27afa101e07d7714d27a1bb98904a26f37ef"
+CI_LINT_REF = "f56e397d9b4ba2d2eaf120c4b04484f9f5a6b15e"
+# GATE-007 lanes (zackees/ci.yml#177), split along input boundaries so each
+# can be cached on its own: Python linters read only Python; guards scan the
+# whole repository; ci-lint is CI-surface and dependency policy (cheap);
+# rust compiles the workspace; tests runs the suite in bosn.
+LANES = ("py-static", "guards", "ci-lint", "rust", "tests")
+# `--lane lint` is exactly the remote Lint job (GATE-001 mirror).
+LINT_ALIAS = ("py-static", "guards")
 PY = ("uv", "run", "--no-project", "--python", "3.13")
 PY_DIRS = (
     "src",
@@ -115,7 +129,7 @@ def checks() -> list[Check]:
         Check(
             "Line-ceiling ratchet",
             (*script("loc_ratchet.py"), "--base-ref", base),
-            "lint",
+            "guards",
             needs_base=True,
         ),
         # soldr#3388 (prevention half of meta soldr#3389) — don't-grow ratchet
@@ -126,7 +140,7 @@ def checks() -> list[Check]:
         Check(
             "Swallowed-stdio ratchet",
             (*script("swallowed_stdio_ratchet.py"), "--base-ref", base),
-            "lint",
+            "guards",
             needs_base=True,
         ),
         # soldr#2493 — the 1000-line absolute ceiling for production sources.
@@ -135,7 +149,7 @@ def checks() -> list[Check]:
         Check(
             "1000-line production ceiling",
             script("loc_ceiling.py"),
-            "lint",
+            "guards",
             needs_base=True,
         ),
         # soldr#2753 — the `.proto` files are the documented source of truth for
@@ -143,7 +157,7 @@ def checks() -> list[Check]:
         # and they had drifted: wire.proto referenced a message it never defined
         # (invalid protobuf), and the rust_plan mirror understated its tag space
         # by two fields. Compares (message, field, tag) triples on both sides.
-        Check("Protobuf schema drift", script("check_proto_drift.py"), "lint"),
+        Check("Protobuf schema drift", script("check_proto_drift.py"), "guards"),
         # soldr#2752 Rule A — the manifest half of the `soldr-deps` gateway,
         # landed first because it needs no facade and no source churn. Adding a
         # third-party dependency now means amending a checked-in inventory in
@@ -153,7 +167,7 @@ def checks() -> list[Check]:
         Check(
             "Third-party dependency inventory",
             script("check_dependency_inventory.py"),
-            "lint",
+            "guards",
         ),
         # soldr#2937 (phase 5 of soldr#2931) — linked test products are never
         # cacheable. Fails when a normal workflow puts one in a cross-run store,
@@ -161,42 +175,44 @@ def checks() -> list[Check]:
         Check(
             "Cache ownership policy",
             script("check_cache_ownership.py", "--with", "pyyaml"),
-            "lint",
+            "guards",
         ),
         # soldr#3318: ci.yml is the only PR entry point. Structural YAML parsing
         # rejects both PR event kinds outside this file before any Rust work.
         Check(
             "Single pull-request workflow entry point",
             script("check_pr_workflow_triggers.py", "--with", "pyyaml"),
-            "lint",
+            "guards",
         ),
         # zackees/ci.yml#6: a cache saved in PR context carries `pr-<N>` in its
         # key so the ci-pre janitor can attribute and delete it.
         Check(
             "PR-context cache keys carry pr-<N>",
             script("check_pr_cache_keys.py", "--with", "pyyaml"),
-            "lint",
+            "guards",
         ),
         # soldr#2360/#2363 — the broker-fronted daemon design deliberately
         # keeps the wire at protocol_v2/client_v2, broken in place; a
         # protocol_v3/client_v3 module would mean two wire majors coexisting,
         # which defeats the minimum-version floor the design relies on to force
         # upgrades. Cheap static grep, no build required.
-        Check("No protocol_v3 policy", script("no_protocol_v3.py"), "lint"),
+        Check("No protocol_v3 policy", script("no_protocol_v3.py"), "guards"),
         # soldr#1981 — `--release` costs thin-LTO + single-CU codegen, and paying
         # that on a job whose output never ships is pure waste. soldr#1982 removed
         # the offenders; this keeps them gone. Runs before the toolchain setup so
         # a regression fails in seconds rather than after a full build.
         Check(
-            "Release-profile policy", script("verify_release_profile_policy.py"), "lint"
+            "Release-profile policy",
+            script("verify_release_profile_policy.py"),
+            "guards",
         ),
         # soldr#2442 slice 4 — tree-level raw process-spawn guard: a new raw
         # `.spawn()` site in any production crate fails here by name until it
         # is routed through a sanctioned module or allowlisted with a
         # justification. Complements the soldr-daemon dylint boundary.
-        Check("Spawn-path guard", script("spawn_path_guard.py"), "lint"),
+        Check("Spawn-path guard", script("spawn_path_guard.py"), "guards"),
         Check(
-            "Nextest bare-Cargo guard", script("check_nextest_bare_cargo.py"), "lint"
+            "Nextest bare-Cargo guard", script("check_nextest_bare_cargo.py"), "guards"
         ),
         # soldr#2763 -- the v0.9.3 release died on macOS ARM64 because a release
         # script ran under the runner image's own python3, which predated the
@@ -212,7 +228,7 @@ def checks() -> list[Check]:
         Check(
             "Workflow Python interpreter pin",
             script("check_workflow_python_pin.py", "--with", "pyyaml"),
-            "lint",
+            "guards",
         ),
         # soldr#2945 — the lint libraries are now the authority on Dylint's
         # nightly, but nothing checked that the nightly they declare has drivers
@@ -226,14 +242,14 @@ def checks() -> list[Check]:
         Check(
             "Dylint driver published for every shipped triple",
             script("check_dylint_driver_assets.py"),
-            "lint",
+            "guards",
         ),
         # soldr#3284: Dylint remains authoritative but expensive; this cheap
         # source-level tripwire must run even when the ci-test lane is skipped.
         Check(
             "Enforce platform cfg boundary",
             script("platform_cfg_boundary_ratchet.py"),
-            "lint",
+            "guards",
             slow=True,
         ),
         # Rust compiler validation is centralized in the native host lane.
@@ -242,10 +258,12 @@ def checks() -> list[Check]:
         Check(
             "Check npm package metadata",
             ("node", "scripts/test-npm-package.js"),
-            "lint",
+            "guards",
         ),
         Check(
-            "Verify direct CI job timeouts", script("verify_ci_job_timeouts.py"), "lint"
+            "Verify direct CI job timeouts",
+            script("verify_ci_job_timeouts.py"),
+            "guards",
         ),
         # Three lanes assert the glibc floor of a binary soldr builds, and
         # they arrived in three separate PRs with nothing tying them
@@ -255,7 +273,7 @@ def checks() -> list[Check]:
         Check(
             "Verify the per-PR glibc ceilings agree",
             script("check_glibc_ceilings.py"),
-            "lint",
+            "guards",
         ),
         # A `paths:` filter that matches nothing leaves its workflow silently
         # dark: it never runs, so it can never go red. `crates/soldr-cli/src/
@@ -269,12 +287,12 @@ def checks() -> list[Check]:
         Check(
             "Verify no folded run block hides arguments behind a comment",
             script("check_run_block_comments.py"),
-            "lint",
+            "guards",
         ),
         Check(
             "Verify workflow path filters still match",
             script("verify_workflow_paths.py"),
-            "lint",
+            "guards",
         ),
         Check(
             "Local gate mirrors the remote quick gate (GATE-001/002)",
@@ -290,7 +308,29 @@ def checks() -> list[Check]:
                 "--repo",
                 ".",
             ),
-            "lint",
+            "guards",
+        ),
+        # zackees/ci.yml PY-002/PY-003 (owner directives 2026-10-01): records
+        # are typed dataclasses, and no subprocess output is captured through a
+        # pipe (a full pipe, or a soldr daemon inheriting one, hangs the
+        # caller). A ratchet: counts per file may only fall
+        # (ci/py-lint-baseline.json; regenerate with --write-baseline after
+        # fixing sites), and new files start at zero.
+        Check(
+            "Python policy ratchet (PY-002 records, PY-003 no pipe capture)",
+            (
+                "uvx",
+                "--from",
+                f"git+https://github.com/zackees/ci.yml@{CI_LINT_REF}",
+                "ci-lint",
+                "py",
+                "lint",
+                "--root",
+                ".",
+                "--baseline",
+                "ci/py-lint-baseline.json",
+            ),
+            "guards",
         ),
         # Check mode, not --fix (zackees/ci.yml#166): a gate that rewrote files
         # could not attest the tree it was given (`ci-lint local-gate run`
@@ -322,7 +362,9 @@ def checks() -> list[Check]:
         # version. An unbounded linter is a CI break waiting on someone
         # else's release date.
         Check(
-            "Python lint (ruff)", (*RUFF, "ruff", "check", "--no-fix", *PY_DIRS), "lint"
+            "Python lint (ruff)",
+            (*RUFF, "ruff", "check", "--no-fix", *PY_DIRS),
+            "py-static",
         ),
         # Pinned, not floating. An unpinned `--with flake8` means a future
         # release that adds a check turns this red on code nobody touched,
@@ -335,7 +377,7 @@ def checks() -> list[Check]:
         Check(
             "Python lint (flake8)",
             (*PY, "--with", "flake8>=7.3,<8", "python", "-m", "flake8", *PY_DIRS),
-            "lint",
+            "py-static",
         ),
         # Ruff's formatter uses Black-compatible style. Keep its width at the
         # previous formatter's 88 columns while Ruff lint retains its own
@@ -343,7 +385,7 @@ def checks() -> list[Check]:
         Check(
             "Python format (ruff)",
             (*RUFF, "ruff", "format", "--check", "--line-length", "88", *PY_DIRS),
-            "lint",
+            "py-static",
         ),
         Check(
             "Python import order (isort)",
@@ -359,7 +401,7 @@ def checks() -> list[Check]:
                 "black",
                 *PY_DIRS,
             ),
-            "lint",
+            "py-static",
         ),
         # mypy over both the shipped package and the tests. `src/` was cleaned
         # in #2107 (four annotation defects, none behavioural); `tests/` is
@@ -403,12 +445,12 @@ def checks() -> list[Check]:
         Check(
             "Python lint (pylint src)",
             (*PYLINT, "python", "-m", "pylint", "src"),
-            "lint",
+            "py-static",
         ),
         Check(
             "Python lint (pylint tests)",
             (*PYLINT, "python", "-m", "pylint", "--rcfile=tests/.pylintrc", "tests"),
-            "lint",
+            "py-static",
             slow=True,
         ),
         Check(
@@ -425,7 +467,7 @@ def checks() -> list[Check]:
                 ".claude/hooks",
                 "--ignore-patterns=test_.*\\.py",
             ),
-            "lint",
+            "py-static",
             slow=True,
         ),
         Check(
@@ -438,7 +480,7 @@ def checks() -> list[Check]:
                 "--rcfile=tests/.pylintrc",
                 *_script_tests(),
             ),
-            "lint",
+            "py-static",
         ),
         # All four directories. `.github/scripts` and `ci` are the scripts CI
         # itself runs, so a type error in them breaks a lane rather than a
@@ -477,7 +519,7 @@ def checks() -> list[Check]:
                 "mypy",
                 *PY_DIRS,
             ),
-            "lint",
+            "py-static",
             slow=True,
         ),
         # soldr#2013 — nothing ran `tests/` on CI, so it decayed silently: a test
@@ -507,7 +549,7 @@ def checks() -> list[Check]:
                 ".github/scripts/",
                 "-q",
             ),
-            "lint",
+            "guards",
             slow=True,
         ),
     ]
@@ -520,10 +562,12 @@ def checks() -> list[Check]:
     # pass attests nothing.
     rust = [
         Check("rustfmt", ("soldr", "cargo", "fmt", "--all", "--", "--check"), "rust"),
-        Check("soldr lint ci", ("soldr", "lint", "ci"), "rust"),
-        Check("cargo deny (bans)", ("soldr", "cargo", "deny", "check", "bans"), "rust"),
-        Check("cargo audit", ("soldr", "cargo", "audit"), "rust"),
-        Check("cargo machete", ("soldr", "cargo", "machete"), "rust"),
+        Check("soldr lint ci", ("soldr", "lint", "ci"), "ci-lint"),
+        Check(
+            "cargo deny (bans)", ("soldr", "cargo", "deny", "check", "bans"), "ci-lint"
+        ),
+        Check("cargo audit", ("soldr", "cargo", "audit"), "ci-lint"),
+        Check("cargo machete", ("soldr", "cargo", "machete"), "ci-lint"),
         Check(
             "clippy",
             (
@@ -585,11 +629,34 @@ class Result:
     output: str
 
 
+@dataclass(frozen=True)
+class Captured:
+    returncode: int
+    output: str
+
+
+def run_captured(argv: list[str]) -> Captured:
+    """Run `argv` from the repository root with stdout and stderr captured
+    through one temporary file, never a pipe (zackees/ci.yml PY-003): a full
+    pipe blocks the child, and a soldr daemon or broker that inherits a pipe
+    keeps the caller waiting for an EOF that never comes. This returns when
+    the direct child exits, whatever it left running."""
+    with tempfile.TemporaryFile() as out:
+        proc = subprocess.run(
+            argv,
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        out.seek(0)
+        return Captured(proc.returncode, out.read().decode("utf-8", errors="replace"))
+
+
 def tool_version(tool: str) -> tuple[int, ...] | None:
-    proc = subprocess.run(
-        [tool, "--version"], capture_output=True, text=True, check=False
-    )
-    match = re.search(r"(\d+)\.(\d+)\.(\d+)", proc.stdout + proc.stderr)
+    proc = run_captured([tool, "--version"])
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", proc.output)
     return tuple(int(part) for part in match.groups()) if match else None
 
 
@@ -609,67 +676,22 @@ def _run(check: Check) -> Result:
                 f"{check.argv[0]} {found or 'unknown'} is older than {want}; "
                 f"upgrade it: uv tool upgrade {check.argv[0]}",
             )
-    proc = subprocess.run(
-        list(check.argv),
-        cwd=ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
-    return Result(check, proc.returncode, time.monotonic() - start, proc.stdout)
-
-
-# Paths whose change can affect the `rust` or `tests` lanes. A diff touching
-# none of them (Python guards, workflows, docs) skips both lanes locally; the
-# remote jobs still run everything, so this only trims the author's loop.
-RUST_INPUTS = (
-    "crates/",
-    "dylints/",
-    "Cargo.toml",
-    "Cargo.lock",
-    "rust-toolchain.toml",
-    ".cargo/",
-    "clippy.toml",
-    "deny.toml",
-    ".config/",
-    ".github/scripts/nextest",
-    "docker/",
-    "bosn.toml",
-    "tests/fixtures/",
-)
-
-
-def changed_paths() -> list[str] | None:
-    """Files this branch changes against its merge base, or None if unknown."""
-    base = subprocess.run(
-        ["git", "merge-base", _base_ref(), "HEAD"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if base.returncode != 0:
-        return None
-    diff = subprocess.run(
-        ["git", "diff", "--name-only", base.stdout.strip(), "HEAD"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return diff.stdout.split() if diff.returncode == 0 else None
+    proc = run_captured(list(check.argv))
+    return Result(check, proc.returncode, time.monotonic() - start, proc.output)
 
 
 def _fetch_base() -> None:
-    """The diff ratchets need the base branch; fetch it, never fatally."""
+    """The diff ratchets need the base branch; fetch it, never fatally. Its
+    output is captured to a file and forwarded only on failure, not
+    swallowed (soldr#3389) and not piped (zackees/ci.yml PY-003)."""
     ref = _base_ref().removeprefix("origin/")
-    subprocess.run(
-        ["git", "fetch", "--no-tags", "--quiet", "origin", ref],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-    )
+    proc = run_captured(["git", "fetch", "--no-tags", "--quiet", "origin", ref])
+    if proc.returncode != 0:
+        print(
+            f"note: git fetch origin {ref} failed (exit {proc.returncode}):",
+            file=sys.stderr,
+        )
+        print(proc.output.rstrip(), file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -677,34 +699,26 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--lane", choices=("all", "lint", "rust", "tests"), default="all"
+        "--lane",
+        choices=("all", "lint", *LANES),
+        default="all",
+        help="one GATE-007 lane, or `lint` (= the remote Lint job: py-static + guards)",
     )
     parser.add_argument("--list", action="store_true", help="print the checks and exit")
     parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 2))
-    parser.add_argument(
-        "--no-scope",
-        action="store_true",
-        help="run the rust and tests lanes even when no Rust input changed",
-    )
     args = parser.parse_args(argv)
 
     event = os.environ.get("GITHUB_EVENT_NAME", "")
-    selected = [c for c in checks() if args.lane in ("all", c.lane)]
+    wanted = LINT_ALIAS if args.lane == "lint" else (args.lane,)
+    selected = [c for c in checks() if args.lane == "all" or c.lane in wanted]
     if event and event != "pull_request":
         selected = [c for c in selected if not c.needs_base]
     if args.list:
         for check in selected:
             print(f"[{check.lane}] {check.name}: {' '.join(check.argv)}")
         return 0
-    if any(c.needs_base for c in selected) or args.lane == "all":
+    if any(c.needs_base for c in selected):
         _fetch_base()
-    if args.lane == "all" and not args.no_scope:
-        changed = changed_paths()
-        if changed is not None and not any(p.startswith(RUST_INPUTS) for p in changed):
-            skipped = [c for c in selected if c.lane in ("rust", "tests")]
-            selected = [c for c in selected if c not in skipped]
-            for check in skipped:
-                print(f"skip         {check.name} (no Rust input changed)", flush=True)
 
     start = time.monotonic()
     parallel = sorted(

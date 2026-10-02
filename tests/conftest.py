@@ -79,7 +79,7 @@ def lint_lane_text() -> str:
     return "\n".join(
         f"{check.name}: {shlex.join(check.argv)}"
         for check in gate.checks()
-        if check.lane == "lint"
+        if check.lane in gate.LINT_ALIAS
     )
 
 
