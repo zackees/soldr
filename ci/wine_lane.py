@@ -45,12 +45,18 @@ class ExeResult:
     log: Path
 
 
-def _run_to_file(argv: list[str], log: Path) -> int:
-    """Output goes to a file, never a pipe (zackees/ci.yml PY-003)."""
-    with open(log, "wb") as fh:
-        return subprocess.run(
-            argv, cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT, check=False
-        ).returncode
+def _run_to_file(argv: list[str], log: Path, err: Path | None = None) -> int:
+    """Output goes to files, never a pipe (zackees/ci.yml PY-003). With
+    `err`, stderr is kept apart so `log` holds only the tool's stdout."""
+    with open(log, "wb") as out:
+        if err is None:
+            return subprocess.run(
+                argv, cwd=ROOT, stdout=out, stderr=subprocess.STDOUT, check=False
+            ).returncode
+        with open(err, "wb") as errfh:
+            return subprocess.run(
+                argv, cwd=ROOT, stdout=out, stderr=errfh, check=False
+            ).returncode
 
 
 def build(out_dir: Path) -> list[TestExe]:
@@ -70,15 +76,19 @@ def build(out_dir: Path) -> list[TestExe]:
     for crate in CRATES:
         argv += ["-p", crate]
     print(f"wine lane: building {', '.join(CRATES)} for {TARGET}", flush=True)
-    code = _run_to_file(argv, messages)
+    errors = out_dir / "build.stderr"
+    code = _run_to_file(argv, messages, errors)
     if code != 0:
-        sys.stdout.write(messages.read_text(encoding="utf-8", errors="replace")[-8000:])
+        sys.stdout.write(errors.read_text(encoding="utf-8", errors="replace")[-8000:])
         raise SystemExit(f"wine lane: cross-build failed (exit {code})")
     exes: list[TestExe] = []
     for line in messages.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.startswith("{"):
             continue
-        msg = json.loads(line)
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue  # a non-message line; artifacts are checked for below
         if msg.get("reason") != "compiler-artifact" or not msg.get("executable"):
             continue
         if not (msg.get("profile") or {}).get("test"):
