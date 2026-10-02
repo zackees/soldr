@@ -105,12 +105,12 @@
     "full_run": "https://github.com/zackees/bosn/actions/runs/36921972900",
     "full_result": "success on exact candidate 58687f4fb17c499416abb9f56ec3f56d1491ae1b; all 12 jobs successful, including both hosted macOS wheel smokes",
     "engine_prerequisites": {
-      "local_commit": "821d3ec",
+      "local_commit": "6f09a80",
       "scope": "Unpublished private runtime, typed raw image proofs, bounded stdin transfer, digest-based imported-image lookup and private cgroup initialization; public run/report and authenticated graph producer remain pending.",
-      "evidence": "Earlier 181 service library tests and 13 lifecycle tests passed. Current five runtime tests cover 19 synthetic actor fault modes; 18 public CLI integration tests, service formatting and all-target Clippy passed. Independent combined review closed the legacy planning bounds finding. Nine actual pinned Docker probes have narrowed implementation failures; none is a successful Act execution yet.",
-      "cleanup": "Previously completed scratch roots were trashed. Root cache /tmp/bosn-act-boundary-3344-owned remains intentionally active during runtime implementation; stop before cleanup.",
+      "evidence": "Independent combined source review clean. Bounded failed-container diagnostics and binary tail captures passed focused tests and Clippy. Eleven actual pinned Docker probes have narrowed implementation failures; none is a successful Act execution yet.",
+      "cleanup": "Worker scratch caches stopped and trashed; root-owned compile caches remain intentionally active until runtime work is finished. Private input/evidence bundle retained. No foreign engine or checkout touched.",
       "pending_review_fixes": [],
-      "latest_root_validation": "Probe-only storage/memory telemetry and exact legacy recovery passed five focused tests. Eighth and ninth actual probes passed import/config verification with an inferred 20 GiB tmpfs/28 GiB memory profile; eighth sampled peaks were 13,404,200,960 tmpfs bytes and 13,986,791,424 cgroup memory bytes. Act then failed starting the runner because tail was not found. Ninth retained raw imported configs matching pinned execution fields. All failed running engines report verified removal. Failed-container diagnostics and real success/cancellation remain pending."
+      "latest_root_validation": "Probe 11 (2b4995de-acc0-4000-ac75-a4a69a8a4154), run 16d03b7f-dc7f-4a1d-85a1-916aed715dc8, failed starting exact pinned runner despite correct PATH. Before verified cleanup, bounded docker cp captured both /usr/bin/tail and /bin/tail: exit 0, identical 70,144-byte USTAR archives SHA256 2985992a07e348002e41d9cc0d3c48f8496559a0b6187357134488c9417fd5bd. Safe in-memory inspection proves executable regular file mode 0755, 68,112 bytes, payload SHA256 bcf029b8d381f34834332bdaa5a5d23af9c56676f26eaf2339578bc7aa408198 and ELF interpreter /lib64/ld-linux-x86-64.so.2. Loader/rootfs diagnosis is pending. All eleven failed engines report removal; root Docker name check found no owned Act engines. Success and cancellation remain unproved."
     }
   },
   "latest_local_python_validation": {
@@ -169,9 +169,9 @@
   "local_shared_prerequisites": [
     {
       "checkout": "../soldr2-extern/soldr-release-control",
-      "commit": "df097477",
-      "scope": "Exact candidate tag peeling and immutable asset retries; published incomplete releases refuse upload. Release controller and frozen issue directive remain absent.",
-      "verification": "Unsafe tag and clobber behavior reproduced RED; published-partial upload finding fixed RED to GREEN. Worker 49 focused checks and root 45 release tests passed; independent primary review clean. No publication, tags or live API mutations; unpublished."
+      "commit": "0c1001bf",
+      "scope": "Exact immutable tag/assets and pure frozen release contracts. Npm-selected publication fails closed until package bytes are frozen. Contracts do not authenticate issue directives; actual start/resume/status controller and live publication remain absent.",
+      "verification": "Independent primary reviews clean after published-partial upload and npm byte identity findings were fixed. Root 102 combined release contract/publication/completeness tests passed. No publication, tags, live API mutations or push; unpublished."
     },
     {
       "checkout": "../soldr2-extern/soldr-release-execution",
