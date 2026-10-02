@@ -277,6 +277,11 @@ jobs:
     # run on workflow_dispatch as well as on main pushes and PRs.
     needs: [ci-mode, path-selection, lint]
     if: ${{ always() && (needs.ci-mode.outputs.mode == 'full' || needs.path-selection.outputs.docs_only != 'true') && (needs.lint.result == 'success' || needs.ci-mode.outputs.skip_lint == 'true') && needs.ci-mode.outputs.skip_build-linux-x64 != 'true' }}
+    # zackees/ci.yml#198 phase 4: the called workflow lists cache keys
+    # (GET only) to restore the nearest attested Tier-2 store.
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/_build-and-test.yml
     with:
       runner: ubuntu-24.04
