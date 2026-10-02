@@ -81,7 +81,7 @@ jobs:
           toolchain: 1.98.1
 
       - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2  # ci-lint: allow CACHE-025 bootstrap: this job builds soldr with bare cargo before any soldr exists, then benchmarks it
         with:
           # soldr#1978 item 6 deliberately leaves this off the shared
           # `ws-<profile>-<target>` scheme. This job builds AND measures in

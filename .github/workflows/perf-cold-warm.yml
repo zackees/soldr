@@ -104,7 +104,7 @@ jobs:
       # build soldr — perf must keep working when soldr is broken.
       - name: Restore cargo intermediates
         if: steps.soldr-bin-cache.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2  # ci-lint: allow CACHE-025 bootstrap: build-soldr builds soldr with bare cargo before any soldr exists (perf must survive a broken soldr)
         with:
           # soldr#1978 item 6 deliberately does NOT re-key this onto the
           # `ws-<profile>-<target>` scheme used by the ordinary CI lanes.

@@ -842,6 +842,10 @@ def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
     # specifically rather than the bare word.
     assert "uses: Swatinem/rust-cache" not in cross_job
     assert "shared-key:" not in cross_job
+    # zackees/ci.yml#209 (CACHE-025): the wheel lane has a soldr, so its
+    # rust-cache step was retired rather than kept as a bootstrap exception.
+    assert "uses: Swatinem/rust-cache" not in wheel_job
+    assert "shared-key:" not in wheel_job
 
     # soldr#3148 step 2: the nextest archive is no longer capped. The old
     # $GITHUB_ENV cap was only half applied (the daemon had already resolved

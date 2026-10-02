@@ -64,12 +64,12 @@ jobs:
           targets: x86_64-unknown-linux-gnu
 
       - name: Restore cargo + target caches
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2  # ci-lint: allow CACHE-025 bootstrap: this job builds soldr with bare cargo before any soldr exists
         with:
-          # soldr#1978 item 6. Same (profile, target) as the glibc leg of
-          # `build-soldr` below, which `needs:` this job -- so this pass
-          # populates the namespace and that one restores it, instead of the
-          # two compiling the same release dependency graph into two caches.
+          # soldr#1978 item 6 named this namespace for the release dependency
+          # graph. Since zackees/ci.yml#209 (CACHE-025) only this bootstrap
+          # job -- the one that builds soldr with bare cargo -- may keep it;
+          # `build-soldr` below has a soldr and no longer restores it.
           shared-key: ws-release-x86_64-unknown-linux-gnu
 
       # Same key as before: one binary, one cache entry. Now only one job
@@ -133,20 +133,13 @@ jobs:
           toolchain: 1.98.1
           targets: ${{ matrix.target }}
 
-      # soldr#1235 — cache ~/.cargo/{registry,git} + target/ so the
-      # `Build soldr-cli via soldr cargo zigbuild` step below doesn't
-      # recompile ~700 crate deps from scratch on every run. Same
-      # SHA-pinned action already in #1228/#1233. The workflow's zero-
-      # deps mandate covers only the DOCKER CONTAINER (used by the
-      # Bootstrap test acceptance jobs); runner-side compile is a
-      # normal build with no such constraint.
-      - name: Restore cargo + target caches
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          # soldr#1978 item 6. The glibc leg lands on the same key as the
-          # `bootstrap-soldr` job above (same profile, same triple); the musl
-          # leg gets its own, correctly.
-          shared-key: ws-release-${{ matrix.target }}
+      # zackees/ci.yml#209 (CACHE-025) retired the Swatinem/rust-cache step
+      # (soldr#1235, `ws-release-<target>`) that used to sit here. This job
+      # is not a bootstrap: it builds through the bootstrap soldr downloaded
+      # below (`soldr cargo zigbuild`), so its compile cache is soldr's own
+      # embedded zccache. The workflow is manual-only acceptance, so the
+      # cold dependency compile is an accepted cost, not a regression on any
+      # per-PR path.
 
       # soldr#1978 item 5: the host-side bootstrap is built once by
       # `bootstrap-soldr` and passed here, instead of both legs rebuilding the

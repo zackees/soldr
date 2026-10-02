@@ -129,13 +129,44 @@ def test_native_lane_owns_the_shared_dev_namespace_and_target_dir() -> None:
     )
 
 
-def test_baseline_zero_deps_pair_shares_one_release_namespace() -> None:
-    """`build-soldr` needs `bootstrap-soldr`, so one populates, one restores."""
-    text = read("baseline-zero-deps.yml")
+def test_baseline_zero_deps_release_namespace_is_bootstrap_only() -> None:
+    """Only the bare-cargo `bootstrap-soldr` job keeps `ws-release-*`.
+
+    zackees/ci.yml#209 (CACHE-025) bans Swatinem/rust-cache except on a job
+    that builds soldr before any soldr exists. `build-soldr` builds through
+    the downloaded bootstrap soldr, so it lost its restore of the namespace.
+    """
     keys = shared_keys("baseline-zero-deps.yml")
-    assert "ws-release-x86_64-unknown-linux-gnu" in keys
-    assert "ws-release-${{ matrix.target }}" in keys
-    assert "needs: bootstrap-soldr" in text, (
-        "the two release lanes no longer run in sequence, so sharing one "
-        "namespace is no longer a populate-then-restore relationship"
-    )
+    assert keys == ["ws-release-x86_64-unknown-linux-gnu"], keys
+    assert "ws-release-${{ matrix.target }}" not in read("baseline-zero-deps.yml")
+
+
+SWATINEM_USES = re.compile(
+    r"^\s*(?:-\s+)?uses:\s*[\"']?swatinem/rust-cache", re.IGNORECASE
+)
+CACHE_025_ALLOW = re.compile(r"#\s*ci-lint:\s*allow\s+CACHE-025\s+bootstrap:\s*\S")
+
+# The only jobs that may keep Swatinem/rust-cache: each builds soldr with bare
+# cargo before any soldr exists (zackees/ci.yml#209, CACHE-025 exception 1).
+CACHE_025_BOOTSTRAP_WORKFLOWS = {
+    "ci.yml": 1,
+    "baseline-zero-deps.yml": 1,
+    "parent-cache-bench.yml": 1,
+    "perf-cold-warm.yml": 1,
+}
+
+
+def test_swatinem_rust_cache_only_on_allowed_bootstrap_steps() -> None:
+    """CACHE-025: every surviving rust-cache step is a reasoned bootstrap allow."""
+    seen: dict[str, int] = {}
+    for path in sorted([*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")]):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not SWATINEM_USES.match(line):
+                continue
+            assert CACHE_025_ALLOW.search(line), (
+                f"{path.name}: `{line.strip()}` needs a same-line "
+                "`# ci-lint: allow CACHE-025 bootstrap: <reason>`, or removal "
+                "if the job already has a soldr (zackees/ci.yml#209)"
+            )
+            seen[path.name] = seen.get(path.name, 0) + 1
+    assert seen == CACHE_025_BOOTSTRAP_WORKFLOWS

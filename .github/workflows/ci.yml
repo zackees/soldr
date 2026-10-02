@@ -530,7 +530,7 @@ jobs:
       # to look like an oversight.
       - name: Restore cargo + target caches for bootstrap build
         if: steps.bootstrap_cache.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2  # ci-lint: allow CACHE-025 bootstrap: this job builds soldr with bare cargo before any soldr exists (cook-unreachable-lane, soldr#3016/#3047)
         with:
           # soldr#3047 -- PRs restore from `main` and no longer write their
           # own copy; without this each family carried one entry per open PR.
@@ -926,13 +926,17 @@ jobs:
           name: soldr-ci-bootstrap-linux-gnu
           path: ${{ runner.temp }}/soldr-bin
 
-      - name: Restore cargo + target caches for the wheel build
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          # soldr#3047 -- PRs restore from `main` and no longer write their
-          # own copy; without this each family carried one entry per open PR.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          shared-key: wheel-cross-${{ matrix.target }}-release-v1
+      # zackees/ci.yml#209 (CACHE-025) retired the Swatinem/rust-cache step
+      # that used to restore `wheel-cross-<target>-release-v1` here. Unlike
+      # the bootstrap driver, this lane HAS a soldr (the shared bootstrap
+      # artifact above), so the bootstrap carve-out does not apply. The lane
+      # is now uncached across runs, the same outcome soldr#3047 chose for
+      # the pep517 wheel lane: it runs only under `ci-full` or a
+      # wheel-relevant change, and it canaries the release helper's exact
+      # `--locked --strip` maturin build, whose cargo env a cook slice would
+      # have to reproduce byte for byte to hit. If wall time demands a cache,
+      # the sanctioned layer is `zackees/setup-soldr/cook` (tier `cook`),
+      # never rust-cache.
 
       # Deliberately no `pip install maturin` here: provisioning maturin is
       # part of what `soldr wheel` claims to do (it re-enters through the
