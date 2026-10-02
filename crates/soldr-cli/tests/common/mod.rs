@@ -415,6 +415,20 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         // same opt-out the lib unit tests use; a fixture that exercises the
         // managed-cmake injection removes this after calling the helper.
         .env(soldr_cli::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1")
+        // soldr#3530: the same shape, one lookup earlier. Each fresh cache
+        // root made the front door fetch the toolchain catalogue
+        // (zackees.github.io/soldr-toolchain + raw.githubusercontent.com parts)
+        // before doing anything else: ~5 s per fixture on a GitHub runner,
+        // x127 cargo_front_door tests = the whole 604 s CI-vs-local gap.
+        // Measured on a real runner (runs 36964344956, 36965017158): 5.2 s ->
+        // 0.17 s per test with the lookup disabled. Fixtures model a front
+        // door, not catalogue resolution; one that exercises the catalogue
+        // removes this after calling the helper (fetch_tools tests drive it
+        // in-process under `catalogue_env::CatalogueEnvGuard`).
+        .env(
+            soldr_cli::fetch::manifest_lookup::MANIFEST_DISABLE_ENV_VAR,
+            "1",
+        )
         .env_remove("RUSTC_WRAPPER")
         // `soldr ci-test` deliberately points this override at the source
         // binary. Nested fixture front doors model fresh callers: inheriting
