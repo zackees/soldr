@@ -1239,6 +1239,9 @@ def test_real_manifest_declares_evict_only_for_the_safe_families() -> None:
         name: spec["evict"] for name, spec in families.items() if "evict" in spec
     }
     assert evictable == {
+        # zackees/ci.yml#198: tiny attestation evidence; an evicted entry only
+        # makes hydration pick an older (or no) attested ancestor.
+        "attestation-evidence": "lru",
         "experiment-lanes": "lru",
         "pinned-immutable-download": "newest-per-lineage",
         # soldr#3458: only the newest main store generation is ever restored.

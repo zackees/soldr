@@ -1,0 +1,31 @@
+# ci-attestations (zackees/ci.yml#198, GATE-010; soldr#3534 phase 1).
+#
+# Each gate is one thing CI would otherwise verify remotely, named by the
+# platform schema path <ecosystem>/<platform>/<check>. `lane` is the
+# local-gate.toml lane whose pass proves it: `ci-lint local-gate run` writes
+# one compact-JSON `Ci-Attestation:` trailer per gate of each passed lane
+# into the commit message (never into the tree). A gate with no trailer was
+# not run locally, so CI runs it.
+#
+# `jobs` maps each remote job to the gates it runs. On a PR, CI mode skips
+# a job only when every one of its gates is attested and stamp-valid AND the
+# head passes [gate.trust] (local-gate.toml). This file is read from the PR's
+# base and is itself a trust surface. Pushes to main always run every job,
+# and a release always ignores attestations.
+version: 1
+gates:
+  python/all/static: {lane: py-static}     # ruff, flake8, isort checks, PY-002/003 ratchet
+  python/all/guards: {lane: guards}        # repository guards + the Python test suite
+  rust/all/fmt: {lane: rust}               # rustfmt --check
+  rust/all/deps: {lane: ci-lint}           # soldr lint ci, cargo deny/audit/machete
+  rust/x86_64-unknown-linux-gnu/clippy: {lane: rust}
+  rust/x86_64-unknown-linux-gnu/dylint: {lane: rust}
+  rust/x86_64-unknown-linux-gnu/test: {lane: tests}   # nextest + doctests (glibc), in bosn
+jobs:
+  ci.yml:lint: [python/all/static, python/all/guards]
+  ci.yml:build-linux-x64:
+    - rust/all/fmt
+    - rust/all/deps
+    - rust/x86_64-unknown-linux-gnu/clippy
+    - rust/x86_64-unknown-linux-gnu/dylint
+    - rust/x86_64-unknown-linux-gnu/test
