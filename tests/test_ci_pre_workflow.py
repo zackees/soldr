@@ -87,7 +87,7 @@ def test_attestation_publisher_reads_the_pr_but_runs_only_pinned_ci_lint() -> No
     saves = [
         s for s in job["steps"] if s.get("uses", "").startswith("actions/cache/save@")
     ]
-    assert len(saves) == 8
+    assert len(saves) == 16
     for save in saves:
         assert save["with"]["key"].endswith("${{ env.PR_CACHE_TAG }}")
         assert "steps.att.outputs.stem_" in save["with"]["key"]

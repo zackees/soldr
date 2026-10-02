@@ -128,7 +128,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: zackees/ci.yml
-          ref: e74c4f618aaaffcefa3e28d4ba93740072da38ac
+          ref: db7ec84591abd0ffaa6d84768a60da381a1954be
           path: .ci-lint
           persist-credentials: false
           sparse-checkout: ci_lint
@@ -139,7 +139,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          args=(--repo . --commit "$HEAD_SHA" --main-ref origin/main --out-dir "$RUNNER_TEMP/ci-attestations" --github-output)
+          args=(--repo . --commit "$HEAD_SHA" --main-ref origin/main --out-dir "$RUNNER_TEMP/ci-attestations" --slots 16 --github-output)
           if [[ -n "$PR_NUMBER" ]]; then args+=(--pr "$PR_NUMBER" --base "$BASE_SHA"); fi
           PYTHONPATH=.ci-lint python3 -m ci_lint attest keys "${args[@]}"
       - name: Save attestation side entry 0
@@ -190,3 +190,51 @@ jobs:
         with:
           path: ${{ steps.att.outputs.path_7 }}
           key: ${{ steps.att.outputs.stem_7 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 8
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 8 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_8 }}
+          key: ${{ steps.att.outputs.stem_8 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 9
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 9 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_9 }}
+          key: ${{ steps.att.outputs.stem_9 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 10
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 10 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_10 }}
+          key: ${{ steps.att.outputs.stem_10 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 11
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 11 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_11 }}
+          key: ${{ steps.att.outputs.stem_11 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 12
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 12 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_12 }}
+          key: ${{ steps.att.outputs.stem_12 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 13
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 13 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_13 }}
+          key: ${{ steps.att.outputs.stem_13 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 14
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 14 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_14 }}
+          key: ${{ steps.att.outputs.stem_14 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 15
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 15 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_15 }}
+          key: ${{ steps.att.outputs.stem_15 }}${{ env.PR_CACHE_TAG }}
