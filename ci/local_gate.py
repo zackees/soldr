@@ -32,6 +32,9 @@ Lanes:
   `aarch64-apple-darwin`, cross-checked from this Linux host (zackees/ci.yml
   #198 phase 2). They attest `rust/<target>/{clippy,dylint}`; no PR job
   covers those targets, so this is added coverage, not a skipped job.
+- `wine`: Windows-MSVC unit tests of the crates that pass in full under
+  Wine, cross-built here and executed in `docker/wine-test`, never on the
+  host (`ci/wine_lane.py`; zackees/ci.yml#202 phase 3).
 - `tests`: soldr's own test suite, in bosn's isolated container
   (`bosn run --task test`), never on the host (GATE-005, soldr#3516).
 
@@ -67,7 +70,7 @@ CI_LINT_REF = "acde655080acb24bcdb70b153b3790474b958379"
 # can be cached on its own: Python linters read only Python; guards scan the
 # whole repository; ci-lint is CI-surface and dependency policy (cheap);
 # rust compiles the workspace; tests runs the suite in bosn.
-LANES = ("py-static", "guards", "ci-lint", "rust", "cross", "tests")
+LANES = ("py-static", "guards", "ci-lint", "rust", "cross", "wine", "tests")
 # zackees/ci.yml#198 phase 2: Clippy and Dylint for the non-Linux targets, run
 # from this Linux host. No ordinary PR job lints these targets, so the
 # attestation adds coverage rather than replacing a remote job (experiment X1
@@ -650,6 +653,14 @@ def checks() -> list[Check]:
                 exclusive=True,
             ),
         ]
+    wine = [
+        Check(
+            "windows-msvc unit tests (wine, container)",
+            (*PY, "python", "ci/wine_lane.py"),
+            "wine",
+            exclusive=True,
+        )
+    ]
     # zackees/ci.yml#168 (GATE-005), soldr#3516: soldr's test suite starts
     # soldr daemons and touches soldr state roots, so it never runs on the
     # developer host -- the nextest run-wrapper refuses unless CI=true or
@@ -670,7 +681,7 @@ def checks() -> list[Check]:
             tree_nonce=True,
         )
     ]
-    return lint + rust + cross + tests
+    return lint + rust + cross + wine + tests
 
 
 def _script_tests() -> tuple[str, ...]:

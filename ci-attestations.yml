@@ -27,6 +27,11 @@ gates:
   rust/x86_64-pc-windows-msvc/dylint: {lane: cross}
   rust/aarch64-apple-darwin/clippy: {lane: cross}
   rust/aarch64-apple-darwin/dylint: {lane: cross}
+  # Phase 3 (zackees/ci.yml#202): library unit tests of soldr-platform,
+  # soldr-fetch and soldr-nextest-wrapper built for Windows MSVC and run
+  # under Wine in docker/wine-test. Not a native Windows run: no PR job runs
+  # Windows tests at all, and a release still runs them natively.
+  rust/x86_64-pc-windows-msvc/unit: {lane: wine}
 jobs:
   ci.yml:lint: [python/all/static, python/all/guards]
   ci.yml:build-linux-x64:

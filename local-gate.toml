@@ -84,6 +84,19 @@ exclude = [
 ]
 keep = ["tests/fixtures/**", "src/soldr/_bundle_bins.py"]
 
+# zackees/ci.yml#202 phase 3: Windows-MSVC unit tests under Wine, in a
+# container. Rust inputs plus the lane script and its image.
+[gate.lanes.wine]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "wine"]
+tools = ["soldr", "docker"]
+env = ["SOLDR_LINKER"]
+exclude = [
+  "docs/**", "*.md", "*.png", "contracts/**", "bench/**", "perf/**", "examples/**",
+  "tests/**", "docker/**", "bosn.toml", ".github/**", "ci/**", "tools/**", "scripts/**", ".claude/**",
+  "src/**", "install", "install.sh", "lint", "test", "clean", "package.json", "uv.lock",
+]
+keep = ["tests/fixtures/**", "src/soldr/_bundle_bins.py", "ci/wine_lane.py", "docker/wine-test/**"]
+
 # The test suite, in bosn: the Rust world plus the harness it runs under.
 [gate.lanes.tests]
 run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "tests"]
