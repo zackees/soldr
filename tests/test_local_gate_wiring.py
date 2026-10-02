@@ -44,6 +44,23 @@ def test_lint_job_runs_only_the_lint_lane() -> None:
     )
 
 
+def test_attested_skip_is_declared_and_wired() -> None:
+    """zackees/ci.yml#190 (GATE-008): the skip jobs consume ci-mode's
+    `trusted` output, the protected `Lint` status still reports through
+    lint-docs, and pushes to main always run (verify never trusts them)."""
+    gate = tomllib.loads((ROOT / "local-gate.toml").read_text(encoding="utf-8"))["gate"]
+    trust = gate["trust"]
+    assert trust["mode"] == "enforce"
+    assert trust["skip"] == ["ci.yml:lint", "ci.yml:build-linux-x64"]
+    assert trust.get("audit-rate", 10) >= 2
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "local-gate verify --repo . --trust --github-output" in workflow
+    assert "trusted: ${{ steps.gate.outputs.trusted }}" in workflow
+    assert workflow.count("needs.ci-mode.outputs.trusted != 'true'") == 2
+    assert "needs.ci-mode.outputs.trusted == 'true'" in workflow  # lint-docs
+    assert "\n    branches:\n      - main\n" in workflow
+
+
 def test_the_test_suite_only_runs_isolated_locally() -> None:
     lanes = {check.name: check for check in GATE.checks()}
     tests = lanes["soldr tests (isolated, bosn)"]
