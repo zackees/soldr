@@ -105,12 +105,12 @@
     "full_run": "https://github.com/zackees/bosn/actions/runs/36921972900",
     "full_result": "success on exact candidate 58687f4fb17c499416abb9f56ec3f56d1491ae1b; all 12 jobs successful, including both hosted macOS wheel smokes",
     "engine_prerequisites": {
-      "local_commit": "6f09a80",
+      "local_commit": "ec256c6",
       "scope": "Unpublished private runtime, typed raw image proofs, bounded stdin transfer, digest-based imported-image lookup and private cgroup initialization; public run/report and authenticated graph producer remain pending.",
-      "evidence": "Independent combined source review clean. Bounded failed-container diagnostics and binary tail captures passed focused tests and Clippy. Eleven actual pinned Docker probes have narrowed implementation failures; none is a successful Act execution yet.",
+      "evidence": "Private pinned Docker/Act runtime real success and cancellation passed after snapshot storage gained explicit exec. 11 engine tests, five runtime tests, eight probe tests (three ignored by default), Clippy and independent primary review passed. Public commands, startup reconciliation, authenticated adapter graph and whole fleet workflows remain pending.",
       "cleanup": "Worker scratch caches stopped and trashed; root-owned compile caches remain intentionally active until runtime work is finished. Private input/evidence bundle retained. No foreign engine or checkout touched.",
       "pending_review_fixes": [],
-      "latest_root_validation": "Probe 11 (2b4995de-acc0-4000-ac75-a4a69a8a4154), run 16d03b7f-dc7f-4a1d-85a1-916aed715dc8, failed starting exact pinned runner despite correct PATH. Before verified cleanup, bounded docker cp captured both /usr/bin/tail and /bin/tail: exit 0, identical 70,144-byte USTAR archives SHA256 2985992a07e348002e41d9cc0d3c48f8496559a0b6187357134488c9417fd5bd. Safe in-memory inspection proves executable regular file mode 0755, 68,112 bytes, payload SHA256 bcf029b8d381f34834332bdaa5a5d23af9c56676f26eaf2339578bc7aa408198 and ELF interpreter /lib64/ld-linux-x86-64.so.2. Loader/rootfs diagnosis is pending. All eleven failed engines report removal; root Docker name check found no owned Act engines. Success and cancellation remain unproved."
+      "latest_root_validation": "Actual probe 12 completed in 161.26 seconds: exact-SHA/repository assertion job succeeded; cancellation observed genuine nested containers before reaping and cleanup. Both engines verified removed. Bounded mountinfo confirms private Docker storage executable and /run,/tmp noexec. Compact checked receipt ci/fleet-evidence/bosn-private-act-ec256c6.json; eleven prior failures retained diagnostically."
     }
   },
   "latest_local_python_validation": {
@@ -169,9 +169,9 @@
   "local_shared_prerequisites": [
     {
       "checkout": "../soldr2-extern/soldr-release-control",
-      "commit": "0c1001bf",
-      "scope": "Exact immutable tag/assets and pure frozen release contracts. Npm-selected publication fails closed until package bytes are frozen. Contracts do not authenticate issue directives; actual start/resume/status controller and live publication remain absent.",
-      "verification": "Independent primary reviews clean after published-partial upload and npm byte identity findings were fixed. Root 102 combined release contract/publication/completeness tests passed. No publication, tags, live API mutations or push; unpublished."
+      "commit": "220bc43d",
+      "scope": "Exact immutable tag/assets and pure release contracts now freeze supplied npm tarball size/SHA256/SHA512 identity and bounded member inventory. Actual pack producer, exact-tarball publisher, issue authority and start/resume/status controller remain unwired.",
+      "verification": "Independent primary reviews clean after published-partial upload, npm omission and compressed PAX/GNU metadata findings were fixed. Root 116 combined tests passed. No publication, tags, API mutations or push; unpublished."
     },
     {
       "checkout": "../soldr2-extern/soldr-release-execution",
