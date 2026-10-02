@@ -105,12 +105,12 @@
     "full_run": "https://github.com/zackees/bosn/actions/runs/36921972900",
     "full_result": "success on exact candidate 58687f4fb17c499416abb9f56ec3f56d1491ae1b; all 12 jobs successful, including both hosted macOS wheel smokes",
     "engine_prerequisites": {
-      "local_commit": "3fcddc4",
+      "local_commit": "76610b2",
       "scope": "Unpublished private runtime, typed raw image proofs, bounded stdin transfer, digest-based imported-image lookup and private cgroup initialization; public run/report and authenticated graph producer remain pending.",
-      "evidence": "181 service library tests, 13 lifecycle tests, 17 synthetic actor fault modes and all-target Clippy passed. Same-primary source review closed all HIGH findings. Real Docker probe prepared but not executed; two MEDIUM probe harness findings are being fixed.",
+      "evidence": "Earlier 181 service library tests and 13 lifecycle tests passed. Current five runtime tests cover 19 synthetic actor fault modes; service formatting and all-target Clippy passed. Same-primary scoped source review is clean. Seven actual pinned Docker probes have exposed and narrowed implementation failures; none is a successful Act execution yet.",
       "cleanup": "Previously completed scratch roots were trashed. Root cache /tmp/bosn-act-boundary-3344-owned remains intentionally active during runtime implementation; stop before cleanup.",
       "pending_review_fixes": [],
-      "latest_root_validation": "10 engine transport tests; five runtime tests with 18 synthetic fault modes and Clippy passed. Actual probes verified input streaming/hash readback and both imported image identities, then failed on cgroup initialization. Exact stopped-engine recovery passed; failed running engines report verified removal. Private cgroup initialization now source-reviewed/tested, actual nested execution still pending."
+      "latest_root_validation": "10 engine transport tests; five runtime tests with 19 synthetic fault modes and Clippy passed. Actual probes verified input streaming/hash readback, both imported image identities and private cgroup initialization. The seventh probe reached real Act but failed copying the runner snapshot because the bounded 12 GiB Docker tmpfs filled; engine removal was verified. Failed job evidence and terminal diagnostics are now retained. Resource sizing and real success/cancellation remain pending."
     }
   },
   "latest_local_python_validation": {
