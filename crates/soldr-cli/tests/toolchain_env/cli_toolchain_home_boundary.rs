@@ -233,7 +233,7 @@ fn a_project_cargo_config_dir_never_becomes_cargo_home() {
     fs::create_dir_all(&config_dir).expect("failed to create project .cargo");
     fs::write(
         config_dir.join("config.toml"),
-        "[target.'cfg(unix)']\nrunner = \"ci/test_guard.sh\"\n",
+        "[alias]\nxtask = \"run -p xtask --\"\n",
     )
     .expect("failed to write project cargo config");
 
