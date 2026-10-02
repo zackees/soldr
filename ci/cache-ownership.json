@@ -84,7 +84,7 @@
     {
       "id": "ci-pre-attestation-side-entries",
       "workflow": "ci-pre.yml",
-      "step": "Save attestation side entry <i> (8 slots)",
+      "step": "Save attestation side entry <i> (16 slots)",
       "mechanism": "actions/cache",
       "tier": "attestation-evidence",
       "rationale": "Per-gate ci-attestation evidence (compact JSON) keyed by lineage label; listed, never restored into a build."

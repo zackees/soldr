@@ -80,7 +80,7 @@ def test_ci_attestations_cover_every_skip_job() -> None:
         assert lane in gate["lanes"], lane
     pre = (ROOT / ".github" / "workflows" / "ci-pre.yml").read_text(encoding="utf-8")
     assert "ci_lint attest keys" in pre
-    assert pre.count("steps.att.outputs.stem_") == 8
+    assert pre.count("steps.att.outputs.stem_") == 16
 
 
 def test_the_isolated_test_run_proves_its_tree() -> None:
