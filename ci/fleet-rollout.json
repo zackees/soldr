@@ -110,7 +110,15 @@
       "evidence": "Immutable v3 creation profiles, historical init-command verification and startup registry fencing implemented. Root four-crate Rust lib/integration suite, 13 engine, five runtime and eight probe tests passed; service Clippy and workspace formatting passed. Startup fence: 199 service tests passed, three ignored; independent primary review clean. Public commands, actual startup Docker recovery and fleet workflow graph remain pending.",
       "cleanup": "Worker scratch caches stopped and trashed; root-owned compile caches remain intentionally active until runtime work is finished. Private input/evidence bundle retained. No foreign engine or checkout touched.",
       "pending_review_fixes": [],
-      "latest_root_validation": "Actual v3 probe 13 passed in 163.16 seconds at runtime 634a84a: exact-SHA/repository assertion succeeded; genuine nested cancellation observed and reaped. Both exact engine IDs absent afterward. Compact checked receipt ci/fleet-evidence/bosn-private-act-634a84a.json includes frozen profiles, resource peaks and effective mounts. Startup fence 917c516 was added afterward and is not claimed by this probe. Actual startup through Service::serve passed in3.49s at48edd11: stale claimed engine removed before authenticated ping; durablev3 record Terminal/Interrupted/noexecution. Receipt ci/fleet-evidence/bosn-private-startup-48edd11.json. Full four-crate suite, Clippy, formatting and primaryreview passed."
+      "latest_root_validation": "Actual v3 probe 13 passed in 163.16 seconds at runtime 634a84a: exact-SHA/repository assertion succeeded; genuine nested cancellation observed and reaped. Both exact engine IDs absent afterward. Compact checked receipt ci/fleet-evidence/bosn-private-act-634a84a.json includes frozen profiles, resource peaks and effective mounts. Startup fence 917c516 was added afterward and is not claimed by this probe. Actual startup through Service::serve passed in3.49s at48edd11: stale claimed engine removed before authenticated ping; durablev3 record Terminal/Interrupted/noexecution. Receipt ci/fleet-evidence/bosn-private-startup-48edd11.json. Full four-crate suite, Clippy, formatting and primaryreview passed.",
+      "declared_python_task": {
+        "candidate": "48edd11",
+        "result": "failed before pytest",
+        "reason": "uv source installation calls bare cargo, absent from declared Python test image",
+        "owned_state": "/tmp/bosn-act-localgate-3345-owned",
+        "next_work": "Preserve native package build through Soldr; provision builder and writable target/toolchain volumes. Do not skip source install.",
+        "cleanup": "Task terminal; own daemon and idle container stopped, cache volumes retained for repair/retry."
+      }
     }
   },
   "latest_local_python_validation": {
