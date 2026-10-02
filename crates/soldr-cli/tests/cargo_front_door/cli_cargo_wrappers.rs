@@ -1199,7 +1199,7 @@ fn repo_local_toolchain_homes_are_used_when_env_vars_are_unset() {
     let repo_cargo_home = repo_root.join(".cargo");
     let repo_rustup_home = repo_root.join(".rustup");
     let nested = repo_root.join("workspace").join("crate");
-    fs::create_dir_all(&repo_cargo_home).expect("failed to create repo-local .cargo");
+    fs::create_dir_all(repo_cargo_home.join("bin")).expect("failed to create repo-local .cargo");
     fs::create_dir_all(&repo_rustup_home).expect("failed to create repo-local .rustup");
     fs::create_dir_all(&nested).expect("failed to create nested working dir");
 

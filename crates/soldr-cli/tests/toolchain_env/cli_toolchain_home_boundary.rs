@@ -217,3 +217,54 @@ fn relative_managed_rustc_wrapper_uses_soldr_toolchain_homes() {
         "relative managed rustc must receive Soldr's managed RUSTUP_HOME: {rustc_line}"
     );
 }
+
+/// A project's `.cargo/config.toml` directory is Cargo's per-project config
+/// dir, not a `CARGO_HOME`. With `CARGO_HOME` unset, soldr once exported the
+/// project's `.cargo` as `CARGO_HOME`, so Cargo downloaded a full crates.io
+/// registry cache into the repository (`<repo>/.cargo/registry`).
+#[test]
+fn a_project_cargo_config_dir_never_becomes_cargo_home() {
+    let cache_root = unique_temp_dir("cargo-config-dir-not-home-cache");
+    let log_path = cache_root.join("tool.log");
+    let tool_dir = unique_temp_dir("cargo-config-dir-not-home-toolchain");
+    let (cargo, rustc, _) = install_fake_version_toolchain(&tool_dir, &log_path);
+    let project = unique_temp_dir("cargo-config-dir-not-home-project");
+    let config_dir = project.join(".cargo");
+    fs::create_dir_all(&config_dir).expect("failed to create project .cargo");
+    fs::write(
+        config_dir.join("config.toml"),
+        "[target.'cfg(unix)']\nrunner = \"ci/test_guard.sh\"\n",
+    )
+    .expect("failed to write project cargo config");
+
+    let output = isolated_soldr_command()
+        .args(["--no-cache", "cargo", "--version"])
+        .current_dir(&project)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_REAL_CARGO", &cargo)
+        .env("SOLDR_REAL_RUSTC", &rustc)
+        .env("PATH", isolated_test_path())
+        .env_remove("CARGO_HOME")
+        .env_remove("RUSTUP_HOME")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .output()
+        .expect("failed to run soldr cargo --version in a project with .cargo/config.toml");
+
+    assert!(
+        output.status.success(),
+        "cargo front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let log = fs::read_to_string(&log_path).expect("failed to read fake cargo log");
+    let cargo_line = log
+        .lines()
+        .find(|line| line.starts_with("cargo "))
+        .unwrap_or_else(|| panic!("real cargo override was not invoked: {log}"));
+    assert!(
+        !path_display_variants(&config_dir)
+            .iter()
+            .any(|path| cargo_line.contains(&format!("cargo_home={path}"))),
+        "a project's .cargo config dir must never be exported as CARGO_HOME: {cargo_line}"
+    );
+}

@@ -112,6 +112,27 @@ fn find_in_ancestors(start_dir: Option<&Path>, relative_path: &str) -> Option<Pa
     }
 }
 
+/// The nearest ancestor `.cargo/` that is a real repo-local `CARGO_HOME`:
+/// one holding a `bin/` directory, which is what a repo-local home is for.
+///
+/// A `.cargo/` without `bin/` is Cargo's per-project *config* directory
+/// (`.cargo/config.toml`), never a home. Exporting it as `CARGO_HOME` made
+/// Cargo download a full crates.io registry cache into the repository
+/// (`<repo>/.cargo/registry`). Such a directory is skipped and the walk
+/// continues upward, so a home above it is still found.
+fn find_cargo_home_in_ancestors(start_dir: Option<&Path>) -> Option<PathBuf> {
+    let mut current = start_dir?.to_path_buf();
+    loop {
+        let candidate = current.join(".cargo");
+        if candidate.join("bin").is_dir() {
+            return Some(candidate);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ImplicitToolchainHomes {
     cargo_home: Option<PathBuf>,
@@ -126,7 +147,7 @@ impl ImplicitToolchainHomes {
     ) -> Self {
         Self {
             cargo_home: if cargo_home_env.is_none() {
-                find_dir_in_ancestors(start_dir, ".cargo")
+                find_cargo_home_in_ancestors(start_dir)
             } else {
                 None
             },
@@ -544,7 +565,7 @@ mod tests {
     #[test]
     fn implicit_toolchain_homes_detect_repo_local_directories_from_ancestors() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".cargo")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".cargo").join("bin")).unwrap();
         std::fs::create_dir_all(dir.path().join(".rustup")).unwrap();
         let nested = dir.path().join("workspace").join("crate");
         std::fs::create_dir_all(&nested).unwrap();
@@ -554,12 +575,44 @@ mod tests {
         assert_eq!(homes.rustup_home, Some(dir.path().join(".rustup")));
     }
 
+    /// A project's `.cargo/` holding only `config.toml` is Cargo's
+    /// per-project *config* directory, never a `CARGO_HOME`. Treating it as
+    /// one made Cargo download a full crates.io registry cache into the
+    /// repository (`<repo>/.cargo/registry`, hundreds of MB).
+    #[test]
+    fn a_project_config_dir_is_not_a_cargo_home() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let config_dir = project.join(".cargo");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[target.'cfg(unix)']\nrunner = \"ci/test_guard.sh\"\n",
+        )
+        .unwrap();
+
+        let homes = ImplicitToolchainHomes::from_env(Some(project.as_path()), None, None);
+        assert_eq!(homes.cargo_home, None);
+
+        // A config dir an earlier soldr already polluted with a registry
+        // cache is still not a home: it has no `bin/`.
+        std::fs::create_dir_all(config_dir.join("registry").join("index")).unwrap();
+        let homes = ImplicitToolchainHomes::from_env(Some(project.as_path()), None, None);
+        assert_eq!(homes.cargo_home, None);
+
+        // The walk goes past the config dir to a real repo-local home.
+        let real_home = dir.path().join(".cargo");
+        std::fs::create_dir_all(real_home.join("bin")).unwrap();
+        let homes = ImplicitToolchainHomes::from_env(Some(project.as_path()), None, None);
+        assert_eq!(homes.cargo_home, Some(real_home));
+    }
+
     #[test]
     fn implicit_toolchain_homes_only_fill_missing_env_vars() {
         let dir = tempdir().unwrap();
         let repo_cargo_home = dir.path().join(".cargo");
         let repo_rustup_home = dir.path().join(".rustup");
-        std::fs::create_dir_all(&repo_cargo_home).unwrap();
+        std::fs::create_dir_all(repo_cargo_home.join("bin")).unwrap();
         std::fs::create_dir_all(&repo_rustup_home).unwrap();
 
         let homes = ImplicitToolchainHomes::from_env(
@@ -574,7 +627,7 @@ mod tests {
     #[test]
     fn implicit_toolchain_homes_treat_empty_env_as_explicit() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".cargo")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".cargo").join("bin")).unwrap();
         std::fs::create_dir_all(dir.path().join(".rustup")).unwrap();
 
         let homes = ImplicitToolchainHomes::from_env(
