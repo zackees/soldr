@@ -28,11 +28,24 @@ Lanes:
 - `rust`: rustfmt, Clippy and Dylint -- ci-test's own commands, run by the
   host's soldr. Local only (the remote `build-linux-x64` job runs the same
   stages inside `soldr ci-test`).
+- `cross`: Clippy and Dylint for `x86_64-pc-windows-msvc` and
+  `aarch64-apple-darwin`, cross-checked from this Linux host (zackees/ci.yml
+  #198 phase 2). They attest `rust/<target>/{clippy,dylint}`; no PR job
+  covers those targets, so this is added coverage, not a skipped job.
+- `wine`: Windows-MSVC unit tests of the crates that pass in full under
+  Wine, cross-built here and executed in `docker/wine-test`, never on the
+  host (`ci/wine_lane.py`; zackees/ci.yml#202 phase 3).
+- `winvm`: the Windows-MSVC target-run partition (`_ci-target-run.yml`'s
+  owned selection), built here and replayed natively in a warm local
+  dockur/windows VM (`ci/winvm_lane.py`). Host-optional: with no VM it exits
+  75 and local-gate records `winvm:n/a` -- not cached, not attested, and the
+  gate passes (zackees/ci.yml#202, ci_lint 9687a0b).
 - `tests`: soldr's own test suite, in bosn's isolated container
   (`bosn run --task test`), never on the host (GATE-005, soldr#3516).
 
-Native-only lanes (macOS, Windows, linux-arm64 target-runs) cannot run here
-and stay remote; they are the residual first-push risk.
+Native *execution* (macOS, Windows, linux-arm64 target-runs) cannot run here
+and stays remote; it is the residual first-push risk. Their *lints* run here
+(`cross` lane).
 
 Checks in a lane run in parallel; each one's output is shown only when it
 fails, then a timing table. Exit 1 when any check fails.
@@ -43,6 +56,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -56,12 +70,17 @@ ROOT = Path(__file__).resolve().parent.parent
 # The zackees/ci.yml commit whose ci_lint this repository uses. ci.yml's
 # `ci-mode` job checks out the same SHA; tests/test_local_gate.py keeps the
 # two in step.
-CI_LINT_REF = "acde655080acb24bcdb70b153b3790474b958379"
+CI_LINT_REF = "e74c4f618aaaffcefa3e28d4ba93740072da38ac"
 # GATE-007 lanes (zackees/ci.yml#177), split along input boundaries so each
 # can be cached on its own: Python linters read only Python; guards scan the
 # whole repository; ci-lint is CI-surface and dependency policy (cheap);
 # rust compiles the workspace; tests runs the suite in bosn.
-LANES = ("py-static", "guards", "ci-lint", "rust", "tests")
+LANES = ("py-static", "guards", "ci-lint", "rust", "cross", "wine", "winvm", "tests")
+# zackees/ci.yml#198 phase 2: Clippy and Dylint for the non-Linux targets, run
+# from this Linux host. No ordinary PR job lints these targets, so the
+# attestation adds coverage rather than replacing a remote job (experiment X1
+# found three Windows-only clippy warnings on main that way).
+CROSS_TARGETS = ("x86_64-pc-windows-msvc", "aarch64-apple-darwin")
 # `--lane lint` is exactly the remote Lint job (GATE-001 mirror).
 LINT_ALIAS = ("py-static", "guards")
 PY = ("uv", "run", "--no-project", "--python", "3.13")
@@ -103,6 +122,21 @@ class Check:
     # Oldest version of argv[0] that runs this check correctly, read from
     # `<tool> --version`; an older tool fails fast with an upgrade hint.
     min_version: tuple[int, ...] | None = None
+    # zackees/ci.yml#196 (candidate GATE-009): prove the isolated runner saw
+    # THIS worktree. bosn can reuse a warm container still bound to another
+    # checkout (zackees/bosn#314) -- once it ran a sibling session's tree and
+    # this gate would have attested it. A fresh nonce is written to
+    # NONCE_FILE; the runner must echo it back from its /repo.
+    tree_nonce: bool = False
+    # Host-optional (local-gate.toml `optional = true`): exit
+    # NOT_APPLICABLE means "cannot run on this host" -- reported, not failed,
+    # and a lane made only of such checks exits NOT_APPLICABLE itself so
+    # ci-lint records it `n/a` and attests nothing for it.
+    optional: bool = False
+
+
+# EX_TEMPFAIL: ci-lint's "not applicable on this host" for an optional lane.
+NOT_APPLICABLE = 75
 
 
 def _base_ref() -> str:
@@ -590,6 +624,68 @@ def checks() -> list[Check]:
             exclusive=True,
         ),
     ]
+    cross = [
+        Check(
+            "cross targets (rust-std)",
+            ("soldr", "rustup", "target", "add", *CROSS_TARGETS),
+            "cross",
+        )
+    ]
+    for target in CROSS_TARGETS:
+        cross += [
+            Check(
+                f"clippy ({target})",
+                (
+                    "soldr",
+                    "cargo",
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--target",
+                    target,
+                    "--",
+                    "-D",
+                    "warnings",
+                ),
+                "cross",
+                exclusive=True,
+            ),
+            Check(
+                f"dylint ({target})",
+                (
+                    "soldr",
+                    "cargo",
+                    "dylint",
+                    "--all",
+                    "--",
+                    "--workspace",
+                    "--all-targets",
+                    "--target",
+                    target,
+                ),
+                "cross",
+                exclusive=True,
+            ),
+        ]
+    wine = [
+        Check(
+            "windows-msvc unit tests (wine, container)",
+            (*PY, "python", "ci/wine_lane.py"),
+            "wine",
+            exclusive=True,
+        )
+    ]
+    # The owned Windows MSVC target-run partition, replayed natively in a
+    # local dockur/windows VM; never on this host (GATE-005).
+    winvm = [
+        Check(
+            "windows-msvc target-run (local Windows VM)",
+            (*PY, "python", "ci/winvm_lane.py"),
+            "winvm",
+            exclusive=True,
+            optional=True,
+        )
+    ]
     # zackees/ci.yml#168 (GATE-005), soldr#3516: soldr's test suite starts
     # soldr daemons and touches soldr state roots, so it never runs on the
     # developer host -- the nextest run-wrapper refuses unless CI=true or
@@ -607,9 +703,10 @@ def checks() -> list[Check]:
             # state dir is reclaimed instead of failing autostart, and a
             # client/daemon version mismatch is reported instead of a reset.
             min_version=(0, 1, 6),
+            tree_nonce=True,
         )
     ]
-    return lint + rust + tests
+    return lint + rust + cross + wine + winvm + tests
 
 
 def _script_tests() -> tuple[str, ...]:
@@ -660,7 +757,36 @@ def tool_version(tool: str) -> tuple[int, ...] | None:
     return tuple(int(part) for part in match.groups()) if match else None
 
 
+NONCE_FILE = ".gate-nonce"
+NONCE_MARKER = "gate-nonce: "
+
+
 def _run(check: Check) -> Result:
+    if not check.tree_nonce:
+        return _run_plain(check)
+    nonce = secrets.token_hex(16)
+    path = ROOT / NONCE_FILE
+    path.write_text(nonce + "\n", encoding="utf-8")
+    try:
+        result = _run_plain(check)
+    finally:
+        path.unlink(missing_ok=True)
+    if f"{NONCE_MARKER}{nonce}" in result.output:
+        return result
+    seen = [ln for ln in result.output.splitlines() if ln.startswith(NONCE_MARKER)]
+    return Result(
+        check,
+        result.code or 1,
+        result.seconds,
+        result.output + f"\nlocal gate: the isolated runner did not see this worktree "
+        f"(expected {NONCE_MARKER}{nonce}, saw {seen[-1] if seen else 'no nonce'}). "
+        "It ran another checkout's tree -- zackees/bosn#314, zackees/ci.yml#196. "
+        "Stop or remove the bosn setup container bound to the other worktree, "
+        "or wait for it, then rerun.",
+    )
+
+
+def _run_plain(check: Check) -> Result:
     start = time.monotonic()
     tool = shutil.which(check.argv[0])
     if tool is None:
@@ -678,6 +804,10 @@ def _run(check: Check) -> Result:
             )
     proc = run_captured(list(check.argv))
     return Result(check, proc.returncode, time.monotonic() - start, proc.output)
+
+
+def _not_applicable(result: Result) -> bool:
+    return result.check.optional and result.code == NOT_APPLICABLE
 
 
 def _fetch_base() -> None:
@@ -736,21 +866,33 @@ def main(argv: list[str] | None = None) -> int:
     for check in (c for c in selected if c.exclusive):
         result = _run(check)
         results.append(result)
-        print(
-            f"{'ok  ' if result.code == 0 else 'FAIL'} {result.seconds:6.1f}s  {check.name}",
-            flush=True,
+        status = (
+            "n/a "
+            if _not_applicable(result)
+            else "ok  "
+            if result.code == 0
+            else "FAIL"
         )
+        print(f"{status} {result.seconds:6.1f}s  {check.name}", flush=True)
+        if _not_applicable(result):
+            print(
+                f"      {result.output.strip().splitlines()[-1] if result.output.strip() else ''}"
+            )
 
-    failed = [r for r in results if r.code != 0]
+    skipped = [r for r in results if _not_applicable(r)]
+    failed = [r for r in results if r.code != 0 and not _not_applicable(r)]
     for result in failed:
         print(f"\n===== FAIL: {result.check.name} (exit {result.code}) =====")
         print(f"$ {' '.join(result.check.argv)}")
         print(result.output.rstrip()[-20000:])
     total = time.monotonic() - start
     print(
-        f"\nlocal gate ({args.lane}): {len(results) - len(failed)}/{len(results)} passed in {total:.0f}s"
+        f"\nlocal gate ({args.lane}): {len(results) - len(failed) - len(skipped)}/{len(results)} passed"
+        f"{f', {len(skipped)} not applicable here' if skipped else ''} in {total:.0f}s"
     )
-    return 1 if failed else 0
+    if failed:
+        return 1
+    return NOT_APPLICABLE if results and len(skipped) == len(results) else 0
 
 
 if __name__ == "__main__":

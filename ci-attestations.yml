@@ -21,6 +21,23 @@ gates:
   rust/x86_64-unknown-linux-gnu/clippy: {lane: rust}
   rust/x86_64-unknown-linux-gnu/dylint: {lane: rust}
   rust/x86_64-unknown-linux-gnu/test: {lane: tests}   # nextest + doctests (glibc), in bosn
+  # Phase 2 (cross lane, from the Linux host). No PR job lints these
+  # targets, so they map to no job: attested coverage beyond PR CI.
+  rust/x86_64-pc-windows-msvc/clippy: {lane: cross}
+  rust/x86_64-pc-windows-msvc/dylint: {lane: cross}
+  rust/aarch64-apple-darwin/clippy: {lane: cross}
+  rust/aarch64-apple-darwin/dylint: {lane: cross}
+  # Phase 3 (zackees/ci.yml#202): library unit tests of soldr-platform,
+  # soldr-fetch and soldr-nextest-wrapper built for Windows MSVC and run
+  # under Wine in docker/wine-test. Not a native Windows run: no PR job runs
+  # Windows tests at all, and a release still runs them natively.
+  rust/x86_64-pc-windows-msvc/unit: {lane: wine}
+  # zackees/ci.yml#202: the owned Windows MSVC target-run partition (the
+  # selection _ci-target-run.yml replays on windows-2025), run natively in a
+  # local dockur/windows VM. The lane is host-optional: where no VM exists it
+  # is recorded n/a and this gate carries no trailer, so CI runs it. No PR
+  # job maps to it; main and the release still run their native lanes.
+  rust/x86_64-pc-windows-msvc/test: {lane: winvm}
 jobs:
   ci.yml:lint: [python/all/static, python/all/guards]
   ci.yml:build-linux-x64:

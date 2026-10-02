@@ -139,6 +139,11 @@ def main(argv: list[str] | None = None) -> int:
         "--bootstrap", type=Path, default=Path("/opt/soldr-bootstrap/bin/soldr")
     )
     args = parser.parse_args(argv)
+    # zackees/ci.yml#196: echo the gate's nonce so the host can prove this
+    # container is bound to the worktree that invoked it (zackees/bosn#314).
+    nonce = args.repo / ".gate-nonce"
+    seen = nonce.read_text(encoding="utf-8").strip() if nonce.is_file() else "(none)"
+    print(f"gate-nonce: {seen}", flush=True)
 
     plan = workspace_test_plan(target=args.target, bootstrap=args.bootstrap)
     setup, source_start, validation, teardown = plan[:3], plan[3], plan[4], plan[5:]

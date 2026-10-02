@@ -83,6 +83,17 @@ def test_ci_attestations_cover_every_skip_job() -> None:
     assert pre.count("steps.att.outputs.stem_") == 8
 
 
+def test_the_isolated_test_run_proves_its_tree() -> None:
+    """zackees/ci.yml#196: the bosn test check carries a nonce the container
+    must echo from its /repo, so a container bound to another worktree
+    (zackees/bosn#314) fails the gate instead of attesting the wrong tree."""
+    tests = next(c for c in GATE.checks() if c.lane == "tests")
+    assert tests.tree_nonce
+    task = (ROOT / "ci" / "bosn_workspace_test.py").read_text(encoding="utf-8")
+    assert '".gate-nonce"' in task and "gate-nonce: " in task
+    assert GATE.NONCE_FILE in (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+
 def test_the_test_suite_only_runs_isolated_locally() -> None:
     lanes = {check.name: check for check in GATE.checks()}
     tests = lanes["soldr tests (isolated, bosn)"]
