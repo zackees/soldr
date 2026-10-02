@@ -39,18 +39,24 @@ mod tests {
 
     #[test]
     fn physical_cores_are_plausible_or_absent() {
-        let logical = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
-        // Not asserting an exact number — this runs on unknown CI
-        // hardware. The invariants that must hold anywhere are that a
-        // reported count is positive and never exceeds the logical CPU
-        // count, since every physical core carries at least one thread.
+        // A reported count must be positive. It is NOT bounded by
+        // `available_parallelism()`: that honours a cgroup CPU quota,
+        // while the topology describes the whole machine. Inside a
+        // container limited to 4 CPUs on an 8-core host (bosn 0.1.7's
+        // default runner quota) physical cores legitimately exceed the
+        // process's logical CPUs. The invariant that matters is the one
+        // the caller relies on: the compile-job limit derived from it
+        // stays within what this process may use.
         if let Some(cores) = physical_cores() {
             assert!(cores > 0, "a reported core count must be positive");
+            let logical = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1);
+            let jobs = crate::core::jobs::default_compile_jobs_from(logical, Some(cores));
             assert!(
-                cores <= logical,
-                "physical cores ({cores}) cannot exceed logical CPUs ({logical})"
+                (1..=logical.max(1)).contains(&jobs),
+                "compile jobs ({jobs}) must stay within 1..={logical} even when \
+                 physical cores ({cores}) exceed a quota-limited logical count"
             );
         }
     }
