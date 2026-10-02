@@ -25,10 +25,15 @@ class Selection(TypedDict):
     author_permission: str
     expected_sha: str
     selected_sha: str
+    trusted: bool
 
 
 def required_jobs(
-    adapter: dict[str, Any], full: dict[str, Any], mode: str, docs_only: bool
+    adapter: dict[str, Any],
+    full: dict[str, Any],
+    mode: str,
+    docs_only: bool,
+    trusted: bool = False,
 ) -> set[str]:
     """Adapters declare a meaningful minimal gate and nonempty test expansion."""
     groups = {}
@@ -47,7 +52,7 @@ def required_jobs(
         raise ValueError("test tier must add jobs beyond minimal")
     jobs = {"ci-mode", "path-selection"}
     if mode == "minimal":
-        return jobs | groups["docs_jobs" if docs_only else "minimal_jobs"]
+        return jobs | groups["docs_jobs" if docs_only or trusted else "minimal_jobs"]
     if mode == "test":
         return jobs | groups["minimal_jobs"] | groups["test_jobs"]
     if mode == "full":
@@ -72,6 +77,7 @@ def summary_failures(
     author_permission: str,
     expected_sha: str,
     selected_sha: str,
+    trusted: bool = False,
 ) -> list[str]:
     failures = []
     if event_name not in ("pull_request", "push", "workflow_dispatch", "merge_group"):
@@ -86,7 +92,15 @@ def summary_failures(
         failures.append("candidate dispatch requires full CI")
     if event_name == "merge_group" and mode != "full":
         failures.append("merge queue requires full CI")
-    jobs = required_jobs(adapter, full, mode, docs_only)
+    if trusted and (
+        event_name != "pull_request"
+        or mode != "minimal"
+        or author_permission not in ("write", "maintain", "admin")
+    ):
+        failures.append("attested skip is limited to a writer's minimal PR")
+    # This bit comes from reviewed ci-mode's attestation verifier. It is not
+    # evidence furnished by a PR artifact, and never replaces test/full cells.
+    jobs = required_jobs(adapter, full, mode, docs_only, trusted)
     failures += COVERAGE["coverage_failures"](
         {"schema_version": 1, "required_jobs": sorted(jobs), "targets": []},
         needs,
@@ -148,6 +162,7 @@ def main() -> int:
         "author_permission": os.environ.get("AUTHOR_PERMISSION", "unknown"),
         "expected_sha": os.environ.get("EXPECTED_SHA", ""),
         "selected_sha": os.environ.get("SELECTED_SHA", ""),
+        "trusted": os.environ.get("CI_TRUSTED", "") == "true",
     }
     selector_permission = inputs["author_permission"]
     current_event = None
@@ -199,7 +214,11 @@ def main() -> int:
             )
         failures = summary_failures(adapter, full, needs, **inputs)
         failures += current_failures
-        jobs = sorted(required_jobs(adapter, full, inputs["mode"], inputs["docs_only"]))
+        jobs = sorted(
+            required_jobs(
+                adapter, full, inputs["mode"], inputs["docs_only"], inputs["trusted"]
+            )
+        )
     except (ValueError, TypeError, KeyError) as error:
         failures, jobs = [f"invalid CI contract or selection: {error}"], []
     report = {
