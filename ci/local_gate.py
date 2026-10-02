@@ -35,6 +35,11 @@ Lanes:
 - `wine`: Windows-MSVC unit tests of the crates that pass in full under
   Wine, cross-built here and executed in `docker/wine-test`, never on the
   host (`ci/wine_lane.py`; zackees/ci.yml#202 phase 3).
+- `winvm`: the Windows-MSVC target-run partition (`_ci-target-run.yml`'s
+  owned selection), built here and replayed natively in a warm local
+  dockur/windows VM (`ci/winvm_lane.py`). Host-optional: with no VM it exits
+  75 and local-gate records `winvm:n/a` -- not cached, not attested, and the
+  gate passes (zackees/ci.yml#202, ci_lint 9687a0b).
 - `tests`: soldr's own test suite, in bosn's isolated container
   (`bosn run --task test`), never on the host (GATE-005, soldr#3516).
 
@@ -65,12 +70,12 @@ ROOT = Path(__file__).resolve().parent.parent
 # The zackees/ci.yml commit whose ci_lint this repository uses. ci.yml's
 # `ci-mode` job checks out the same SHA; tests/test_local_gate.py keeps the
 # two in step.
-CI_LINT_REF = "acde655080acb24bcdb70b153b3790474b958379"
+CI_LINT_REF = "e74c4f618aaaffcefa3e28d4ba93740072da38ac"
 # GATE-007 lanes (zackees/ci.yml#177), split along input boundaries so each
 # can be cached on its own: Python linters read only Python; guards scan the
 # whole repository; ci-lint is CI-surface and dependency policy (cheap);
 # rust compiles the workspace; tests runs the suite in bosn.
-LANES = ("py-static", "guards", "ci-lint", "rust", "cross", "wine", "tests")
+LANES = ("py-static", "guards", "ci-lint", "rust", "cross", "wine", "winvm", "tests")
 # zackees/ci.yml#198 phase 2: Clippy and Dylint for the non-Linux targets, run
 # from this Linux host. No ordinary PR job lints these targets, so the
 # attestation adds coverage rather than replacing a remote job (experiment X1
@@ -123,6 +128,15 @@ class Check:
     # this gate would have attested it. A fresh nonce is written to
     # NONCE_FILE; the runner must echo it back from its /repo.
     tree_nonce: bool = False
+    # Host-optional (local-gate.toml `optional = true`): exit
+    # NOT_APPLICABLE means "cannot run on this host" -- reported, not failed,
+    # and a lane made only of such checks exits NOT_APPLICABLE itself so
+    # ci-lint records it `n/a` and attests nothing for it.
+    optional: bool = False
+
+
+# EX_TEMPFAIL: ci-lint's "not applicable on this host" for an optional lane.
+NOT_APPLICABLE = 75
 
 
 def _base_ref() -> str:
@@ -661,6 +675,17 @@ def checks() -> list[Check]:
             exclusive=True,
         )
     ]
+    # The owned Windows MSVC target-run partition, replayed natively in a
+    # local dockur/windows VM; never on this host (GATE-005).
+    winvm = [
+        Check(
+            "windows-msvc target-run (local Windows VM)",
+            (*PY, "python", "ci/winvm_lane.py"),
+            "winvm",
+            exclusive=True,
+            optional=True,
+        )
+    ]
     # zackees/ci.yml#168 (GATE-005), soldr#3516: soldr's test suite starts
     # soldr daemons and touches soldr state roots, so it never runs on the
     # developer host -- the nextest run-wrapper refuses unless CI=true or
@@ -681,7 +706,7 @@ def checks() -> list[Check]:
             tree_nonce=True,
         )
     ]
-    return lint + rust + cross + wine + tests
+    return lint + rust + cross + wine + winvm + tests
 
 
 def _script_tests() -> tuple[str, ...]:
@@ -781,6 +806,10 @@ def _run_plain(check: Check) -> Result:
     return Result(check, proc.returncode, time.monotonic() - start, proc.output)
 
 
+def _not_applicable(result: Result) -> bool:
+    return result.check.optional and result.code == NOT_APPLICABLE
+
+
 def _fetch_base() -> None:
     """The diff ratchets need the base branch; fetch it, never fatally. Its
     output is captured to a file and forwarded only on failure, not
@@ -837,21 +866,33 @@ def main(argv: list[str] | None = None) -> int:
     for check in (c for c in selected if c.exclusive):
         result = _run(check)
         results.append(result)
-        print(
-            f"{'ok  ' if result.code == 0 else 'FAIL'} {result.seconds:6.1f}s  {check.name}",
-            flush=True,
+        status = (
+            "n/a "
+            if _not_applicable(result)
+            else "ok  "
+            if result.code == 0
+            else "FAIL"
         )
+        print(f"{status} {result.seconds:6.1f}s  {check.name}", flush=True)
+        if _not_applicable(result):
+            print(
+                f"      {result.output.strip().splitlines()[-1] if result.output.strip() else ''}"
+            )
 
-    failed = [r for r in results if r.code != 0]
+    skipped = [r for r in results if _not_applicable(r)]
+    failed = [r for r in results if r.code != 0 and not _not_applicable(r)]
     for result in failed:
         print(f"\n===== FAIL: {result.check.name} (exit {result.code}) =====")
         print(f"$ {' '.join(result.check.argv)}")
         print(result.output.rstrip()[-20000:])
     total = time.monotonic() - start
     print(
-        f"\nlocal gate ({args.lane}): {len(results) - len(failed)}/{len(results)} passed in {total:.0f}s"
+        f"\nlocal gate ({args.lane}): {len(results) - len(failed) - len(skipped)}/{len(results)} passed"
+        f"{f', {len(skipped)} not applicable here' if skipped else ''} in {total:.0f}s"
     )
-    return 1 if failed else 0
+    if failed:
+        return 1
+    return NOT_APPLICABLE if results and len(skipped) == len(results) else 0
 
 
 if __name__ == "__main__":

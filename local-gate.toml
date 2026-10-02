@@ -2,7 +2,7 @@
 #
 # Before every push, from a clean, committed tree:
 #
-#   uvx --from git+https://github.com/zackees/ci.yml@acde655080acb24bcdb70b153b3790474b958379 ci-lint local-gate run
+#   uvx --from git+https://github.com/zackees/ci.yml@e74c4f618aaaffcefa3e28d4ba93740072da38ac ci-lint local-gate run
 #
 # runs `run` below and, on success, stamps HEAD with a tree-bound
 # `Local-Gate:` trailer. CI's `ci-mode` job (`verify`) fails a PR whose head
@@ -27,6 +27,10 @@ mode = "enforce"
 marker = "SOLDR_TEST_ISOLATED"
 runner = ["bosn", "run", "--task", "test"]
 guard = ".github/scripts/nextest_wrapper.sh"
+# zackees/ci.yml#196 (GATE-009): the gate writes .gate-nonce and the bosn
+# task echoes it from /repo, so a container bound to another worktree
+# (zackees/bosn#314) fails instead of attesting someone else's tree.
+proves-tree = true
 
 # zackees/ci.yml#177 (GATE-007): the gate as cacheable lanes, split along
 # input boundaries. A lane is skipped when its inputs -- the commit tree minus
@@ -96,6 +100,30 @@ exclude = [
   "src/**", "install", "install.sh", "lint", "test", "clean", "package.json", "uv.lock",
 ]
 keep = ["tests/fixtures/**", "src/soldr/_bundle_bins.py", "ci/wine_lane.py", "docker/wine-test/**"]
+
+# zackees/ci.yml#202: the Windows-MSVC target-run partition, replayed natively
+# in a warm local dockur/windows VM (ci/winvm_lane.py + ci/winvm_guest.ps1).
+# Host-optional: without the VM (or /dev/kvm) the lane exits 75, ci-lint
+# records `winvm:n/a`, never caches or attests it, and the gate passes.
+# Rust inputs plus the lane scripts, the guest-probe tooling they reuse, and
+# the CI selection they replay (ownership manifest, nextest profile, helpers).
+[gate.lanes.winvm]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "winvm"]
+tools = ["soldr", "docker"]
+env = ["SOLDR_LINKER", "SOLDR_WINVM_CONTAINER", "SOLDR_WINVM_SSH_KEY"]
+optional = true
+exclude = [
+  "docs/**", "*.md", "*.png", "contracts/**", "bench/**", "perf/**", "examples/**",
+  "tests/**", "docker/**", "bosn.toml", ".github/**", "ci/**", "tools/**", "scripts/**", ".claude/**",
+  "src/**", "install", "install.sh", "lint", "test", "clean", "package.json", "uv.lock",
+]
+keep = [
+  "tests/fixtures/**", "src/soldr/_bundle_bins.py",
+  "ci/winvm_lane.py", "ci/winvm_guest.ps1", "ci/windows_guest_probe.py", "ci/windows_guest_probe/**",
+  "ci/target-run-ownership.json", ".github/scripts/target_run_ownership.py",
+  ".github/scripts/fetch_catalogued_nextest.py", ".github/scripts/download_catalogued_asset.py",
+  ".github/scripts/toolchain_asset_query.py",
+]
 
 # The test suite, in bosn: the Rust world plus the harness it runs under.
 [gate.lanes.tests]
