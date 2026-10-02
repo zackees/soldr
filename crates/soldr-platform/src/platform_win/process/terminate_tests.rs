@@ -247,7 +247,7 @@ fn a_real_grandchild_tree_is_killed_whole() {
 
 #[test]
 fn a_real_grandchild_with_inherited_stderr_pipe_is_killed_whole() {
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     let (mut child, grandchildren, stderr_closed) =
         spawn_cmd_with_ping_grandchild_and_stderr_pipe();
