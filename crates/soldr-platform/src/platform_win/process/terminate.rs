@@ -148,6 +148,9 @@ pub fn terminate_tree(child: &mut Child) -> io::Result<TreeKill> {
 
 const PROCESS_TERMINATE: u32 = 0x0001;
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+// Test-only: terminate_tests.rs proves the identity handle works under a
+// token that denies SYNCHRONIZE.
+#[cfg(test)]
 const SYNCHRONIZE: u32 = 0x0010_0000;
 
 /// FILETIMEs read from one retained query-only process handle.
@@ -360,6 +363,7 @@ fn all_exited(known: &[TrackedDescendant]) -> bool {
     })
 }
 
+#[cfg(test)]
 fn terminate_request_succeeded(result: bool) -> bool {
     result
 }
