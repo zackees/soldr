@@ -694,7 +694,9 @@ def checks() -> list[Check]:
     tests = [
         Check(
             "soldr tests (isolated, bosn)",
-            ("bosn", "run", "--task", "test"),
+            # A locally built Bosn can be selected without replacing a shared
+            # installation. Its normal version and isolation checks still run.
+            (os.environ.get("SOLDR_LOCAL_GATE_BOSN", "bosn"), "run", "--task", "test"),
             "tests",
             exclusive=True,
             # zackees/bosn#317 (0.1.5): older bosn reaps a task whose output
