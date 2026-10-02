@@ -80,17 +80,8 @@ jobs:
         with:
           toolchain: 1.98.1
 
-      - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2  # ci-lint: allow CACHE-025 bootstrap: this job builds soldr with bare cargo before any soldr exists, then benchmarks it
-        with:
-          # soldr#1978 item 6 deliberately leaves this off the shared
-          # `ws-<profile>-<target>` scheme. This job builds AND measures in
-          # the same job (`cargo build --release` then
-          # `bench/parent_cache_bench.py`), so a CI lane writing this
-          # namespace would change what is on disk when the benchmark starts
-          # -- measurement contamination, not just topology drift.
-          shared-key: parent-cache-bench
-
+      # No dependency cache: CACHE-025 bans Swatinem/rust-cache with no exceptions (zackees/ci.yml, maintainer decision 2026-10-02).
+      # This job builds and measures in the same job, so it builds soldr uncached.
       - name: Install uv
         uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
 

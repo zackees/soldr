@@ -63,14 +63,8 @@ jobs:
           toolchain: 1.98.1
           targets: x86_64-unknown-linux-gnu
 
-      - name: Restore cargo + target caches
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2  # ci-lint: allow CACHE-025 bootstrap: this job builds soldr with bare cargo before any soldr exists
-        with:
-          # soldr#1978 item 6 named this namespace for the release dependency
-          # graph. Since zackees/ci.yml#209 (CACHE-025) only this bootstrap
-          # job -- the one that builds soldr with bare cargo -- may keep it;
-          # `build-soldr` below has a soldr and no longer restores it.
-          shared-key: ws-release-x86_64-unknown-linux-gnu
+      # No dependency cache: CACHE-025 bans Swatinem/rust-cache with no exceptions (zackees/ci.yml, maintainer decision 2026-10-02).
+      # A binary-cache miss builds soldr uncached.
 
       # Same key as before: one binary, one cache entry. Now only one job
       # consults it, so a miss costs one build rather than two.

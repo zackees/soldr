@@ -181,7 +181,10 @@ def test_manifest_budget_is_self_consistent() -> None:
         sum(spec["max_bytes"] for spec in families.values())
         == budget["total_max_bytes"]
     )
-    assert budget["total_max_bytes"] == 9663676416
+    # 9 GiB until CACHE-025 dropped its exceptions (zackees/ci.yml, maintainer
+    # decision 2026-10-02): retiring the rust-cache-residual family removed its
+    # 0.50 GiB from the total instead of re-allocating it.
+    assert budget["total_max_bytes"] == 9126805504
 
     owned_prefixes = [
         (prefix, family_id)
@@ -473,9 +476,9 @@ def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
             **entry("stable-cook-v2-x86_64-unknown-linux-gnu-" + "b" * 64, 650 * mib),
             "createdAt": "2026-09-23T01:00:00Z",
         },
-        # Above rust-cache-residual's 0.50 GiB allocation (zackees/ci.yml#209
-        # left only the bootstrap producer): the family must not fit until the
-        # producer shrinks.
+        # A leftover entry of the retired rust-cache-residual family (its last
+        # producer, the bootstrap driver build, went with CACHE-025's
+        # exceptions on 2026-10-02): a retired prefix, so it is reclaimable.
         entry("v0-rust-bootstrap-soldr-linux-gnu-dev-abc", 700 * mib),
     ]
     entries = guard.normalize_entries(rows)
@@ -490,22 +493,13 @@ def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
     )
     candidates = guard.prune_candidates(entries, "9506e5de4a14312c")
     effective = [e for e in entries if e not in candidates]
-    problems = guard.budget_problems(MANIFEST, manifest, effective)
-    assert (
-        len(candidates) == 8
-    )  # PR bases, old cook locks, old unit run, both retired stable-cook entries
-    assert any("rust-cache-residual" in p for p in problems)
-    assert not any("zccache-unit" in p for p in problems)
-    # Only after the residual producer shrinks does every family fit.
-    shrunk = [
-        (
-            e
-            if not e.key.startswith("v0-rust-bootstrap-soldr-linux-gnu-dev-")
-            else guard.CacheEntry(e.key, e.ref, 360 * mib)
-        )
-        for e in effective
-    ]
-    assert guard.budget_problems(MANIFEST, manifest, shrunk) == []
+    # PR bases, old cook locks, old unit run, both retired stable-cook entries,
+    # and the retired rust-cache-residual entry.
+    assert len(candidates) == 9
+    assert any(
+        e.key.startswith("v0-rust-bootstrap-soldr-linux-gnu-dev-") for e in candidates
+    )
+    assert guard.budget_problems(MANIFEST, manifest, effective) == []
 
 
 def test_cook_rollback_uses_main_lock_not_creation_time() -> None:
@@ -641,13 +635,14 @@ def test_3347_lineage_policy_fits_every_family_and_total() -> None:
 
 
 def test_3347_policy_is_not_green_when_a_family_truly_does_not_fit() -> None:
-    # A residual producer above the rebalanced allocation has no safe
-    # prune candidate, so it must stay red.
+    # A newest zccache-unit generation above its allocation has no safe prune
+    # candidate (the newest main generation is what required jobs restore), so
+    # it must stay red. (This used the rust-cache-residual family until
+    # CACHE-025 retired it on 2026-10-02.)
     entries = [
         (
-            # Sized so the family exceeds its 0.50 GiB allocation (zackees/ci.yml#209).
-            guard.CacheEntry(e.key, e.ref, 600_000_000, e.id, e.created_at)
-            if e.key.startswith("v0-rust-bootstrap-soldr-linux-gnu-dev-")
+            guard.CacheEntry(e.key, e.ref, 3_000_000_000, e.id, e.created_at)
+            if e.key.startswith("zccache-unit-")
             else e
         )
         for e in lineage_entries()
@@ -655,7 +650,7 @@ def test_3347_policy_is_not_green_when_a_family_truly_does_not_fit() -> None:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     effective = without(entries, guard.prune_candidates(entries, CURRENT_LOCK))
     problems = guard.budget_problems(MANIFEST, manifest, effective)
-    assert any("'rust-cache-residual'" in p for p in problems)
+    assert any("'zccache-unit'" in p for p in problems)
     assert "STILL OVER BUDGET" in guard.effective_verdict(problems)
 
 

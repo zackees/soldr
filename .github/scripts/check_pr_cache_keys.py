@@ -27,7 +27,6 @@ every reusable workflow it calls, transitively) that uses:
 * `actions/cache` or `actions/cache/save`, unless the step's `if:` excludes
   pull requests (`refs/heads/main`, or `github.event_name != 'pull_request'`);
 * `astral-sh/setup-uv`, unless `enable-cache: false` or its `if:` excludes PRs;
-* `Swatinem/rust-cache`, unless `save-if` names `refs/heads/main`.
 
 `zackees/setup-soldr` with `save-cache: auto` already skips saves on pull
 requests and needs no tag. `actions/cache/restore` never saves.
@@ -135,8 +134,6 @@ def untagged_saves(document: dict) -> list[str]:
                 saves = True
             elif uses.startswith("astral-sh/setup-uv@"):
                 saves = str(inputs.get("enable-cache", "auto")).lower() != "false"
-            elif uses.startswith("Swatinem/rust-cache@"):
-                saves = "refs/heads/main" not in str(inputs.get("save-if", ""))
             if saves and TAG_REFERENCE not in text:
                 found.append(label)
     return found

@@ -134,9 +134,6 @@ jobs:
       - uses: astral-sh/setup-uv@abc
         with:
           enable-cache: false
-      - uses: Swatinem/rust-cache@abc
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 """,
     )
     assert guard.check(tmp_path) == []

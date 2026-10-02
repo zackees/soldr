@@ -5,8 +5,8 @@ soldr#3047, Phase B of soldr#3039. GitHub evicts the oldest, least-recently-used
 entries once a repository's Actions cache crosses the 10 GB it documents as the
 per-repository ceiling, and it does so silently: no job goes red, the run whose
 warm cache disappeared underneath it just gets slower. The manifest's
-`budget.total_max_bytes` is 9 GiB -- the sum of the family allocations -- and
-`budget.fail_total_bytes` is 9.5 GiB (10,200,547,328), half a GiB of headroom
+`budget.total_max_bytes` is 8.5 GiB -- the sum of the family allocations -- and
+`budget.fail_total_bytes` is 9.5 GiB (10,200,547,328), a GiB of headroom
 so a family briefly over its own allocation does not fail the whole gate
 before the next `--prune` sweep catches up. Both numbers live in
 `ci/cache-ownership.json`; this script reads them and hard-codes neither.
@@ -178,6 +178,17 @@ RETIRED_PREFIXES: tuple[str, ...] = (
     # Retired by zackees/ci.yml#209 (CACHE-025): the lane runs the shared
     # bootstrap soldr, so the bootstrap exception does not cover it.
     "v0-rust-wheel-cross-",
+    # The last Swatinem/rust-cache producers, retired when CACHE-025 dropped
+    # its exceptions (zackees/ci.yml, maintainer decision 2026-10-02):
+    # ci.yml's bootstrap driver (`bootstrap-soldr-linux-gnu-dev-v1`, formerly
+    # the rust-cache-residual family) and three experiment lanes --
+    # baseline-zero-deps (`ws-release-<target>`), parent-cache-bench and
+    # perf-cold-warm (`perf-cold-warm-build-soldr-linux`). Their prefixes stay
+    # in experiment-lanes only so a leftover entry is retired, not unknown.
+    "v0-rust-bootstrap-soldr-linux-gnu-dev-",
+    "v0-rust-ws-release-",
+    "v0-rust-parent-cache-bench",
+    "v0-rust-perf-cold-warm-",
 )
 
 
