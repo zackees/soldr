@@ -21,6 +21,12 @@ gates:
   rust/x86_64-unknown-linux-gnu/clippy: {lane: rust}
   rust/x86_64-unknown-linux-gnu/dylint: {lane: rust}
   rust/x86_64-unknown-linux-gnu/test: {lane: tests}   # nextest + doctests (glibc), in bosn
+  # Phase 2 (cross lane, from the Linux host). No PR job lints these
+  # targets, so they map to no job: attested coverage beyond PR CI.
+  rust/x86_64-pc-windows-msvc/clippy: {lane: cross}
+  rust/x86_64-pc-windows-msvc/dylint: {lane: cross}
+  rust/aarch64-apple-darwin/clippy: {lane: cross}
+  rust/aarch64-apple-darwin/dylint: {lane: cross}
 jobs:
   ci.yml:lint: [python/all/static, python/all/guards]
   ci.yml:build-linux-x64:

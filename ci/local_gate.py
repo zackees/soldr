@@ -28,11 +28,16 @@ Lanes:
 - `rust`: rustfmt, Clippy and Dylint -- ci-test's own commands, run by the
   host's soldr. Local only (the remote `build-linux-x64` job runs the same
   stages inside `soldr ci-test`).
+- `cross`: Clippy and Dylint for `x86_64-pc-windows-msvc` and
+  `aarch64-apple-darwin`, cross-checked from this Linux host (zackees/ci.yml
+  #198 phase 2). They attest `rust/<target>/{clippy,dylint}`; no PR job
+  covers those targets, so this is added coverage, not a skipped job.
 - `tests`: soldr's own test suite, in bosn's isolated container
   (`bosn run --task test`), never on the host (GATE-005, soldr#3516).
 
-Native-only lanes (macOS, Windows, linux-arm64 target-runs) cannot run here
-and stay remote; they are the residual first-push risk.
+Native *execution* (macOS, Windows, linux-arm64 target-runs) cannot run here
+and stays remote; it is the residual first-push risk. Their *lints* run here
+(`cross` lane).
 
 Checks in a lane run in parallel; each one's output is shown only when it
 fails, then a timing table. Exit 1 when any check fails.
@@ -61,7 +66,12 @@ CI_LINT_REF = "acde655080acb24bcdb70b153b3790474b958379"
 # can be cached on its own: Python linters read only Python; guards scan the
 # whole repository; ci-lint is CI-surface and dependency policy (cheap);
 # rust compiles the workspace; tests runs the suite in bosn.
-LANES = ("py-static", "guards", "ci-lint", "rust", "tests")
+LANES = ("py-static", "guards", "ci-lint", "rust", "cross", "tests")
+# zackees/ci.yml#198 phase 2: Clippy and Dylint for the non-Linux targets, run
+# from this Linux host. No ordinary PR job lints these targets, so the
+# attestation adds coverage rather than replacing a remote job (experiment X1
+# found three Windows-only clippy warnings on main that way).
+CROSS_TARGETS = ("x86_64-pc-windows-msvc", "aarch64-apple-darwin")
 # `--lane lint` is exactly the remote Lint job (GATE-001 mirror).
 LINT_ALIAS = ("py-static", "guards")
 PY = ("uv", "run", "--no-project", "--python", "3.13")
@@ -590,6 +600,49 @@ def checks() -> list[Check]:
             exclusive=True,
         ),
     ]
+    cross = [
+        Check(
+            "cross targets (rust-std)",
+            ("soldr", "rustup", "target", "add", *CROSS_TARGETS),
+            "cross",
+        )
+    ]
+    for target in CROSS_TARGETS:
+        cross += [
+            Check(
+                f"clippy ({target})",
+                (
+                    "soldr",
+                    "cargo",
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--target",
+                    target,
+                    "--",
+                    "-D",
+                    "warnings",
+                ),
+                "cross",
+                exclusive=True,
+            ),
+            Check(
+                f"dylint ({target})",
+                (
+                    "soldr",
+                    "cargo",
+                    "dylint",
+                    "--all",
+                    "--",
+                    "--workspace",
+                    "--all-targets",
+                    "--target",
+                    target,
+                ),
+                "cross",
+                exclusive=True,
+            ),
+        ]
     # zackees/ci.yml#168 (GATE-005), soldr#3516: soldr's test suite starts
     # soldr daemons and touches soldr state roots, so it never runs on the
     # developer host -- the nextest run-wrapper refuses unless CI=true or
@@ -609,7 +662,7 @@ def checks() -> list[Check]:
             min_version=(0, 1, 6),
         )
     ]
-    return lint + rust + tests
+    return lint + rust + cross + tests
 
 
 def _script_tests() -> tuple[str, ...]:
