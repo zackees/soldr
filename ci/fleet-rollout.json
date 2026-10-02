@@ -105,14 +105,12 @@
     "full_run": "https://github.com/zackees/bosn/actions/runs/36921972900",
     "full_result": "success on exact candidate 58687f4fb17c499416abb9f56ec3f56d1491ae1b; all 12 jobs successful, including both hosted macOS wheel smokes",
     "engine_prerequisites": {
-      "local_commit": "cdf08c7",
-      "scope": "Reviewed private engine execution with verified runner import, durable exclusive claims and owner-only cleanup; unpublished.",
+      "local_commit": "3fcddc4",
+      "scope": "Unpublished private runtime, typed raw image proofs, bounded stdin transfer, digest-based imported-image lookup and private cgroup initialization; public run/report and authenticated graph producer remain pending.",
       "evidence": "181 service library tests, 13 lifecycle tests, 17 synthetic actor fault modes and all-target Clippy passed. Same-primary source review closed all HIGH findings. Real Docker probe prepared but not executed; two MEDIUM probe harness findings are being fixed.",
       "cleanup": "Previously completed scratch roots were trashed. Root cache /tmp/bosn-act-boundary-3344-owned remains intentionally active during runtime implementation; stop before cleanup.",
-      "pending_review_fixes": [
-        "Real Docker29 Descriptor has no synthetic config.digest annotation. Hash-verified raw manifest/config proof integration is being reviewed."
-      ],
-      "latest_root_validation": "Two actual ignored probe attempts failed closed: runner empty Volumes map rejection corrected with 38 tests and review; real Docker Descriptor config binding correction pending. No success/cancellation or fleet parity proof. No owned outer containers remain after failed attempts."
+      "pending_review_fixes": [],
+      "latest_root_validation": "10 engine transport tests; five runtime tests with 18 synthetic fault modes and Clippy passed. Actual probes verified input streaming/hash readback and both imported image identities, then failed on cgroup initialization. Exact stopped-engine recovery passed; failed running engines report verified removal. Private cgroup initialization now source-reviewed/tested, actual nested execution still pending."
     }
   },
   "latest_local_python_validation": {
@@ -157,12 +155,15 @@
     },
     "setup_soldr_checkpoint": {
       "base_sha": "0f223ac68e97fccaaeab026ef1861e5bf73639ac",
-      "local_commit": "4f313692a84e2724cdae5880718a54bff888290c",
-      "status": "Unpushed source checkpoint; 79 tests and actionlint passed. Same-primary review closed three HIGH findings. Trusted baseline lacks new contracts and deliberately refuses activation until a separate reviewed bootstrap is merged. ARM musl and live native/cost/Bosn evidence remain pending.",
+      "local_commit": "ac86bc877094a9fa4e76a4b33e04efced3260108",
+      "status": "Unpushed activation pins the independently reviewed policy update. ARM musl build and native fixture execution are mandatory in candidate source; no capability skip. 81 local tests, Actionlint and independent source review passed; final pin delta24 tests passed. Real hosted ARM musl execution, full/cost/Bosn/protection evidence remain pending.",
       "review_findings": [],
       "bootstrap_pr": "https://github.com/zackees/setup-soldr/pull/550",
       "bootstrap_merge_sha": "d1c0009a7406a861b4acf77105e30e172765ac49",
-      "bootstrap_evidence": "Four policy/test/docs files only; 70 local Python tests and independent review passed. All eight hosted checks passed on exact9e898d907a58d6ab3ba7df39ccd5d3bd02530805 before squash merge. Activation not yet pinned or deployed."
+      "bootstrap_evidence": "Four policy/test/docs files only; 70 local Python tests and independent review passed. All eight hosted checks passed on exact9e898d907a58d6ab3ba7df39ccd5d3bd02530805 before squash merge. Activation not yet pinned or deployed.",
+      "arm_policy_pr": "https://github.com/zackees/setup-soldr/pull/551",
+      "arm_policy_merge_sha": "fe965fc7e2c5203570072e1d0fd19d0935d98e39",
+      "arm_policy_evidence": "Three declarative/test/docs files; 70 local Python tests, independent review and all eight hosted checks passed on exact41d65bcb4e434dd7a211d98e4d691198d47325b3 before merge. Requirement data is not native execution proof."
     }
   },
   "local_shared_prerequisites": [
