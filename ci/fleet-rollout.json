@@ -105,13 +105,16 @@
     "full_run": "https://github.com/zackees/bosn/actions/runs/36921972900",
     "full_result": "success on exact candidate 58687f4fb17c499416abb9f56ec3f56d1491ae1b; all 12 jobs successful, including both hosted macOS wheel smokes",
     "engine_prerequisites": {
-      "local_commit": "2cd8be4d3cfead2a8112743c331fec8daeea1b29",
-      "scope": "Unpublished private runtime with frozen creation profiles and actual pre-admission startup cleanup. Public run/report, exact adapter graph producer and whole fleet workflow validation remain pending.",
+      "local_commit": "f08dfc605b94967bf071b03edfc9c9cb67f83741",
+      "scope": "Draft PR private runtime prerequisites; public run/report, exact adapter graph producer and whole fleet workflow validation remain pending.",
       "evidence": "Immutable v3 creation profiles, historical init-command verification and startup registry fencing implemented. Root four-crate Rust lib/integration suite, 13 engine, five runtime and eight probe tests passed; service Clippy and workspace formatting passed. Startup fence: 199 service tests passed, three ignored; independent primary review clean. Actual startup Docker recovery passed as recorded below. Public commands and fleet workflow graph remain pending.",
       "cleanup": "Worker scratch caches stopped and trashed; root-owned compile caches remain intentionally active until runtime work is finished. Private input/evidence bundle retained. No foreign engine or checkout touched.",
-      "pending_review_fixes": [
-        "Ordinary container creation-profile checkpoint is uncommitted. Primary review found that named-volume reuse must verify local-driver options and actual mountpoint, not name and driver alone; correction and repeat review pending."
-      ],
+      "pending_review_fixes": [],
+      "ordinary_container_binding": {
+        "commit": "93ec942602131a136073d01a4cbf2125116e11f8",
+        "result": "Versioned creation identity binds workspace, actual mounts and resolved volumes; bounded private image/container/volume inspection precedes reuse, adoption, start and recovery. Primary volume-options/mountpoint HIGH closed; 56 setup and 210 service tests passed.",
+        "scope": "Actual proof checkout and new workspace volume IDs verified. Ordinary pre-create durable container reservation remains absent."
+      },
       "sterile_act_queries": {
         "commit": "2cd8be4d3cfead2a8112743c331fec8daeea1b29",
         "result": "18 CLI tests and Clippy passed; same primary review clean.",
@@ -121,18 +124,20 @@
       "source_cache_inputs": {
         "commit": "7afd7ef",
         "result": "Dynamic uv cache keys include Rust, Python, backend and declared toolchain inputs; offline lock check and primary review passed.",
-        "scope": "Actual fresh source-wheel task remains pending."
+        "scope": "Actual audited native source rebuild passed in declared tasks at 020bb43; receipt below."
       },
       "latest_root_validation": "Actual v3 probe 13 passed in 163.16 seconds at runtime 634a84a: exact-SHA/repository assertion succeeded; genuine nested cancellation observed and reaped. Both exact engine IDs absent afterward. Compact checked receipt ci/fleet-evidence/bosn-private-act-634a84a.json includes frozen profiles, resource peaks and effective mounts. Startup fence 917c516 was added afterward and is not claimed by this probe. Actual startup through Service::serve passed in3.49s at48edd11: stale claimed engine removed before authenticated ping; durablev3 record Terminal/Interrupted/noexecution. Receipt ci/fleet-evidence/bosn-private-startup-48edd11.json. Full four-crate suite, Clippy, formatting and primaryreview passed.",
       "declared_python_task": {
-        "candidate": "2762cf3",
-        "result": "failed: 171 passed, 1 failed, 10 deselected in 184.45s",
-        "reason": "Native CLI and audited Python wheel built and installed; repeated clean-wheel build fails to locate OpenSSL names rewritten by earlier repair.",
-        "owned_state": "/tmp/bosn-act-localgate-3345-owned",
-        "next_work": "Fix repeated wheel build artifact isolation and rerun declared task. Do not skip audit or source installation.",
+        "candidate": "020bb43762bd6a45ee7e5fac4083b4ddf5b5f4bf",
+        "result": "passed: 178 tests, 10 deselected in 26.00s; declared lint passed",
+        "reason": "Verified source bind and new workspace volumes; actual audited native wheel rebuilt and installed, repeated clean-wheel build passed. Full Rust workspace split, embedded-Python tests, all-target Clippy and formatting also passed.",
+        "owned_state": "/tmp/bosn-act-wheelgate-3345-owned",
+        "next_work": "Validate and merge the prerequisite PR, then integrate the authenticated public graph producer and actual fleet workflow execution.",
+        "receipt": "ci/fleet-evidence/bosn-declared-tasks-020bb43.json",
+        "prior_failure": "At2762cf3, 171 passed/1 failed/10 deselected; repeated Maturin repair could not locate hashed OpenSSL sidecars. Fixed by a870557 and validated by the actual clean-wheel task.",
         "cleanup": "Task terminal; both owned task daemons and exact owned container stopped. Container and cache volumes retained for diagnosis and scoped retry; foreign resources untouched.",
         "reviewed_fix_commit": "a870557c4a3fd6d068d1ae99e9a59d1a23fc77d0",
-        "fix_tests": "26 backend/native-boundary tests passed; primary review clean. Actual fresh repeated wheel task not yet passed.",
+        "fix_tests": "26 backend/native-boundary tests and primary review passed; actual fresh and warm declared native-wheel tasks now passed.",
         "fresh_attempt": {
           "candidate": "070a9eed70435ecc277ffa48f54d7d8fe91b1640",
           "workspace": "../soldr2-extern/bosn-act-wheel-proof",
@@ -140,7 +145,7 @@
           "result": "aborted; not fresh proof",
           "reason": "Manifest ensure reused prior same-image container e251fe99b6741561c013f2b91fdb12ed5bb41fc89fa05a7d47cb3450a166d462 with old /repo bind to bosn-act-runtime and old target/venv volumes. New-checkout execution was not established.",
           "cleanup": "Own new daemon stopped; task handle terminal1; actual container process census shows no task children. Original owned container retained for diagnosis.",
-          "next_work": "Bind container reuse to intended source/workspace/mount configuration before rerunning the exact candidate."
+          "next_work": "Resolved by reviewed v2 creation binding and actual verified execution recorded in bosn-declared-tasks-020bb43.json."
         }
       },
       "artifact_acquisition": {
@@ -162,7 +167,26 @@
           "unsupported or foreign cells"
         ],
         "authority": "No source authorization or public execution claim; producer integration pending."
-      }
+      },
+      "pr": "https://github.com/zackees/bosn/pull/349",
+      "pr_state": "draft; unmerged",
+      "hosted_attempts": [
+        {
+          "run": "https://github.com/zackees/bosn/actions/runs/36971198645",
+          "candidate": "020bb43762bd6a45ee7e5fac4083b4ddf5b5f4bf",
+          "result": "cancelled overlapping creation/label attempt; retain in whole-event cost accounting"
+        },
+        {
+          "run": "https://github.com/zackees/bosn/actions/runs/36971198767",
+          "candidate": "020bb43762bd6a45ee7e5fac4083b4ddf5b5f4bf",
+          "result": "failed: missing uv in Rust fixtures and Soldr in native Linux/Windows wheel jobs; Linux Docker, both Darwin cross builds and both hosted native Darwin smoke checks passed"
+        },
+        {
+          "run": "https://github.com/zackees/bosn/actions/runs/36972513158",
+          "candidate": "f08dfc605b94967bf071b03edfc9c9cb67f83741",
+          "result": "pending; reviewed existing-workflow provisioning correction, 15 tier tests and both platform guards passed"
+        }
+      ]
     }
   },
   "latest_local_python_validation": {
