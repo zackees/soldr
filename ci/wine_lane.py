@@ -48,13 +48,25 @@ class ExeResult:
 def _run_to_file(argv: list[str], log: Path) -> int:
     """Output goes to a file, never a pipe (zackees/ci.yml PY-003)."""
     with open(log, "wb") as fh:
-        return subprocess.run(argv, cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT, check=False).returncode
+        return subprocess.run(
+            argv, cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT, check=False
+        ).returncode
 
 
 def build(out_dir: Path) -> list[TestExe]:
     messages = out_dir / "build.jsonl"
     # --lib --bins: soldr-nextest-wrapper's unit tests live in its binary.
-    argv = ["soldr", "cargo", "test", "--no-run", "--lib", "--bins", "--target", TARGET, "--message-format=json"]
+    argv = [
+        "soldr",
+        "cargo",
+        "test",
+        "--no-run",
+        "--lib",
+        "--bins",
+        "--target",
+        TARGET,
+        "--message-format=json",
+    ]
     for crate in CRATES:
         argv += ["-p", crate]
     print(f"wine lane: building {', '.join(CRATES)} for {TARGET}", flush=True)
@@ -99,9 +111,18 @@ def ensure_image(out_dir: Path) -> str:
 def run_exe(tag: str, exe: TestExe, out_dir: Path) -> ExeResult:
     log = out_dir / f"{exe.crate}.log"
     argv = [
-        "docker", "run", "--rm", "--network=none",
-        "-v", f"{ROOT}:{ROOT}:ro", "-w", str(ROOT),
-        tag, "wine", str(exe.path), f"--test-threads={TEST_THREADS}",
+        "docker",
+        "run",
+        "--rm",
+        "--network=none",
+        "-v",
+        f"{ROOT}:{ROOT}:ro",
+        "-w",
+        str(ROOT),
+        tag,
+        "wine",
+        str(exe.path),
+        f"--test-threads={TEST_THREADS}",
     ]
     start = time.monotonic()
     code = _run_to_file(argv, log)
@@ -117,16 +138,26 @@ def main() -> int:
         for exe in exes:
             result = run_exe(tag, exe, out_dir)
             summary = next(
-                (ln for ln in result.log.read_text(encoding="utf-8", errors="replace").splitlines()
-                 if ln.startswith("test result:")),
+                (
+                    ln
+                    for ln in result.log.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).splitlines()
+                    if ln.startswith("test result:")
+                ),
                 "no libtest summary",
             )
-            print(f"wine lane: {exe.crate}: exit {result.returncode} in {result.secs:.0f}s -- {summary}", flush=True)
+            print(
+                f"wine lane: {exe.crate}: exit {result.returncode} in {result.secs:.0f}s -- {summary}",
+                flush=True,
+            )
             if result.returncode != 0:
                 failed.append(result)
         for result in failed:
             sys.stdout.write(f"\n===== {result.exe.crate} (wine) =====\n")
-            sys.stdout.write(result.log.read_text(encoding="utf-8", errors="replace")[-12000:])
+            sys.stdout.write(
+                result.log.read_text(encoding="utf-8", errors="replace")[-12000:]
+            )
         return 1 if failed else 0
 
 

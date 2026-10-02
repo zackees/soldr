@@ -75,3 +75,16 @@ Use the `win11-enterprise` selection to measure the desktop guest;
 `webview2` and `gpu_rendering` are reported separately. A consumer requiring
 screenshots still needs an actual UI-test and license decision, not a
 capability-name inference.
+
+## Local `winvm` gate lane
+
+`ci/winvm_lane.py` (`ci/local_gate.py --lane winvm`) reuses this probe's
+archive shape, signed VC++ runtime and pinned MinGit against a *warm*,
+developer-owned dockur/windows VM (container `dockur-win`) instead of an
+ephemeral one. It replays the owned Windows MSVC target-run partition and
+attests `rust/x86_64-pc-windows-msvc/test`. Each run pins the guest first:
+Windows Update off (policy `NoAutoUpdate=1`; wuauserv, UsoSvc and
+WaaSMedicSvc `Start=4`; UpdateOrchestrator tasks disabled), because an
+auto-installed KB once changed the warm image under the lane. The evaluation
+licensing notes above apply to that VM too. Hosts without the VM or KVM
+report the lane not applicable (exit 75): nothing is attested, CI runs it.
