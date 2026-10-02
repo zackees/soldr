@@ -1,14 +1,111 @@
 """Always-running, fail-closed merge summary (setup-soldr#523)."""
 
+import ast
 import json
 from pathlib import Path
 
 import pytest
+import yaml
 from conftest import load_script_module
 
 ROOT = Path(__file__).parents[1]
 SUMMARY = load_script_module(ROOT / ".github/scripts/ci_summary.py", "ci_summary")
 SHA = "a" * 40
+
+
+def condition_value(node):
+    if isinstance(node, ast.Expression):
+        return condition_value(node.body)
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.BoolOp):
+        values = [condition_value(value) for value in node.values]
+        return all(values) if isinstance(node.op, ast.And) else any(values)
+    assert isinstance(node, ast.Compare) and len(node.ops) == 1
+    left = condition_value(node.left)
+    right = condition_value(node.comparators[0])
+    return left == right if isinstance(node.ops[0], ast.Eq) else left != right
+
+
+@pytest.mark.parametrize(
+    "mode,trusted,docs,expected",
+    [
+        ("minimal", "false", "false", (False, True, True)),
+        ("minimal", "false", "true", (True, False, False)),
+        ("minimal", "true", "false", (True, False, False)),
+        ("minimal", "true", "true", (True, False, False)),
+        ("test", "false", "false", (False, True, True)),
+        ("test", "false", "true", (False, True, True)),
+        ("test", "true", "false", (False, True, True)),
+        ("test", "true", "true", (False, True, True)),
+        ("full", "false", "false", (False, True, True)),
+        ("full", "false", "true", (False, True, True)),
+        ("full", "true", "false", (False, True, True)),
+        ("full", "true", "true", (False, True, True)),
+    ],
+)
+def test_workflow_attestation_never_skips_expanded_tiers(mode, trusted, docs, expected):
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    actual = []
+    for name in ("lint-docs", "lint", "build-linux-x64"):
+        expression = jobs[name]["if"].removeprefix("${{").removesuffix("}}")
+        for key, value in {
+            "needs.ci-mode.outputs.mode": mode,
+            "needs.ci-mode.outputs.trusted": trusted,
+            "needs.path-selection.outputs.docs_only": docs,
+            "needs.lint.result": "success",
+        }.items():
+            expression = expression.replace(key, repr(value))
+        expression = expression.replace("always()", "True")
+        expression = expression.replace("&&", " and ").replace("||", " or ")
+        tree = ast.parse(expression.strip(), mode="eval")
+        allowed = (
+            ast.Expression,
+            ast.BoolOp,
+            ast.Compare,
+            ast.Constant,
+            ast.And,
+            ast.Or,
+            ast.Eq,
+            ast.NotEq,
+        )
+        assert all(isinstance(node, allowed) for node in ast.walk(tree))
+        actual.append(condition_value(tree))
+    assert tuple(actual) == expected
+    assert jobs["ci-summary"]["env"]["CI_TRUSTED"] == (
+        "${{ needs.ci-mode.outputs.mode == 'minimal' && needs.ci-mode.outputs.trusted == 'true' }}"
+    )
+
+
+@pytest.mark.parametrize("job", ["full-coverage", "ci-summary"])
+def test_enforcement_executes_reviewed_base_helpers_and_contracts(job):
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    checkout = next(
+        step for step in jobs[job]["steps"] if "checkout@" in step.get("uses", "")
+    )
+    assert (
+        checkout["with"]["ref"]
+        == "${{ github.event.pull_request.base.sha || github.sha }}"
+    )
+    assert checkout["with"]["persist-credentials"] is False
+
+
+def test_path_policy_is_trusted_but_runs_diff_in_candidate_checkout():
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    checkouts = [
+        step["with"]
+        for step in jobs["path-selection"]["steps"]
+        if "checkout@" in step.get("uses", "")
+    ]
+    assert any(
+        step.get("path") == ".ci-policy"
+        and step["ref"] == "${{ github.event.pull_request.base.sha || github.sha }}"
+        for step in checkouts
+    )
+    assert any(
+        ".ci-policy/.github/scripts/ci_path_policy.py" in step.get("run", "")
+        for step in jobs["path-selection"]["steps"]
+    )
 
 
 def adapter():
@@ -99,6 +196,40 @@ def test_docs_gate_requires_successful_path_selection_and_docs_lint():
     needs["path-selection"] = {"result": "failure"}
     assert check(needs, mode="minimal", docs_only=True, author_permission="admin")
     assert check(needs, docs_only=True)
+
+
+def test_attested_routine_head_requires_canonical_gate_and_candidate():
+    needs = {
+        job: {"result": "success"} for job in ["ci-mode", "path-selection", "docs-lint"]
+    }
+    assert check(needs, mode="minimal", author_permission="write", trusted=True) == []
+    assert check(
+        needs,
+        mode="minimal",
+        author_permission="write",
+        trusted=True,
+        selected_sha="b" * 40,
+    )
+    needs["ci-mode"] = {"result": "failure"}
+    assert check(needs, mode="minimal", author_permission="write", trusted=True)
+
+
+@pytest.mark.parametrize("mode", ["test", "full"])
+def test_attestation_cannot_replace_requested_execution(mode):
+    assert "attested skip is limited to a writer's minimal PR" in check(
+        passing(), mode=mode, author_permission="write", trusted=True
+    )
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch", "merge_group"])
+def test_attestation_cannot_replace_non_pr_execution(event):
+    assert "attested skip is limited to a writer's minimal PR" in check(
+        passing(),
+        mode="minimal",
+        event_name=event,
+        author_permission="write",
+        trusted=True,
+    )
 
 
 def test_unknown_mode_fails_clearly():
@@ -221,6 +352,23 @@ def test_rerun_summary_rechecks_permission_instead_of_cached_write(
     assert queries == [(event, "o/r", "test-token")]
     report = json.loads(report_path.read_text())
     assert report["author_permission"] == (permission or "unknown")
+
+
+def test_merge_summary_runs_even_when_selector_or_required_cells_fail():
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    summary = jobs.get("ci-summary")
+    assert summary, "a skipped Full coverage job is not a merge summary"
+    assert summary["name"] == "CI summary"
+    assert summary["if"] == "${{ always() }}"
+    assert set(jobs["full-coverage"]["needs"]) <= set(summary["needs"])
+    assert {"lint-docs", "path-selection", "full-coverage"} <= set(summary["needs"])
+
+
+def test_extended_tier_overrides_docs_only_skip_for_its_required_host():
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    for name in ("lint", "build-linux-x64"):
+        assert "needs.ci-mode.outputs.mode != 'minimal'" in jobs[name]["if"]
+    assert "needs.ci-mode.outputs.mode == 'minimal'" in jobs["lint-docs"]["if"]
 
 
 @pytest.mark.parametrize("label", ["ci-test", "ci-full"])
