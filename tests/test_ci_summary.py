@@ -13,6 +13,20 @@ SUMMARY = load_script_module(ROOT / ".github/scripts/ci_summary.py", "ci_summary
 SHA = "a" * 40
 
 
+def condition_value(node):
+    if isinstance(node, ast.Expression):
+        return condition_value(node.body)
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.BoolOp):
+        values = [condition_value(value) for value in node.values]
+        return all(values) if isinstance(node.op, ast.And) else any(values)
+    assert isinstance(node, ast.Compare) and len(node.ops) == 1
+    left = condition_value(node.left)
+    right = condition_value(node.comparators[0])
+    return left == right if isinstance(node.ops[0], ast.Eq) else left != right
+
+
 @pytest.mark.parametrize(
     "mode,trusted,docs,expected",
     [
@@ -56,9 +70,7 @@ def test_workflow_attestation_never_skips_expanded_tiers(mode, trusted, docs, ex
             ast.NotEq,
         )
         assert all(isinstance(node, allowed) for node in ast.walk(tree))
-        actual.append(
-            eval(compile(tree, "<workflow condition>", "eval"), {"__builtins__": {}})
-        )
+        actual.append(condition_value(tree))
     assert tuple(actual) == expected
     assert jobs["ci-summary"]["env"]["CI_TRUSTED"] == (
         "${{ needs.ci-mode.outputs.mode == 'minimal' && needs.ci-mode.outputs.trusted == 'true' }}"
