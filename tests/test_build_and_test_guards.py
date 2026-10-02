@@ -493,15 +493,28 @@ def test_log_artifacts_carry_the_shadow_admission_estimates() -> None:
 def test_the_object_store_key_rotates_and_falls_back() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     body = _step_body(workflow, ZCCACHE_STORE)
-    # actions/cache never re-saves on an exact-key hit, so the run_id suffix
-    # is what keeps the store from freezing after the first save; the two
-    # restore-keys are the same-graph and any-graph fallbacks.
+    # actions/cache never re-saves on an exact-key hit, so the key must be
+    # unique per main commit or the store freezes after the first save:
+    # zackees/ci.yml#198 phase 4 keys it by the commit's lineage label
+    # (`m<n>-<sha10>`), with the run id as the fallback when resolution
+    # failed. The first restore-key is the nearest ATTESTED ancestor
+    # generation; the two prefix restore-keys remain the same-graph and
+    # any-graph fallbacks.
     key_line = next(
         line for line in body.splitlines() if line.strip().startswith("key:")
     )
-    assert key_line.rstrip().endswith("-${{ github.run_id }}")
+    assert key_line.rstrip().endswith(
+        "-${{ steps.lineage.outputs.lineage || github.run_id }}"
+    )
     assert "restore-keys: |" in body
     restore_lines = [line.strip() for line in body.splitlines()]
+    first_restore = restore_lines[restore_lines.index("restore-keys: |") + 1]
+    assert first_restore == "${{ steps.lineage.outputs.restore_key }}"
+    resolve = _step_body(
+        workflow, "Resolve the attested Tier-2 store to hydrate (ci-attestations)"
+    )
+    assert "continue-on-error: true" in resolve
+    assert "--require-gate rust/x86_64-unknown-linux-gnu/test" in resolve
     assert "zccache-unit-v1-${{ inputs.target }}-" in restore_lines
     assert any(
         line.startswith("zccache-unit-v1-${{ inputs.target }}-")
