@@ -81,6 +81,41 @@ fn broker_spawn_env_preserves_soldr_and_endpoint_resolver_inputs() {
     );
 }
 
+/// soldr#3516: the broker overlays its own home identity onto every daemon
+/// it launches, because `UserBaseline` would otherwise rebuild `HOME` from
+/// the real account. `SOLDR_*` is deliberately left to the route's labels.
+#[test]
+fn daemon_home_identity_env_keeps_home_family_only() {
+    use std::ffi::OsString;
+
+    let forwarded = filter_daemon_home_identity_env(vec![
+        (
+            OsString::from("SOLDR_CACHE_DIR"),
+            OsString::from("/broker/own/root"),
+        ),
+        (OsString::from("HOME"), OsString::from("/fixture/home")),
+        (
+            OsString::from("USERPROFILE"),
+            OsString::from("/fixture/home"),
+        ),
+        (OsString::from("TMPDIR"), OsString::from("/fixture/tmp")),
+        (OsString::from("XDG_CONFIG_HOME"), OsString::new()),
+        (OsString::from("PATH"), OsString::from("/usr/bin")),
+    ]);
+    assert_eq!(
+        forwarded,
+        vec![
+            (OsString::from("HOME"), OsString::from("/fixture/home")),
+            (
+                OsString::from("USERPROFILE"),
+                OsString::from("/fixture/home")
+            ),
+            (OsString::from("TMPDIR"), OsString::from("/fixture/tmp")),
+        ],
+        "only non-empty home-identity variables cross; SOLDR_* comes from the route labels"
+    );
+}
+
 #[test]
 fn wrapper_invocation_is_never_eligible() {
     let _guard = ENV_LOCK.lock().unwrap();

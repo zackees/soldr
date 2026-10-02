@@ -54,7 +54,9 @@ def pending_bootstrap_zccache(workflow: str) -> str | None:
     return match.group(1) if match else None
 
 
-def bootstrap_matches_workspace(declared: str, pending: str | None, workspace: str) -> bool:
+def bootstrap_matches_workspace(
+    declared: str, pending: str | None, workspace: str
+) -> bool:
     """True when the bootstrap embeds the workspace zccache, or the lag is declared.
 
     A pending marker is only valid while the declaration still lags: it must

@@ -1,0 +1,123 @@
+# soldr's local gate (zackees/ci.yml#166, #168, GATE-001..005).
+#
+# Before every push, from a clean, committed tree:
+#
+#   uvx --from git+https://github.com/zackees/ci.yml@756b5c0b9feda73ae6daf535ed8039a2ff11673e ci-lint local-gate run
+#
+# runs `run` below and, on success, stamps HEAD with a tree-bound
+# `Local-Gate:` trailer. CI's `ci-mode` job (`verify`) fails a PR whose head
+# lacks it, and every other job needs `ci-mode`. Install the matching
+# pre-push hook once per clone with `... ci-lint local-gate install-hook`.
+[gate]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py"]
+# The remote Lint job runs `ci/local_gate.py --lane lint` and nothing else.
+mirrors = ["ci.yml:lint"]
+setup-steps = ["Enlarge swap (OOM headroom)", "Install ripgrep"]
+verify = "ci.yml:ci-mode"
+# ci-pre must not wait on anything (zackees/ci.yml#23); path-selection only
+# computes outputs and runs beside ci-mode rather than after it.
+verify-exempt = ["ci-pre", "path-selection"]
+mode = "enforce"
+
+# zackees/ci.yml#168 (GATE-005), soldr#3516: soldr's tests start soldr
+# daemons and touch soldr state roots, so they never run on a developer host.
+# The nextest run-wrapper refuses unless CI=true or the marker is set; the
+# bosn image sets the marker; the gate's `tests` lane runs the suite there.
+[gate.isolation]
+marker = "SOLDR_TEST_ISOLATED"
+runner = ["bosn", "run", "--task", "test"]
+guard = ".github/scripts/nextest_wrapper.sh"
+
+# zackees/ci.yml#177 (GATE-007): the gate as cacheable lanes, split along
+# input boundaries. A lane is skipped when its inputs -- the commit tree minus
+# `exclude`, plus `keep` and the mandatory inputs (this file,
+# ci/local_gate.py, Cargo.lock, rust-toolchain.toml) -- match a recorded pass.
+# Exclusions must be evidence-based: replay history with
+# `ci-lint local-gate lanes --simulate N`, and never exclude a path a lane
+# might read. Measured traps: the Rust crates `include_str!`
+# src/soldr/_bundle_bins.py, crates/*/benchmarks/*.md and tests/fixtures/**,
+# so `**/*.py`, `**/*.md` and `tests/**` are NOT safe Rust exclusions.
+
+# Python linters: only Python sources and their configs.
+[gate.lanes.py-static]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "py-static"]
+tools = ["uv"]
+exclude = [
+  "crates/**", "dylints/**", "_vender/**", "Cargo.toml", "Cargo.lock", "docs/**", "*.md", "*.png", "contracts/**",
+  "docker/**", "bosn.toml", ".github/workflows/**", "examples/**", "perf/**",
+  # Data files: the linters read only Python and their own configs.
+  "**/*.json", "**/*.yml", "**/*.yaml", "**/*.rs",
+]
+
+# Repository-scanning guards and the Python tests: they read everything.
+[gate.lanes.guards]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "guards"]
+tools = ["uv", "node"]
+
+# soldr lint ci + dependency policy: seconds; reads CI surfaces and lockfiles.
+[gate.lanes.ci-lint]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "ci-lint"]
+tools = ["soldr"]
+
+# rustfmt, Clippy, Dylint: the Rust world.
+[gate.lanes.rust]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "rust"]
+tools = ["soldr"]
+env = ["SOLDR_LINKER"]
+exclude = [
+  "docs/**", "*.md", "*.png", "contracts/**", "bench/**", "perf/**", "examples/**",
+  "tests/**", "docker/**", "bosn.toml", ".github/**", "ci/**", "tools/**", "scripts/**", ".claude/**",
+  "src/**", "install", "install.sh", "lint", "test", "clean", "package.json", "uv.lock",
+]
+keep = ["tests/fixtures/**", "src/soldr/_bundle_bins.py"]
+
+# The test suite, in bosn: the Rust world plus the harness it runs under.
+[gate.lanes.tests]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "tests"]
+tools = ["bosn"]
+exclude = [
+  "docs/**", "*.md", "*.png", "contracts/**", "bench/**", "perf/**", "examples/**",
+  "tests/**", ".github/**", "ci/**", "tools/**", "scripts/**", ".claude/**",
+  "src/**", "install", "install.sh", "lint", "test", "clean", "package.json", "uv.lock",
+]
+keep = [
+  "tests/fixtures/**", "src/soldr/_bundle_bins.py", ".github/scripts/nextest*",
+  "ci/bosn_workspace_test.py",
+]
+
+# zackees/ci.yml#190 (GATE-008, pilot #189): an attested PR head skips the
+# remote Lint and Linux x64 jobs -- they would rerun exactly what the gate
+# just ran, at ~14 min of PR latency. CI's ci-mode job decides with
+# `ci-lint local-gate verify --trust`, from THIS file as committed on the
+# PR's base. It fails closed: a fork or non-writer author, a `ci-full`
+# label, a head not attested for its exact tree, a trailer missing a lane,
+# a change to any surface below (or to this file, ci/local_gate.py, ci.yml,
+# _build-and-test.yml and the local actions they use), or the 1-in-10
+# audit sample all run the jobs as before. Pushes to main always run them
+# (the post-merge catch); the release candidate's full run is the last.
+[gate.trust]
+mode = "enforce"
+skip = ["ci.yml:lint", "ci.yml:build-linux-x64"]
+# Linux x64 is not a pure mirror: its `soldr ci-test` DAG is the rust
+# (fmt/Clippy/Dylint), ci-lint (dependency policy) and tests (nextest +
+# doctests, bosn) lanes; the CI-only probes below run on every main push.
+covered-by = { "ci.yml:build-linux-x64" = ["rust", "ci-lint", "tests"] }
+# Scripts only the skipped jobs run: a change to one can only be validated
+# remotely.
+surfaces = [
+  ".github/scripts/setup_ci_swap.sh",
+  ".github/scripts/analyze_compile_journal.py",
+  ".github/scripts/check_compile_fallbacks.py",
+  ".github/scripts/check_pr_cache_keys.py",
+  ".github/scripts/check_third_party_compiles.py",
+  ".github/scripts/check_toolchain_homes.py",
+  ".github/scripts/dylint_toolchain_channel.py",
+  ".github/scripts/fit_memory_estimate.py",
+  ".github/scripts/index_build_logs.py",
+  ".github/scripts/install_ci_cargo_guard.py",
+  ".github/scripts/measure_zccache_working_set.py",
+  ".github/scripts/report_dylint_tree_size.py",
+  ".github/scripts/ci_mode.py",
+  "ci/check_linked_libs.py",
+  "ci/check_zccache_feature_graph.py",
+]

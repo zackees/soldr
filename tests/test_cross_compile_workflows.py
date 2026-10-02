@@ -751,9 +751,9 @@ def test_production_cross_workflows_do_not_select_legacy_backends() -> None:
             line for line in body.splitlines() if not line.lstrip().startswith("#")
         )
         for token in forbidden:
-            assert (
-                token not in executable
-            ), f"{path.relative_to(REPO_ROOT)} selects {token!r}"
+            assert token not in executable, (
+                f"{path.relative_to(REPO_ROOT)} selects {token!r}"
+            )
 
     cross_all_executable = "\n".join(
         line

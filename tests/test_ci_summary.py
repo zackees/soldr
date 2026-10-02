@@ -1,5 +1,6 @@
 """Always-running, fail-closed merge summary (setup-soldr#523)."""
 
+import ast
 import json
 from pathlib import Path
 
@@ -10,6 +11,58 @@ from conftest import load_script_module
 ROOT = Path(__file__).parents[1]
 SUMMARY = load_script_module(ROOT / ".github/scripts/ci_summary.py", "ci_summary")
 SHA = "a" * 40
+
+
+@pytest.mark.parametrize(
+    "mode,trusted,docs,expected",
+    [
+        ("minimal", "false", "false", (False, True, True)),
+        ("minimal", "false", "true", (True, False, False)),
+        ("minimal", "true", "false", (True, False, False)),
+        ("minimal", "true", "true", (True, False, False)),
+        ("test", "false", "false", (False, True, True)),
+        ("test", "false", "true", (False, True, True)),
+        ("test", "true", "false", (False, True, True)),
+        ("test", "true", "true", (False, True, True)),
+        ("full", "false", "false", (False, True, True)),
+        ("full", "false", "true", (False, True, True)),
+        ("full", "true", "false", (False, True, True)),
+        ("full", "true", "true", (False, True, True)),
+    ],
+)
+def test_workflow_attestation_never_skips_expanded_tiers(mode, trusted, docs, expected):
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    actual = []
+    for name in ("lint-docs", "lint", "build-linux-x64"):
+        expression = jobs[name]["if"].removeprefix("${{").removesuffix("}}")
+        for key, value in {
+            "needs.ci-mode.outputs.mode": mode,
+            "needs.ci-mode.outputs.trusted": trusted,
+            "needs.path-selection.outputs.docs_only": docs,
+            "needs.lint.result": "success",
+        }.items():
+            expression = expression.replace(key, repr(value))
+        expression = expression.replace("always()", "True")
+        expression = expression.replace("&&", " and ").replace("||", " or ")
+        tree = ast.parse(expression.strip(), mode="eval")
+        allowed = (
+            ast.Expression,
+            ast.BoolOp,
+            ast.Compare,
+            ast.Constant,
+            ast.And,
+            ast.Or,
+            ast.Eq,
+            ast.NotEq,
+        )
+        assert all(isinstance(node, allowed) for node in ast.walk(tree))
+        actual.append(
+            eval(compile(tree, "<workflow condition>", "eval"), {"__builtins__": {}})
+        )
+    assert tuple(actual) == expected
+    assert jobs["ci-summary"]["env"]["CI_TRUSTED"] == (
+        "${{ needs.ci-mode.outputs.mode == 'minimal' && needs.ci-mode.outputs.trusted == 'true' }}"
+    )
 
 
 @pytest.mark.parametrize("job", ["full-coverage", "ci-summary"])

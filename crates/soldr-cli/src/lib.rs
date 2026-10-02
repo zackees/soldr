@@ -263,6 +263,8 @@ pub mod compile_fallback_rollup;
 pub mod cook;
 /// soldr#3117 -- keeps the daemon route alive for the whole of `soldr cook`.
 pub(crate) mod cook_route_hold;
+/// soldr#3518 -- durable journal making the in-place cook skeleton crash-safe.
+pub(crate) mod cook_source_journal;
 pub mod cook_source_snapshot;
 /// No-progress watchdog for `soldr cook`'s cargo-chef phases (CI silence
 /// follow-up to soldr#3043).

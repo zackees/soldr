@@ -249,27 +249,8 @@ fn direct_rustc_like_commands_route_through_zccache_with_and_without_global_flag
     let cache_root = unique_temp_dir("direct-rustc-like-zccache");
     let home_root = cache_root.join("home");
     let _broker = BrokerHomeGuard::new(&cache_root, &home_root);
-    let daemon_executable = common::isolated_daemon::isolated_daemon_executable(
-        &common::soldr_daemon_bin(),
-        &cache_root,
-    );
-    let daemon_start = isolated_soldr_command()
-        .args(["daemon", "start"])
-        .env("SOLDR_CACHE_DIR", &cache_root)
-        .env("HOME", &home_root)
-        .env("USERPROFILE", &home_root)
-        .env(
-            soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR,
-            &daemon_executable,
-        )
-        .output()
-        .expect("start broker-owned daemon for direct compiler routes");
-    assert!(
-        daemon_start.status.success(),
-        "broker-owned daemon start failed for direct compiler routes\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&daemon_start.stdout),
-        String::from_utf8_lossy(&daemon_start.stderr)
-    );
+    let daemon_executable =
+        crate::fixture_daemon_isolation::start_fixture_broker_daemon(&cache_root, &home_root);
     for tool in ["rustc", "clippy-driver"] {
         for (label, prefix_args) in [
             ("plain", vec![tool]),

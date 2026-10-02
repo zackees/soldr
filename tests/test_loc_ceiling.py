@@ -3,6 +3,8 @@
 import importlib.util
 from pathlib import Path
 
+from conftest import lint_lane_text
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = REPO_ROOT / ".github" / "scripts" / "loc_ceiling.py"
 
@@ -35,9 +37,7 @@ def test_violations_are_sorted_and_measured() -> None:
 
 
 def test_ci_enforces_the_thousand_line_ceiling() -> None:
-    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = lint_lane_text()
     assert "1000-line production ceiling" in workflow
     # soldr#2763: the Lint job runs its guards through `uv run --python 3.13`
     # so the interpreter is pinned rather than inherited from the runner image.

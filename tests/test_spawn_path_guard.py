@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from conftest import load_script_module
+from conftest import lint_lane_text, load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / ".github" / "scripts" / "spawn_path_guard.py"
@@ -67,7 +67,5 @@ def test_test_sources_are_out_of_scope() -> None:
 
 
 def test_lint_job_runs_the_guard() -> None:
-    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = lint_lane_text()
     assert "spawn_path_guard.py" in workflow

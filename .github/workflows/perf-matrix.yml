@@ -351,7 +351,7 @@ jobs:
       - name: Install Rust toolchain
         if: steps.gate.outputs.selected == 'true'
         run: |
-          rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update
+          rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update  # ci-lint: allow RUST-001 bootstrap: runner toolchain provisioning before soldr is on PATH
 
       # Layer 1: actions/cache keyed by the source-of-truth files that
       # determine the soldr binary. Same source on the same platform =
@@ -374,7 +374,7 @@ jobs:
       # work even when soldr is broken or absent on a new platform.
       - name: Build soldr (release)
         if: steps.gate.outputs.selected == 'true' && steps.soldr-bin-cache.outputs.cache-hit != 'true'
-        run: cargo build --release -p soldr-cli
+        run: cargo build --release -p soldr-cli  # ci-lint: allow RUST-001 bootstrap: builds soldr from source before any soldr exists in this job
 
       # Keep same-source reruns (including perf-only iterations) compile-free.
       # Source changes miss the exact key and build from the registry normally.
@@ -481,7 +481,7 @@ jobs:
         run: |
           # Workers need cargo on PATH so soldr cargo can dispatch to
           # it. Soldr fetches/manages zccache itself on first use.
-          rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update
+          rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update  # ci-lint: allow RUST-001 bootstrap: runner toolchain provisioning before soldr is on PATH
 
       - name: Install fixture native deps
         if: steps.gate.outputs.selected == 'true' && matrix.fixture == 'sqlite-link'

@@ -73,24 +73,61 @@ pub(crate) fn broker_spawn_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)
     filter_broker_spawn_env(std::env::vars_os())
 }
 
+/// The per-user identity variables that select a home, config, runtime, or
+/// temp location. `UserBaseline` rebuilds these from the passwd entry (Unix)
+/// or the user profile (Windows), i.e. from the *real* account, so a spawn
+/// that must stay under the caller's home has to overlay them explicitly.
+const HOME_IDENTITY_ENV_VARS: &[&str] = &[
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_CONFIG_HOME",
+    "XDG_RUNTIME_DIR",
+    "TMPDIR",
+];
+
+fn is_home_identity_env(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy().to_ascii_uppercase();
+    HOME_IDENTITY_ENV_VARS.contains(&name.as_str())
+}
+
 fn filter_broker_spawn_env(
     vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
 ) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     vars.into_iter()
         .filter(|(name, _)| {
-            let name = name.to_string_lossy().to_ascii_uppercase();
-            name.starts_with("SOLDR_")
-                || matches!(
-                    name.as_str(),
-                    "HOME"
-                        | "USERPROFILE"
-                        | "APPDATA"
-                        | "LOCALAPPDATA"
-                        | "XDG_CONFIG_HOME"
-                        | "XDG_RUNTIME_DIR"
-                        | "TMPDIR"
-                )
+            name.to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("SOLDR_")
+                || is_home_identity_env(name)
         })
+        .collect()
+}
+
+/// soldr#3516: the home-identity overlay the broker applies to every daemon
+/// it launches.
+///
+/// The broker spawns daemons under `UserBaseline`, which rebuilds `HOME` (and
+/// the rest of [`HOME_IDENTITY_ENV_VARS`]) from the real account. A broker
+/// started under a test fixture's throwaway `HOME` therefore launched daemons
+/// whose `HOME` was the developer's real one: they could resolve the real
+/// broker endpoint, the real `~/dev` GC roots and the real default Soldr root,
+/// and one such daemon outlived its test holding the real `~/.soldr` root
+/// lock, wedging every host build. The broker's own identity is exactly the
+/// one its starter chose ([`broker_spawn_env`] forwarded it), and it already
+/// keys the broker's own paths (service definitions, staged route images), so
+/// the daemons it launches inherit that same identity. `SOLDR_*` stays with
+/// the route's service-definition labels, which are authoritative per route.
+pub(crate) fn daemon_home_identity_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    filter_daemon_home_identity_env(std::env::vars_os())
+}
+
+pub(crate) fn filter_daemon_home_identity_env(
+    vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    vars.into_iter()
+        .filter(|(name, value)| is_home_identity_env(name) && !value.is_empty())
         .collect()
 }
 
