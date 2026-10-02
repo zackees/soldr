@@ -105,12 +105,12 @@
     "full_run": "https://github.com/zackees/bosn/actions/runs/36921972900",
     "full_result": "success on exact candidate 58687f4fb17c499416abb9f56ec3f56d1491ae1b; all 12 jobs successful, including both hosted macOS wheel smokes",
     "engine_prerequisites": {
-      "local_commit": "76610b2",
+      "local_commit": "821d3ec",
       "scope": "Unpublished private runtime, typed raw image proofs, bounded stdin transfer, digest-based imported-image lookup and private cgroup initialization; public run/report and authenticated graph producer remain pending.",
-      "evidence": "Earlier 181 service library tests and 13 lifecycle tests passed. Current five runtime tests cover 19 synthetic actor fault modes; service formatting and all-target Clippy passed. Same-primary scoped source review is clean. Seven actual pinned Docker probes have exposed and narrowed implementation failures; none is a successful Act execution yet.",
+      "evidence": "Earlier 181 service library tests and 13 lifecycle tests passed. Current five runtime tests cover 19 synthetic actor fault modes; 18 public CLI integration tests, service formatting and all-target Clippy passed. Independent combined review closed the legacy planning bounds finding. Nine actual pinned Docker probes have narrowed implementation failures; none is a successful Act execution yet.",
       "cleanup": "Previously completed scratch roots were trashed. Root cache /tmp/bosn-act-boundary-3344-owned remains intentionally active during runtime implementation; stop before cleanup.",
       "pending_review_fixes": [],
-      "latest_root_validation": "10 engine transport tests; five runtime tests with 19 synthetic fault modes and Clippy passed. Actual probes verified input streaming/hash readback, both imported image identities and private cgroup initialization. The seventh probe reached real Act but failed copying the runner snapshot because the bounded 12 GiB Docker tmpfs filled; engine removal was verified. Failed job evidence and terminal diagnostics are now retained. Resource sizing and real success/cancellation remain pending."
+      "latest_root_validation": "Probe-only storage/memory telemetry and exact legacy recovery passed five focused tests. Eighth and ninth actual probes passed import/config verification with an inferred 20 GiB tmpfs/28 GiB memory profile; eighth sampled peaks were 13,404,200,960 tmpfs bytes and 13,986,791,424 cgroup memory bytes. Act then failed starting the runner because tail was not found. Ninth retained raw imported configs matching pinned execution fields. All failed running engines report verified removal. Failed-container diagnostics and real success/cancellation remain pending."
     }
   },
   "latest_local_python_validation": {
@@ -168,6 +168,12 @@
   },
   "local_shared_prerequisites": [
     {
+      "checkout": "../soldr2-extern/soldr-release-control",
+      "commit": "df097477",
+      "scope": "Exact candidate tag peeling and immutable asset retries; published incomplete releases refuse upload. Release controller and frozen issue directive remain absent.",
+      "verification": "Unsafe tag and clobber behavior reproduced RED; published-partial upload finding fixed RED to GREEN. Worker 49 focused checks and root 45 release tests passed; independent primary review clean. No publication, tags or live API mutations; unpublished."
+    },
+    {
       "checkout": "../soldr2-extern/soldr-release-execution",
       "commit": "d701b1ddaaaaa4e6a772308e9ec7307bd2cf7ce8",
       "scope": "Windows wheel and GNU ARM64 release execution gates, including force-PyPI recovery; no live artifact execution yet",
@@ -192,6 +198,8 @@
     "root": "/tmp/preloop-verified-3345.6wenqR",
     "cli": "0.33.7",
     "golden_sha256": "618f7970217f039ff92d9c0d4aa03c580f8108f6b2c417d6e0f8a4bfa1d96a4d",
-    "scope": "Official CLI, runner, SmolVM binary and golden digest verified. Golden lacks a checksum asset; verification used GitHub asset digest. Extracted guest distribution has 276 recorded confined symlink conversions. No VM or comparison execution yet."
+    "scope": "Official CLI, runner, SmolVM binary and golden digest verified. Golden verification used GitHub asset digest. Guest distribution has 276 confined symlink conversions. Preloop auto-acquired Node externals without independent verification.",
+    "execution": "Virtio-net boot failed on internal libkrun MMIO IRQ capacity; documented TSI configuration booted real VMs. Run 2469d168-94d4-4088-8fe1-833a61eb59e1 executed the unchanged fixture and failed its SHA equality assertion; repository context was correct. Runtime SHA value was not captured. This is no fleet workflow or exact-SHA success proof.",
+    "cleanup": "Owned server stopped, exact owned golden deleted, machine namespace empty and temporary parity checkout trashed. Missing owned UID registry explains the generic cleanup warning; no foreign registry touched. Input bundle and evidence remain intentionally retained."
   }
 }
