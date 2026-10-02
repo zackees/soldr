@@ -105,12 +105,12 @@
     "full_run": "https://github.com/zackees/bosn/actions/runs/36921972900",
     "full_result": "success on exact candidate 58687f4fb17c499416abb9f56ec3f56d1491ae1b; all 12 jobs successful, including both hosted macOS wheel smokes",
     "engine_prerequisites": {
-      "local_commit": "ec256c6",
+      "local_commit": "917c516",
       "scope": "Unpublished private runtime, typed raw image proofs, bounded stdin transfer, digest-based imported-image lookup and private cgroup initialization; public run/report and authenticated graph producer remain pending.",
-      "evidence": "Private pinned Docker/Act runtime real success and cancellation passed after snapshot storage gained explicit exec. 11 engine tests, five runtime tests, eight probe tests (three ignored by default), Clippy and independent primary review passed. Public commands, startup reconciliation, authenticated adapter graph and whole fleet workflows remain pending.",
+      "evidence": "Immutable v3 creation profiles, historical init-command verification and startup registry fencing implemented. Root four-crate Rust lib/integration suite, 13 engine, five runtime and eight probe tests passed; service Clippy and workspace formatting passed. Startup fence: 199 service tests passed, three ignored; independent primary review clean. Public commands, actual startup Docker recovery and fleet workflow graph remain pending.",
       "cleanup": "Worker scratch caches stopped and trashed; root-owned compile caches remain intentionally active until runtime work is finished. Private input/evidence bundle retained. No foreign engine or checkout touched.",
       "pending_review_fixes": [],
-      "latest_root_validation": "Actual probe 12 completed in 161.26 seconds: exact-SHA/repository assertion job succeeded; cancellation observed genuine nested containers before reaping and cleanup. Both engines verified removed. Bounded mountinfo confirms private Docker storage executable and /run,/tmp noexec. Compact checked receipt ci/fleet-evidence/bosn-private-act-ec256c6.json; eleven prior failures retained diagnostically."
+      "latest_root_validation": "Actual v3 probe 13 passed in 163.16 seconds at runtime 634a84a: exact-SHA/repository assertion succeeded; genuine nested cancellation observed and reaped. Both exact engine IDs absent afterward. Compact checked receipt ci/fleet-evidence/bosn-private-act-634a84a.json includes frozen profiles, resource peaks and effective mounts. Startup fence 917c516 was added afterward and is not claimed by this probe."
     }
   },
   "latest_local_python_validation": {
@@ -169,9 +169,9 @@
   "local_shared_prerequisites": [
     {
       "checkout": "../soldr2-extern/soldr-release-control",
-      "commit": "220bc43d",
-      "scope": "Exact immutable tag/assets and pure release contracts now freeze supplied npm tarball size/SHA256/SHA512 identity and bounded member inventory. Actual pack producer, exact-tarball publisher, issue authority and start/resume/status controller remain unwired.",
-      "verification": "Independent primary reviews clean after published-partial upload, npm omission and compressed PAX/GNU metadata findings were fixed. Root 116 combined tests passed. No publication, tags, API mutations or push; unpublished."
+      "commit": "1e4c3b41",
+      "scope": "Immutable release contracts freeze actual npm tarball bytes. Exact-tarball publisher stages verified bytes, checks remote version/integrity and owns bounded process cleanup. Actual pack producer, issue authority and start/resume/status controller remain unwired.",
+      "verification": "Independent primary review clean after tarball replacement, atime, descendant-process and cleanup dependency findings were fixed. Root 138 combined Python tests passed. No publication, tags, API mutations or push; unpublished."
     },
     {
       "checkout": "../soldr2-extern/soldr-release-execution",
