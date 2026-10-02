@@ -56,9 +56,31 @@ def test_attested_skip_is_declared_and_wired() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "local-gate verify --repo . --trust --github-output" in workflow
     assert "trusted: ${{ steps.gate.outputs.trusted }}" in workflow
-    assert workflow.count("needs.ci-mode.outputs.trusted != 'true'") == 2
-    assert "needs.ci-mode.outputs.trusted == 'true'" in workflow  # lint-docs
+    # zackees/ci.yml#198 (GATE-010): each skip job consumes its own per-job
+    # decision, and Linux x64 still runs when only Lint was skipped.
+    assert "needs.ci-mode.outputs.skip_lint != 'true'" in workflow
+    assert "needs.ci-mode.outputs.skip_build-linux-x64 != 'true'" in workflow
+    assert (
+        "(needs.lint.result == 'success' || needs.ci-mode.outputs.skip_lint == 'true')"
+        in workflow
+    )
+    assert "needs.ci-mode.outputs.skip_lint == 'true'" in workflow  # lint-docs
     assert "\n    branches:\n      - main\n" in workflow
+
+
+def test_ci_attestations_cover_every_skip_job() -> None:
+    """zackees/ci.yml#198: every [gate.trust] skip job is mapped to gates,
+    and every gate names a declared lane (ci-lint local-gate lint checks the
+    same; this keeps it offline)."""
+    gate = tomllib.loads((ROOT / "local-gate.toml").read_text(encoding="utf-8"))["gate"]
+    text = (ROOT / "ci-attestations.yml").read_text(encoding="utf-8")
+    for job in gate["trust"]["skip"]:
+        assert f"  {job}:" in text, job
+    for lane in re.findall(r"\{lane: ([a-z-]+)\}", text):
+        assert lane in gate["lanes"], lane
+    pre = (ROOT / ".github" / "workflows" / "ci-pre.yml").read_text(encoding="utf-8")
+    assert "ci_lint attest keys" in pre
+    assert pre.count("steps.att.outputs.stem_") == 8
 
 
 def test_the_test_suite_only_runs_isolated_locally() -> None:

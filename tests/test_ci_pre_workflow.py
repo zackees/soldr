@@ -43,12 +43,16 @@ def test_ci_pre_installs_nothing_and_is_fast() -> None:
         assert job["timeout-minutes"] <= 2, job_id
         assert job["runs-on"] == "ubuntu-24.04", job_id
         checkouts = [s for s in job["steps"] if "checkout" in s.get("uses", "")]
+        if job_id == ATTESTATIONS_JOB:
+            continue  # pinned separately below
         assert len(checkouts) == 1, job_id
         assert checkouts[0]["with"]["sparse-checkout"], job_id
 
 
 def test_cache_control_never_executes_pr_authored_helper_with_write_token() -> None:
-    for job in _load("ci-pre.yml")["jobs"].values():
+    for job_id, job in _load("ci-pre.yml")["jobs"].items():
+        if job_id == ATTESTATIONS_JOB:
+            continue  # reads the PR head on purpose; pinned below
         checkout = next(
             step for step in job["steps"] if "checkout" in step.get("uses", "")
         )
@@ -57,6 +61,36 @@ def test_cache_control_never_executes_pr_authored_helper_with_write_token() -> N
             == "${{ github.event.pull_request.base.sha || github.sha }}"
         )
         assert checkout["with"]["persist-credentials"] is False
+
+
+ATTESTATIONS_JOB = "attestations"
+
+
+def test_attestation_publisher_reads_the_pr_but_runs_only_pinned_ci_lint() -> None:
+    """zackees/ci.yml#198: the one ci-pre job that checks out the PR head.
+    It must hold no actions:write, run nothing but ci_lint from a pinned
+    zackees/ci.yml SHA, and save only its own lineage-keyed side entries."""
+    job = _load("ci-pre.yml")["jobs"][ATTESTATIONS_JOB]
+    assert job["permissions"] == {"contents": "read"}
+    repo, lint = [s for s in job["steps"] if "checkout" in s.get("uses", "")]
+    assert repo["with"]["persist-credentials"] is False
+    assert repo["with"]["fetch-depth"] == 0
+    assert lint["with"]["repository"] == "zackees/ci.yml"
+    assert (
+        len(lint["with"]["ref"]) == 40 and lint["with"]["sparse-checkout"] == "ci_lint"
+    )
+    runs = [s["run"] for s in job["steps"] if "run" in s]
+    assert (
+        len(runs) == 1
+        and "PYTHONPATH=.ci-lint python3 -m ci_lint attest keys" in runs[0]
+    )
+    saves = [
+        s for s in job["steps"] if s.get("uses", "").startswith("actions/cache/save@")
+    ]
+    assert len(saves) == 8
+    for save in saves:
+        assert save["with"]["key"].endswith("${{ env.PR_CACHE_TAG }}")
+        assert "steps.att.outputs.stem_" in save["with"]["key"]
 
 
 def test_the_janitor_is_one_repo_wide_uncancelled_sweep() -> None:

@@ -23,6 +23,11 @@ permissions:
   contents: read
   actions: write
 
+env:
+  # zackees/ci.yml#6 / check_pr_cache_keys.py: every PR-reachable cache save
+  # carries this tag; empty outside a pull request.
+  PR_CACHE_TAG: ${{ github.event_name == 'pull_request' && format('-pr-{0}', github.event.pull_request.number) || '' }}
+
 jobs:
   cache-janitor:
     name: Cache janitor
@@ -94,3 +99,94 @@ jobs:
           args=(--event-name "$EVENT_NAME" --ref "$REF")
           if [[ "$REQUIRE_LIVE" == "true" ]]; then args+=(--require-live); fi
           python3 .github/scripts/check_cache_budget.py "${args[@]}"
+
+  # zackees/ci.yml#198 (GATE-010), soldr#3534: publish each stamp-valid
+  # `Ci-Attestation:` of this commit as its own tiny cache entry,
+  #   att1-<gate>-m<b>-c<k>-<sha10>${{ env.PR_CACHE_TAG }}
+  # (a human-readable, ancestor-defining lineage label). Later runs list
+  # them (GET-only REST) with `ci-lint attest resolve --require-gate` to
+  # choose which caches are valid to hydrate. Off the critical path: nothing
+  # needs this job. Two documented deviations from this file's contract
+  # (tests/test_ci_pre_workflow.py pins both): it checks out the PR HEAD with
+  # full history, because lineage ordinals and the trailers live there --
+  # but only READS it (the code it runs is ci_lint from the pinned ci.yml
+  # ref, never a PR-authored script), and it holds no `actions: write`;
+  # cache saves use the runner's token, which GitHub scopes to this PR.
+  attestations:
+    name: Publish ci-attestations
+    if: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: zackees/ci.yml
+          ref: c87f1a2b88c07037d5c10a8e8ff27dd25895eab9
+          path: .ci-lint
+          persist-credentials: false
+          sparse-checkout: ci_lint
+      - name: Validate attestations and derive side-entry keys
+        id: att
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          args=(--repo . --commit "$HEAD_SHA" --main-ref origin/main --out-dir "$RUNNER_TEMP/ci-attestations" --github-output)
+          if [[ -n "$PR_NUMBER" ]]; then args+=(--pr "$PR_NUMBER" --base "$BASE_SHA"); fi
+          PYTHONPATH=.ci-lint python3 -m ci_lint attest keys "${args[@]}"
+      - name: Save attestation side entry 0
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 0 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_0 }}
+          key: ${{ steps.att.outputs.stem_0 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 1
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 1 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_1 }}
+          key: ${{ steps.att.outputs.stem_1 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 2
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 2 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_2 }}
+          key: ${{ steps.att.outputs.stem_2 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 3
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 3 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_3 }}
+          key: ${{ steps.att.outputs.stem_3 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 4
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 4 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_4 }}
+          key: ${{ steps.att.outputs.stem_4 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 5
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 5 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_5 }}
+          key: ${{ steps.att.outputs.stem_5 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 6
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 6 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_6 }}
+          key: ${{ steps.att.outputs.stem_6 }}${{ env.PR_CACHE_TAG }}
+      - name: Save attestation side entry 7
+        if: ${{ fromJSON(steps.att.outputs.count || '0') > 7 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_7 }}
+          key: ${{ steps.att.outputs.stem_7 }}${{ env.PR_CACHE_TAG }}

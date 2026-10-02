@@ -85,9 +85,14 @@ jobs:
       checkout_sha: ${{ steps.mode.outputs.checkout_sha }}
       author_permission: ${{ steps.mode.outputs.author_permission }}
       # zackees/ci.yml#190 (GATE-008): 'true' only for an attested PR head
-      # inside local-gate.toml's [gate.trust] policy; Lint and Linux x64
-      # then skip. Never 'true' on push/dispatch.
+      # inside local-gate.toml's [gate.trust] policy. Never 'true' on
+      # push/dispatch.
       trusted: ${{ steps.gate.outputs.trusted }}
+      # zackees/ci.yml#198 (GATE-010): per job, 'true' only when the head is
+      # trusted AND every gate ci-attestations.yml maps to the job carries a
+      # stamp-valid `Ci-Attestation:` trailer. Omitted gates run remotely.
+      skip_lint: ${{ steps.gate.outputs.skip_lint }}
+      skip_build-linux-x64: ${{ steps.gate.outputs.skip_build-linux-x64 }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -115,7 +120,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: zackees/ci.yml
-          ref: efbd8b123ebc7b1bdfa65ac2274f73376436e33d
+          ref: c87f1a2b88c07037d5c10a8e8ff27dd25895eab9
           path: .ci-lint
           persist-credentials: false
           sparse-checkout: ci_lint
@@ -153,7 +158,7 @@ jobs:
   lint-docs:
     name: Lint
     needs: [ci-mode, path-selection]
-    if: ${{ needs.ci-mode.outputs.mode != 'full' && (needs.path-selection.outputs.docs_only == 'true' || needs.ci-mode.outputs.trusted == 'true') }}
+    if: ${{ needs.ci-mode.outputs.mode != 'full' && (needs.path-selection.outputs.docs_only == 'true' || needs.ci-mode.outputs.skip_lint == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -162,7 +167,7 @@ jobs:
   lint:
     name: Lint
     needs: [ci-mode, path-selection]
-    if: ${{ (needs.ci-mode.outputs.mode == 'full' || needs.path-selection.outputs.docs_only != 'true') && needs.ci-mode.outputs.trusted != 'true' }}
+    if: ${{ (needs.ci-mode.outputs.mode == 'full' || needs.path-selection.outputs.docs_only != 'true') && needs.ci-mode.outputs.skip_lint != 'true' }}
     # Run on every push to main AND on every PR — without this PRs slip
     # in unformatted code that breaks main's Lint job on merge. Repeated
     # 4 times in late 2026-06 (#1111/#1114/#1115/#1120 fallout), each
@@ -271,7 +276,7 @@ jobs:
     # No `if:` guard: every downstream job hangs off this one, so it must
     # run on workflow_dispatch as well as on main pushes and PRs.
     needs: [ci-mode, path-selection, lint]
-    if: ${{ always() && (needs.ci-mode.outputs.mode == 'full' || needs.path-selection.outputs.docs_only != 'true') && needs.lint.result == 'success' && needs.ci-mode.outputs.trusted != 'true' }}
+    if: ${{ always() && (needs.ci-mode.outputs.mode == 'full' || needs.path-selection.outputs.docs_only != 'true') && (needs.lint.result == 'success' || needs.ci-mode.outputs.skip_lint == 'true') && needs.ci-mode.outputs.skip_build-linux-x64 != 'true' }}
     uses: ./.github/workflows/_build-and-test.yml
     with:
       runner: ubuntu-24.04
