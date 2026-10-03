@@ -65,7 +65,7 @@ def _entries(evidence: dict, expected_sha: str) -> dict[str, tuple[str, str, str
     return result
 
 
-def verify_policy_trees(
+def verify_policy_trees(  # noqa: C901
     reviewed: dict,
     candidate: dict,
     *,

@@ -251,6 +251,7 @@ pub(crate) fn collect_logs_show_output_for_paths(
 /// filesystem. The fixed list mirrors the issue #820 repro's
 /// "non-obvious tour" and the paths `cache_lib` / `daemon` /
 /// `gc` actually use.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
     let root = &paths.root;
     let cache = &paths.cache;

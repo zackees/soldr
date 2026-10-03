@@ -59,7 +59,7 @@ def platform_selectors() -> tuple[str, ...]:
     return selectors
 
 
-def mask_comments_and_strings(source: str) -> str:
+def mask_comments_and_strings(source: str) -> str:  # noqa: C901
     """Replace comments and string literals with whitespace (newlines kept)."""
     output: list[str] = []
     index = 0

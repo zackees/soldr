@@ -1,3 +1,5 @@
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
     // #1364: a truthy `ZCCACHE_DISABLE` acts like `--no-cache` so the
     // standard zccache kill-switch actually bypasses the wrapper/daemon.
@@ -278,8 +280,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         }
         Commands::Logs { command } => {
             match command {
-                // soldr#820: `list` / `show` / `paths` are implemented;
-                // `view` / `prune` remain follow-up verbs.
+                // soldr#820: `list`/`show`/`paths` are implemented; `view`/`prune` are follow-ups.
                 Some(LogsSubcommand::List { limit, json }) => {
                     guarded_exit(logs_cmd::run_logs_list(limit, json)?);
                 }

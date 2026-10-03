@@ -149,6 +149,7 @@ struct DoctorSoldrDebugInfo {
 
 /// Implementation of `soldr doctor`. Read-only — never invokes
 /// `rustup component add` / `target add` / `toolchain install`.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) fn run_doctor(
     json: bool,
     refresh_defender_probe: bool,

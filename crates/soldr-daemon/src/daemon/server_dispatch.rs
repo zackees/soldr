@@ -1,3 +1,5 @@
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 async fn handle_connection<S>(
     mut stream: S,
     mut control: ControlContext,

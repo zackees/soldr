@@ -222,6 +222,7 @@ fn quiesce_embedded_state_before_save(cache_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn run_save(args: SaveArgs) -> i32 {
     let args = match apply_private_session_cache_dir_default(
         args,

@@ -58,7 +58,7 @@ def _sha256_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
-def _manifest_binaries(manifest: dict[str, Any]) -> dict[str, str]:
+def _manifest_binaries(manifest: dict[str, Any]) -> dict[str, str]:  # noqa: C901
     binaries: dict[str, str] = {}
     soldr = manifest.get("soldr", {})
     if isinstance(soldr, dict):
@@ -115,7 +115,7 @@ def soldr_debug_info_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def validate_release_manifest(
+def validate_release_manifest(  # noqa: C901
     manifest: dict[str, Any],
     *,
     soldr_target: str,

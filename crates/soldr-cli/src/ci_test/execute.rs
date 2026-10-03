@@ -219,6 +219,7 @@ fn supervise_parallel_stage_and_dylint<'a>(
 /// before it succeeds, whatever phase Dylint is in (soldr#3446). A failed
 /// stage ends its own chain -- later stages depend on it -- but never the
 /// other chain (soldr#3100), and the first failure is the returned code.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn supervise_peer_chain_and_dylint<'a>(
     spawner: &impl StageSpawner,
     peer_chain: &[&'a Stage],

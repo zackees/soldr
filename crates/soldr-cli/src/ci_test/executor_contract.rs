@@ -5,6 +5,7 @@ use super::execute::stage_named;
 use super::model::{CiTestPlan, Stage};
 use crate::core::SoldrError;
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(super) fn validate_executor_contract(plan: &CiTestPlan) -> Result<(), SoldrError> {
     let mut expected = vec!["rustfmt", "lint-ci", "clippy"];
     expected.extend(

@@ -31,6 +31,7 @@ use soldr_cli::msvc_host::{
 };
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn ensure_msvc_env_for_native_makes_link_exe_findable_on_plain_powershell() {
     if !matches!(
         soldr_platform::host::facts::os(),

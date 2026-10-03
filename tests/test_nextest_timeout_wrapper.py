@@ -208,7 +208,7 @@ print("direct child exiting normally", flush=True)
     assert "nextest timeout: stdout/stderr drained" in stderr
 
 
-def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
+def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:  # noqa: C901
     config = CONFIG.read_text(encoding="utf-8")
     assert 'experimental = ["wrapper-scripts"]' in config
     assert 'run-wrapper = "timeout-diagnostics"' in config

@@ -102,7 +102,7 @@ def _job_requires_success(job: str, dependency: str) -> bool:
     return dotted in job or bracketed in job
 
 
-def release_execution_failures(
+def release_execution_failures(  # noqa: C901
     contract_path: Path = CONTRACT,
     ci_workflow_path: Path = CI_WORKFLOW,
     release_workflow_path: Path = RELEASE_WORKFLOW,

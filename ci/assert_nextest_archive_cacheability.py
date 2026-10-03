@@ -869,7 +869,7 @@ def build_image(image: str) -> int:
     ).returncode
 
 
-def run_harness(
+def run_harness(  # noqa: C901
     image: str, volumes: list[str], tracker: "PhaseTracker | None" = None
 ) -> "tuple[int, dict[str, Any] | None, list[str] | None]":
     cmd = [
@@ -953,7 +953,7 @@ def remove_volumes(volumes: list[str]) -> None:
     subprocess.run(["docker", "volume", "rm", "--force", *volumes], check=False)
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str]) -> int:  # noqa: C901
     args = parse_args(argv)
     if args.explain_report is not None:
         # Before the Docker check: this runs *inside* the container, where

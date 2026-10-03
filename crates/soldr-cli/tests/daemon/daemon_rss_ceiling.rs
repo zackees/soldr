@@ -764,6 +764,7 @@ fn count_compile_journal_lines(cache_root: &Path) -> u64 {
     32 KiB/compile budget. Un-ignoring would flake. Telling allocator segment \
     growth apart from residual retention needs a heap profile. Run \
     explicitly with `--run-ignored all` to see the measured rate."]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn daemon_rss_retention_rate_per_compile_stays_within_budget() {
     let cache_root = unique_temp_dir("rss-rate-cache");
     let home_root = unique_temp_dir("rss-rate-home");
@@ -976,6 +977,7 @@ const GUARANTEED_BREACH_CEILING_BYTES: u64 = 32 * 1024 * 1024;
 /// own breach arm specifically rather than leaving it to chance which of
 /// the two breaches first).
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn daemon_dies_and_dumps_memory_when_the_ceiling_is_breached() {
     let home_root = unique_temp_dir("rss-breach-home");
     let cache_root_a = unique_temp_dir("rss-breach-cache-a");

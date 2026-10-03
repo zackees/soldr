@@ -177,7 +177,7 @@ def uv_run_has_rebuild_guard(parts):
     return False
 
 
-def check_command(command):
+def check_command(command):  # noqa: C901
     """Check a command string for forbidden bare invocations.
 
     Returns (tool, reason) if forbidden, None if allowed.

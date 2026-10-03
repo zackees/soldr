@@ -92,6 +92,7 @@ fn pid_is_alive(pid: u32) -> bool {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn windows_long_path_publication_survives_fresh_worktree_reuse() {
     if !matches!(
         soldr_platform::host::facts::os(),

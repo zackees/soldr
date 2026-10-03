@@ -314,7 +314,7 @@ def gib(value: int) -> str:
     return f"{value / GIB:.2f} GiB"
 
 
-def render(
+def render(  # noqa: C901
     walk: Walk | None,
     verdict: str,
     cap_bytes: int,

@@ -148,7 +148,7 @@ def download_verified(urls: list[object], expected_sha: str, destination: Path) 
     raise SupportBinaryError(f"all catalogue URLs failed: {error_kind}")
 
 
-def download_catalogued_asset(asset: dict, destination: Path) -> str:
+def download_catalogued_asset(asset: dict, destination: Path) -> str:  # noqa: C901
     """Download a direct asset or reconstruct a catalogue-v2 multipart asset."""
     expected_sha = str(asset.get("sha256", "")).lower()
     if not is_sha256(expected_sha):

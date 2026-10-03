@@ -463,3 +463,11 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(dylint_lib, values(any()))
 # bincode call site; this gate keeps it that way.
 [workspace.lints.clippy]
 disallowed_methods = "deny"
+# Function-complexity ratchet (zackees/ci.yml#229, RUST-018): every function
+# stays under clippy's default ceilings (clippy.toml must not raise them).
+# The functions already over carry `#[expect(clippy::<lint>, reason = ...)]`,
+# never `allow`; an expectation that stops firing is itself a warning, so a
+# refactor deletes its suppression in the same change and the list only
+# shrinks.
+cognitive_complexity = "warn"
+too_many_lines = "warn"

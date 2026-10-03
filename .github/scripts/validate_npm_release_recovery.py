@@ -94,7 +94,7 @@ def _versions(source_dir: Path) -> tuple[str, str, str]:
     return npm_version, cargo_version, cli_versions[0]
 
 
-def validate_recovery(
+def validate_recovery(  # noqa: C901
     *,
     repository: str,
     release_ref: str,

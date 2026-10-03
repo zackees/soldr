@@ -366,7 +366,7 @@ def load_manifest(path: pathlib.Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def budget_problems(
+def budget_problems(  # noqa: C901
     manifest_path: pathlib.Path, manifest: dict, entries: list[CacheEntry]
 ) -> list[str]:
     """Every budget failure for `entries` under `manifest['budget']`."""
@@ -687,7 +687,7 @@ def perf_target_cache_candidates(on_main: list[CacheEntry]) -> list[CacheEntry]:
     return candidates
 
 
-def prune_candidates(
+def prune_candidates(  # noqa: C901
     entries: list[CacheEntry],
     current_main_lock: str | None = None,
 ) -> list[CacheEntry]:
@@ -1113,7 +1113,7 @@ def delete_pr_ref(repo: str, ref: str, entries: list[CacheEntry]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: C901
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--manifest",

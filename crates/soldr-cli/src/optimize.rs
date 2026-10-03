@@ -277,6 +277,8 @@ fn build_plan(
 }
 
 /// Entry point for `soldr optimize ...`. Returns the process exit code.
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) fn run_optimize(args: OptimizeArgs) -> Result<i32, SoldrError> {
     let platform = detect_platform();
     let scope = args.scope;

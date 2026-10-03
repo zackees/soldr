@@ -177,7 +177,7 @@ def prepare(
     return prepared_env, managed
 
 
-def assert_managed_environment(
+def assert_managed_environment(  # noqa: C901
     env: dict[str, str], target: str, managed: dict[str, str]
 ) -> tuple[Path, Path]:
     suffix = target.replace("-", "_")

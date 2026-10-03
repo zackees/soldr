@@ -372,6 +372,8 @@ pub(super) fn resolve_git_checkout_last_used(
 // Tracked target subtree walkers (#323 slice 4).
 // ---------------------------------------------------------------------------
 
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(super) fn walk_cargo_target_subtrees(
     rows: &[crate::cache_lib::target_registry::TargetRow],
     now: i64,

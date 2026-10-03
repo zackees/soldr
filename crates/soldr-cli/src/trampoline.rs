@@ -126,6 +126,7 @@ enum FastPathOutcome {
     StaleSource(PathBuf),
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn try_fast_path(
     cleaned_args: &[String],
     parsed: Option<ParsedRunArgs>,
@@ -447,6 +448,7 @@ pub(crate) fn parse_run_args(args: &[String]) -> Option<ParsedRunArgs> {
 /// Shared parser for the trampoline. Accepts only invocations whose first
 /// positional matches one of `accepted_subs`. The verb itself is consumed
 /// but not recorded — callers already know which they asked for.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) fn parse_cargo_args(args: &[String], accepted_subs: &[&str]) -> Option<ParsedRunArgs> {
     let mut toolchain: Option<String> = None;
     let mut bin: Option<String> = None;

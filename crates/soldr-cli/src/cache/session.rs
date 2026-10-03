@@ -499,6 +499,7 @@ fn clear_session_artifacts(zccache_dir: &std::path::Path) -> Result<bool, SoldrE
     Ok(removed_any)
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) async fn run_cache_shutdown_command(
     archive_logs: Option<std::path::PathBuf>,
     no_depgraph_save: bool,

@@ -138,6 +138,7 @@ fn workspace_targets(ctx: &GcContext) -> bool {
 }
 
 /// The one source of truth for category metadata and ordering.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn registry() -> Vec<GcCategory> {
     vec![
         GcCategory {

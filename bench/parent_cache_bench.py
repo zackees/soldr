@@ -411,7 +411,7 @@ def append_github_outputs(
             fh.write(f"Threshold: `{threshold:.2f}x`\n")
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901
     args = parse_args()
     target_url = resolve_target(args.target)
     preflight(args.target)

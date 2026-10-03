@@ -99,6 +99,7 @@ fn validate_load_inputs(opts: &LoadOptions<'_>) -> Result<()> {
 /// When [`LoadOptions::mtimes_only`] is `true`, only the manifest entry
 /// is consumed; any `cache/...` entry in the archive is rejected as a
 /// hard error (the producer should not have included one).
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
     validate_load_inputs(opts)?;
     let start = std::time::Instant::now();

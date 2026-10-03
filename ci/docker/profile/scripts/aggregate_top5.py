@@ -63,7 +63,7 @@ def _normalize_leaf(leaf: str) -> str:
     return leaf or "<unknown>"
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901
     parser = argparse.ArgumentParser()
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--scenarios", nargs="+", required=True)

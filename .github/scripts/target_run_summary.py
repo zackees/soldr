@@ -28,7 +28,7 @@ def _int_attr(element: ET.Element, name: str) -> int:
     return count
 
 
-def read_test_list(path: Path | None) -> tuple[int | None, int | None]:
+def read_test_list(path: Path | None) -> tuple[int | None, int | None]:  # noqa: C901
     if path is None:
         return None, None
     if not path.is_file():

@@ -309,7 +309,7 @@ def measure(
     }
 
 
-def render_text(summary: dict[str, Any]) -> str:
+def render_text(summary: dict[str, Any]) -> str:  # noqa: C901
     """Render `summary` (the dict `measure()` returns) as a console report."""
     lines: list[str] = []
     lines.append("== libgit2-sys cost measurement (soldr#3046 step 1) ==")

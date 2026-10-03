@@ -86,7 +86,7 @@ def embedded_binaries(wheel: Path, extract_dir: Path) -> "list[Path]":
     ]
 
 
-def main(argv: "list[str] | None" = None) -> int:
+def main(argv: "list[str] | None" = None) -> int:  # noqa: C901
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("wheels", nargs="+", help="wheel files to inspect")
     parser.add_argument(

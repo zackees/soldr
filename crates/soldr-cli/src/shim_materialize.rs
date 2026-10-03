@@ -118,6 +118,7 @@ fn materialize_trampoline(source: &Path, target: &Path) -> Result<MaterializeRes
 /// Install `target` as a hardlink to `source`, falling back to a copy.
 /// Returns `created=false` when the existing target already has identical
 /// bytes.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) fn materialize_executable(
     source: &Path,
     target: &Path,

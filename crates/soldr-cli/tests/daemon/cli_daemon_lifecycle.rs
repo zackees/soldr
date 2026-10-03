@@ -346,6 +346,7 @@ fn windows_daemon_console_probe_helper() {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn managed_windows_start_has_one_consoleless_owner() {
     if !matches!(
         soldr_platform::host::facts::os(),

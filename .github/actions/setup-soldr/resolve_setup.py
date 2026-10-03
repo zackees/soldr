@@ -260,7 +260,7 @@ def _write_outputs(values: dict[str, str]) -> None:
                 fh.write(f"{key}={value}\n")
 
 
-def main() -> None:
+def main() -> None:  # noqa: C901
     workspace = Path(os.environ["ACTION_WORKSPACE"]).resolve()
     runner_temp = Path(os.environ.get("RUNNER_TEMP", workspace / ".tmp")).resolve()
 

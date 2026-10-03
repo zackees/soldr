@@ -149,6 +149,7 @@ fn latest_tree_mtime(root: &std::path::Path) -> Result<SystemTime, std::io::Erro
 /// Reclaim stale soldr-owned embedded generations beneath exactly one selected
 /// product root.  The active stable identity and current version are always
 /// protected; links and every sibling product root are ignored.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn sweep_legacy_cache_roots(
     paths: &SoldrPaths,
     now: SystemTime,

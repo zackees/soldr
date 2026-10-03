@@ -39,7 +39,7 @@ def percentile(values: List[float], pct: float) -> float:
     return s[f] + (s[c] - s[f]) * (k - f)
 
 
-def main(argv: List[str]) -> int:
+def main(argv: List[str]) -> int:  # noqa: C901
     if len(argv) != 2:
         print(__doc__.strip(), file=sys.stderr)
         return 64

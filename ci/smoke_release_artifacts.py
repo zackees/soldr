@@ -591,7 +591,7 @@ def verify_collected(collected_dir: Path, *, guest_exit_code: str) -> int:
     return 0
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True, help="rust target triple")
     parser.add_argument(

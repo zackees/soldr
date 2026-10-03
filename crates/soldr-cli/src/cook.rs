@@ -257,6 +257,7 @@ pub(crate) fn build_cook_context(
 const COOK_SKIPPED_UNCOOKABLE_WORKSPACE: i32 = 3;
 
 /// Top-level dispatch. Invoked from `Commands::Cook` in `main.rs`.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) async fn run_cook(args: &[String], cache_enabled: bool) -> Result<i32, SoldrError> {
     let parsed = parse_cook_args(args)?;
     let cwd = std::env::current_dir()
@@ -763,6 +764,7 @@ fn index_cooked_artifact(
     )
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn index_cooked_artifact_with_packer<F>(
     ctx: &CookContext,
     args: &CookArgs,

@@ -776,6 +776,7 @@ fn cargo_explicit_timeout_kills_and_reaps_descendants() {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn cargo_timeout_cleans_incremental_and_next_run_succeeds() {
     let root = unique_temp_dir("cargo-timeout-cleanup");
     let workspace = root.join("workspace");

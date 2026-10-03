@@ -132,7 +132,7 @@ def _logs(target: Path) -> "list[Path]":
     return [target] if target.exists() else []
 
 
-def main(argv: "list[str] | None" = None) -> int:
+def main(argv: "list[str] | None" = None) -> int:  # noqa: C901
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("target", help="a build-log XML file, or a directory of them")
     parser.add_argument(

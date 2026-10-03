@@ -103,7 +103,7 @@ def summarize(checks: list[Check]) -> str:
     return ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "no checks yet"
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("pr", help="PR number, branch, or URL (as accepted by gh)")
     parser.add_argument("--repo", help="owner/name; defaults to the current repo")

@@ -25,7 +25,7 @@ def append_github_env(name: str, value: str) -> None:
         fh.write(f"{name}={value}\n")
 
 
-def rustup_init_target_triple() -> str:
+def rustup_init_target_triple() -> str:  # noqa: C901
     system = platform.system().lower()
     machine = platform.machine().lower()
 

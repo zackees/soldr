@@ -187,6 +187,7 @@ mod tests;
 /// mirror `wait_for_cargo_child_with_heartbeat`: a heartbeat line per
 /// interval, and on deadline the observed tree is killed through
 /// running-process containment.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) fn run_observed_inheriting_stdio(
     command: &mut Command,
     context: &str,

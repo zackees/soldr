@@ -73,6 +73,7 @@ pub fn cook_evict_pass(paths: &SoldrPaths, cfg: &CookConfig) -> CookEvictReport 
 /// Run cook GC while enforcing an optional absolute age that overrides
 /// `keep_per_origin`. Daemon full maintenance supplies this bound so even the
 /// newest entries in an otherwise abandoned origin eventually expire.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn cook_evict_pass_with_absolute_age(
     paths: &SoldrPaths,
     cfg: &CookConfig,

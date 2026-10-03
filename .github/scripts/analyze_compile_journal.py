@@ -279,7 +279,7 @@ def _is_native_compiler(compiler: str | None) -> bool:
     return basename in NATIVE_COMPILER_BASENAMES
 
 
-def _derive_crate_name_and_type(
+def _derive_crate_name_and_type(  # noqa: C901
     obj: dict[str, Any], compiler: str | None, args: list[str]
 ) -> tuple[str, str]:
     raw_name = obj.get("crate_name")
@@ -1112,7 +1112,7 @@ def _section(lines: list[str], title: str) -> None:
     lines.append(f"-- {title} --")
 
 
-def render_text(summary: dict[str, Any], top: int = 10, verbose: bool = False) -> str:
+def render_text(summary: dict[str, Any], top: int = 10, verbose: bool = False) -> str:  # noqa: C901
     """Render `summary` (the dict `analyze()` returns) as a console table."""
     lines: list[str] = []
     inputs = summary["inputs"]
@@ -1300,7 +1300,7 @@ def _print_baseline_table(rows: list[dict[str, Any]], tolerance: float) -> None:
         )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: C901
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

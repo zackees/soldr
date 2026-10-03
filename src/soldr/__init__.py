@@ -113,7 +113,7 @@ def _project_root() -> Path:
     return current
 
 
-def _toml_section_values(path: Path, section: str) -> "dict[str, str]":
+def _toml_section_values(path: Path, section: str) -> "dict[str, str]":  # noqa: C901
     """Read the small TOML subset needed before Python 3.11's tomllib.
 
     The backend must remain dependency-free in an isolated build environment.
@@ -1066,7 +1066,7 @@ def _discard_pep517_log(path: "Path | None") -> None:
         pass
 
 
-def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
+def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:  # noqa: C901
     """Run the maturin child, relaying output live, killing only on silence.
 
     Both child streams are piped unbuffered and relayed chunk-by-chunk to

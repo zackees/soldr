@@ -37,6 +37,7 @@ fn fake_cargo_doc_hold_script(log_path: &Path) -> String {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn fake_cargo_doc_script(
     log_path: &Path,
     source_path: &Path,
@@ -466,6 +467,7 @@ fn timeout_cargo_doc_route(
     }))
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn run_cargo_doc_route(route: CargoDocRoute<'_>) -> Result<CargoDocRouteResult, String> {
     let CargoDocRoute {
         label,

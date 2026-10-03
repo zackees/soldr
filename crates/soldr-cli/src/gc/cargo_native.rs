@@ -99,6 +99,7 @@ pub(crate) fn run_gc_cargo_command(args: GcCargoArgs) -> Result<(), SoldrError> 
 /// `gc sweep`. When `skip_when_missing` is true (sweep), a missing
 /// nightly toolchain returns a `skipped = true` outcome with
 /// `exit_code = 0` so the orchestrator can continue.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(super) fn invoke_cargo_native_gc(
     args: &GcCargoArgs,
     skip_when_missing: bool,

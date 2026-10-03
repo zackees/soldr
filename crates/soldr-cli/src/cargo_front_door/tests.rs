@@ -2395,11 +2395,11 @@ fn compile_journal_history_uses_effective_embedded_version_root() {
     );
 }
 
-// soldr#1790: rendering-level RED->GREEN evidence for the build-log writer.
-// Since soldr#1814/#2257, daemon-owned history reaches production exclusively
-// over IPC; this fixture injects the response payload rather than reopening
-// state.sqlite3 from the CLI process.
+// soldr#1790: rendering-level RED->GREEN evidence for the build-log writer. Since
+// soldr#1814/#2257, daemon-owned history reaches production exclusively over IPC; this
+// fixture injects the response payload rather than reopening state.sqlite3 from the CLI.
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn write_build_log_reflects_seeded_compile_session_events() {
     let root = tempfile::tempdir().expect("temp root");
     let paths = SoldrPaths::with_root(root.path().join("soldr"));

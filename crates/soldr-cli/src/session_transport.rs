@@ -498,6 +498,7 @@ where
     .await
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 async fn read_negotiated_with_deadlines<S>(
     stream: &mut S,
     expected_request_id: u64,

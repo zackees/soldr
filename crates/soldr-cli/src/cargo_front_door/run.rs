@@ -1,3 +1,5 @@
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) async fn run_cargo_front_door(
     args: &[String],
     cache_enabled: bool,
@@ -33,10 +35,9 @@ pub(crate) async fn run_cargo_front_door(
 
     let trust_inherited_soldr_env =
         trust_inherited_soldr_env || env_flag_truthy(crate::TRUST_INHERITED_SOLDR_ENV_VAR);
-    // The stable-rustc fallback re-enters this front door. Snapshot the
-    // caller-facing contract before toolchain directives and Soldr-private
-    // Cargo flags are normalized so the retry performs the same processing
-    // exactly once.
+    // The stable-rustc fallback re-enters this front door. Snapshot the caller-facing
+    // contract before toolchain directives and Soldr-private Cargo flags are
+    // normalized so the retry performs the same processing exactly once.
     let zthreads_retry_context =
         ZthreadsRetryContext::new(args, cache_enabled, trust_inherited_soldr_env);
     let _fresh_workspace_env =

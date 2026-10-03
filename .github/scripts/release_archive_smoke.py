@@ -138,7 +138,7 @@ def run(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, capture_output=True, text=True, check=False)
 
 
-def smoke(args: argparse.Namespace) -> None:
+def smoke(args: argparse.Namespace) -> None:  # noqa: C901
     archive = Path(args.archive)
     if not archive.is_file():
         raise SmokeError(f"missing archive: {archive}")

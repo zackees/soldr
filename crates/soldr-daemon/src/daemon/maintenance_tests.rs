@@ -56,6 +56,7 @@ fn sweep_fs_phase_child_holds_the_barrier() {
 // point and the parent's open would burn its whole 5 s budget and
 // fail.
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn sweep_never_holds_state_db_across_filesystem_work() {
     let fixture = tempfile::tempdir().expect("tempdir");
     let root = fixture.path().join("soldr-root");

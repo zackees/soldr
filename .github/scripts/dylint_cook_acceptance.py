@@ -163,7 +163,7 @@ grep -F "soldr Dylint fixture diagnostic" "$DIAGNOSTICS/real_dylint.log"
 """
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901
     common_result = subprocess.run(
         ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
         cwd=ROOT,

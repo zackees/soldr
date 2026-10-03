@@ -344,7 +344,7 @@ def _rust_marker_reason(line: str) -> str | None:
     return None
 
 
-def rust_hits(source: str) -> list[tuple[int, str]]:
+def rust_hits(source: str) -> list[tuple[int, str]]:  # noqa: C901
     # `mask_comments_and_strings` is exactly length-preserving (every branch
     # consumes as many input characters as it appends), so an offset into
     # `masked` is always the same offset into `source` -- but it is NOT

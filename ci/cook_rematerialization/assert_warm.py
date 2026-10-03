@@ -11,7 +11,7 @@ def is_external(package_id: str) -> bool:
     return package_id.startswith(("registry+", "git+"))
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901
     messages_path = Path(sys.argv[1])
     stderr_path = Path(sys.argv[2])
     seed_ms = int(Path(sys.argv[3]).read_text(encoding="utf-8").strip())

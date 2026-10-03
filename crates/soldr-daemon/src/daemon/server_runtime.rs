@@ -144,6 +144,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
 /// Split out so the synchronous [`run`] entry point can time the Tokio runtime
 /// build -- which happens before any async code exists to time it -- on the
 /// same clock as everything after it (soldr#3163).
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 async fn run_async_recording(
     opts: ServerOptions,
     mut bringup: crate::daemon::bringup::BringupRecorder,

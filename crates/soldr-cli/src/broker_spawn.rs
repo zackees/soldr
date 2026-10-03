@@ -291,6 +291,7 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
 /// Soldr image (the common CI shape once setup-soldr's pinned binary and a
 /// freshly-built checkout binary share one broker endpoint) corrupted a
 /// caller's `json.loads()` with the soldr#2549 mismatch warning.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn ensure_stable_broker_ready(diagnostics_eligible: bool) -> Result<(), String> {
     // soldr#2571: the `startup_trace` marks below gate on their own env var,
     // NOT on `diagnostics_eligible` — see that module's doc for why folding

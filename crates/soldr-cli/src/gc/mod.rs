@@ -503,6 +503,7 @@ struct GcListOutput {
     entries: Vec<GcListEntryOutput>,
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) fn run_gc_list_command(
     json: bool,
     kind_filter: Option<GcListKindFilter>,
@@ -733,6 +734,7 @@ struct GcTargetFailure {
     error: String,
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) fn run_gc_target_command(args: crate::cli_args::GcTargetArgs) -> Result<(), SoldrError> {
     use std::io::{IsTerminal, Write};
     use target_walker::TargetEntry;
