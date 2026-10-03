@@ -93,6 +93,25 @@ def test_attestation_publisher_reads_the_pr_but_runs_only_pinned_ci_lint() -> No
         assert "steps.att.outputs.stem_" in save["with"]["key"]
 
 
+def test_attestation_cache_slots_keep_evidence_and_lineage_keys_together() -> None:
+    """A swapped slot must never publish one gate's proof under another key."""
+    job = _load("ci-pre.yml")["jobs"][ATTESTATIONS_JOB]
+    saves = [
+        step
+        for step in job["steps"]
+        if step.get("uses", "").startswith("actions/cache/save@")
+    ]
+    assert len(saves) == 16
+    for slot, save in enumerate(saves):
+        assert save["with"]["path"] == f"${{{{ steps.att.outputs.path_{slot} }}}}"
+        assert save["with"]["key"] == (
+            f"${{{{ steps.att.outputs.stem_{slot} }}}}${{{{ env.PR_CACHE_TAG }}}}"
+        )
+        assert save["if"] == (
+            f"${{{{ fromJSON(steps.att.outputs.count || '0') > {slot} }}}}"
+        )
+
+
 def test_the_janitor_is_one_repo_wide_uncancelled_sweep() -> None:
     janitor = _load("ci-pre.yml")["jobs"]["cache-janitor"]
     assert janitor["concurrency"] == {
