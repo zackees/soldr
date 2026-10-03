@@ -19,7 +19,8 @@
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use crate::fetch::VersionSpec;
 use crate::trampoline::{
-    refresh_sidecar_after_cargo, strip_no_trampoline_flag, try_run_trampoline, TrampolineDecision,
+    refresh_sidecar_after_cargo, strip_no_trampoline_flag, try_run_trampoline, FellThroughPlan,
+    TrampolineDecision,
 };
 use crate::zccache::{
     cache_lifecycle_from_env, command_lifetime_shutdown_timeout, CacheLifecycle,
@@ -141,6 +142,8 @@ type CargoRunResult = Result<
 include!("history_and_timeout.rs");
 include!("environment_and_cleanup.rs");
 include!("run.rs");
+include!("run_prepare.rs");
+include!("run_finish.rs");
 include!("output_capture.rs");
 include!("subcommand_bootstrap.rs");
 #[cfg(test)]

@@ -43,7 +43,7 @@ use crate::common;
 
 /// Marks the start of the build session: acquires the activity lease,
 /// sets `build_active`, and publishes `BuildSessionStart`.
-const SESSION_START: &str = "begin_build_activity_lease(&paths, session_id";
+const SESSION_START: &str = "begin_build_activity_lease(paths, session_id";
 
 /// Fallible preparation the front door performs before cargo runs.
 /// Every one of these must appear *above* [`SESSION_START`].
@@ -53,11 +53,11 @@ const SESSION_START: &str = "begin_build_activity_lease(&paths, session_id";
 /// unrelated mention in a comment does not satisfy the check.
 const FALLIBLE_PRE_SPAWN_STEPS: &[(&str, &str)] = &[
     (
-        "pyo3_plan.materialize_compatibility(&paths).await?",
+        "pyo3_plan.materialize_compatibility(spec.paths).await?",
         "PyO3 compatibility materialization",
     ),
     (
-        "target::apply_linker_override(&mut command",
+        "target::apply_linker_override(command",
         "linker override setup",
     ),
     (
@@ -65,7 +65,7 @@ const FALLIBLE_PRE_SPAWN_STEPS: &[(&str, &str)] = &[
         "cache-plan finalization",
     ),
     (
-        "cache_plan.apply_to_command(&mut command",
+        "cache_plan.apply_to_command(command",
         "cache-plan application",
     ),
     (
