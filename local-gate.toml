@@ -2,7 +2,7 @@
 #
 # Before every push, from a clean, committed tree:
 #
-#   uvx --from git+https://github.com/zackees/ci.yml@db7ec84591abd0ffaa6d84768a60da381a1954be ci-lint local-gate run
+#   uvx --from git+https://github.com/zackees/ci.yml@95b23eae7b2dd059d7fdf33ee15200bd9ae8721a ci-lint local-gate run
 #
 # runs `run` below and, on success, stamps HEAD with a tree-bound
 # `Local-Gate:` trailer. CI's `ci-mode` job (`verify`) fails a PR whose head
