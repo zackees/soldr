@@ -128,19 +128,24 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: zackees/ci.yml
-          ref: 95b23eae7b2dd059d7fdf33ee15200bd9ae8721a
+          ref: 045b97c63146cedc263c4f6a12bb7e4b755f7602
           path: .ci-lint
           persist-credentials: false
           sparse-checkout: ci_lint
       - name: Validate attestations and derive side-entry keys
         id: att
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           args=(--repo . --commit "$HEAD_SHA" --main-ref origin/main --out-dir "$RUNNER_TEMP/ci-attestations" --slots 16 --github-output)
-          if [[ -n "$PR_NUMBER" ]]; then args+=(--pr "$PR_NUMBER" --base "$BASE_SHA"); fi
+          if [[ -n "$PR_NUMBER" ]]; then
+            args+=(--pr "$PR_NUMBER" --base "$BASE_SHA")
+          else
+            args+=(--promote-merged-pr --fetch-promotion-source)
+          fi
           PYTHONPATH=.ci-lint python3 -m ci_lint attest keys "${args[@]}"
       - name: Save attestation side entry 0
         if: ${{ fromJSON(steps.att.outputs.count || '0') > 0 }}
