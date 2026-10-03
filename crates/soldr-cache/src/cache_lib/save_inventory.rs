@@ -147,6 +147,7 @@ fn walk_workspace_files(workspace: &Path, threads: Option<usize>) -> Result<Vec<
 /// Build a conservative Cargo-input inventory from compiler dep-info files.
 /// A missing, malformed, stale, or build-script-sensitive inventory returns
 /// `None`, so callers retain the broad source walk and cannot underbuild.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn cargo_input_inventory(
     workspace: &Path,
     target_dir: &Path,

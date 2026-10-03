@@ -140,6 +140,7 @@ pub struct PruneTargetReport {
 ///
 /// Idempotent: a second run on the same directory is a no-op (every
 /// remaining bucket has a single entry, so nothing is deletable).
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn prune_target(opts: &PruneTargetOptions) -> Result<PruneTargetReport, RegistryError> {
     let target_dir = &opts.target_dir;
     let metadata = fs::metadata(target_dir).map_err(RegistryError::Io)?;

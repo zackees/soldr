@@ -84,6 +84,7 @@ fn set_mtime(path: &std::path::Path, time: SystemTime) {
 /// relative to `now`. A sibling directory outside the soldr cache root
 /// (`target-sim`, alongside `paths.root`) stands in for a Cargo `target/`
 /// tree: files hard-linked into it are what a real cache hit materializes.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) fn host_shaped_stores(paths: &SoldrPaths, now: SystemTime) -> HostShapedStores {
     let embedded_root = embedded_cache_root(paths);
     let retired = embedded_root.join("v1.13.22");

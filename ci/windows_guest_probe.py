@@ -50,7 +50,7 @@ CAPABILITY_NAMES = (
 )
 
 
-def make_report(
+def make_report(  # noqa: C901
     *,
     host: dict[str, Any],
     timings: dict[str, Any],
@@ -387,7 +387,7 @@ def _remove_scratch(
             ) from exc
 
 
-def run_probe(args: argparse.Namespace) -> int:
+def run_probe(args: argparse.Namespace) -> int:  # noqa: C901
     guest_edition = getattr(args, "guest_edition", "server-core")
     if guest_edition not in GUEST_EDITIONS:
         raise ValueError(f"unsupported guest edition: {guest_edition}")

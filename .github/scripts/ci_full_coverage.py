@@ -26,7 +26,7 @@ EXTRA_REQUIRED = {
 }
 
 
-def required_jobs(contract: dict[str, Any]) -> set[str]:
+def required_jobs(contract: dict[str, Any]) -> set[str]:  # noqa: C901
     declared = contract.get("required_jobs", list(EXTRA_REQUIRED))
     if "required_jobs" in contract and (
         not isinstance(contract.get("schema_version"), int)

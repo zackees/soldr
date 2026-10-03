@@ -100,6 +100,7 @@ fn stop_daemon(root: &Path, home: &Path, child: &mut Child) {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn prod_dev_daemons_and_manual_orphan_maintenance_are_isolated() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");

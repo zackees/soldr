@@ -489,6 +489,7 @@ pub fn classify_target(triple: &str) -> Result<TargetAttrs, SoldrError> {
 /// Paths are version-pinned where possible (e.g. LLVM 21.1.5 and the
 /// managed GNU/musl compiler bundles) so a stale archive that's missing the current pin is
 /// reported as "missing" even if an older version exists on disk.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) fn expected_state_paths(
     attrs: &TargetAttrs,
     paths: &SoldrPaths,

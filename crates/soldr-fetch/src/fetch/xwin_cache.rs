@@ -61,6 +61,7 @@ pub const XWIN_CACHE_DIR_ENV_VAR: &str = "XWIN_CACHE_DIR";
 /// Resolve the local xwin-cache directory for `target`. Materializes
 /// the bundle on first call; subsequent calls return the cached path
 /// immediately.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub async fn ensure_xwin_cache(
     paths: &SoldrPaths,
     target_triple: &str,

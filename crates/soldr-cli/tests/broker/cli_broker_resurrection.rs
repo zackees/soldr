@@ -452,6 +452,7 @@ fn issue_2920_concurrent_newer_clients_retire_one_known_bad_broker() {
 /// five-second lease after stop; the second owns recovery, while the first is
 /// fenced before cleanup.
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn issue_2920_expired_retirement_lease_preserves_replacement_resources() {
     let deadline = Instant::now() + RESURRECTION_TEST_ENVELOPE;
     let home = common::unique_temp_dir("broker-known-bad-expired-lease");

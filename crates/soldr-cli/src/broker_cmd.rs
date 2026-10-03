@@ -316,6 +316,7 @@ enum VerifiedBrokerStop {
 /// the soldr#2920 known-bad exception. An expected instance re-probes STATUS
 /// immediately before signaling, so a winner can never retire a broker that
 /// replaced the one whose compatibility it classified.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn stop_verified_broker(
     socket_path: &str,
     operation: &str,

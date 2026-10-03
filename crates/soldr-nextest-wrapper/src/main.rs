@@ -136,6 +136,7 @@ impl Termination {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn run(argv: &[std::ffi::OsString]) -> i32 {
     let command: Vec<String> = argv
         .iter()

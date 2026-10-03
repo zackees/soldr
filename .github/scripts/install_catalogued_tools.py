@@ -151,7 +151,7 @@ def safe_source_path(value: object) -> bool:
     return not any(part in {"", ".", ".."} for part in value.split("/"))
 
 
-def validate_transport(entry: dict[str, Any], *, asset: str) -> None:
+def validate_transport(entry: dict[str, Any], *, asset: str) -> None:  # noqa: C901
     """Validate the catalogue-v2 direct/multipart transport union."""
     size_bytes = entry.get("size_bytes")
     if not positive_int(size_bytes) or size_bytes > MAX_ASSET_BYTES:
@@ -281,7 +281,7 @@ def validate_publication_state_url(value: object, generation: str) -> str:
     return url
 
 
-def validate_publication_state(
+def validate_publication_state(  # noqa: C901
     state: dict[str, Any], *, generation: str, catalogue_sha256: str
 ) -> None:
     require_exact_keys(
@@ -491,7 +491,7 @@ def validate_publication_state(
         raise SystemExit("publication state logical and payload identities differ")
 
 
-def bind_catalogue_entries(catalogue: dict[str, Any], state: dict[str, Any]) -> None:
+def bind_catalogue_entries(catalogue: dict[str, Any], state: dict[str, Any]) -> None:  # noqa: C901
     entries = catalogue.get("entries")
     logical_assets = state["logical_assets"]
     if not isinstance(entries, list):

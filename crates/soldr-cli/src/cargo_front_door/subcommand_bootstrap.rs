@@ -86,6 +86,7 @@ pub(crate) struct SubcommandToolBootstrap {
     pub cargo_args: Vec<String>,
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) async fn ensure_known_subcommand_tool(
     args: &[String],
     paths: &SoldrPaths,

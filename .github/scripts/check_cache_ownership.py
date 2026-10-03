@@ -346,7 +346,7 @@ def _classify(workflow: str, job: str, index: int, step: dict) -> list[Persisted
 # --------------------------------------------------------------------------
 
 
-def manifest_problems(manifest: dict) -> list[str]:
+def manifest_problems(manifest: dict) -> list[str]:  # noqa: C901
     """Schema, vocabulary and exemption-agreement failures (R1, R5)."""
     problems: list[str] = []
 
@@ -433,7 +433,7 @@ def manifest_problems(manifest: dict) -> list[str]:
 # --------------------------------------------------------------------------
 
 
-def budget_problems(manifest: dict) -> list[str]:
+def budget_problems(manifest: dict) -> list[str]:  # noqa: C901
     """Schema and typing failures in `manifest['budget']` (R6).
 
     A family with a bad shape is still recorded (with an empty key_prefixes
@@ -560,7 +560,7 @@ def budget_problems(manifest: dict) -> list[str]:
 # --------------------------------------------------------------------------
 
 
-def budget_coverage_problems(manifest: dict) -> list[str]:
+def budget_coverage_problems(manifest: dict) -> list[str]:  # noqa: C901
     """Family/entry claim resolution and durable-entry coverage (R7).
 
     Skipped when `budget.families` itself is malformed -- `budget_problems`
@@ -771,7 +771,7 @@ def _path_lines(step: dict) -> frozenset[str]:
     )
 
 
-def prefix_cache_problems(workflow_dir: pathlib.Path) -> list[str]:
+def prefix_cache_problems(workflow_dir: pathlib.Path) -> list[str]:  # noqa: C901
     """Appending `restore-keys` caches without a registered prune step (R8)."""
     problems: list[str] = []
     seen: set[tuple[str, str]] = set()

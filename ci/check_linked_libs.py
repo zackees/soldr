@@ -63,7 +63,7 @@ def _elf_program_headers(f: BinaryIO, e_phoff: int, e_phentsize: int, e_phnum: i
         yield p_type, p_offset, p_vaddr, p_filesz, p_memsz
 
 
-def read_elf_needed(f: BinaryIO) -> list[str] | None:
+def read_elf_needed(f: BinaryIO) -> list[str] | None:  # noqa: C901
     """Return every `DT_NEEDED` name, or `None` if *f* is not a supported ELF.
 
     Only 64-bit little-endian ELF is supported -- every soldr Linux release

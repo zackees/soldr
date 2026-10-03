@@ -110,7 +110,7 @@ def seconds(start, end):
     return elapsed, 0
 
 
-def collect_sha(api, repo, sha, event, *, weights=None, anchor_run_id=None):
+def collect_sha(api, repo, sha, event, *, weights=None, anchor_run_id=None):  # noqa: C901
     if event not in EVENTS:
         raise ValueError(f"event must be one of {EVENTS}")
     if not sha:

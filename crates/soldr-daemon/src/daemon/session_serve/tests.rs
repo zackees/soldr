@@ -85,6 +85,7 @@ where
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn session_compile_e2e_real_rustc_through_the_bridge() {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()

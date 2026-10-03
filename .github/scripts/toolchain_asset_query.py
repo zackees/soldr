@@ -99,7 +99,7 @@ def fetch_json(url: str) -> Any:
     return decode_json(fetch_bytes(url), url)
 
 
-def load_tool_manifest(origin: str, tool: str) -> tuple[str, dict[str, Any]]:
+def load_tool_manifest(origin: str, tool: str) -> tuple[str, dict[str, Any]]:  # noqa: C901
     """Follow and verify a tool descriptor from the published root index."""
     root = f"{origin.rstrip('/')}/manifest.json"
     index = decode_json(fetch_bytes(root), root)
@@ -252,7 +252,7 @@ def find_asset_url(release: dict[str, Any], candidates: list[dict[str, str]]) ->
     return str(asset["urls"][0])
 
 
-def normalize_asset(
+def normalize_asset(  # noqa: C901
     platform: dict[str, Any], asset: dict[str, Any], *, require_sha256: bool
 ) -> dict[str, Any]:
     urls = asset.get("urls") or []

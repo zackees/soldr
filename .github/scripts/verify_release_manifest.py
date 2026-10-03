@@ -93,7 +93,7 @@ def env_leak_problems(manifest: dict) -> "list[str]":
     return problems
 
 
-def sha_problems(manifest: dict, package_dir: "Path | None") -> "list[str]":
+def sha_problems(manifest: dict, package_dir: "Path | None") -> "list[str]":  # noqa: C901
     """Malformed digests, and mismatches when the files are available."""
     problems: list[str] = []
     for path, value in find_string_fields(manifest):

@@ -241,7 +241,7 @@ def _remove_private_tmpdir(path: str | None) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
-def run(command: list[str]) -> int:
+def run(command: list[str]) -> int:  # noqa: C901
     """Run one test command and preserve all output around timeout shutdown."""
 
     parent_pid = os.getpid()

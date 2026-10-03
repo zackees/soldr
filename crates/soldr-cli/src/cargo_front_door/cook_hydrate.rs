@@ -179,6 +179,7 @@ fn lookup_worthwhile_from_status(
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> {
     let manifest_path = crate::trampoline::find_nearest_manifest()?;
     let manifest_dir = manifest_path.parent()?.to_path_buf();

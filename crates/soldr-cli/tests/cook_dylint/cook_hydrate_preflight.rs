@@ -454,6 +454,7 @@ fn cook_lookup_miss_is_silent_and_returns_cleanly() {
 // channel, and rustc version are compatible. This exercises the real
 // `soldr cargo build` pre-flight path in a container-local git repo.
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn feature_branch_soldr_cargo_build_hydrates_from_main_fallback() {
     if skip_unless_in_container("feature_branch_soldr_cargo_build_hydrates_from_main_fallback") {
         return;

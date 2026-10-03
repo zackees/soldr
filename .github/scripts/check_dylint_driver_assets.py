@@ -242,7 +242,7 @@ def pinned_dylint_version(source: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def release_included_triples(payload: object) -> list[str]:
+def release_included_triples(payload: object) -> list[str]:  # noqa: C901
     """Canonical triples whose `release.status` is `included`.
 
     Same field and same value as

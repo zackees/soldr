@@ -94,6 +94,7 @@ pub(crate) fn provision_target_toolchain(target: &str) -> Result<(), SoldrError>
     Ok(())
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) async fn prepare_target(
     paths: &SoldrPaths,
     target: &str,
@@ -716,6 +717,7 @@ pub(crate) fn plan(target: &str) -> Result<TargetPlan, SoldrError> {
     plan_for_host(target, crate::pyo3_detect::host_triple())
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn plan_for_host(target: &str, _host: &str) -> Result<TargetPlan, SoldrError> {
     let attrs = classify_target(target)?;
     let canonical = crate::core::CANONICAL_TARGETS.contains(&target);

@@ -139,6 +139,7 @@ fn find_stage<'a>(plan: &'a Value, name: &str) -> &'a Value {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn ci_test_is_a_native_builtin_with_a_versioned_complete_plan_schema() {
     let plan = plan_json(&[]);
 
@@ -296,6 +297,8 @@ fn no_cache_explain_plan_reports_the_effective_disabled_wrapper() {
 }
 
 #[test]
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
     let plan = plan_json(&[]);
     let host = plan["host_triple"]
@@ -576,6 +579,8 @@ fn ci_test_prescribes_the_ci_dag_and_exactly_one_nextest_test_compilation() {
 }
 
 #[test]
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn ci_test_preserves_scope_and_exposes_incompatible_overrides_as_domains_or_errors() {
     let scoped = plan_json(&["--package", "soldr-cli", "--all-features"]);
     let scope = object(&scoped, "scope");

@@ -156,6 +156,7 @@ fn persist_build_log_history(
     None
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn persist_build_log_history_inner(
     request: &BuildLogHistoryRequest<'_>,
 ) -> Result<crate::daemon::protocol::BuildLogPaths, SoldrError> {

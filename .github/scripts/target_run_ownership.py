@@ -201,7 +201,7 @@ def _selector_patterns_overlap(left: ReplaySelector, right: ReplaySelector) -> b
     return exact.startswith(prefix)
 
 
-def parse_manifest(payload: dict[str, object]) -> OwnershipManifest:
+def parse_manifest(payload: dict[str, object]) -> OwnershipManifest:  # noqa: C901
     if payload.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(
             f"target-run ownership schema_version must be {SCHEMA_VERSION}"
@@ -505,7 +505,7 @@ def _declared_tests(source: str) -> tuple[tuple[str, str], ...]:
     )
 
 
-def _split_cfg_arguments(value: str) -> tuple[str, ...]:
+def _split_cfg_arguments(value: str) -> tuple[str, ...]:  # noqa: C901
     arguments: list[str] = []
     start = 0
     depth = 0
@@ -703,7 +703,7 @@ def _validate_selector_target_scopes(
     return failures
 
 
-def validate_source_ownership(manifest: dict[str, object], repo_root: Path) -> None:
+def validate_source_ownership(manifest: dict[str, object], repo_root: Path) -> None:  # noqa: C901
     """Fail on unclassified host source or a stale/overlapping classification."""
 
     parsed = parse_manifest(manifest)

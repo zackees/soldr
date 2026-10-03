@@ -699,6 +699,7 @@ fn save_without_cache_or_mtimes_only_errors() {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn delta_cache_roundtrip_restores_base_overlay_tombstones_and_mtimes() {
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("cache");

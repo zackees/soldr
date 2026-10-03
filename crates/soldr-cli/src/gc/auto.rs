@@ -235,6 +235,7 @@ fn sweep_stale_scratch(paths: &SoldrPaths, now_ms: i64) -> u64 {
     removed
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::PathBuf) {
     use crate::cache_lib::auto_gc::DiskFreeProbe as _;
     use crate::cache_lib::auto_gc::VolumeProbe as _;

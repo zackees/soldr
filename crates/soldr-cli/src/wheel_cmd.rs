@@ -279,6 +279,7 @@ fn has_flag(args: &[String], flag: &str) -> bool {
 ///
 /// No I/O and no env reads — the host is injected — so this is the piece worth
 /// unit-testing, and it is the only place the wheel surface decides anything.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn plan_for_host(args: &WheelArgs, host: &WheelHost) -> Result<WheelPlan, SoldrError> {
     let rest = args.rest.as_slice();
     let requested = args

@@ -15,6 +15,7 @@ const DYLINTS: &[&str] = &[
     "ban_swallowed_child_stdio",
 ];
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) async fn freeze(
     invocation: &Invocation,
     cache_enabled: bool,

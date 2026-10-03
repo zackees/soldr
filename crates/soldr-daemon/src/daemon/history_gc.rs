@@ -189,6 +189,8 @@ where
     )
 }
 
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn sweep_with_ops_and_remove<F, L, M, D>(
     paths: &SoldrPaths,
     db_path: &Path,

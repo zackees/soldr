@@ -1107,6 +1107,7 @@ pub(crate) fn fake_failing_rustup_script(log_path: &Path) -> String {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
     if matches!(
         soldr_platform::host::facts::os(),

@@ -102,7 +102,7 @@ BASELINE: frozenset[tuple[str, str]] = frozenset(
 CONTINUATION_PATTERN = re.compile(r"\\s*\n\s*")
 
 
-def shell_command_prefix(line: str, script_start: int) -> str:
+def shell_command_prefix(line: str, script_start: int) -> str:  # noqa: C901
     """Return the shell command segment immediately before a script path.
 
     A prior ``uv run`` on a compound shell line cannot route a later command:

@@ -261,6 +261,7 @@ fn cargo_prepare_memo_rejects_ambiguous_alias_toolchains() {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn dylint_blessed_and_cargo_share_the_readiness_matrix() {
     use crate::dylint_toolchain_readiness::{
         dylint_toolchain_readiness_at, DylintToolchainReadiness,

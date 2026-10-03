@@ -273,6 +273,7 @@ struct GcPurgeTargetSubtreeFailure {
 /// Walks target subtree entries from the tracked target registry and deletes
 /// only the selected derived kind. If any Cargo build lock is present under a
 /// target, that whole target is skipped as an active-build guard.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(crate) fn run_gc_purge_target_subtree_command(
     kind: GcListKindFilter,
     purge_all: bool,

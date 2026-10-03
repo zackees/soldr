@@ -309,7 +309,7 @@ def test_scratch_cleanup_failure_is_a_failing_no_go(tmp_path, monkeypatch):
     assert "cleanup failed" in report["reason"].lower()
 
 
-def test_shell_and_replay_have_distinct_timestamps(tmp_path, monkeypatch):
+def test_shell_and_replay_have_distinct_timestamps(tmp_path, monkeypatch):  # noqa: C901
     monkeypatch.setattr(probe, "_kvm_usable", lambda: True)
     monkeypatch.setattr(
         probe.shutil, "disk_usage", lambda _: SimpleNamespace(free=60 * 1024**3)

@@ -161,6 +161,7 @@ pub(crate) async fn run_with_paths(
 
 /// Resolve args (consulting the network for GitHub sha/release) into a
 /// fully-materialized [`ResolvedInstall`].
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 async fn resolve(args: &InstallArgs, paths: &SoldrPaths) -> Result<ResolvedInstall, SoldrError> {
     let target = target::classify(&args.target)?;
     let triple = match &args.target_triple {

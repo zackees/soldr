@@ -207,7 +207,7 @@ def _export_bundle_env(install_dir: Path) -> None:
             fh.write(f"{CARGO_CHEF_LOCAL_DIR_ENV}={install_dir}\n")
 
 
-def main() -> None:
+def main() -> None:  # noqa: C901
     install_dir = Path(os.environ["SOLDR_INSTALL_DIR"])
     install_dir.mkdir(parents=True, exist_ok=True)
     binary_name = "soldr.exe" if os.name == "nt" else "soldr"

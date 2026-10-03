@@ -432,7 +432,7 @@ fi
 """
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901
     mode = os.environ.get("SOLDR_DYLINT_ACCEPTANCE_MODE", "full")
     if mode not in {"full", "sibling-diagnostic"}:
         print(f"error: unsupported Dylint acceptance mode: {mode}", file=sys.stderr)

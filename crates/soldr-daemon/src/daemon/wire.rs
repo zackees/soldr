@@ -387,6 +387,7 @@ pub fn status_info_from_wire(wire: proto::WireStatusInfo) -> StatusInfo {
 // =========================================================================
 
 impl From<&Request> for proto::WireRequest {
+    #[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
     fn from(req: &Request) -> Self {
         let kind = match req {
             Request::RecordTargetTouch { path, unix_seconds } => {

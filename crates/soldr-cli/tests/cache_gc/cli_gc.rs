@@ -436,6 +436,7 @@ fn daemon_target_touch_lines(cache_root: &Path) -> String {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn gc_list_json_reports_built_project_target_dir() {
     let cache_root = unique_temp_dir("gc-list-build");
     let home_root = unique_temp_dir("gc-list-build-home");

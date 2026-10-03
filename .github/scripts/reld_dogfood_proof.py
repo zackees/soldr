@@ -146,7 +146,7 @@ def extract_linker_path(invocation: str) -> str | None:
     return match.group(1) if match else None
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901
     args = parse_args()
     repo_root = pathlib.Path(args.repo_root).resolve()
     soldr_bin = (repo_root / args.soldr_bin).resolve()

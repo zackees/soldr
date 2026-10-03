@@ -443,7 +443,7 @@ def stage_release_binaries(
     return staged
 
 
-def stage_debug_symbols(
+def stage_debug_symbols(  # noqa: C901
     target: str,
     release_dir: Path,
     package_dir: Path,

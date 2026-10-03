@@ -347,7 +347,7 @@ def log_reports_enomem(path: Path) -> bool:
     return any(marker in raw for marker in ENOMEM_MARKERS)
 
 
-def run_case(
+def run_case(  # noqa: C901
     jobs: int | str,
     command: list[str],
     *,
@@ -504,7 +504,7 @@ def format_markdown(results: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
+def parse_args(argv: list[str]) -> argparse.Namespace:  # noqa: C901
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--jobs",

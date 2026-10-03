@@ -102,6 +102,7 @@ fn validate_save_inputs(opts: &SaveOptions<'_>) -> Result<()> {
 /// When [`SaveOptions::mtimes_only`] is `true`, the cache walk is skipped
 /// entirely and the archive contains only `SOLDR_MANIFEST.pb`. That mode
 /// requires `workspace` to be `Some` — there is nothing else to snapshot.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
     validate_save_inputs(opts)?;
     let start = std::time::Instant::now();
@@ -265,6 +266,7 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
     })
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
     let start = std::time::Instant::now();
     let pool = build_pool(opts.threads)?;

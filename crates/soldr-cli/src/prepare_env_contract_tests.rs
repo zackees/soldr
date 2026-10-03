@@ -57,6 +57,7 @@ impl Drop for DynamicEnvVarGuard {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn managed_gnu_toolchain_is_exported_for_later_github_steps() {
     if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
         return;
@@ -258,6 +259,7 @@ fn managed_gnu_toolchain_is_exported_for_later_github_steps() {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn managed_musl_toolchain_is_exported_without_zig_or_host_tools() {
     if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
         return;
@@ -408,6 +410,7 @@ fn managed_musl_toolchain_is_exported_without_zig_or_host_tools() {
 /// No unscoped `OPENSSL_*` key is ever exported: GitHub env reaches host
 /// build scripts too.
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn managed_openssl_is_exported_only_for_graphs_linking_openssl_sys() {
     let _lock = TEST_PROCESS_ENV_LOCK
         .lock()

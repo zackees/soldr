@@ -1149,11 +1149,10 @@ fn no_cache_bypasses_wrapper_and_zccache() {
         !log.contains("zccache start"),
         "no-cache front door should not start zccache: {log}"
     );
-    // Parse the wrapper slot instead of substring-matching the soldr binary
-    // path against the whole log: on the Recovery guest SOLDR_BIN is
-    // /tmp/soldr and the fixture temp dirs live under
-    // /Volumes/Work/tmp/soldr-..., so every log line contains the binary
-    // path as a substring even though `wrapper=` is empty (soldr#3135).
+    // Parse the wrapper slot instead of substring-matching the soldr binary path
+    // against the whole log: on the Recovery guest SOLDR_BIN is /tmp/soldr and the
+    // fixture temp dirs live under /Volumes/Work/tmp/soldr-..., so every log line
+    // contains the binary path as a substring even though `wrapper=` is empty (soldr#3135).
     let wrapper_slots_empty = log
         .lines()
         .filter(|line| line.contains("wrapper="))
@@ -1519,6 +1518,7 @@ fn cargo_front_door_never_memoizes_failed_toolchain_preparation() {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn cargo_front_door_invalidates_toolchain_preparation_memo() {
     let workspace = unique_temp_dir("cargo-toolchain-prepare-invalidation");
     let soldr_root = workspace.join("soldr-root");

@@ -360,6 +360,7 @@ fn env_logging_fake_maturin_script(log_path: &Path) -> String {
 // Before soldr#3432 the maturin path skipped preparation for the host target,
 // so the bundle's linker never reached maturin and the tag was `pypi`.
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn soldr_wheel_release_prepares_the_host_target_against_glibc_2_17() {
     if soldr_cli::pyo3_detect::host_triple() != "x86_64-unknown-linux-gnu" {
         return;

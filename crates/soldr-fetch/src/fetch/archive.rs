@@ -97,6 +97,7 @@ pub(super) async fn extract_catalogue_asset_with_pin(
     .await
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 async fn download_and_extract_with_pin_inner(
     paths: &SoldrPaths,
     cache_name: &str,

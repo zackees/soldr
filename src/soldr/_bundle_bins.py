@@ -130,7 +130,7 @@ def _bracket_depth(text: str) -> int:
     return depth
 
 
-def _fallback_entries(text: str) -> "list[Any]":
+def _fallback_entries(text: str) -> "list[Any]":  # noqa: C901
     """Parse the one supported ``bundle-bins`` shape without tomllib.
 
     Python 3.10 has no tomllib and the backend must stay dependency-free, so
@@ -457,7 +457,7 @@ def _append_workspace_members(text: str, additions: "Sequence[str]") -> str:
     return text[: match.start()] + replacement + text[match.end() :]
 
 
-def patch_sdist_workspace_members(
+def patch_sdist_workspace_members(  # noqa: C901
     sdist: Path, entries: "Sequence[BundleBin]"
 ) -> "list[str]":
     """Keep every ``bundle-bins`` package as an sdist workspace member.

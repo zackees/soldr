@@ -112,7 +112,7 @@ def unexpected_imports(names: "list[str]") -> "list[str]":
     return sorted(seen.values(), key=str.lower)
 
 
-def pe_imports(data: bytes) -> "list[str]":
+def pe_imports(data: bytes) -> "list[str]":  # noqa: C901
     """The DLL names in a PE's import directory.
 
     Raises PEError rather than returning an empty list on anything it cannot

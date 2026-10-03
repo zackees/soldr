@@ -358,6 +358,7 @@ fn missing_compiler_probe_reports_path_and_spawn_error() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 async fn real_rustc_hit_survives_full_and_ci_save_load_relocation() {
     use crate::cache_lib::save::{
         load, save, LoadOptions, SaveOptions, SaveProfile, DEFAULT_ZSTD_LEVEL,

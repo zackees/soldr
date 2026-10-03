@@ -373,7 +373,7 @@ def enforce_runner_budget(runner: Runner, image_id: str) -> None:
     ensure_runner(runner, image_id)
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str]) -> int:  # noqa: C901
     repo_root = Path(__file__).resolve().parent.parent
     source_root = shared_source_root(repo_root)
     runner = runner_for(source_root)

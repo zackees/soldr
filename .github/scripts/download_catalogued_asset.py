@@ -117,7 +117,7 @@ def download_one_of(
     raise SystemExit(f"all catalogue URLs failed: {error_kind}")
 
 
-def download_verified(metadata: dict, output: Path) -> dict:
+def download_verified(metadata: dict, output: Path) -> dict:  # noqa: C901
     expected = str(metadata.get("sha256", "")).lower()
     if len(expected) != 64 or any(char not in "0123456789abcdef" for char in expected):
         raise SystemExit("catalogued asset has no valid sha256")

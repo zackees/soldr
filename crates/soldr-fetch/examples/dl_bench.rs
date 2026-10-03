@@ -490,6 +490,7 @@ fn main() -> Result<()> {
         .expect("dl-bench-main thread panicked")
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 async fn async_main() -> Result<()> {
     let args = parse_args();
     let http = client();

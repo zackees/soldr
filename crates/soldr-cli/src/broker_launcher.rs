@@ -189,6 +189,7 @@ impl BackendLauncher for SoldrBackendLauncher {
 }
 
 impl SoldrBackendLauncher {
+    #[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
     fn launch_keyed(
         &self,
         request: &BackendLaunchRequest<'_>,
@@ -468,6 +469,7 @@ impl SoldrBackendLauncher {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
     fn place_backend_image(
         &self,
         request: &BackendLaunchRequest<'_>,
