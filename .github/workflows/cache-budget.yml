@@ -49,6 +49,7 @@ jobs:
     permissions:
       contents: read
       actions: write
+      pull-requests: read
 
   closed-pr-cleanup:
     name: Delete closed PR caches

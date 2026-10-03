@@ -155,7 +155,7 @@ def test_isolated_suite_requires_a_bosn_that_does_not_reap_bursts() -> None:
 def test_main_publisher_promotes_merged_pr_evidence() -> None:
     """Merged PR trailers become main cache evidence without skipping main jobs."""
     pre = (ROOT / ".github" / "workflows" / "ci-pre.yml").read_text(encoding="utf-8")
-    assert "--promote-merged-pr --fetch-promotion-source" in pre
+    assert "--github-context" in pre
     assert "GITHUB_TOKEN: ${{ github.token }}" in pre
-    assert 'if [[ -n "$PR_NUMBER" ]]' in pre
+    assert "args=" not in pre.split("  attestations:", 1)[1]
     assert f"ref: {GATE.CI_LINT_REF}" in pre

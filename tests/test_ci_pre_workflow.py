@@ -71,7 +71,7 @@ def test_attestation_publisher_reads_the_pr_but_runs_only_pinned_ci_lint() -> No
     It must hold no actions:write, run nothing but ci_lint from a pinned
     zackees/ci.yml SHA, and save only its own lineage-keyed side entries."""
     job = _load("ci-pre.yml")["jobs"][ATTESTATIONS_JOB]
-    assert job["permissions"] == {"contents": "read"}
+    assert job["permissions"] == {"contents": "read", "pull-requests": "read"}
     repo, lint = [s for s in job["steps"] if "checkout" in s.get("uses", "")]
     assert repo["with"]["persist-credentials"] is False
     assert repo["with"]["fetch-depth"] == 0
@@ -142,7 +142,15 @@ def test_ci_calls_ci_pre_first_and_nothing_waits_for_it() -> None:
     jobs = document["jobs"]
     assert next(iter(jobs)) == "ci-pre"
     assert jobs["ci-pre"]["uses"] == "./.github/workflows/ci-pre.yml"
-    assert jobs["ci-pre"]["permissions"] == {"contents": "read", "actions": "write"}
+    assert jobs["ci-pre"]["permissions"] == {
+        "contents": "read",
+        "actions": "write",
+        "pull-requests": "read",
+    }
+    assert (
+        _load("cache-budget.yml")["jobs"]["ci-pre"]["permissions"]["pull-requests"]
+        == "read"
+    )
     for job_id, job in jobs.items():
         needs = job.get("needs") or []
         needs = [needs] if isinstance(needs, str) else needs
