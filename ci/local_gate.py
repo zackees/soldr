@@ -70,7 +70,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # The zackees/ci.yml commit whose ci_lint this repository uses. ci.yml's
 # `ci-mode` job checks out the same SHA; tests/test_local_gate.py keeps the
 # two in step.
-CI_LINT_REF = "db7ec84591abd0ffaa6d84768a60da381a1954be"
+CI_LINT_REF = "95b23eae7b2dd059d7fdf33ee15200bd9ae8721a"
 # GATE-007 lanes (zackees/ci.yml#177), split along input boundaries so each
 # can be cached on its own: Python linters read only Python; guards scan the
 # whole repository; ci-lint is CI-surface and dependency policy (cheap);

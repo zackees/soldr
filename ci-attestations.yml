@@ -31,13 +31,13 @@ gates:
   # soldr-fetch and soldr-nextest-wrapper built for Windows MSVC and run
   # under Wine in docker/wine-test. Not a native Windows run: no PR job runs
   # Windows tests at all, and a release still runs them natively.
-  rust/x86_64-pc-windows-msvc/unit: {lane: wine}
+  rust/x86_64-pc-windows-msvc/unit: {lane: wine, fidelity: emulation}
   # zackees/ci.yml#202: the owned Windows MSVC target-run partition (the
   # selection _ci-target-run.yml replays on windows-2025), run natively in a
   # local dockur/windows VM. The lane is host-optional: where no VM exists it
   # is recorded n/a and this gate carries no trailer, so CI runs it. No PR
   # job maps to it; main and the release still run their native lanes.
-  rust/x86_64-pc-windows-msvc/test: {lane: winvm}
+  rust/x86_64-pc-windows-msvc/test: {lane: winvm, fidelity: vm}
 jobs:
   ci.yml:lint: [python/all/static, python/all/guards]
   ci.yml:build-linux-x64:
