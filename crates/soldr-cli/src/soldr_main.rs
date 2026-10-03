@@ -391,4 +391,6 @@ async fn run_dylint_command(
 
 include!("soldr_main_build.rs");
 include!("soldr_main_dispatch.rs");
+include!("soldr_main_commands.rs");
+include!("soldr_main_external.rs");
 include!("soldr_main_helpers.rs");
