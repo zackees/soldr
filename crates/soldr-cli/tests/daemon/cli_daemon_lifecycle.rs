@@ -406,11 +406,23 @@ fn managed_windows_start_has_one_consoleless_owner() {
          `.../soldr-broker/routes/<r>/runtime/soldr-daemon/...`): {}",
         exe.display()
     );
+    // The daemon owns its route's private lock. The test executable has a
+    // different image identity, so an unscoped probe would check another
+    // route's (free) lock instead.
+    let generations =
+        fs::read_dir(soldr_cli::cache_lib::soldr_daemon_dir(&paths).join("generations"))
+            .expect("generation directories")
+            .map(|entry| entry.expect("generation entry").file_name())
+            .collect::<Vec<_>>();
+    assert_eq!(generations.len(), 1, "expected one managed daemon route");
+    let service_name = generations[0].to_string_lossy();
     assert!(
-        soldr_cli::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
-            .expect("probe root owner lock")
-            .is_none(),
-        "the live PID owner must hold the root lock"
+        soldr_cli::daemon::backend_handle_adoption::with_generation_key(&service_name, || {
+            soldr_cli::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
+        })
+        .expect("probe this route's owner lock")
+        .is_none(),
+        "the live PID owner must hold its private route lock"
     );
 
     // A plain second start: `--idle-timeout` is a hard-rejected legacy flag
@@ -471,10 +483,12 @@ fn managed_windows_start_has_one_consoleless_owner() {
         "daemon PID {pid} survived stop"
     );
     assert!(
-        soldr_cli::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
-            .expect("probe released root owner lock")
-            .is_some(),
-        "daemon stop must release the root lock"
+        soldr_cli::daemon::backend_handle_adoption::with_generation_key(&service_name, || {
+            soldr_cli::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
+        })
+        .expect("probe released route owner lock")
+        .is_some(),
+        "daemon stop must release its private route lock"
     );
 }
 
