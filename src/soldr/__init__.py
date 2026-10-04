@@ -1294,6 +1294,31 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:  # n
     _discard_pep517_log(log_path)
 
 
+def _run_pep517_with_root_busy_fallback(
+    cmd: "list[str]", env: "dict[str, str]"
+) -> None:
+    try:
+        _run_pep517_streaming(cmd, env=env)
+    except subprocess.CalledProcessError as exc:
+        diagnosis = f"{exc.output or ''}\n{exc.stderr or ''}"
+        root_busy = (
+            "broker refused the daemon route" in diagnosis
+            and "soldr root ownership is busy" in diagnosis
+        )
+        if not root_busy or "RUSTC_WRAPPER" in os.environ:
+            raise
+        # A different daemon generation owns the shared root. PEP 517's
+        # disposable soldr cannot displace it, but cargo can compile directly
+        # with the same toolchain and linker. Preserve an explicit wrapper.
+        print(
+            "soldr: daemon root is busy; retrying this PEP 517 build "
+            "without the compile cache wrapper",
+            file=sys.stderr,
+        )
+        env["RUSTC_WRAPPER"] = ""
+        _run_pep517_streaming(cmd, env=env)
+
+
 def _maturin_pep517(
     subcommand: str,
     *args: str,
@@ -1319,7 +1344,7 @@ def _maturin_pep517(
         # soldr#2742: names a terminated *backend* (uv's bare 0xffffffff).
         with _explain_backend_termination(cmd, env, started_at):
             with _sibling_module("_tty_quiet").quiet_tty_echo():
-                _run_pep517_streaming(cmd, env=env)
+                _run_pep517_with_root_busy_fallback(cmd, env)
     except subprocess.TimeoutExpired as exc:
         if session_id is not None:
             _session_command("session-end", env, "--id", session_id)
