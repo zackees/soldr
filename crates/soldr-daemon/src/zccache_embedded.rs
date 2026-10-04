@@ -29,15 +29,10 @@
 //! so only one build-aware scanner runs. `console-subscriber` sees the union
 //! of soldr and zccache tasks.
 //!
-//! ## Identity defaults
-//!
-//! - `product = "soldr"`
-//! - `instance_id = "embedded-v1"` — stable across daemon restarts, soldr
-//!   upgrades, and cache-root save/load relocation. The selected `SoldrPaths`
-//!   root provides physical isolation between dev/prod/custom installations.
-//! - `workspace_id` — currently unused by us at start-time (set per
-//!   compile via `AuditContext`). Left as the same hash as instance_id
-//!   so a future per-workspace bisect still has a default name.
+//! Identity: product `soldr`, with the broker route in `instance_id` so
+//! daemon images sharing a root have distinct zccache writer locks.
+//! `workspace_id` defaults to the same route identity; compile calls set it
+//! through `AuditContext`.
 //!
 //! ## Cache root
 //!
@@ -204,11 +199,8 @@ impl SoldrZccacheService {
         daemon_identity: &DaemonProcess,
     ) -> Result<Self, EmbeddedServiceError> {
         let identity = derive_identity();
-        // soldr#1635 / zccache#1085: the embedded service must never place
-        // mutable zccache snapshots under a root that another broker-routed
-        // daemon can open. The selected soldr root provides physical
-        // isolation. A fixed relative identity keeps the backend stable across
-        // save/load relocation and soldr upgrades.
+        // Broker generations may share one Soldr root. The route-scoped host
+        // identity isolates their mutable zccache snapshots and writer locks.
         let cache_root = private_zccache_cache_root(paths, &identity);
         let prepare_started = std::time::Instant::now();
         prepare_embedded_cache_root(paths, daemon_identity, &cache_root)?;
@@ -825,7 +817,18 @@ fn split_compiler_and_args(
 }
 
 fn derive_identity() -> HostIdentity {
-    let id = "embedded-v1".to_string();
+    let route = crate::daemon::backend_handle_adoption::broker_service_name().ok();
+    identity_for_route(route.as_deref())
+}
+
+fn identity_for_route(route: Option<&str>) -> HostIdentity {
+    let id = match route {
+        Some(route) => format!("embedded-v1-{route}"),
+        // Direct test helpers without a registered broker route still need a
+        // deterministic identity; production daemons receive their route in
+        // SOLDR_BROKER_SERVICE from the singleton broker.
+        None => format!("embedded-v1-soldr-v{}", crate::core::MANAGED_SHIM_VERSION),
+    };
     HostIdentity {
         product: "soldr".to_string(),
         instance_id: id.clone(),

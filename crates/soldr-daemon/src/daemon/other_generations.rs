@@ -1,13 +1,8 @@
-//! Naming a root's owner when it belongs to a different daemon generation
-//! (soldr#3456).
+//! Read claims from other generations for maintenance and diagnostics.
 //!
-//! `root-owner.lock` is one lock per root, held for a daemon's whole life,
-//! while route claims are keyed per generation (`generations/<service>/`,
-//! soldr#3374). A daemon of another Soldr version can therefore hold the lock
-//! while this version's own claim slot is empty, and the ownership error used
-//! to say "no daemon route claim to name the owner" -- true only of *this*
-//! generation's slot. This module reads the other generations' claims so the
-//! error can name the process that actually holds the root.
+//! Each generation owns its own `root-owner.lock` under
+//! `generations/<service>/` (soldr#3566). A sibling route can coexist with
+//! this one and cannot hold this route's lock.
 
 use crate::core::SoldrPaths;
 use std::path::PathBuf;
@@ -57,31 +52,33 @@ pub(crate) fn recorded_generation_owners(paths: &SoldrPaths) -> Vec<GenerationOw
     owners
 }
 
-/// The ownership-conflict text for a root whose own generation recorded no
-/// daemon. Names a live process from another generation when one is recorded;
-/// otherwise hedges, because nothing on disk identifies the holder.
+/// The ownership-conflict text when this route has no recorded daemon.
+/// Other generation claims are context only; they cannot identify this lock's
+/// holder.
 pub(crate) fn describe_unrecorded_owner(
-    root: &std::path::Display<'_>,
+    paths: &SoldrPaths,
     owners: &[GenerationOwner],
     is_alive: impl Fn(u32) -> bool,
 ) -> String {
-    let remedies = "\
-         soldr: only one daemon can own a root at a time, so a different Soldr version or image cannot start a second one.\n\
-         soldr: to build now without touching it, use an isolated root: SOLDR_CACHE_DIR=<scratch dir>.\n\
-         soldr: to retire it deliberately, stop it from the Soldr that started it (`soldr daemon stop`) or run `soldr broker remove`; nothing is replaced automatically.";
+    let root = paths.root.display();
+    let lock = crate::daemon::generation_key::generation_state_dir(paths).join("root-owner.lock");
+    let remedies = format!(
+        "soldr: this route's lock is {}; identify its holder before terminating a process.\n\
+         soldr: run `soldr status` and `soldr logs paths` to inspect this route.\n\
+         soldr: use SOLDR_CACHE_DIR=<scratch dir> to build with a separate root.",
+        lock.display()
+    );
     if let Some(owner) = owners.iter().find(|owner| is_alive(owner.pid)) {
         return format!(
-            "soldr root ownership is busy: {root} (held by PID {}, image {}, route generation {} -- \
-             a different Soldr version or daemon image than this one)\n{remedies}",
+            "soldr root ownership is busy: {root} (no daemon route claim to name this route's lock holder).\n\
+             soldr: sibling route generation {} has recorded PID {} (image {}); it can coexist and does not hold this route's lock.\n{remedies}",
+            owner.generation,
             owner.pid,
             owner.exe.display(),
-            owner.generation
         );
     }
     format!(
-        "soldr root ownership is busy: {root} (no daemon route claim to name the owner)\n\
-         soldr: another Soldr, possibly a different version, is likely using this root.\n\
-         soldr: run `soldr status` and `soldr logs paths` to see the running broker and daemon.\n{remedies}"
+        "soldr root ownership is busy: {root} (no daemon route claim to name this route's lock holder).\n{remedies}"
     )
 }
 

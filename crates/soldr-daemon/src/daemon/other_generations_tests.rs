@@ -35,12 +35,15 @@ fn another_generations_claim_is_found_and_named() {
     assert_eq!(owners[0].generation, "soldr-daemon-0.9.25-abc");
     assert_eq!(owners[0].pid, daemon.pid);
 
-    let root = paths.root.display();
-    let text = describe_unrecorded_owner(&root, &owners, |_| true);
+    let text = describe_unrecorded_owner(&paths, &owners, |_| true);
     assert!(text.contains(&format!("PID {}", daemon.pid)), "{text}");
     assert!(text.contains("soldr-daemon-0.9.25-abc"), "{text}");
     assert!(text.contains("SOLDR_CACHE_DIR"), "{text}");
-    assert!(text.contains("soldr broker remove"), "{text}");
+    assert!(
+        text.contains("can coexist and does not hold this route's lock"),
+        "{text}"
+    );
+    assert!(text.contains("root-owner.lock"), "{text}");
 }
 
 #[test]
@@ -49,10 +52,9 @@ fn dead_or_absent_claims_fall_back_to_the_hedged_message() {
     let paths = SoldrPaths::with_root(temp.path().join("root"));
     assert!(recorded_generation_owners(&paths).is_empty());
 
-    let root = paths.root.display();
-    let none = describe_unrecorded_owner(&root, &[], |_| true);
+    let none = describe_unrecorded_owner(&paths, &[], |_| true);
     assert!(none.contains("no daemon route claim"), "{none}");
-    for remedy in ["SOLDR_CACHE_DIR", "soldr broker remove", "soldr status"] {
+    for remedy in ["SOLDR_CACHE_DIR", "root-owner.lock", "soldr status"] {
         assert!(none.contains(remedy), "{remedy}: {none}");
     }
 
@@ -61,6 +63,6 @@ fn dead_or_absent_claims_fall_back_to_the_hedged_message() {
         pid: 4_000_000,
         exe: "/x".into(),
     }];
-    let text = describe_unrecorded_owner(&root, &dead, |_| false);
+    let text = describe_unrecorded_owner(&paths, &dead, |_| false);
     assert!(text.contains("no daemon route claim"), "{text}");
 }

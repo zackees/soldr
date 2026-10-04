@@ -157,13 +157,13 @@ pub fn sweep_legacy_cache_roots(
 ) -> LegacyCacheSweepReport {
     let zccache_root = paths.cache.join("zccache");
     let daemon_state = zccache_root.join("daemon-state");
-    let embedded_root = daemon_state.join("embedded-v1");
+    let current_embedded_root = embedded_cache_root(paths);
     let current_version = zccache::core::config::versioned_subdir();
     let mut report = LegacyCacheSweepReport::default();
     if !zccache_root.exists() {
         return report;
     }
-    for root in [&zccache_root, &daemon_state, &embedded_root] {
+    for root in [&zccache_root, &daemon_state] {
         if root.exists()
             && crate::cache_lib::path_safety::validate_owned_directory(&paths.root, root).is_err()
         {
@@ -224,16 +224,56 @@ pub fn sweep_legacy_cache_roots(
             Err(_) => report.failed += 1,
         }
     }
-    if embedded_root.exists() {
-        retired.merge(
-            &zccache::core::config::sweep_retired_version_stores_in_with_mode(
-                &embedded_root,
-                &current_version,
-                max_age,
-                now,
-                zccache::core::config::RetiredSweepMode::Pressure,
-            ),
-        );
+    // The singleton broker can keep several daemon image routes alive at
+    // once. Each route now owns a private embedded store. An old route's
+    // writer lock is the authority on whether it has retired: zccache's
+    // sweep leaves a live store intact and can reclaim it after the broker
+    // stops that daemon and the lock is released.
+    if let Ok(entries) = std::fs::read_dir(&daemon_state) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !name.starts_with("embedded-v1")
+                || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+                || crate::cache_lib::path_safety::validate_owned_directory(&paths.root, &path)
+                    .is_err()
+            {
+                continue;
+            }
+            if path == current_embedded_root {
+                retired.merge(
+                    &zccache::core::config::sweep_retired_version_stores_in_with_mode(
+                        &path,
+                        &current_version,
+                        max_age,
+                        now,
+                        zccache::core::config::RetiredSweepMode::Pressure,
+                    ),
+                );
+            } else if let Ok(stores) = std::fs::read_dir(&path) {
+                for store in stores.flatten() {
+                    let store_path = store.path();
+                    if store.file_type().is_ok_and(|kind| kind.is_dir())
+                        && store
+                            .file_name()
+                            .to_str()
+                            .is_some_and(zccache::core::config::is_version_dir_name)
+                    {
+                        retired.merge(
+                            &zccache::core::config::sweep_retired_version_store_with_mode(
+                                &store_path,
+                                max_age,
+                                now,
+                                zccache::core::config::RetiredSweepMode::Pressure,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
     }
     report.removed += retired.stores_removed;
     report.failed += retired.failed;
@@ -299,6 +339,7 @@ pub fn measure_retired_stores(
                 .file_name()
                 .to_str()
                 .is_some_and(zccache::core::config::is_version_dir_name)
+            || writer_lock_is_held(&path)
         {
             continue;
         }
@@ -324,6 +365,22 @@ pub fn measure_retired_stores(
         }
     }
     usage
+}
+
+/// An occupied or unreadable writer lock cannot be counted as retired.
+fn writer_lock_is_held(store: &std::path::Path) -> bool {
+    use fs2::FileExt as _;
+
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(store.join(ZCCACHE_WRITER_LOCK_FILE))
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
+    };
+    file.try_lock_exclusive().is_err()
 }
 
 /// True the first time a file's identity is seen, so a hardlinked file is
@@ -398,9 +455,13 @@ mod legacy_gc_tests {
         let legacy = owned
             .cache
             .join("zccache/daemon-state/0123456789abcdef0123456789abcdef");
-        let embedded = owned.cache.join("zccache/daemon-state/embedded-v1");
+        let embedded = embedded_cache_root(&owned);
         let current = embedded.join(zccache::core::config::versioned_subdir());
         let nested_old_version = embedded.join("v0.0.1");
+        let retired_route = owned
+            .cache
+            .join("zccache/daemon-state/embedded-v1-soldr-daemon-retired")
+            .join(zccache::core::config::versioned_subdir());
         let top_old_version = owned.cache.join("zccache/v0.0.2");
         // Top-level versions belong to the removed standalone/legacy layout,
         // even when their version text happens to equal the embedded build.
@@ -416,6 +477,7 @@ mod legacy_gc_tests {
             legacy.join("artifact"),
             current.join("artifact"),
             nested_old_version.join("artifact"),
+            retired_route.join("artifact"),
             top_old_version.join("artifact"),
             top_current_version.join("artifact"),
             malformed.join("artifact"),
@@ -426,9 +488,10 @@ mod legacy_gc_tests {
         }
 
         let report = sweep_legacy_cache_roots(&owned, SystemTime::now(), std::time::Duration::ZERO);
-        assert_eq!(report.removed, 4);
+        assert_eq!(report.removed, 5);
         assert!(!legacy.exists());
         assert!(!nested_old_version.exists());
+        assert!(!retired_route.exists());
         assert!(!top_old_version.exists());
         assert!(!top_current_version.exists());
         assert!(current.join("artifact").is_file());
@@ -470,7 +533,10 @@ mod legacy_gc_tests {
 
         let temp = tempfile::tempdir().unwrap();
         let owned = SoldrPaths::with_root(temp.path().join(".soldr"));
-        let retired = owned.cache.join("zccache/daemon-state/embedded-v1/v0.0.1");
+        let retired = owned
+            .cache
+            .join("zccache/daemon-state/embedded-v1")
+            .join(zccache::core::config::versioned_subdir());
         std::fs::create_dir_all(&retired).unwrap();
         std::fs::write(retired.join("artifact"), b"payload").unwrap();
         let lock = std::fs::File::create(retired.join(ZCCACHE_WRITER_LOCK_FILE)).unwrap();

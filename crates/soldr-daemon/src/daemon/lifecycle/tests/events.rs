@@ -613,22 +613,15 @@ mod root_ownership_diagnostic_tests {
             msg.contains("soldr#2316"),
             "must point at the orphan-holder issue: {msg}"
         );
-        // The core regression: no longer a dead end. It must carry a concrete
-        // kill command the operator can run.
-        let hint = if crate::platform::host::facts::os()
-            == crate::platform::host::facts::HostOs::Windows
-        {
-            "Stop-Process"
-        } else {
-            "pkill"
-        };
+        assert!(msg.contains("root-owner.lock"), "{msg}");
+        assert!(msg.contains("terminate only that process"), "{msg}");
         assert!(
-            msg.contains(hint),
-            "must give a platform-appropriate remediation command ({hint}): {msg}"
+            !msg.contains("pkill"),
+            "must preserve sibling routes: {msg}"
         );
         assert!(
-            msg.contains("orphan"),
-            "must name the culprit class (orphaned daemon): {msg}"
+            !msg.contains("Stop-Process"),
+            "must preserve sibling routes: {msg}"
         );
     }
 
@@ -640,7 +633,7 @@ mod root_ownership_diagnostic_tests {
         let msg = describe_root_ownership_conflict(&paths);
         assert!(msg.contains("no daemon route claim"), "{msg}");
         // soldr#3456: and it must say how to get unstuck.
-        for remedy in ["SOLDR_CACHE_DIR", "soldr broker remove", "soldr status"] {
+        for remedy in ["SOLDR_CACHE_DIR", "root-owner.lock", "soldr status"] {
             assert!(msg.contains(remedy), "missing {remedy}: {msg}");
         }
     }

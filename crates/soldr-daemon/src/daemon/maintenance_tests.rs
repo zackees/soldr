@@ -952,6 +952,13 @@ fn status_reports_retired_store_bytes() {
         let retired = crate::zccache_embedded::embedded_cache_root(&paths).join("v0.0.1");
         std::fs::create_dir_all(&retired).expect("retired store");
         std::fs::write(retired.join("artifact"), vec![0u8; 4321]).expect("retired artifact");
+        let retired_route = paths
+            .cache
+            .join("zccache/daemon-state/embedded-v1-soldr-daemon-retired")
+            .join(zccache::core::config::versioned_subdir());
+        std::fs::create_dir_all(&retired_route).expect("retired route");
+        std::fs::write(retired_route.join("artifact"), vec![0u8; 1234])
+            .expect("retired route artifact");
         let context = MaintenanceContext {
             paths: paths.clone(),
             db_path: crate::cache_lib::data_db_path(&paths),
@@ -959,10 +966,26 @@ fn status_reports_retired_store_bytes() {
             shutdown: Arc::new(ShutdownSignal::default()),
         };
 
+        use fs2::FileExt as _;
+        let writer = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(retired_route.join(crate::zccache_embedded::ZCCACHE_WRITER_LOCK_FILE))
+            .expect("retired route writer lock");
+        writer.try_lock_exclusive().expect("hold live sibling lock");
+        let mut while_live =
+            MaintenanceStatus::new(&context, MaintenanceKind::Pressure, SystemTime::now());
+        super::retired_status::measure_retired(&context, &mut while_live);
+        assert_eq!(while_live.retired_store_bytes, Some(4321));
+        assert_eq!(while_live.retired_store_count, Some(1));
+        drop(writer);
+
         let status = run_once(&context, MaintenanceKind::Pressure, SystemTime::now()).await;
 
-        assert_eq!(status.retired_store_bytes, Some(4321), "{status:?}");
-        assert_eq!(status.retired_store_count, Some(1), "{status:?}");
+        assert_eq!(status.retired_store_bytes, Some(5555), "{status:?}");
+        assert_eq!(status.retired_store_count, Some(2), "{status:?}");
 
         drop(context);
         if let Ok(service) = Arc::try_unwrap(service) {

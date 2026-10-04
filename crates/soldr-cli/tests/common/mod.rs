@@ -615,6 +615,27 @@ pub(crate) fn discovered_private_zccache_cache_dir(cache_root: &Path) -> PathBuf
     namespace_dir
 }
 
+/// Find the embedded store owned by this fixture's broker daemon route.
+pub(crate) fn discovered_embedded_zccache_store(cache_root: &Path) -> PathBuf {
+    let daemon_state = cache_root.join("cache/zccache/daemon-state");
+    let mut routes: Vec<PathBuf> = fs::read_dir(&daemon_state)
+        .unwrap_or_else(|error| panic!("read {}: {error}", daemon_state.display()))
+        .map(|entry| entry.expect("read daemon route").path())
+        .filter(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("embedded-v1-soldr-daemon-"))
+        })
+        .collect();
+    routes.sort();
+    assert_eq!(routes.len(), 1, "expected one embedded route: {routes:?}");
+    routes
+        .remove(0)
+        .join(zccache::core::config::versioned_subdir())
+}
+
 pub(crate) fn logged_cargo_wrapper(log: &str) -> Option<String> {
     log.lines().find_map(|line| {
         let wrapper = line.strip_prefix("cargo wrapper=")?;

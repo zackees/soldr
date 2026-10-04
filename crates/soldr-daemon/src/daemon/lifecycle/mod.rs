@@ -138,10 +138,9 @@ impl MissingImageDetector {
 pub fn describe_root_ownership_conflict(paths: &SoldrPaths) -> String {
     let root = paths.root.display();
     let Some((pid, exe)) = read_recorded_daemon_identity(paths) else {
-        // soldr#3456: this generation recorded nothing, but a daemon of another
-        // generation may hold the root; name it when one is recorded.
+        // A sibling generation may be live, but it cannot own this route's lock.
         return crate::daemon::other_generations::describe_unrecorded_owner(
-            &root,
+            paths,
             &crate::daemon::other_generations::recorded_generation_owners(paths),
             pid_is_alive,
         );
@@ -161,19 +160,14 @@ pub fn describe_root_ownership_conflict(paths: &SoldrPaths) -> String {
             exe.display()
         ),
         (false, _) => {
-            // soldr#2316: recorded owner dead but the lock is still held, so an
-            // unrecorded orphaned soldr-daemon holds it. Hand over the fix
-            // instead of dead-ending; daemons respawn on demand, so it is safe.
-            let kill_hint = if crate::platform::host::facts::os()
-                == crate::platform::host::facts::HostOs::Windows
-            {
-                "Get-Process soldr-daemon | Stop-Process -Force"
-            } else {
-                "pkill -f soldr-daemon"
-            };
+            // The stale claim does not identify the process holding this
+            // route's private lock. Never suggest killing sibling daemons.
+            let lock = crate::daemon::generation_key::generation_state_dir(paths)
+                .join("root-owner.lock");
             format!(
-                "soldr root ownership is busy: {root} -- recorded owner PID {pid} is dead, but the              lock is held by an unrecorded orphaned soldr-daemon that outlived the route claim; `soldr daemon stop` cannot reach it (it probes the endpoint, not the lock; soldr#1987, soldr#2316).
-             soldr: terminate the orphaned daemon(s) to recover (safe -- respawned on demand): {kill_hint}"
+                "soldr root ownership is busy: {root} -- recorded owner PID {pid} is dead, but this route's lock is still held (soldr#2316).\n\
+                 soldr: inspect {} to identify its holder, then terminate only that process. Other daemon routes can coexist and must keep serving.",
+                lock.display()
             )
         }
     }

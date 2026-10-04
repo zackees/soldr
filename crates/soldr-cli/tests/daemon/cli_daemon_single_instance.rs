@@ -10,8 +10,8 @@
 //! Three layers are supposed to prevent that (all in
 //! `soldr-daemon/src/daemon/{lifecycle,server}.rs`):
 //!
-//! 1. `RootOwnershipGuard` — an `flock`'d `<cache>/soldr-daemon/root-owner.lock`
-//!    held for the daemon's whole lifetime, deliberately version-blind.
+//! 1. `RootOwnershipGuard` — a file lock under the daemon's private
+//!    `generations/<service>/` directory, held for its whole lifetime.
 //! 2. `existing_daemon_pid` — a route-claim + endpoint-status identity check.
 //! 3. `claim_unix_endpoint` — an immediate bind, before init, to close the
 //!    accept race.

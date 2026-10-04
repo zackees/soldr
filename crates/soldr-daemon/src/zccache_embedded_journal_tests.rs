@@ -31,7 +31,7 @@ fn startup_scrubs_live_and_rotated_pre_redaction_journals() {
         let row: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
         assert!(row.get("env").is_none());
     }
-    assert!(current.starts_with(paths.cache.join("zccache/daemon-state/embedded-v1")));
+    assert!(current.starts_with(embedded_cache_root(&paths)));
 }
 
 /// soldr#3174: the migration must run once per store, not once per daemon
