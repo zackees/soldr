@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod retired_status;
+
 pub const PRESSURE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 pub const FULL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const EVENT_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -143,15 +145,6 @@ impl MaintenanceStatus {
     }
 }
 
-/// Record the retired-store footprint. Read-only, so it needs no lease.
-fn measure_retired(context: &MaintenanceContext, status: &mut MaintenanceStatus) {
-    let embedded_root = crate::zccache_embedded::embedded_cache_root(&context.paths);
-    let current = embedded_root.join(zccache::core::config::versioned_subdir());
-    let usage = crate::zccache_embedded::measure_retired_stores(&embedded_root, &current);
-    status.retired_store_bytes = Some(usage.bytes);
-    status.retired_store_count = Some(usage.stores);
-}
-
 pub fn status_path(paths: &SoldrPaths) -> PathBuf {
     paths
         .cache
@@ -274,7 +267,7 @@ async fn run_once_with_lease_state(
         .map_or(0, |previous| previous.consecutive_full_deferrals);
     status.consecutive_full_deferrals = previous_deferrals;
     // Measured before any sweep, so the report shows what the pass found.
-    measure_retired(context, &mut status);
+    retired_status::measure_retired(context, &mut status);
     let _maintenance_lease =
         match crate::cache_lib::build_active::MaintenanceLease::try_acquire(&context.paths) {
             Ok(None) => {
@@ -393,9 +386,34 @@ pub async fn run_manual_root(root: PathBuf) -> Result<MaintenanceStatus, String>
     let paths = SoldrPaths::with_root(root);
     crate::cache_lib::path_safety::validate_owned_directory(&paths.root, &paths.root)
         .map_err(|error| format!("unsafe manual maintenance root: {error}"))?;
-    let _root_owner = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
-        .map_err(|error| format!("acquire root ownership: {error}"))?
-        .ok_or_else(|| "refusing orphan-root maintenance: root ownership is busy".to_string())?;
+    let _legacy_root_owner =
+        crate::daemon::lifecycle::RootOwnershipGuard::try_acquire_legacy_root(&paths)
+            .map_err(|error| format!("acquire legacy root ownership: {error}"))?
+            .ok_or_else(|| {
+                "refusing orphan-root maintenance: legacy root ownership is busy".to_string()
+            })?;
+    let _root_owner = if crate::daemon::generation_key::generation_state_dir(&paths)
+        != crate::cache_lib::soldr_daemon_dir(&paths)
+    {
+        Some(
+            crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
+                .map_err(|error| format!("acquire root ownership: {error}"))?
+                .ok_or_else(|| {
+                    "refusing orphan-root maintenance: root ownership is busy".to_string()
+                })?,
+        )
+    } else {
+        None
+    };
+    if let Some(owner) = crate::daemon::other_generations::recorded_generation_owners(&paths)
+        .into_iter()
+        .find(|owner| crate::daemon::lifecycle::pid_is_alive(owner.pid))
+    {
+        return Err(format!(
+            "refusing orphan-root maintenance: daemon pid {} still owns generation {}",
+            owner.pid, owner.generation
+        ));
+    }
     if let Some(pid) = crate::daemon::lifecycle::claimed_daemon_occupies_route(&paths) {
         return Err(format!(
             "refusing orphan-root maintenance: daemon pid {pid} owns {}",

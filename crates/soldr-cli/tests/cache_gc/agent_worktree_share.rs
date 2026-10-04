@@ -203,10 +203,7 @@ fn windows_long_path_publication_survives_fresh_worktree_reuse() {
         fs::read_to_string(cache_dir.join("zccache-trace.log"))
             .unwrap_or_else(|error| format!("unavailable: {error}")),
         fs::read_to_string(
-            embedded_artifact_dir(&cache_dir)
-                .parent()
-                .expect("embedded cache root")
-                .join(zccache::core::config::versioned_subdir())
+            common::discovered_embedded_zccache_store(&cache_dir)
                 .join("logs/daemon-lifecycle.log"),
         )
         .unwrap_or_else(|error| format!("unavailable: {error}")),
@@ -269,9 +266,7 @@ fn windows_deep_cache_root_keeps_staged_linker_path_short() {
     // the compile succeeds, so command success is the authoritative
     // assertion that the linker did not receive an unusable path.
     assert!(
-        !cache_dir
-            .join("cache/zccache/daemon-state/embedded-v1")
-            .join(zccache::core::config::versioned_subdir())
+        !common::discovered_embedded_zccache_store(&cache_dir)
             .join("staging")
             .exists(),
         "Windows compiler staging must be outside the deep durable cache root"
@@ -285,7 +280,7 @@ fn embedded_artifact_dir(cache_dir: &Path) -> PathBuf {
         .join("cache")
         .join("zccache")
         .join("daemon-state")
-        .join("embedded-v1")
+        .join("embedded-v1-soldr-daemon-00000000000000000000000000000000")
         .join("artifacts")
 }
 
@@ -405,7 +400,7 @@ fn describe_missing_session_stats(cache_dir: &Path, check_output: &str) -> Strin
         probes.extend(entries.filter_map(|e| Some(e.ok()?.path())));
     }
     // soldr#2186: the compile journal is written under
-    // `daemon-state/embedded-v1/v<store-version>/logs/`, while the session
+    // `daemon-state/embedded-v1-<route>/v<store-version>/logs/`, while the session
     // stats it archives from are read out of the unversioned
     // `cache/zccache/logs/`. When the latter is empty, the question is whether
     // the stats file was never produced or produced somewhere else — and the

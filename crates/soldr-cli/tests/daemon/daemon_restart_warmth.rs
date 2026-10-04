@@ -326,9 +326,7 @@ fn wait_for_depgraph_save(cache_dir: &Path, budget: Duration) {
 }
 
 fn compile_journal_path(cache_dir: &Path) -> PathBuf {
-    cache_dir
-        .join("cache/zccache/daemon-state/embedded-v1")
-        .join(zccache::core::config::versioned_subdir())
+    common::discovered_embedded_zccache_store(cache_dir)
         .join("logs")
         .join("compile_journal.jsonl")
 }

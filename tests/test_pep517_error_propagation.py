@@ -135,17 +135,16 @@ def test_a_failure_message_without_a_payload_still_names_the_exit_status(backend
     )
 
 
-def test_root_owner_refusal_retries_without_the_cache_wrapper(backend, monkeypatch):
+def test_root_owner_refusal_keeps_the_cache_wrapper(backend, monkeypatch):
     calls = []
 
     def build(cmd, env):
         calls.append(env.copy())
-        if len(calls) == 1:
-            raise subprocess.CalledProcessError(
-                1,
-                cmd,
-                output="broker refused the daemon route: soldr root ownership is busy",
-            )
+        raise subprocess.CalledProcessError(
+            1,
+            cmd,
+            output="broker refused the daemon route: soldr root ownership is busy",
+        )
 
     monkeypatch.delenv("RUSTC_WRAPPER", raising=False)
     monkeypatch.setattr(
@@ -154,9 +153,10 @@ def test_root_owner_refusal_retries_without_the_cache_wrapper(backend, monkeypat
     monkeypatch.setattr(backend, "_stats_mode", lambda env: "off")
     monkeypatch.setattr(backend, "_run_pep517_streaming", build)
 
-    backend._maturin_pep517("build-wheel")
+    with pytest.raises(SystemExit):
+        backend._maturin_pep517("build-wheel")
 
-    assert [env["RUSTC_WRAPPER"] for env in calls] == ["soldr", ""]
+    assert [env["RUSTC_WRAPPER"] for env in calls] == ["soldr"]
 
 
 def test_other_refusals_keep_the_original_failure(backend, monkeypatch):
@@ -171,30 +171,6 @@ def test_other_refusals_keep_the_original_failure(backend, monkeypatch):
         )
 
     monkeypatch.delenv("RUSTC_WRAPPER", raising=False)
-    monkeypatch.setattr(
-        backend, "_prep_env", lambda *a, **k: {"RUSTC_WRAPPER": "soldr"}
-    )
-    monkeypatch.setattr(backend, "_stats_mode", lambda env: "off")
-    monkeypatch.setattr(backend, "_run_pep517_streaming", build)
-
-    with pytest.raises(SystemExit):
-        backend._maturin_pep517("build-wheel")
-
-    assert len(calls) == 1
-
-
-def test_explicit_wrapper_is_not_disabled_on_root_conflict(backend, monkeypatch):
-    calls = []
-
-    def build(cmd, env):
-        calls.append(env.copy())
-        raise subprocess.CalledProcessError(
-            1,
-            cmd,
-            output="broker refused the daemon route: soldr root ownership is busy",
-        )
-
-    monkeypatch.setenv("RUSTC_WRAPPER", "soldr")
     monkeypatch.setattr(
         backend, "_prep_env", lambda *a, **k: {"RUSTC_WRAPPER": "soldr"}
     )

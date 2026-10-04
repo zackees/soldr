@@ -115,8 +115,25 @@ fn identity_is_portable_across_cache_roots() {
 }
 
 #[test]
-fn identity_survives_soldr_upgrades() {
-    assert_eq!(derive_identity().instance_id, "embedded-v1");
+fn identity_is_scoped_to_soldr_version() {
+    assert_eq!(
+        identity_for_route(None).instance_id,
+        format!("embedded-v1-soldr-v{}", crate::core::MANAGED_SHIM_VERSION)
+    );
+}
+
+#[test]
+fn broker_routes_have_distinct_private_cache_roots() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(temp.path().join("root"));
+    let a = identity_for_route(Some("soldr-daemon-image-a"));
+    let b = identity_for_route(Some("soldr-daemon-image-b"));
+    assert_ne!(
+        private_zccache_cache_root(&paths, &a),
+        private_zccache_cache_root(&paths, &b)
+    );
+    assert!(private_zccache_cache_root(&paths, &a)
+        .starts_with(paths.cache.join("zccache/daemon-state")));
 }
 
 #[test]

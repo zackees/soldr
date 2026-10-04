@@ -323,10 +323,8 @@ fn stat(stats: &serde_json::Value, key: &str) -> u64 {
 }
 
 fn journal_lines(cache_root: &Path) -> Vec<String> {
-    let path = cache_root
-        .join("cache/zccache/daemon-state/embedded-v1")
-        .join(zccache::core::config::versioned_subdir())
-        .join("logs/compile_journal.jsonl");
+    let path =
+        common::discovered_embedded_zccache_store(cache_root).join("logs/compile_journal.jsonl");
     fs::read_to_string(path)
         .expect("read managed compile journal")
         .lines()

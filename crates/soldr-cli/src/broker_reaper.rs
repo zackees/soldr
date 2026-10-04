@@ -418,6 +418,7 @@ pub(crate) async fn run_route_reaper(
     // soldr#3251: daemon-disk reclamation shares this loop at its own slower
     // cadence. Starting from `None` runs the first pass on the first tick.
     let mut last_disk_sweep: Option<Instant> = None;
+    let mut retry_retired_cache = false;
     loop {
         tokio::select! {
             () = shutdown.wait() => return,
@@ -432,8 +433,30 @@ pub(crate) async fn run_route_reaper(
         // The sweep signals other processes, so keep it off the async worker.
         let sweep_owners = Arc::clone(&route_owners);
         let sweep_registry = Arc::clone(&registry);
-        let (reaped, removed_images, disk) = tokio::task::spawn_blocking(move || {
+        let (reaped, removed_images, disk, cache) = tokio::task::spawn_blocking(move || {
             let reaped = reap_orphaned_routes(&sweep_owners, &sweep_registry, grace);
+            let cache = (!reaped.is_empty() || retry_retired_cache).then(|| {
+                let mut live = BTreeSet::new();
+                live.extend(
+                    sweep_owners
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .service_names()
+                        .map(str::to_owned),
+                );
+                live.extend(
+                    sweep_registry
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .iter()
+                        .map(|(key, _)| key.service_name.clone()),
+                );
+                crate::broker_daemon_cache::sweep_retired_route_caches(
+                    &running_process::broker::protocol_v2::service_definition_dir_v2(),
+                    &live,
+                    std::time::SystemTime::now(),
+                )
+            });
             // soldr#3164: reclaim daemon images no route has run for the
             // stale window. Each route rescans at most once a day.
             let removed = crate::self_relocate::sweep_route_runtime_copies(
@@ -444,10 +467,18 @@ pub(crate) async fn run_route_reaper(
             let disk = disk_sweep_due.then(|| {
                 crate::broker_daemon_disk::sweep_broker_daemon_disk(&sweep_owners, &sweep_registry)
             });
-            (reaped, removed, disk)
+            (reaped, removed, disk, cache)
         })
         .await
         .unwrap_or_default();
+        retry_retired_cache = cache.as_ref().is_some_and(|report| report.stores_live > 0);
+        if let Some(cache) = cache.filter(|report| report.stores_removed > 0) {
+            println!(
+                "soldr broker: reclaimed {} retired private cache store(s) ({} MiB)",
+                cache.stores_removed,
+                cache.bytes_reclaimed / (1024 * 1024)
+            );
+        }
         if removed_images > 0 {
             println!(
                 "soldr broker: removed {removed_images} stale daemon image(s) from route runtimes"
@@ -455,10 +486,13 @@ pub(crate) async fn run_route_reaper(
         }
         if let Some(disk) = disk.filter(|report| !report.is_empty()) {
             println!(
-                "soldr broker: reclaimed {} idle daemon route(s) ({} MiB) and {} stale \
-                 registration(s); {} removal(s) failed and will be retried",
+                "soldr broker: reclaimed {} idle daemon route(s) ({} MiB), {} private cache \
+                 store(s) ({} MiB), and {} stale registration(s); {} removal(s) failed and \
+                 will be retried",
                 disk.routes_removed,
                 disk.bytes_reclaimed / (1024 * 1024),
+                disk.cache_stores_removed,
+                disk.cache_bytes_reclaimed / (1024 * 1024),
                 disk.registrations_removed,
                 disk.failed
             );

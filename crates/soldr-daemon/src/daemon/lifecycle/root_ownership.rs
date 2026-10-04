@@ -1,8 +1,7 @@
-//! Version-independent root ownership: the file lock one daemon holds for
+//! Per-generation root ownership: the file lock one daemon holds for
 //! its whole lifetime, plus the stop-then-relaunch acquisition grace window.
 //! Split out of `lifecycle/mod.rs` for the per-file LOC ratchet.
 
-use crate::cache_lib::soldr_daemon_dir;
 use crate::core::SoldrPaths;
 use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
@@ -10,17 +9,26 @@ use std::time::{Duration, Instant};
 
 const ROOT_OWNER_LOCK_NAME: &str = "root-owner.lock";
 
-/// Version-independent ownership for one product root. The daemon holds this
-/// for its whole lifetime; explicit orphan-root maintenance uses the same lock
-/// so startup and manual deletion cannot race even across protocol versions.
+/// Ownership of one broker daemon generation. Different images may serve the
+/// same product root concurrently; duplicate starts of one image still race
+/// on this lock.
 pub struct RootOwnershipGuard {
     file: File,
 }
 
 impl RootOwnershipGuard {
     pub fn try_acquire(paths: &SoldrPaths) -> std::io::Result<Option<Self>> {
-        let dir = soldr_daemon_dir(paths);
-        fs::create_dir_all(&dir)?;
+        Self::try_acquire_in(&crate::daemon::generation_key::generation_state_dir(paths))
+    }
+
+    /// Manual maintenance must also respect a daemon from an older Soldr
+    /// image that still holds the pre-generation global lock.
+    pub fn try_acquire_legacy_root(paths: &SoldrPaths) -> std::io::Result<Option<Self>> {
+        Self::try_acquire_in(&crate::cache_lib::soldr_daemon_dir(paths))
+    }
+
+    fn try_acquire_in(dir: &std::path::Path) -> std::io::Result<Option<Self>> {
+        fs::create_dir_all(dir)?;
         let file = OpenOptions::new()
             .create(true)
             .read(true)

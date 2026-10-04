@@ -214,6 +214,7 @@ pub mod bootstrap;
 pub(crate) mod broker_bringup;
 pub mod broker_cmd;
 mod broker_control_transport;
+pub(crate) mod broker_daemon_cache;
 /// soldr#3251: broker-owned reclamation of idle daemon routes and registrations.
 pub(crate) mod broker_daemon_disk;
 /// soldr#2493: broker route-acquisition deadlines and their `soldr doctor`

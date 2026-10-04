@@ -150,11 +150,11 @@ cmd = "bash /repo/ci/cook_rematerialization/verify_warm.sh"
 
 [task.daemon-generations]
 stack = "cook"
-cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-daemon --lib -- daemon::lifecycle::tests::generations:: daemon::lifecycle::tests::root_acquire:: daemon::backend_handle_adoption::tests:: daemon::service_definition:: && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --lib -- broker_launcher::"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-daemon --lib -- daemon::lifecycle::tests::generations:: daemon::lifecycle::tests::root_acquire:: daemon::backend_handle_adoption::tests:: daemon::service_definition:: private_root_tests:: legacy_gc_tests:: status_reports_retired_store_bytes && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --lib -- broker_launcher:: broker_reaper:: broker_daemon_cache::tests::"
 
 [task.daemon-generations-e2e]
 stack = "cook"
-cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --test daemon -- cli_daemon_lifecycle:: daemon_fast_sigterm::"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --test daemon -- cli_daemon_lifecycle:: daemon_fast_sigterm:: daemon_restart_warmth::"
 
 [task.cook-watchdog-test]
 stack = "cook"

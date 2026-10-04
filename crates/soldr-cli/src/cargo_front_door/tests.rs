@@ -1976,11 +1976,7 @@ fn embedded_compile_journal_path_matches_service_layout() {
 
     assert_eq!(
         embedded_compile_journal_path(&paths),
-        paths
-            .cache
-            .join("zccache")
-            .join("daemon-state")
-            .join("embedded-v1")
+        crate::zccache_embedded::embedded_cache_root(&paths)
             .join(zccache::core::config::versioned_subdir())
             .join("logs")
             .join("compile_journal.jsonl")
@@ -2387,9 +2383,7 @@ fn compile_journal_history_uses_effective_embedded_version_root() {
     let journal = embedded_compile_journal_path(&paths);
     assert_eq!(
         journal,
-        paths
-            .cache
-            .join("zccache/daemon-state/embedded-v1")
+        crate::zccache_embedded::embedded_cache_root(&paths)
             .join(zccache::core::config::versioned_subdir())
             .join("logs/compile_journal.jsonl")
     );

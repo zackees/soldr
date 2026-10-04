@@ -75,6 +75,9 @@ pub(crate) struct DaemonDiskReport {
     pub(crate) routes_removed: usize,
     pub(crate) bytes_reclaimed: u64,
     pub(crate) registrations_removed: usize,
+    pub(crate) cache_stores_removed: usize,
+    pub(crate) cache_bytes_reclaimed: u64,
+    pub(crate) cache_stores_live: usize,
     /// Removals that failed, such as an image still open on Windows. Each is
     /// retried by a later sweep, and none stops the current one.
     pub(crate) failed: usize,
@@ -82,7 +85,10 @@ pub(crate) struct DaemonDiskReport {
 
 impl DaemonDiskReport {
     pub(crate) fn is_empty(&self) -> bool {
-        self.routes_removed == 0 && self.registrations_removed == 0 && self.failed == 0
+        self.routes_removed == 0
+            && self.registrations_removed == 0
+            && self.cache_stores_removed == 0
+            && self.failed == 0
     }
 }
 
@@ -142,6 +148,15 @@ pub(crate) fn sweep_daemon_disk_with(
 ) -> DaemonDiskReport {
     let mut report = DaemonDiskReport::default();
 
+    // A route's service definition persists the selected Soldr root. Sweep
+    // its private cache before removing that registration; a live writer lock
+    // keeps the store intact and the next broker pass retries it.
+    let cache = crate::broker_daemon_cache::sweep_retired_route_caches(services_root, live, now);
+    report.cache_stores_removed = cache.stores_removed;
+    report.cache_bytes_reclaimed = cache.bytes_reclaimed;
+    report.cache_stores_live = cache.stores_live;
+    report.failed += cache.failed;
+
     let mut idle_routes = Vec::new();
     for (service, path) in daemon_entries(routes_root, live, route_service) {
         let Ok(metadata) = fs::symlink_metadata(&path) else {
@@ -175,7 +190,7 @@ pub(crate) fn sweep_daemon_disk_with(
     // Registrations run after routes, so a route reclaimed above takes its
     // registration with it in the same sweep.
     for (service, path) in daemon_entries(services_root, live, registration_service) {
-        if routes_root.join(&service).exists() {
+        if routes_root.join(&service).exists() || cache.pending.contains(&service) {
             continue;
         }
         let Ok(metadata) = fs::symlink_metadata(&path) else {
