@@ -181,7 +181,15 @@ fn persist_build_log_history_inner(
         &archive_dir,
         "last-session-stats.json",
     );
-    let cache_summary = cache_states::read_build_cache_summary(&session.session_stats_path);
+    // soldr#3540: only this session's stats may drive the journal-tail wait
+    // or enter the build's history — a file left by an earlier invocation
+    // (finalize no-op'd) would both wait on compiles that never ran and
+    // attach another build's hit/miss figures to this record.
+    let cache_summary = cache_states::read_build_cache_summary(
+        &session.session_stats_path,
+        &session.session_id,
+    )
+    .fresh();
     let expected_compile_journal_entries = cache_summary
         .as_ref()
         .and_then(|summary| (summary.compilations > 0).then_some(summary.compilations));

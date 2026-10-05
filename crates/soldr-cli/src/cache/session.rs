@@ -285,7 +285,10 @@ pub(crate) fn capture_build_baseline(zccache_dir: &std::path::Path, session_id: 
 /// artifact `soldr cache report` (and the perf harness) read. Restores
 /// the reporting the pre-#1368 managed `zccache session-end` path used
 /// to produce. A missing baseline is treated as all-zero (fresh daemon).
-/// No-op when the daemon is unreachable at end (nothing to report).
+/// No-op when the daemon is unreachable at end (nothing to report) — which
+/// leaves the *previous* invocation's file in place, so what is written is
+/// keyed with [`key_session_stats`] and readers reject a file from another
+/// session (soldr#3540).
 pub(crate) fn finalize_build_session_stats(zccache_dir: &std::path::Path, session_id: &str) {
     if validate_session_id(session_id).is_err() {
         return;
@@ -302,6 +305,7 @@ pub(crate) fn finalize_build_session_stats(zccache_dir: &std::path::Path, sessio
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
+        let stats = key_session_stats(stats, session_id);
         if let Ok(json) = serde_json::to_string(&stats) {
             let _ = std::fs::write(&path, json);
         }
@@ -309,6 +313,20 @@ pub(crate) fn finalize_build_session_stats(zccache_dir: &std::path::Path, sessio
     if let Ok(path) = session_baseline_path(zccache_dir, session_id) {
         let _ = std::fs::remove_file(path);
     }
+}
+
+/// soldr#3540: stamp the baseline-diff with the session that produced it.
+///
+/// `last-session-stats.json` is a fixed name shared by every front-door
+/// invocation, so the counters alone cannot say *which* build they came from.
+/// When [`finalize_build_session_stats`] no-ops — the daemon is unreachable
+/// at end of build — the file still holds the previous invocation's numbers;
+/// keying it lets `read_build_cache_summary` tell that stale file from this
+/// session's own and report "no stats for this session" instead of repeating
+/// the prior build's figures verbatim.
+fn key_session_stats(mut stats: serde_json::Value, session_id: &str) -> serde_json::Value {
+    stats["session_id"] = serde_json::json!(session_id);
+    stats
 }
 
 /// Diff a session-end stats snapshot against the session-start baseline
@@ -790,8 +808,8 @@ mod tests {
     use super::super::report::zccache_analyze_failure_note;
     use super::super::{output_snippet, ANALYZE_NOTE_LIMIT};
     use super::{
-        clear_session_artifacts, compilation_delta, compute_session_stats, session_baseline_path,
-        validate_session_id,
+        clear_session_artifacts, compilation_delta, compute_session_stats, key_session_stats,
+        session_baseline_path, validate_session_id,
     };
 
     fn compile_stats(total_compilations: u64) -> crate::daemon::protocol::CompileStatsInfo {
@@ -843,6 +861,25 @@ mod tests {
             None,
             "a daemon restart must be unproven, never misreported as zero compiles"
         );
+    }
+
+    /// soldr#3540: whatever a finalize writes must carry the id of the
+    /// session that finalized it — the file name is fixed, so the key is the
+    /// only thing that lets a later front door refuse these numbers as stale.
+    #[test]
+    fn session_stats_are_keyed_to_the_session_that_wrote_them() {
+        let mut baseline = compile_stats(10);
+        baseline.cache_hits = 400;
+        baseline.cache_misses = 9;
+        let mut current = compile_stats(460);
+        current.cache_hits = 442;
+        current.cache_misses = 9;
+        let stats = compute_session_stats(Some(&baseline), Some(&current)).expect("stats");
+        let keyed = key_session_stats(stats, "build-session-7f3a");
+        assert_eq!(keyed["session_id"], serde_json::json!("build-session-7f3a"));
+        assert_eq!(keyed["status"], serde_json::json!("ok"));
+        assert_eq!(keyed["hits"], serde_json::json!(42));
+        assert_eq!(keyed["misses"], serde_json::json!(0));
     }
 
     #[test]
