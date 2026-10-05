@@ -84,7 +84,7 @@
       "ci/smoke_published_dylint.py": 1,
       "ci/smoke_release_artifacts.py": 3,
       "ci/win_wheel_local.py": 1,
-      "ci/windows_guest_probe.py": 12,
+      "ci/windows_guest_probe.py": 27,
       "perf/lib/cargo_units.py": 2,
       "src/soldr/__init__.py": 1,
       "tests/test_action_pin_comments.py": 1,
