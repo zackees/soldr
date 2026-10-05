@@ -156,10 +156,19 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
     let cache_walk = cache_walk_result?;
     let cache_files_paths = cache_walk.included_paths;
     let cache_symlink_entries = cache_walk.symlinks;
-    let (cache_manifest_files, cache_file_metas): (Vec<CacheFile>, Vec<std::fs::Metadata>) =
-        build_cache_manifest_entries(&pool, opts.cache_dir, &cache_files_paths)?
-            .into_iter()
-            .unzip();
+    // Entries that survived the stat+hash pass, each carrying its own path:
+    // files that vanished mid-pass are dropped *with* their path, so the
+    // tar append below can never zip a surviving path against another
+    // file's metadata (#3533).
+    let cache_manifest_entries =
+        build_cache_manifest_entries(&pool, opts.cache_dir, &cache_files_paths)?;
+    let mut cache_manifest_files = Vec::with_capacity(cache_manifest_entries.len());
+    let mut cache_tar_entries: Vec<(PathBuf, std::fs::Metadata)> =
+        Vec::with_capacity(cache_manifest_entries.len());
+    for (abs, entry, meta) in cache_manifest_entries {
+        cache_manifest_files.push(entry);
+        cache_tar_entries.push((abs, meta));
+    }
 
     let manifest = Manifest {
         version: MANIFEST_VERSION,
@@ -230,16 +239,20 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
         // files into tar here. The tar writer feeds the multithreaded
         // zstd encoder, which does the heavy CPU work in its own
         // thread pool.
-        if !cache_files_paths.is_empty() {
-            // cache_files_paths is non-empty only when we enumerated a
+        if !cache_tar_entries.is_empty() {
+            // cache_tar_entries is non-empty only when we enumerated a
             // real cache_dir above (i.e. not the mtimes_only branch),
             // so this expect() is unreachable in practice.
             let cache_dir = opts
                 .cache_dir
-                .expect("cache_files_paths non-empty implies cache_dir was set");
-            cache_files = cache_files_paths.len() as u64;
-            for (abs, meta) in cache_files_paths.iter().zip(cache_file_metas.iter()) {
-                append_cache_file_entry(&mut tar_builder, cache_dir, abs, meta)?;
+                .expect("cache_tar_entries non-empty implies cache_dir was set");
+            for (abs, meta) in &cache_tar_entries {
+                // Counts what actually landed in the archive: a file the
+                // daemon renamed away between the manifest pass and this
+                // append is skipped, not fatal, and not counted (#3533).
+                if append_cache_file_entry(&mut tar_builder, cache_dir, abs, meta)? {
+                    cache_files += 1;
+                }
             }
         }
         tar_builder.finish().map_err(SaveLoadError::BareIo)?;
@@ -306,6 +319,10 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
     let manifest_files = source_result?;
     let cache_walk = cache_walk_result?;
     let cache_files_paths = cache_walk.included_paths;
+    // Each entry carries the path it was hashed from, so a file that
+    // vanished mid-pass is dropped together with its path and the map
+    // below can never pair a surviving path with another file's metadata
+    // (#3533).
     let cache_manifest_entries =
         build_cache_manifest_entries(&pool, Some(opts.cache_dir), &cache_files_paths)?;
 
@@ -319,8 +336,7 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
     let current_by_path: BTreeMap<&str, (&CacheFile, &PathBuf, &std::fs::Metadata)> =
         cache_manifest_entries
             .iter()
-            .zip(cache_files_paths.iter())
-            .map(|((entry, meta), path)| (entry.path.as_str(), (entry, path, meta)))
+            .map(|(path, entry, meta)| (entry.path.as_str(), (entry, path, meta)))
             .collect();
 
     let mut delta_entries = Vec::new();
@@ -416,20 +432,27 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
 }
 
 /// Hash + stat every cache file in parallel. Output order matches
-/// `cache_files_paths` (rayon's indexed collect preserves order), so
-/// callers can zip the two to append files without re-stating them.
+/// `cache_files_paths` (rayon's indexed collect preserves order), and each
+/// result carries the path it came from: files that vanish between the
+/// walk, the stat, and the hash are dropped as a whole `(path, entry,
+/// meta)` triple (#3533), so callers can never zip a surviving path
+/// against another file's metadata.
 fn build_cache_manifest_entries(
     pool: &rayon::ThreadPool,
     cache_dir: Option<&Path>,
     cache_files_paths: &[PathBuf],
-) -> Result<Vec<(CacheFile, std::fs::Metadata)>> {
+) -> Result<Vec<(PathBuf, CacheFile, std::fs::Metadata)>> {
     let Some(cache_dir) = cache_dir else {
         return Ok(Vec::new());
     };
     pool.install(|| {
         cache_files_paths
             .par_iter()
-            .filter_map(|abs| cache_file_entry(cache_dir, abs).transpose())
+            .filter_map(|abs| {
+                cache_file_entry(cache_dir, abs)
+                    .transpose()
+                    .map(|result| result.map(|(entry, meta)| (abs.clone(), entry, meta)))
+            })
             .collect()
     })
 }
@@ -467,25 +490,45 @@ fn append_manifest_entry<W: Write>(
 /// Append one cache file into the tar. `meta` comes from the manifest
 /// pre-pass ([`cache_file_entry`]) so the file is stat'd exactly once
 /// per save and the tar header always agrees with the manifest (#1541).
+///
+/// Returns `Ok(false)` — appended nothing — when the file was renamed or
+/// removed between the manifest pre-pass and this open (#3533). The
+/// window cannot be closed: the daemon is rewriting its tree while we
+/// archive it, and a file that no longer exists is not worth failing a
+/// whole save over. `load` already tolerates a manifest entry with no
+/// payload (it is the delta-metadata-only shape), so the archive stays
+/// loadable; any other open error still fails loudly.
 fn append_cache_file_entry<W: Write>(
     tar_builder: &mut tar::Builder<W>,
     cache_dir: &Path,
     abs: &Path,
     meta: &std::fs::Metadata,
-) -> Result<()> {
+) -> Result<bool> {
     let rel = abs
         .strip_prefix(cache_dir)
         .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
     let mut archive_path = PathBuf::from(CACHE_DIR_NAME);
     archive_path.push(rel);
     let archive_path_str = rel_to_posix(&archive_path);
-    let mut file = File::open(abs).map_err(|e| io(abs, e))?;
+    let mut file = match File::open(abs) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(
+                event = "save_append_vanished",
+                path = %abs.display(),
+                "file vanished between manifest pass and append; skipped"
+            );
+            return Ok(false);
+        }
+        Err(e) => return Err(io(abs, e)),
+    };
     let mut header = tar::Header::new_gnu();
     header.set_metadata(meta);
     header.set_cksum();
     tar_builder
         .append_data(&mut header, archive_path_str, &mut file)
-        .map_err(SaveLoadError::BareIo)
+        .map_err(SaveLoadError::BareIo)?;
+    Ok(true)
 }
 
 fn manifest_digest(manifest: &Manifest) -> Result<Vec<u8>> {

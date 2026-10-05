@@ -108,6 +108,157 @@ fn a_file_that_vanishes_after_the_walk_is_skipped_not_fatal() {
     );
 }
 
+// The exact path from #3533's failing Perf Matrix run. zccache writes its
+// metadata atomically -- create `.{name}.tmp-<pid>-<seq>`, then rename --
+// so these scratch names are half-written *and* about to disappear: they
+// must be excluded before the walk ever stats or hashes them.
+#[test]
+fn zccache_tmp_scratch_names_are_excluded_from_every_profile() {
+    for rel in [
+        "zccache/daemon-state/embedded-v1/v1.15.0/.metadata.bin.tmp-2869-6",
+        "zccache/daemon-state/embedded-v1/v1.15.0/.metadata.bin.tmp-42",
+        "zccache/index.redb.tmp-99",
+        "zccache/.tmp-17",
+        "zccache/objects/.tmp-crashed/obj.o",
+        "zccache/half-written.tmp",
+    ] {
+        assert!(
+            archive_always_excludes_cache_path(Path::new(rel)),
+            "{rel} is zccache scratch, never cache payload"
+        );
+    }
+
+    // The exclusion must stay narrow: the finished files these temps are
+    // renamed into, and ordinary payload, still get archived.
+    for rel in [
+        "zccache/daemon-state/embedded-v1/v1.15.0/.metadata.bin",
+        "zccache/objects/ab/cdef.o",
+        "registry/cache/foo-1.0.crate",
+    ] {
+        assert!(
+            !archive_always_excludes_cache_path(Path::new(rel)),
+            "{rel} is cache payload and must still be archived"
+        );
+    }
+}
+
+// Walk-level proof for the path above: a full-profile save collects the
+// payload and never the in-flight `.metadata.bin.tmp-*`.
+#[test]
+fn full_walk_never_collects_an_inflight_metadata_temp_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cache = tmp.path();
+    let payload = cache.join("zccache/objects/ab/cdef.o");
+    std::fs::create_dir_all(payload.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&payload, b"cache payload").expect("write");
+    let temp = cache.join("zccache/daemon-state/embedded-v1/v1.15.0/.metadata.bin.tmp-2869-6");
+    std::fs::create_dir_all(temp.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&temp, b"half-written").expect("write");
+
+    let walk = walk_cache_files_for_profile(cache, None, SaveProfile::Full).expect("walk");
+
+    assert_eq!(walk.included_paths, vec![payload]);
+    assert_eq!(walk.excluded_files, 1);
+    assert_eq!(walk.excluded_bytes, b"half-written".len() as u64);
+}
+
+// Exclusion accounting runs its own stat after the walk (to sum excluded
+// bytes), so a scratch file the daemon already renamed away must not fail
+// the save there either.
+#[test]
+fn exclusion_accounting_survives_a_file_vanished_after_the_walk() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let gone = tmp.path().join(".metadata.bin.tmp-9-1");
+    assert_eq!(excluded_file_len(&gone).expect("vanished is skippable"), 0);
+
+    let present = tmp.path().join("present.bin");
+    std::fs::write(&present, b"abc").expect("write");
+    assert_eq!(excluded_file_len(&present).expect("stat"), 3);
+}
+
+// The #3533 window inside `cache_file_entry`: the stat succeeds, then the
+// daemon renames the file away, then `hash_file` fails with NotFound. That
+// error must classify as skippable — and only NotFound must, so a
+// permissions error or bad disk still fails the save loudly.
+#[test]
+fn a_hash_error_for_a_vanished_file_is_skippable_but_only_notfound() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let missing = tmp.path().join(".metadata.bin.tmp-2869-6");
+    let err = hash_file(&missing).expect_err("a missing file cannot be hashed");
+    assert!(
+        save_error_is_not_found(&err),
+        "the mid-save NotFound must classify as skippable: {err:?}"
+    );
+
+    assert!(save_error_is_not_found(&io(
+        &missing,
+        std::io::Error::from(std::io::ErrorKind::NotFound)
+    )));
+    assert!(save_error_is_not_found(&SaveLoadError::BareIo(
+        std::io::Error::from(std::io::ErrorKind::NotFound)
+    )));
+    assert!(!save_error_is_not_found(&io(
+        &missing,
+        std::io::Error::from(std::io::ErrorKind::PermissionDenied)
+    )));
+    assert!(!save_error_is_not_found(&SaveLoadError::BadArchivePath(
+        "x".into()
+    )));
+}
+
+// The same window one stage later, at save_archive's `File::open`: the
+// manifest pass stats and hashes successfully, then the daemon renames the
+// file away, then the tar append opens it. Before the fix this `expect`
+// failed with `io error at ...: No such file or directory` and killed the
+// whole save; afterwards the append is skipped and the save continues.
+#[test]
+fn a_file_that_vanishes_before_the_append_is_skipped_not_fatal() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cache = tmp.path();
+    let abs = cache.join("zccache/objects/ab/cdef.o");
+    std::fs::create_dir_all(abs.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&abs, b"cache payload").expect("write");
+    let (_entry, meta) = cache_file_entry(cache, &abs)
+        .expect("manifest pass")
+        .expect("the file exists during the manifest pass");
+
+    // The daemon renames it away between the manifest pass and the append.
+    std::fs::remove_file(&abs).expect("remove");
+
+    let out = tmp.path().join("out.tar");
+    let appended = {
+        let file = File::create(&out).expect("create");
+        let mut tar_builder = tar::Builder::new(file);
+        let appended = append_cache_file_entry(&mut tar_builder, cache, &abs, &meta)
+            .expect("a vanished file must not fail the save");
+        tar_builder.finish().expect("finish");
+        appended
+    };
+    assert!(!appended, "nothing should have been appended");
+
+    // Positive control: the same call on a present file still appends, so
+    // the tolerance cannot silently empty an archive.
+    let keep = cache.join("zccache/objects/ab/keep.o");
+    std::fs::write(&keep, b"kept").expect("write");
+    let (_entry, meta) = cache_file_entry(cache, &keep)
+        .expect("manifest pass")
+        .expect("present");
+    let appended = {
+        let file = File::create(&out).expect("create");
+        let mut tar_builder = tar::Builder::new(file);
+        let appended =
+            append_cache_file_entry(&mut tar_builder, cache, &keep, &meta).expect("append");
+        tar_builder.finish().expect("finish");
+        appended
+    };
+    assert!(appended, "a present file must still be archived");
+    let entries = tar::Archive::new(File::open(&out).expect("open"))
+        .entries()
+        .expect("entries")
+        .count();
+    assert_eq!(entries, 1);
+}
+
 #[test]
 fn legacy_archive_cannot_mutate_live_daemon_runtime() {
     let root = tempfile::tempdir().unwrap();

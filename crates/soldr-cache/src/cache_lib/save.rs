@@ -256,6 +256,20 @@ fn io(path: impl Into<PathBuf>, source: std::io::Error) -> SaveLoadError {
     }
 }
 
+/// True when `err` is an I/O `NotFound` — i.e. the path disappeared
+/// between two passes over a tree a live daemon is still writing
+/// (#3533). Scoped to `NotFound` only: a permissions error or a bad disk
+/// still fails loudly, because those mean the archive would be silently
+/// incomplete.
+fn save_error_is_not_found(err: &SaveLoadError) -> bool {
+    match err {
+        SaveLoadError::Io { source, .. } | SaveLoadError::BareIo(source) => {
+            source.kind() == std::io::ErrorKind::NotFound
+        }
+        _ => false,
+    }
+}
+
 pub type Result<T> = std::result::Result<T, SaveLoadError>;
 
 // ---------- helpers shared by save + load ----------

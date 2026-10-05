@@ -390,9 +390,10 @@ fn walk_cache_files_for_profile(
             || (profile == SaveProfile::Ci && ci_profile_excludes_cache_path(rel))
             || (profile == SaveProfile::Cook && cook_profile_excludes_cache_path(rel))
         {
-            let meta = std::fs::metadata(&abs).map_err(|e| io(&abs, e))?;
             walk.excluded_files += 1;
-            walk.excluded_bytes = walk.excluded_bytes.saturating_add(meta.len());
+            walk.excluded_bytes = walk
+                .excluded_bytes
+                .saturating_add(excluded_file_len(&abs)?);
         } else {
             walk.included_paths.push(abs);
         }
@@ -424,6 +425,22 @@ fn walk_cache_files_for_profile(
         }
     }
     Ok(walk)
+}
+
+/// Bytes of an excluded cache file, for exclusion accounting.
+///
+/// `Ok(0)` when the file vanished between the directory walk and this
+/// stat (#3533): a lock, socket, or zccache `*.tmp-*` scratch file the
+/// daemon already renamed away is exactly what the exclusion predicted,
+/// and counting it must not fail a whole save. Any other error still
+/// fails loudly — a permissions error or a bad disk means the walk is
+/// untrustworthy.
+fn excluded_file_len(abs: &Path) -> Result<u64> {
+    match std::fs::metadata(abs) {
+        Ok(meta) => Ok(meta.len()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(io(abs, e)),
+    }
 }
 
 /// Build the manifest entry for one on-disk symlink, or explain why it is
@@ -479,6 +496,16 @@ fn archive_always_excludes_cache_path(rel: &Path) -> bool {
 /// `staging/` is included by directory name because its contents are
 /// partially-written files by construction: a publish in flight is not cache
 /// payload, and its name is not predictable enough to match by suffix.
+///
+/// zccache's atomic-rename scratch files are the same story under another
+/// name (#3533): the daemon writes `.{name}.tmp-<pid>[-<seq>]` (the exact
+/// failure was `.metadata.bin.tmp-2869-6`) and renames it into place, so a
+/// full-profile save used to walk-and-hash a file that could be renamed
+/// away mid-save. These files are by construction half-written and about to
+/// disappear — never payload — so any path component containing `.tmp-`
+/// (which also covers the `.tmp-<id>` staged-store scratch and its
+/// `.tmp-crashed` marker directory) and any `*.tmp` file are excluded at
+/// any depth, before they can be stat'd or hashed at all.
 fn path_is_transient_runtime_file(rel: &Path) -> bool {
     let parts: Vec<String> = rel
         .components()
@@ -487,7 +514,10 @@ fn path_is_transient_runtime_file(rel: &Path) -> bool {
             _ => None,
         })
         .collect();
-    if parts.iter().any(|part| part == "staging") {
+    if parts
+        .iter()
+        .any(|part| part == "staging" || part.contains(".tmp-"))
+    {
         return true;
     }
     let Some(file_name) = parts.last().map(String::as_str) else {
@@ -498,6 +528,7 @@ fn path_is_transient_runtime_file(rel: &Path) -> bool {
         || file_name.ends_with(".sock")
         || file_name.ends_with(".socket")
         || file_name.ends_with(".pid")
+        || file_name.ends_with(".tmp")
 }
 
 fn manifest_path_is_daemon_runtime(path: &str) -> bool {
@@ -734,7 +765,23 @@ fn cache_file_entry(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(io(abs, e)),
     };
-    let hash = hash_file(abs)?;
+    // The stat above and the hash below are two syscalls with a window
+    // between them: the daemon can rename the file away (its `.metadata.bin`
+    // is written `.{name}.tmp-<pid>` then renamed into place, #3533) right
+    // after we stat'd it. That is the same "file vanished" outcome as the
+    // stat, so it is skipped the same way instead of failing the save.
+    let hash = match hash_file(abs) {
+        Ok(hash) => hash,
+        Err(e) if save_error_is_not_found(&e) => {
+            tracing::debug!(
+                event = "save_hash_vanished",
+                path = %abs.display(),
+                "file vanished between stat and hash; skipped"
+            );
+            return Ok(None);
+        }
+        Err(e) => return Err(e),
+    };
     let entry = CacheFile {
         path: rel_to_posix(rel),
         mtime_ns: mtime_ns(&meta),
