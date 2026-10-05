@@ -18,6 +18,7 @@ mod cli_gc_extras;
 mod cli_gc_git_checkouts;
 mod cli_gc_registry_src;
 mod cli_gc_report_only;
+mod cli_gc_rustup_purge;
 mod cli_gc_target;
 mod cli_gc_target_subtrees;
 mod cook_auto_gc;

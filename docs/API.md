@@ -1923,6 +1923,8 @@ soldr gc purge --doc --all                     # delete target/doc/
 soldr gc purge --subcommand-caches --all       # delete target/{criterion,nextest,...}/
 soldr gc purge --registry-src --all            # delete extracted registry sources
 soldr gc purge --git-checkouts --all           # delete git checkout worktrees
+soldr gc purge --kind rustup_toolchain --dry-run --all  # list unprotected toolchains; deletes nothing
+soldr gc purge --kind rustup_toolchain --all   # uninstall them via `rustup toolchain uninstall`
 ```
 
 Defaults:
@@ -1947,8 +1949,12 @@ reclaimable size, skipped/dropped counts, and the largest eligible
 target directories with size and last-used age.
 
 `gc list --json` uses the issue #323 taxonomy. Derived kinds can be
-purged through explicit opt-in flags or `--kind`; primary kinds are
-report-only and `gc purge --kind <primary>` is rejected before deletion.
+purged through explicit opt-in flags or `--kind`; the cargo-owned primary
+kinds (`cargo_registry_cache`, `cargo_git_db`, `cargo_installed_binaries`)
+remain report-only and `gc purge --kind <primary>` is rejected before
+deletion for them. `rustup_toolchain` is also primary but is purgeable
+through rustup itself — see the
+`soldr gc purge --kind rustup_toolchain` section below.
 
 Derived purge kinds:
 
@@ -1960,11 +1966,14 @@ Derived purge kinds:
 - `cargo_registry_src`
 - `cargo_git_checkouts`
 
-Report-only primary kinds:
+Report-only primary kinds (rejected before deletion):
 
 - `cargo_registry_cache`
 - `cargo_git_db`
 - `cargo_installed_binaries`
+
+Primary but purgeable through rustup (soldr#3507):
+
 - `rustup_toolchain`
 
 **Eviction order and `in_worktree` (issue #2134).** `cargo_target`
@@ -2002,6 +2011,100 @@ space on the relevant target/current filesystem before spawning Cargo.
 When less than 2 GB is available, it emits a yellow stderr warning that
 recommends `soldr gc`. Disk-space detection failures are ignored so they
 never fail the build.
+
+### `soldr gc purge --kind rustup_toolchain` (soldr#3507)
+
+Real deletion for installed rustup toolchains. Until #3507 this kind was
+report-only ("cargo/rustup own deletion"), nothing ever pruned
+`$RUSTUP_HOME/toolchains/`, and a long-lived soldr home accumulated every
+channel any pin had ever named. Deletion is still owned by rustup: soldr
+never removes the directory itself, it runs
+`rustup toolchain uninstall <name>` per candidate with `RUSTUP_HOME`
+pinned to the home the candidate was enumerated from.
+
+Two homes are enumerated — each report line says which (soldr#1799):
+
+- the caller's `$RUSTUP_HOME`, or `~/.rustup` when unset (`origin:
+  "caller"`);
+- soldr's managed `<root>/rustup`, where `soldr toolchain prepare`
+  installs (`origin: "managed"`). This is where the 20 GB of #3507
+  lived, and it used to be invisible to `gc list`.
+
+```bash
+soldr gc purge --kind rustup_toolchain --dry-run --all   # what would go; deletes nothing, never spawns rustup
+soldr gc purge --kind rustup_toolchain                   # prompt per candidate (closed stdin answers no)
+soldr gc purge --kind rustup_toolchain --all             # no prompt
+soldr gc purge --kind rustup_toolchain --all --json      # machine-readable report
+```
+
+Safety rails — a toolchain is never a candidate when it is:
+
+- the enumerated home's default toolchain (`settings.toml`), or one of
+  that home's `[overrides]` toolchains (rail: active/default);
+- the toolchain this invocation resolves to: `$RUSTUP_TOOLCHAIN`, or the
+  `rust-toolchain.toml` channel found in the working directory's
+  ancestors — which also covers the repo's stable pin, e.g. `1.98.1`
+  inside the soldr tree (rails: active pin + repo pin);
+- anything at all, when that home's `settings.toml` exists but cannot be
+  read or parsed — an unreadable default fails closed for the whole home
+  and the report says so.
+
+Matching is exact-or-triple-aware — a pin of `1.98.1` protects the
+installed directory `1.98.1-x86_64-unknown-linux-gnu` — and
+version-segment aware: `channel = "1.95"` protects the resolved
+`1.95.0-...` directory. Both rules run one-directional (protected →
+installed), so pins only ever over-protect; they can never match past a
+different version. A bare `nightly` never covers a dated
+`nightly-YYYY-MM-DD` snapshot, so old dailies stay eligible while the
+current `nightly` stays protected.
+
+`--dry-run` is only accepted for this kind; every other `gc purge` kind
+rejects it rather than silently ignoring it. `--older-than` /
+`--larger-than` are `target/` knobs and do not apply here: toolchain
+eligibility is decided by the protection rails alone, not by directory
+age (a toolchain's mtime is not a reliable last-used signal). Unlike the
+other gc prompts, a closed stdin answers **no** — bulk deletion requires
+`--all`.
+
+JSON shape (`schema_version: 3`), one row per enumerated home:
+
+```json
+{
+  "schema_version": 3,
+  "command": "gc",
+  "mode": "purge",
+  "kind": "rustup_toolchain",
+  "dry_run": true,
+  "selected_count": 1,
+  "uninstalled_count": 0,
+  "failed_count": 0,
+  "reclaimed_bytes": 0,
+  "reclaimed_human": "0 B",
+  "homes": [
+    {
+      "rustup_home": "/home/me/.rustup",
+      "origin": "caller",
+      "installed_count": 17,
+      "default_toolchain": "stable-x86_64-unknown-linux-gnu",
+      "settings_unreadable": false,
+      "protected": ["1.98.1", "stable-x86_64-unknown-linux-gnu"],
+      "candidates": [
+        {"toolchain": "1.70-x86_64-unknown-linux-gnu", "size_bytes": 1200000000, "size_human": "1.2 GB"}
+      ],
+      "selected": [
+        {"toolchain": "1.70-x86_64-unknown-linux-gnu", "size_bytes": 1200000000, "size_human": "1.2 GB"}
+      ],
+      "uninstalled": [],
+      "failures": []
+    }
+  ]
+}
+```
+
+`selected` mirrors `candidates` under `--dry-run` (a dry-run cannot
+prompt, so it reports the `--all` shape); after a real purge it holds the
+chosen subset. `failures` entries are `{toolchain, error}` and a
+per-candidate rustup failure does not abort the rest of the run.
 
 ### `soldr gc cargo` (issue #323)
 

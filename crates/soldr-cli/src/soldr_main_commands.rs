@@ -319,6 +319,7 @@ async fn run_gc_cli(
             build_scripts,
             doc,
             subcommand_caches,
+            dry_run,
         }) => {
             let effective_kind = gc_purge_kind(
                 kind,
@@ -329,7 +330,7 @@ async fn run_gc_cli(
                 doc,
                 subcommand_caches,
             );
-            match gc_purge_invocation(effective_kind, all, older_than, larger_than, json)? {
+            match gc_purge_invocation(effective_kind, all, older_than, larger_than, json, dry_run)? {
                 Some(invocation) => invocation,
                 None => return Ok(()),
             }
@@ -388,8 +389,37 @@ fn gc_purge_invocation(
     older_than: String,
     larger_than: String,
     json: bool,
+    dry_run: bool,
 ) -> Result<Option<gc::GcInvocation>, SoldrError> {
+    // `--dry-run` exists for the rustup toolchain purge (soldr#3507).
+    // Every other kind rejects it loudly instead of pretending to honor
+    // it; the three cargo-owned report-only kinds below keep their
+    // original message even when `--dry-run` is passed alongside it.
+    if dry_run
+        && !matches!(
+            effective_kind,
+            Some(
+                GcListKind::RustupToolchain
+                    | GcListKind::CargoRegistryCache
+                    | GcListKind::CargoGitDb
+                    | GcListKind::CargoInstalledBinaries
+            )
+        )
+    {
+        let got = match effective_kind {
+            Some(kind) => format!("--kind {}", gc_kind_display_name(kind)),
+            None => "the default cargo_target purge".to_string(),
+        };
+        return Err(SoldrError::Other(format!(
+            "gc purge --dry-run is only supported with `--kind rustup_toolchain` (got {got}); use `soldr gc` for a report-only summary of tracked targets"
+        )));
+    }
     match effective_kind {
+        Some(GcListKind::RustupToolchain) => {
+            // Real deletion, delegated: rustup owns the bytes (soldr#3507).
+            gc::run_gc_purge_rustup_toolchain_command(all, json, dry_run)?;
+            Ok(None)
+        }
         Some(GcListKind::CargoRegistrySrc) => {
             gc::run_gc_purge_registry_src_command(all, json)?;
             Ok(None)
@@ -412,18 +442,9 @@ fn gc_purge_invocation(
             Ok(None)
         }
         Some(
-            GcListKind::CargoRegistryCache
-            | GcListKind::CargoGitDb
-            | GcListKind::CargoInstalledBinaries
-            | GcListKind::RustupToolchain,
+            GcListKind::CargoRegistryCache | GcListKind::CargoGitDb | GcListKind::CargoInstalledBinaries,
         ) => {
-            let kind_name = match effective_kind.expect("matched Some") {
-                GcListKind::CargoRegistryCache => "cargo_registry_cache",
-                GcListKind::CargoGitDb => "cargo_git_db",
-                GcListKind::CargoInstalledBinaries => "cargo_installed_binaries",
-                GcListKind::RustupToolchain => "rustup_toolchain",
-                _ => "selected kind",
-            };
+            let kind_name = gc_kind_display_name(effective_kind.expect("matched Some"));
             Err(SoldrError::Other(format!(
                 "gc purge --kind {kind_name} is report-only; cargo/rustup own deletion for this primary cache"
             )))
@@ -434,6 +455,23 @@ fn gc_purge_invocation(
             larger_than,
             json,
         })),
+    }
+}
+
+/// Taxonomy kind → the `--kind` spelling users type.
+fn gc_kind_display_name(kind: GcListKind) -> &'static str {
+    match kind {
+        GcListKind::CargoTarget => "cargo_target",
+        GcListKind::CargoTargetIncremental => "cargo_target_incremental",
+        GcListKind::CargoTargetBuildScriptBinaries => "cargo_target_build_script_binaries",
+        GcListKind::CargoTargetDoc => "cargo_target_doc",
+        GcListKind::CargoTargetSubcommandCaches => "cargo_target_subcommand_caches",
+        GcListKind::CargoRegistrySrc => "cargo_registry_src",
+        GcListKind::CargoRegistryCache => "cargo_registry_cache",
+        GcListKind::CargoGitCheckouts => "cargo_git_checkouts",
+        GcListKind::CargoGitDb => "cargo_git_db",
+        GcListKind::CargoInstalledBinaries => "cargo_installed_binaries",
+        GcListKind::RustupToolchain => "rustup_toolchain",
     }
 }
 
