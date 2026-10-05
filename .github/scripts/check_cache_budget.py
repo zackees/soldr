@@ -670,20 +670,24 @@ def action_store_lineage_candidates(
     # The current toolchain of every platform that still has a current-lock
     # store: the newest such entry, ties broken on the toolchain hash so two
     # entries with identical timestamps resolve the same way in any order.
-    current_toolchain: dict[str, tuple[str, str]] = {}
+    # Two parallel str dicts rather than a dict-of-tuple record (PY-002).
+    best_created: dict[str, str] = {}
+    best_toolchain: dict[str, str] = {}
     for entry, platform, toolchain, lock in recognized:
-        if lock == current_main_lock:
-            candidate = (entry.created_at or "", toolchain)
-            if (
-                platform not in current_toolchain
-                or candidate > current_toolchain[platform]
-            ):
-                current_toolchain[platform] = candidate
+        if lock != current_main_lock:
+            continue
+        created = entry.created_at or ""
+        if platform not in best_created or (created, toolchain) > (
+            best_created[platform],
+            best_toolchain[platform],
+        ):
+            best_created[platform] = created
+            best_toolchain[platform] = toolchain
     return [
         entry
         for entry, platform, toolchain, lock in recognized
-        if platform in current_toolchain
-        and (lock != current_main_lock or toolchain != current_toolchain[platform][1])
+        if platform in best_toolchain
+        and (lock != current_main_lock or toolchain != best_toolchain[platform])
     ]
 
 
