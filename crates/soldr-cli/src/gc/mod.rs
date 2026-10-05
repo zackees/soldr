@@ -10,6 +10,10 @@
 //! - [`purge`] — confirmation prompt, parallel deletion worker pool,
 //!   `gc purge --registry-src` / `--git-checkouts` commands, and the
 //!   per-summary helpers used by the top-level dispatch entry.
+//! - [`rustup_toolchain`] — `gc purge --kind rustup_toolchain`
+//!   (soldr#3507): enumeration of the caller + managed rustup homes,
+//!   the protected-name selection rails, and the delegation to
+//!   `rustup toolchain uninstall`.
 //! - [`cargo_native`] — `gc cargo`, `gc locations`, `gc sweep` and
 //!   the nightly-cargo wrapper `invoke_cargo_native_gc`.
 //! - [`auto`] — auto-GC background machinery driven by the cargo
@@ -26,6 +30,7 @@ mod discovery;
 pub(crate) mod disk;
 mod holding_process;
 mod purge;
+mod rustup_toolchain;
 pub(crate) mod target_walker;
 mod walks;
 
@@ -39,6 +44,7 @@ pub(crate) use purge::{
     run_gc_purge_git_checkouts_command, run_gc_purge_registry_src_command,
     run_gc_purge_target_subtree_command,
 };
+pub(crate) use rustup_toolchain::run_gc_purge_rustup_toolchain_command;
 
 // Items the tests file reaches through `super::*`. Keeping these
 // `use`d inside `mod.rs` makes the visibility explicit and survives
@@ -602,12 +608,12 @@ pub(crate) fn run_gc_list_command(
         entries.extend(walks::walk_cargo_report_only(&cargo_home, now, kind_filter));
     }
 
-    if let Some(rustup_home) = crate::core::resolve_rustup_home() {
-        entries.extend(walks::walk_rustup_toolchains(
-            &rustup_home,
-            now,
-            kind_filter,
-        ));
+    // Both rustup homes the purge surface operates on (soldr#3507): the
+    // caller's own `$RUSTUP_HOME` and the managed `<root>/rustup`, so
+    // `gc list` can never show a toolchain the purge would not — the 20 GB
+    // of #3507 lives in the managed home and used to be invisible here.
+    for home in rustup_toolchain::homes_for_enumeration(Some(&paths)) {
+        entries.extend(walks::walk_rustup_toolchains(&home.path, now, kind_filter));
     }
 
     // Bounded reopen for the batched removal (#1681).

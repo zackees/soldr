@@ -182,6 +182,12 @@ pub(crate) enum GcSubcommand {
         /// Delete every eligible candidate without prompting.
         #[arg(long)]
         all: bool,
+        /// Report what would be uninstalled and exit without deleting
+        /// anything. Only supported with `--kind rustup_toolchain`
+        /// (soldr#3507); every other kind rejects it rather than
+        /// silently ignoring it.
+        #[arg(long)]
+        dry_run: bool,
         /// Minimum age before a `target/` is considered stale
         /// (e.g. `10d`, `4w`).
         #[arg(long, default_value = "10d", value_name = "DURATION")]
@@ -194,8 +200,12 @@ pub(crate) enum GcSubcommand {
         #[arg(long)]
         json: bool,
         /// Narrow the purge to a single taxonomy kind. Mutually exclusive
-        /// with shorthand flags. Report-only primary kinds are accepted
-        /// for parse consistency but rejected before deletion.
+        /// with shorthand flags. The cargo-owned primary kinds
+        /// (`cargo_registry_cache`, `cargo_git_db`,
+        /// `cargo_installed_binaries`) are accepted for parse consistency
+        /// but rejected before deletion; `rustup_toolchain` purges for
+        /// real by delegating to `rustup toolchain uninstall`
+        /// (soldr#3507).
         #[arg(
             long,
             value_enum,
