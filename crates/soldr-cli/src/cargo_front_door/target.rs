@@ -198,13 +198,14 @@ pub(super) async fn apply_linker_override(
 }
 
 /// Synchronous bridge for unit tests that only inspect the command environment.
+/// The dylint-active backstop has no test caller that needs it set, so the
+/// bridge pins it to `false` — the production entrypoints thread the real value.
 #[cfg(test)]
 pub(super) fn apply_linker_override_blocking(
     command: &mut std::process::Command,
     args: &[String],
     explicit_target: Option<&str>,
     paths: &SoldrPaths,
-    dylint_active: bool,
 ) -> Result<(), SoldrError> {
     tokio::runtime::Runtime::new()
         .map_err(|error| SoldrError::Other(error.to_string()))?
@@ -213,7 +214,7 @@ pub(super) fn apply_linker_override_blocking(
             args,
             explicit_target,
             paths,
-            dylint_active,
+            false,
         ))
 }
 
