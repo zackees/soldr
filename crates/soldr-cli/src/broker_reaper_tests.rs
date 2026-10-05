@@ -286,3 +286,127 @@ fn the_production_start_token_is_stable_and_bounded() {
         None
     );
 }
+
+// ── soldr#3572: route endpoint socket reclamation ───────────────────────────
+
+fn touch_socket(dir: &std::path::Path, stem: &str, suffix: &str) -> std::path::PathBuf {
+    let path = dir.join(format!("{stem}{suffix}"));
+    // A plain file stands in for a socket node: the sweep's liveness probe
+    // refuses to connect to it exactly as it refuses a dead socket.
+    std::fs::write(&path, b"").expect("write placeholder endpoint");
+    path
+}
+
+fn seed_route(dir: &std::path::Path, stem: &str) -> Vec<std::path::PathBuf> {
+    [".session.sock", ".control.sock", ".handoff.sock"]
+        .iter()
+        .map(|suffix| touch_socket(dir, stem, suffix))
+        .collect()
+}
+
+#[test]
+fn dead_route_endpoints_are_removed_and_live_ones_are_not() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dead = seed_route(dir.path(), "d-deadbeefdeadbeef");
+    // A route whose daemon is still up: bind and listen so a connect succeeds.
+    let live_stem = "d-cafecafecafecafe";
+    let live_paths: Vec<std::path::PathBuf> = [".session.sock", ".control.sock", ".handoff.sock"]
+        .iter()
+        .map(|suffix| dir.path().join(format!("{live_stem}{suffix}")))
+        .collect();
+    // `bind_listener` returns a Tokio listener, so it needs a reactor to bind.
+    // The listener keeps the underlying socket alive after the runtime ends,
+    // which is all this test needs — a peer that answers `connect`.
+    let mut listeners = Vec::new();
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let _guard = runtime.enter();
+        for path in &live_paths {
+            let listener = crate::platform::ipc::broker::bind_listener(&path.to_string_lossy(), 8)
+                .expect("bind live endpoint");
+            listeners.push(listener);
+        }
+    }
+
+    let removed = crate::broker_reaper::reap_dead_route_endpoints(dir.path());
+
+    assert_eq!(removed, vec!["d-deadbeefdeadbeef".to_owned()]);
+    for path in &dead {
+        assert!(
+            !path.exists(),
+            "dead endpoint {} should be removed",
+            path.display()
+        );
+    }
+    for path in &live_paths {
+        assert!(
+            path.exists(),
+            "live endpoint {} must be kept",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn the_sweep_never_touches_the_broker_itself_or_unrelated_files() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Files that share the broker directory and must survive untouched.
+    let keep = [
+        "soldr-broker.sock",
+        "soldr-broker",
+        "broker-lease-abc.sqlite3",
+        "broker-spawn.log",
+        "bind.lock",
+        "stamp",
+    ];
+    for name in keep {
+        std::fs::write(dir.path().join(name), b"").expect("write bystander");
+    }
+    // A route with only some of its sockets present is still reclaimed once
+    // none of them answer.
+    touch_socket(dir.path(), "d-partialpartial", ".control.sock");
+
+    crate::broker_reaper::reap_dead_route_endpoints(dir.path());
+
+    for name in keep {
+        assert!(
+            dir.path().join(name).exists(),
+            "{name} must not be removed by the route sweep"
+        );
+    }
+    assert!(!dir.path().join("d-partialpartial.control.sock").exists());
+}
+
+#[test]
+fn a_missing_broker_directory_is_not_an_error() {
+    let missing = std::path::Path::new("/nonexistent/broker/dir/for/tests");
+    assert!(crate::broker_reaper::reap_dead_route_endpoints(missing).is_empty());
+}
+
+/// Not a regression test: proves the sweep against the *measured* pileup on a
+/// developer host (#3572 reported 1,725 routes, 1,724 with no listener).
+/// Ignored by default because it would delete a real home's routes.
+#[test]
+#[ignore = "destructive: removes dead route sockets from the real broker dir"]
+fn the_real_broker_directory_has_no_dead_routes_left_after_a_sweep() {
+    let Ok(endpoint) = crate::broker_identity::ResolvedBrokerEndpoint::resolve() else {
+        return;
+    };
+    let Some(dir) = endpoint
+        .executable_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+    else {
+        return;
+    };
+    let first = crate::broker_reaper::reap_dead_route_endpoints(&dir);
+    let second = crate::broker_reaper::reap_dead_route_endpoints(&dir);
+    assert!(
+        second.is_empty(),
+        "a second sweep found more dead routes: {second:?}"
+    );
+    println!("swept {} dead route(s) from {}", first.len(), dir.display());
+}
