@@ -54,6 +54,7 @@
         "cli_gc_git_checkouts",
         "cli_gc_registry_src",
         "cli_gc_report_only",
+        "cli_gc_rustup_purge",
         "cli_gc_target",
         "cook_auto_gc"
       ],

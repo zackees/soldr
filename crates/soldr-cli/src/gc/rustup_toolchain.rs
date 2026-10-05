@@ -1000,12 +1000,21 @@ mod tests {
         let root = dir.path().join("toolchains");
         std::fs::create_dir_all(root.join("stable-x86_64-unknown-linux-gnu")).expect("mkdir");
         std::fs::create_dir_all(root.join("1.70-x86_64-unknown-linux-gnu")).expect("mkdir");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(
-            root.join("1.70-x86_64-unknown-linux-gnu"),
-            root.join("custom-link"),
-        )
-        .expect("symlink");
+        // Created through the platform crate behind a runtime host gate,
+        // not `#[cfg(unix)]`/`std::os::unix` — the #2493 boundary (and on
+        // Windows symlink creation needs privileges the target-run lanes
+        // may not grant; the assertion below holds either way, since an
+        // absent custom-link is skipped exactly like a symlinked one).
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+            soldr_platform::fs::links::create(
+                root.join("1.70-x86_64-unknown-linux-gnu")
+                    .to_string_lossy()
+                    .as_ref(),
+                root.join("custom-link").to_string_lossy().as_ref(),
+                false,
+            )
+            .expect("symlink");
+        }
         assert_eq!(
             installed_toolchain_names(&root),
             names(&[

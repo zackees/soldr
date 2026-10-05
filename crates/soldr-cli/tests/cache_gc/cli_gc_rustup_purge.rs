@@ -43,7 +43,9 @@ fn seed_toolchain_dir(rustup_home: &Path, name: &str) -> PathBuf {
     let bin = dir.join("bin");
     fs::create_dir_all(&bin).expect("failed to create fake toolchain dir");
     fs::write(
-        bin.join(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
+        // Host-agnostic: EXE_SUFFIX (""/".exe"), not `cfg!(windows)` —
+        // host cfg outside soldr-platform is denied by the #2493 boundary.
+        bin.join(format!("rustc{}", std::env::consts::EXE_SUFFIX)),
         format!("fake rustc for {name}"),
     )
     .expect("failed to seed fake rustc");
