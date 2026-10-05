@@ -1239,13 +1239,16 @@ def test_real_manifest_declares_evict_only_for_the_safe_families() -> None:
         "attestation-evidence": "lru",
         "experiment-lanes": "lru",
         "pinned-immutable-download": "newest-per-lineage",
+        # soldr#3545: superseded lock/toolchain generations are safe-pruned
+        # first, so this only bites on an overage safe-prune cannot explain.
+        "setup-soldr-action-stores": "newest",
         # soldr#3458: only the newest main store generation is ever restored.
         "zccache-unit": "newest",
     }
 
 
 @pytest.mark.parametrize("kind", ["buildcache", "cargoregistry"])
-def test_action_store_retires_only_replaced_main_lock(kind):
+def test_action_store_retires_superseded_lock_and_toolchain(kind):
     current, old, toolchain = "a" * 16, "b" * 16, "c" * 16
 
     def key(lock, shape="linux-x64"):
@@ -1263,6 +1266,50 @@ def test_action_store_retires_only_replaced_main_lock(kind):
             entry(key(old) + "-job-namespace", 900),
         ]
     )
-    assert guard.prune_candidates(entries, current) == [entries[0]]
+    # Retired: the replaced lock generation (entries[0]) and, soldr#3545, the
+    # superseded toolchain generation on the same os/arch (entries[4]) -- it
+    # differs from the live store only by the toolchain hash, so no current
+    # job can ever restore it.
+    assert guard.prune_candidates(entries, current) == [entries[0], entries[4]]
+    # Protected: the current-lock, current-toolchain store (entries[1]), the
+    # windows platform with no current-lock store, unknown formats, and the
+    # namespaced key.
+    assert entries[1] not in guard.prune_candidates(entries, current)
     assert guard.prune_candidates(entries, None) == []
     assert guard.prune_candidates(entries[:1], current) == []
+
+
+@pytest.mark.parametrize("kind", ["buildcache", "cargoregistry"])
+def test_3545_sweep_reclaims_the_older_toolchain_under_one_lock(kind):
+    """soldr#3545: two toolchain generations sharing one lock hash.
+
+    The reported shape: both entries carried the live main lock and differed
+    only in toolchain hash (a toolchain bump that did not touch Cargo.lock),
+    so the lock rule never fired and a shape match that included the
+    toolchain hash never matched -- the stale store was unreachable by every
+    eviction rule while the family sat permanently over its allocation.
+    """
+    lock, stale_toolchain, live_toolchain = "e" * 16, "c" * 16, "d" * 16
+
+    def key(toolchain):
+        if kind == "buildcache":
+            return f"setup-soldr-buildcache-v2-linux-x64-{toolchain}-{lock}"
+        return f"setup-soldr-cargoregistry-v1-linux-x64-{lock}-{toolchain}"
+
+    rows = [
+        aged(key(stale_toolchain), 600, created="2026-09-15T00:00:00Z"),
+        aged(key(live_toolchain), 500, created="2026-09-25T00:00:00Z"),
+    ]
+    spec = {
+        "key_prefixes": ["setup-soldr-buildcache-", "setup-soldr-cargoregistry-"],
+        "max_bytes": 1_000,
+        "entries": [],
+        "rationale": "fixture",
+    }
+    delete, deferred = guard.plan_sweep(
+        guard.normalize_entries(rows), {"budget": budget_with(fam=spec)}, lock, NOW
+    )
+    assert [e.key for e in delete] == [key(stale_toolchain)]
+    assert deferred == []
+    # The current-toolchain generation is genuinely in use and stays live.
+    assert key(live_toolchain) not in {e.key for e in delete}

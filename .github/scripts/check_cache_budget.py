@@ -61,7 +61,10 @@ lineage. The old perf-matrix target-cache namespace is an exception: it is
 kept until a registry-only replacement exists for the same platform. It also
 retires old cook locks within the same target/feature shape
 (across soldr versions) only when that shape has a base under the exact
-current main Cargo.lock hash; see `cook_lineage_candidates`. The report
+current main Cargo.lock hash; see `cook_lineage_candidates`, and superseded
+setup-action store generations (an older lock, or an older toolchain hash
+than the platform's newest current-lock store) via
+`action_store_lineage_candidates`. The report
 prints raw usage and the projected effective-after-safe-prune usage
 separately, and the exit code always follows raw usage.
 Pruning needs cache ids to call `gh cache delete`, so it requires the live
@@ -628,31 +631,59 @@ ACTION_REGISTRY_KEY = re.compile(
 def action_store_lineage_candidates(
     on_main: list[CacheEntry], current_main_lock: str | None
 ) -> list[CacheEntry]:
-    """Retire replaced lock generations of recognized setup-action stores.
+    """Retire superseded lock/toolchain generations of setup-action stores.
 
-    Keep every current-lock entry and every unique platform/toolchain shape.
-    Namespaced or unknown key formats are deliberately outside this policy.
-    Re-running an older lock can rebuild its store, as with cook lineage
-    retention; it must not accumulate indefinitely at main's expense.
+    A recognized key splits into a platform (`<os>-<arch>`), a 16-hex
+    toolchain hash and a 16-hex lock hash. The retention policy:
+
+    * A platform with no entry under the live main lock is unique and active:
+      nothing on it is retired, however old its lock.
+    * On a platform that HAS a current-lock entry, that newest entry's
+      toolchain is the current one and every other entry on the platform is
+      superseded: an older lock at any toolchain (soldr#3347), or the same
+      lock under an older toolchain (soldr#3545 -- a toolchain bump changes
+      the toolchain hash while Cargo.lock often does not, so the stale store
+      shared the live entry's lock and was unreachable by both the lock rule
+      and a shape match that included the toolchain hash; two such entries
+      held 1.43 GiB of a 1.30 GiB family with no eviction rule that could
+      ever select either).
+    * Namespaced and unknown key formats are deliberately outside this
+      policy, and without a known current lock nothing is retired.
+    Re-running an older lock or toolchain can rebuild its store, as with cook
+    lineage retention; it must not accumulate indefinitely at main's expense.
     """
     if not current_main_lock:
         return []
-    recognized: list[tuple[CacheEntry, str, str]] = []
+    # (entry, platform, toolchain, lock). Both key formats end their shape in
+    # the toolchain hash, so the platform is everything before its last '-'.
+    recognized: list[tuple[CacheEntry, str, str, str]] = []
     for entry in on_main:
         build = ACTION_BUILD_KEY.fullmatch(entry.key)
         registry = ACTION_REGISTRY_KEY.fullmatch(entry.key)
         if build:
-            recognized.append((entry, build["shape"], build["lock"]))
+            platform, _, toolchain = build["shape"].rpartition("-")
+            recognized.append((entry, platform, toolchain, build["lock"]))
         elif registry:
-            shape = f"{registry['platform']}-{registry['toolchain']}"
-            recognized.append((entry, shape, registry["lock"]))
-    current_shapes = {
-        shape for _, shape, lock in recognized if lock == current_main_lock
-    }
+            recognized.append(
+                (entry, registry["platform"], registry["toolchain"], registry["lock"])
+            )
+    # The current toolchain of every platform that still has a current-lock
+    # store: the newest such entry, ties broken on the toolchain hash so two
+    # entries with identical timestamps resolve the same way in any order.
+    current_toolchain: dict[str, tuple[str, str]] = {}
+    for entry, platform, toolchain, lock in recognized:
+        if lock == current_main_lock:
+            candidate = (entry.created_at or "", toolchain)
+            if (
+                platform not in current_toolchain
+                or candidate > current_toolchain[platform]
+            ):
+                current_toolchain[platform] = candidate
     return [
         entry
-        for entry, shape, lock in recognized
-        if lock != current_main_lock and shape in current_shapes
+        for entry, platform, toolchain, lock in recognized
+        if platform in current_toolchain
+        and (lock != current_main_lock or toolchain != current_toolchain[platform][1])
     ]
 
 
