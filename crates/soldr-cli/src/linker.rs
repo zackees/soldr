@@ -181,8 +181,8 @@ pub fn from_env_and_config(
 }
 
 pub use crate::linker_project::{
-    reld_fetch_error, resolve_project_choice, resolve_project_choice_from_cwd, LinkerSource,
-    ProjectLinkerSelection, ReldCargoConfig,
+    reld_fetch_error, resolve_project_choice, resolve_project_choice_from_cwd,
+    resolve_project_choice_with_lint_roots, LinkerSource, ProjectLinkerSelection, ReldCargoConfig,
 };
 
 pub(crate) fn target_kind(target: &str) -> TargetKind {
@@ -329,7 +329,9 @@ pub async fn apply_pep517_override(
     // soldr#3277 suppression for a project's own `.cargo/config.toml`
     // linker/rustflags declaration (that case resolves to
     // `LinkerChoice::Default`, source `CargoConfig`).
-    let selection = resolve_project_choice_from_cwd(Some(target), paths)?;
+    // The PEP 517 path is never a Dylint-scoped invocation, so `false`
+    // keeps its per-lint config roots deliberately unconsulted (soldr#3483).
+    let selection = resolve_project_choice_from_cwd(Some(target), paths, false)?;
     let automatic_fast = selection.source == LinkerSource::Default
         && std::env::var(PEP517_LINKER_POLICY_ENV)
             .ok()
@@ -436,8 +438,12 @@ pub(crate) fn project_root(start: &Path) -> PathBuf {
 }
 
 /// Read `[target.<triple>] <key>` from `root/.cargo/config.toml` (or legacy
-/// `.cargo/config`). Only exact-triple sections are recognised: cfg-spec
-/// sections such as `[target.'cfg(all())']` are deliberately NOT detected.
+/// `.cargo/config`). Exact-triple sections win; the universally-matching
+/// `[target.'cfg(all())']` section is the fallback (see
+/// [`target_config_value_in_files`] for why both matter). Other cfg
+/// expressions are not evaluated — without a cfg matcher soldr cannot know
+/// whether they apply to the active target, and guessing wrong in either
+/// direction is worse than leaving them alone.
 #[cfg(test)]
 fn target_config_value_in_root(root: &Path, target: &str, key: &str) -> Option<String> {
     let config_files: Vec<PathBuf> = [".cargo/config.toml", ".cargo/config"]
@@ -447,11 +453,24 @@ fn target_config_value_in_root(root: &Path, target: &str, key: &str) -> Option<S
     target_config_value_in_files(&config_files, target, key)
 }
 
-/// Read `[target.<triple>] <key>` from the first of `config_files` (in
-/// order) that exists, parses, and declares the key. Generalized out of
+/// Read `<key>` from the first of `config_files` (in order) that exists,
+/// parses, and declares it for `target`. Generalized out of
 /// `target_config_value_in_root` (soldr#3276) so callers can layer a
 /// project's `.cargo/config.toml` ahead of `$CARGO_HOME/config.toml`
 /// without duplicating the TOML-walk logic.
+///
+/// Within one file an exact `[target.<triple>]` section wins over
+/// `[target.'cfg(all())']`, matching Cargo's rule that a `<triple>` linker
+/// takes precedence over a `<cfg>` one. The `cfg(all())` fallback exists
+/// because soldr#3483's failure mode depended on it being missed: every
+/// Dylint lint crate declares its linker as
+/// `[target.'cfg(all())'] linker = "dylint-link"`, which applies to every
+/// target yet used to be invisible here — so the guard fell through to the
+/// automatic default, injected `CARGO_TARGET_<triple>_LINKER`, and (triple
+/// beating cfg) silently disabled `dylint-link` for the lint build. Other
+/// cfg expressions (`cfg(unix)`, …) are still not evaluated: soldr has no
+/// cfg matcher, and a wrong guess would suppress — or fail to suppress —
+/// the automatic default for an unrelated project build.
 pub(crate) fn target_config_value_in_files(
     config_files: &[PathBuf],
     target: &str,
@@ -464,10 +483,16 @@ pub(crate) fn target_config_value_in_files(
         let Ok(value) = contents.parse::<toml::Value>() else {
             continue;
         };
-        let configured = value
-            .get("target")
-            .and_then(|targets| targets.get(target))
-            .and_then(|target_config| target_config.get(key));
+        let configured = value.get("target").and_then(|targets| {
+            targets
+                .get(target)
+                .and_then(|target_config| target_config.get(key))
+                .or_else(|| {
+                    targets
+                        .get("cfg(all())")
+                        .and_then(|target_config| target_config.get(key))
+                })
+        });
         if let Some(value) = configured {
             let text = match value {
                 toml::Value::String(value) => value.clone(),

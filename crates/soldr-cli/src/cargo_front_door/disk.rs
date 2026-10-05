@@ -131,13 +131,130 @@ pub(super) fn absolutize_path(path: std::path::PathBuf) -> std::path::PathBuf {
     }
 }
 
+/// Assemble the child cargo's PATH: `dirs` first (in declaration order),
+/// then the inherited PATH, with duplicates removed from both halves.
+///
+/// soldr#3485: `dirs` carries the fetched `cargo-<sub>` tool's directory,
+/// which is version-scoped (`bin/cargo-chef-0.1.73`), and it used to be
+/// prepended unconditionally. That made the child's PATH hash differ between
+/// phases of one workflow — `soldr cook` carried the chef dir while the
+/// following `soldr cargo test` did not — so every PATH-tracking build
+/// script (pyo3's `rerun-if-env-changed=PATH` in particular) saw a dirty
+/// env between phases and rebuilt. Nested front-door invocations also
+/// re-prepended dirs the parent had already added, growing a duplicate per
+/// nesting level.
+///
+/// The rule now: a dir already present in the inherited PATH keeps its
+/// position and is not re-added — so re-assembling over a PATH that already
+/// contains every dir is byte-identical to the input, and a tool dir that
+/// is already resolvable never moves. A dir repeated within `dirs` is
+/// added once. Missing dirs keep the declaration order they are given.
+/// Note that a dir already resolvable *earlier* on the inherited PATH wins
+/// over a later fetched copy — cargo's own dispatch would have deferred to
+/// that binary anyway (`path_deferred_subcommand_tool`), so soldr only
+/// ever fills gaps.
 pub(super) fn prepend_paths(
     dirs: &[std::path::PathBuf],
     existing_path: Option<&std::ffi::OsStr>,
 ) -> Result<std::ffi::OsString, SoldrError> {
-    let mut paths: Vec<std::path::PathBuf> = dirs.to_vec();
-    if let Some(existing_path) = existing_path {
-        paths.extend(std::env::split_paths(existing_path));
+    let existing: Vec<std::path::PathBuf> = existing_path
+        .map(|value| std::env::split_paths(value).collect())
+        .unwrap_or_default();
+    let mut paths: Vec<std::path::PathBuf> = Vec::with_capacity(dirs.len() + existing.len());
+    for dir in dirs {
+        if existing.iter().any(|entry| entry == dir) || paths.iter().any(|entry| entry == dir) {
+            continue;
+        }
+        paths.push(dir.clone());
     }
+    paths.extend(existing);
     std::env::join_paths(paths).map_err(|e| SoldrError::Other(format!("invalid PATH: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepend_paths;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    fn join(entries: &[&str]) -> OsString {
+        std::env::join_paths(entries.iter().map(PathBuf::from)).expect("join paths")
+    }
+
+    fn dirs(entries: &[&str]) -> Vec<PathBuf> {
+        entries.iter().map(PathBuf::from).collect()
+    }
+
+    /// soldr#3485: a missing tool dir is still prepended, ahead of the
+    /// inherited PATH, in the order the caller declared it.
+    #[test]
+    fn missing_dirs_are_prepended_in_declaration_order() {
+        let existing = join(&["/usr/bin", "/bin"]);
+        let assembled =
+            prepend_paths(&dirs(&["/tools/a", "/tools/b"]), Some(&existing)).expect("prepend");
+        assert_eq!(
+            assembled,
+            join(&["/tools/a", "/tools/b", "/usr/bin", "/bin"])
+        );
+    }
+
+    /// The headline observable of soldr#3485: when the tool dir is already
+    /// resolvable, insertion must not change PATH at all — byte for byte —
+    /// so a PATH-tracking build script's `rerun-if-env-changed=PATH` never
+    /// fires between two invocations that resolve the same tool.
+    #[test]
+    fn a_tool_dir_already_present_leaves_path_byte_identical() {
+        let existing = join(&["/usr/bin", "/tools/cargo-chef-0.1.73", "/bin"]);
+        let assembled =
+            prepend_paths(&dirs(&["/tools/cargo-chef-0.1.73"]), Some(&existing)).expect("prepend");
+        assert_eq!(
+            assembled, existing,
+            "an already-present tool dir must not be re-added or moved"
+        );
+    }
+
+    /// A nested front-door invocation inherits the PATH the parent front door
+    /// already assembled. Re-running assembly over it must be a no-op —
+    /// otherwise every nesting level added another copy of the same dir.
+    #[test]
+    fn reassembly_over_an_already_assembled_path_adds_nothing() {
+        let first = prepend_paths(&dirs(&["/tools/cargo-nextest-0.9"]), None).expect("first");
+        let second =
+            prepend_paths(&dirs(&["/tools/cargo-nextest-0.9"]), Some(&first)).expect("second");
+        assert_eq!(second, first);
+        let third =
+            prepend_paths(&dirs(&["/tools/cargo-nextest-0.9"]), Some(&second)).expect("third");
+        assert_eq!(third, first);
+    }
+
+    /// Duplicates within one batch collapse to a single entry, still ahead
+    /// of the inherited PATH and still in first-seen order.
+    #[test]
+    fn duplicate_dirs_within_the_batch_are_added_once() {
+        let existing = join(&["/usr/bin"]);
+        let assembled = prepend_paths(
+            &dirs(&["/tools/a", "/tools/b", "/tools/a", "/tools/b"]),
+            Some(&existing),
+        )
+        .expect("prepend");
+        assert_eq!(assembled, join(&["/tools/a", "/tools/b", "/usr/bin"]));
+    }
+
+    /// Two invocations with the same inputs assemble byte-identical PATHs
+    /// (the deterministic half of soldr#3485's acceptance).
+    #[test]
+    fn assembly_is_byte_stable_for_repeated_invocations() {
+        let existing = join(&["/usr/bin", "/bin"]);
+        let batch = dirs(&["/shims", "/tools/cargo-chef-0.1.73"]);
+        let first = prepend_paths(&batch, Some(&existing)).expect("first");
+        let second = prepend_paths(&batch, Some(&existing)).expect("second");
+        assert_eq!(first, second);
+    }
+
+    /// No inherited PATH: the batch stands alone, still deduplicated.
+    #[test]
+    fn without_an_inherited_path_the_batch_is_the_result() {
+        let assembled = prepend_paths(&dirs(&["/tools/a", "/tools/a"]), None).expect("prepend");
+        assert_eq!(assembled, join(&["/tools/a"]));
+    }
 }

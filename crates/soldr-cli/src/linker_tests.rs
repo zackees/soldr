@@ -906,12 +906,13 @@ fn linker_candidate_identity_differs_across_reld_versions() {
 }
 
 #[test]
-fn project_target_config_does_not_match_cfg_sections() {
-    // Known soldr#3277 limitation: cfg-spec target sections (e.g.
-    // `[target.'cfg(all())']`) are not detected by
-    // `target_config_value_in_root`, which only matches an exact triple key.
-    // This repo's `dylints/*` manifests rely on `SOLDR_LINKER=default` to
-    // opt out of injection rather than a cfg-spec `[target]` section.
+fn project_target_config_matches_cfg_sections() {
+    // soldr#3483 (closing the soldr#3277 limitation): cfg-spec target
+    // sections such as `[target.'cfg(all())']` — how every dylint crate
+    // declares its linker — are now detected by
+    // `target_config_value_in_root`, which previously matched only exact
+    // triple keys and silently ignored them. An exact-triple section in
+    // the same file still wins over the cfg form (cargo's precedence).
     let root = tempfile::tempdir().expect("temporary project root");
     std::fs::create_dir_all(root.path().join(".cargo")).expect("create .cargo dir");
     std::fs::write(
@@ -919,7 +920,23 @@ fn project_target_config_does_not_match_cfg_sections() {
         "[target.'cfg(all())']\nrustflags = [\"-C\", \"linker=dylint-link\"]\n",
     )
     .expect("write .cargo/config.toml");
-    assert!(target_config_value_in_root(root.path(), LINUX, "rustflags").is_none());
+    let value = target_config_value_in_root(root.path(), LINUX, "rustflags");
+    assert!(
+        value.as_deref().is_some_and(|v| v.contains("dylint-link")),
+        "cfg(all()) rustflags must be visible to the guard, got {value:?}"
+    );
+
+    // Exact triple beats cfg(all()) within one file.
+    std::fs::write(
+        root.path().join(".cargo/config.toml"),
+        "[target.'cfg(all())']\nrustflags = [\"cfg\"]\n\n[target.x86_64-unknown-linux-gnu]\nrustflags = [\"exact\"]\n",
+    )
+    .expect("rewrite .cargo/config.toml");
+    let value = target_config_value_in_root(root.path(), LINUX, "rustflags");
+    assert!(
+        value.as_deref().is_some_and(|v| v.contains("exact")),
+        "the exact triple must win over cfg(all()), got {value:?}"
+    );
 }
 
 #[test]
@@ -980,4 +997,117 @@ fn an_unavailable_managed_llvm_falls_back_to_the_system_clang_with_a_warning() {
         "catalogue offline",
         "with neither, the fetch error is the cause"
     );
+}
+
+// --- soldr#3483: the guard must see the shapes Dylint lints actually use ---
+
+/// Every Dylint lint crate declares its linker under the universally-matching
+/// `[target.'cfg(all())']` section (running-process: `linker = "dylint-link"`;
+/// this repo's six lints: `rustflags = ["-C", "linker=dylint-link"]`). Cargo
+/// applies that section to every target; before soldr#3483 the guard only
+/// looked at exact-triple sections, found nothing, resolved the automatic
+/// `Fast` default, and injected `CARGO_TARGET_<triple>_LINKER` — which Cargo
+/// gives precedence over every `cfg` section, silently disabling
+/// `dylint-link` for the lint build.
+#[test]
+fn resolve_project_choice_honors_the_universal_cfg_all_section() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_config(
+        root.path(),
+        "[target.'cfg(all())']\nlinker = \"dylint-link\"\n",
+    );
+    let selection =
+        resolve_project_choice(None, None, Some(LINUX), root.path(), None).expect("resolve");
+    assert_eq!(
+        selection.source,
+        LinkerSource::CargoConfig,
+        "the cfg(all()) declaration must be what the guard saw, not the fallback default"
+    );
+    assert_eq!(
+        selection.choice,
+        LinkerChoice::Default,
+        "a declared non-reld linker suppresses the automatic default (soldr#3277)"
+    );
+    assert!(selection.reld_cargo_config.is_none());
+}
+
+/// The same shape carries a *bare reld* declaration for other projects, and
+/// the cfg(all()) fallback must classify it exactly as an exact-triple one —
+/// the section key changes nothing about the value's meaning.
+#[test]
+fn resolve_project_choice_sees_a_bare_reld_declared_under_cfg_all() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_config(root.path(), "[target.'cfg(all())']\nlinker = \"reld\"\n");
+    let selection =
+        resolve_project_choice(None, None, Some(LINUX), root.path(), None).expect("resolve");
+    assert_eq!(selection.choice, LinkerChoice::Reld);
+    assert_eq!(selection.source, LinkerSource::CargoConfig);
+    assert_eq!(
+        selection.reld_cargo_config,
+        Some(ReldCargoConfig::BareLinker)
+    );
+}
+
+/// Within one file an exact `[target.<triple>]` section outranks
+/// `[target.'cfg(all())']`, mirroring Cargo's rule that a `<triple>` linker
+/// beats a `<cfg>` one. If the cfg section won, the bare `reld` here would
+/// still resolve — so the fixture gives each section a *different* declared
+/// linker and asserts the triple's value is the one classified.
+#[test]
+fn an_exact_triple_section_outranks_cfg_all_in_the_same_file() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_config(
+        root.path(),
+        "[target.'cfg(all())']\nlinker = \"dylint-link\"\n\n\
+         [target.x86_64-unknown-linux-gnu]\nlinker = \"reld\"\n",
+    );
+    let selection =
+        resolve_project_choice(None, None, Some(LINUX), root.path(), None).expect("resolve");
+    assert_eq!(
+        selection.choice,
+        LinkerChoice::Reld,
+        "the exact triple's bare reld must win over the cfg section's dylint-link"
+    );
+    assert_eq!(
+        selection.reld_cargo_config,
+        Some(ReldCargoConfig::BareLinker)
+    );
+}
+
+/// soldr#3483's other miss: the lint package's config lives beside the lint,
+/// not at the workspace root the outer `cargo dylint` runs from. The lint
+/// roots are layered ahead of the project root so the declaration is seen
+/// even when the workspace itself declares nothing.
+#[test]
+fn lint_library_roots_contribute_their_cargo_configs() {
+    let root = tempfile::tempdir().expect("project root");
+    let lint = root.path().join("lints").join("fixture");
+    write_cargo_config(&lint, "[target.'cfg(all())']\nlinker = \"dylint-link\"\n");
+    let selection = resolve_project_choice_with_lint_roots(
+        None,
+        None,
+        Some(LINUX),
+        root.path(),
+        None,
+        std::slice::from_ref(&lint),
+    )
+    .expect("resolve");
+    assert_eq!(selection.source, LinkerSource::CargoConfig);
+    assert_eq!(selection.choice, LinkerChoice::Default);
+}
+
+/// An empty lint-root slice is the plain-build contract: the workspace root
+/// stays the first place looked at, unchanged from before soldr#3483.
+#[test]
+fn no_lint_roots_keeps_the_workspace_root_lookup_unchanged() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_config(
+        root.path(),
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"reld\"\n",
+    );
+    let selection =
+        resolve_project_choice_with_lint_roots(None, None, Some(LINUX), root.path(), None, &[])
+            .expect("resolve");
+    assert_eq!(selection.choice, LinkerChoice::Reld);
+    assert_eq!(selection.source, LinkerSource::CargoConfig);
 }

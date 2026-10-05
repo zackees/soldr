@@ -8,7 +8,7 @@
 
 use crate::core::{SoldrError, SoldrPaths};
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::linker::{extract_flag_value, project_root, target_config_value_in_files, LinkerChoice};
@@ -78,13 +78,17 @@ fn rustflags_declares_bare_reld(rustflags: &str) -> bool {
 /// highest first):
 ///
 /// 1. `env` (`SOLDR_LINKER`) — an invalid value is a hard error.
-/// 2. `[target.<triple>]` in `project_root/.cargo/config.toml` (or the
+/// 2. `[target.<triple>]` (or the universally-matching
+///    `[target.'cfg(all())']`) in `project_root/.cargo/config.toml` (or the
 ///    legacy `.cargo/config`), then `cargo_home/config.toml` (project config
 ///    wins when both declare the target). A bare `reld` linker or rustflags
 ///    fragment resolves to `LinkerChoice::Reld`; any other declared
 ///    linker/rustflags resolves to `LinkerChoice::Default` so soldr does not
 ///    override a project's own choice (soldr#3277) — including an
 ///    absolute-path `reld`, which is left alone rather than re-resolved.
+///    Dylint-scoped callers layer their lint libraries' configs ahead of
+///    the project root's via [`resolve_project_choice_with_lint_roots`]
+///    (soldr#3483).
 /// 3. `[workspace.metadata.soldr].linker` / `[package.metadata.soldr].linker`
 ///    from `project_root/Cargo.toml` — an invalid value is a hard error. A
 ///    missing `Cargo.toml` is treated as "not declared", not an error.
@@ -97,6 +101,30 @@ pub fn resolve_project_choice(
     target: Option<&str>,
     project_root: &Path,
     cargo_home: Option<&Path>,
+) -> Result<ProjectLinkerSelection, SoldrError> {
+    resolve_project_choice_with_lint_roots(env, user_config, target, project_root, cargo_home, &[])
+}
+
+/// [`resolve_project_choice`] plus Dylint library roots (soldr#3483).
+///
+/// `lint_roots` are the workspace's declared Dylint library package
+/// directories (see [`crate::dylint_libraries::library_directories`]). A
+/// lint crate declares its linker in *its own* `.cargo/config.toml` —
+/// `[target.'cfg(all())'] linker = "dylint-link"` — which Cargo reads for
+/// the lint build (whose cwd is the lint package root) but which the
+/// workspace-root lookup below never sees from an outer `cargo dylint`
+/// invocation. The lint roots are consulted **before** the project root
+/// because they are the config closest to the lint build, matching Cargo's
+/// closest-config-wins merge. Callers pass an empty slice outside a
+/// Dylint-scoped invocation so a plain build never consults a lint
+/// package's config (Cargo would not either).
+pub fn resolve_project_choice_with_lint_roots(
+    env: Option<&OsStr>,
+    user_config: Option<&str>,
+    target: Option<&str>,
+    project_root: &Path,
+    cargo_home: Option<&Path>,
+    lint_roots: &[PathBuf],
 ) -> Result<ProjectLinkerSelection, SoldrError> {
     if let Some(env) = env {
         let env = env
@@ -111,10 +139,15 @@ pub fn resolve_project_choice(
     }
 
     if let Some(target) = target {
-        let mut config_files = vec![
-            project_root.join(".cargo/config.toml"),
-            project_root.join(".cargo/config"),
-        ];
+        let mut config_files = Vec::with_capacity(2 + 2 * lint_roots.len() + 2);
+        // soldr#3483: a Dylint library's own `.cargo/config.toml` first —
+        // it is the config the lint build actually resolves.
+        for lint_root in lint_roots {
+            config_files.push(lint_root.join(".cargo/config.toml"));
+            config_files.push(lint_root.join(".cargo/config"));
+        }
+        config_files.push(project_root.join(".cargo/config.toml"));
+        config_files.push(project_root.join(".cargo/config"));
         if let Some(cargo_home) = cargo_home {
             config_files.push(cargo_home.join("config.toml"));
             config_files.push(cargo_home.join("config"));
@@ -185,9 +218,14 @@ pub fn resolve_project_choice(
 /// directly, `paths.load_config()` supplies the user config, and
 /// `CARGO_HOME` (falling back to `~/.cargo`) supplies the cargo-home config
 /// fallback.
+///
+/// `dylint_active` additionally layers the workspace's declared Dylint
+/// library configs ahead of the project root's (soldr#3483) — see
+/// [`resolve_project_choice_with_lint_roots`].
 pub fn resolve_project_choice_from_cwd(
     target: Option<&str>,
     paths: &SoldrPaths,
+    dylint_active: bool,
 ) -> Result<ProjectLinkerSelection, SoldrError> {
     let env = std::env::var_os(crate::LINKER_ENV_VAR);
     let config = paths
@@ -197,13 +235,22 @@ pub fn resolve_project_choice_from_cwd(
         .map_err(|error| SoldrError::Other(format!("soldr: current directory: {error}")))?;
     let root = project_root(&cwd);
     let cargo_home = crate::core::resolve_cargo_home();
+    // Best-effort: a workspace whose Cargo.toml cannot even be walked for
+    // declared libraries must not fail the linker resolution — the
+    // workspace-root config lookup below still runs.
+    let lint_roots = if dylint_active {
+        crate::dylint_libraries::library_directories(&root).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
-    resolve_project_choice(
+    resolve_project_choice_with_lint_roots(
         env.as_deref(),
         config.linker.as_deref(),
         target,
         &root,
         cargo_home.as_deref(),
+        &lint_roots,
     )
 }
 

@@ -180,7 +180,8 @@ pub async fn run(
 /// network call), so repeated invocations across targets do not re-fetch.
 async fn ensure_selected_reld(paths: &SoldrPaths) -> Result<Option<PathBuf>, SoldrError> {
     let host_triple = crate::core::TargetTriple::host()?.triple();
-    let selection = crate::linker::resolve_project_choice_from_cwd(Some(&host_triple), paths)?;
+    let selection =
+        crate::linker::resolve_project_choice_from_cwd(Some(&host_triple), paths, false)?;
     ensure_selected_reld_with(&selection, || crate::fetch::ensure_reld(paths)).await
 }
 
@@ -674,7 +675,8 @@ pub(crate) fn expected_state_paths(
 /// call — same inputs `ensure_selected_reld` uses, minus the fetch.
 fn reld_selected_for_restore_report(paths: &SoldrPaths) -> Result<bool, SoldrError> {
     let host_triple = crate::core::TargetTriple::host()?.triple();
-    let selection = crate::linker::resolve_project_choice_from_cwd(Some(&host_triple), paths)?;
+    let selection =
+        crate::linker::resolve_project_choice_from_cwd(Some(&host_triple), paths, false)?;
     Ok(selection.needs_reld())
 }
 
