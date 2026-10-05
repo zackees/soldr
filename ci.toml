@@ -1,0 +1,173 @@
+# ci.toml — this repository's CI contract. Checked and planned by ci-lint
+# (zackees/ci.yml). Nothing here generates YAML: it bounds what the YAML may
+# do and decides what each run selects.
+#
+# First declaration for this repository (zackees/ci.yml#335). Every platform,
+# runner, target, cache family and permission below was read off the existing
+# workflows and the live cache listing. Where the YAML and this file disagree,
+# the YAML is right and this file is the bug.
+#
+# `[local.gate]` is deliberately ABSENT: this repository declares its gate in
+# `local-gate.toml`, and declaring both is a GATE-001 violation.
+schema  = 3
+profile = "rust-pypi-app"
+linter  = "zackees/ci.yml@a07bab94f16124b5c6857b137a237a53a61e06d1"
+
+# ── Platforms ────────────────────────────────────────────────────────────────
+# Cross-compiled from a Linux host (soldr cross), executed on its own runner.
+# Each host below is one this repository actually uses: ubuntu-24.04-arm
+# (ci.yml:620,682), windows-11-arm (ci.yml:825), macos-15 for aarch64-apple-darwin
+# (ci.yml:729), macos-15-intel for the Intel leg.
+[platforms]
+linux-x64     = { target = "x86_64-unknown-linux-gnu",  runs-on = "ubuntu-24.04",     group = "linux",   wheel = "manylinux_2_17" }
+linux-arm64   = { target = "aarch64-unknown-linux-gnu", runs-on = "ubuntu-24.04-arm", group = "linux",   wheel = "manylinux_2_17" }
+windows-x64   = { target = "x86_64-pc-windows-msvc",    runs-on = "windows-2025",     group = "windows" }
+windows-arm64 = { target = "aarch64-pc-windows-msvc",   runs-on = "windows-11-arm",   group = "windows" }
+macos-arm64   = { target = "aarch64-apple-darwin",      runs-on = "macos-15",         group = "macos" }
+macos-x64     = { target = "x86_64-apple-darwin",       runs-on = "macos-15-intel",   group = "macos" }
+
+# ── Python packaging ─────────────────────────────────────────────────────────
+[python]
+backend = "soldr"
+cli     = { name = "soldr", crate = "soldr-cli", native = true }
+abi3    = "cp310"
+pythons = ["3.11"]
+
+# ── Rust workspace discipline ─────────────────────────────────────────────────
+# soldr publishes no crates (Cargo.toml:6), so membership carries no external
+# surface; the seven crates are all internal.
+[rust]
+public  = "crates/soldr-cli"
+private = "crates/*"
+
+[rust.tests]
+max-binary = "80MB"
+max-total  = "600MB"
+binaries   = ["soldr-core:lib", "soldr-cli:lib", "soldr-cache:lib", "soldr-daemon:lib", "soldr-fetch:lib", "soldr-platform:lib"]
+
+# ── Suites ───────────────────────────────────────────────────────────────────
+[suites]
+unit        = { run = "ci/test.py unit",        required = true }
+smoke       = { run = "ci/wheel.py smoke",      required = true }
+integration = { run = "ci/test.py integration", required = true }
+init        = { run = "ci/test.py init",        cache = "none" }
+
+# ── Flows ────────────────────────────────────────────────────────────────────
+[flow.pr]
+platforms = ["linux-x64"]
+suites    = ["unit", "smoke"]
+budget    = { critical-path = "8m" }
+
+[flow.main]
+extends   = "pr"
+cache     = "write"
+pre-prune = true
+
+[flow.release]
+platforms = "all"
+suites    = "all"
+wheels    = "all"
+publish   = "pypi"
+
+[flow.nightly]
+extends   = "release"
+schedule  = "daily"
+cache     = "write"
+janitor   = true
+publish   = "none"
+pre-prune = true
+
+# ── Tags ─────────────────────────────────────────────────────────────────────
+[tags]
+ci-full        = { add = { platforms = "all", suites = ["integration"] } }
+ci-cache-save  = { cache = "pr-base" }
+no-test        = { remove = { suites = "tests" } }
+release        = { flow = "release", publish = "rehearsal" }
+
+# ── Default-branch reuse ─────────────────────────────────────────────────────
+# `off` is the honest value, not a default. soldr has never reused a verified
+# default-branch run (measured: its real reuse rate is 0%, from duplicated job
+# DISPLAY NAMES -- two jobs both called `Lint` -- not from absent wiring). The
+# rename is the prerequisite; `ci-lint reuse-report` is what would show reuse
+# actually happening before this moves to "shadow".
+[reuse.default-branch]
+mode          = "off"
+max-age-hours = 24
+
+# ── Cache ────────────────────────────────────────────────────────────────────
+# Families and sizes measured from the live listing
+# (`gh api repos/zackees/soldr/actions/caches`, 2026-10-05), not copied from the
+# example. `evict = "lru"` is CACHE-029: nothing else bounds a family's entry
+# count, and this repository's caches were measured at GitHub's 10GiB ceiling.
+[cache]
+budget   = "9GB"
+write-on = ["main", "nightly"]
+never    = []
+retired  = []
+pr       = { mode = "delta", families = ["compile"], max-per-pr = "128MB", budget = "1GB", trim = "on-close" }
+
+[cache.family]
+# zccache-unit is the single largest family measured: 2.43 GiB across 5 entries.
+compile      = { via = "setup-soldr:build-cache",     max = "2600MB", lockfile = true, per = "platform", min = "1MB", evict = "lru", promote = "ancestor" }
+toolchain    = { via = "setup-soldr:solo-toolchain", max = "200MB",  per = "none",                            evict = "lru" }
+registry     = { via = "setup-soldr:cargo-registry",  max = "200MB",  lockfile = true, per = "none",          evict = "lru" }
+soldr-mini   = { via = "setup-soldr:soldr-mini",     max = "30MB",   per = "none", min = "1MB",                evict = "lru" }
+uv           = { via = "setup-uv",                   max = "100MB",  per = "platform",                        evict = "lru" }
+# Dylint is a step inside this repository's `lint` job (ci.yml:263: "Rustfmt,
+# Clippy, doctests, dependency policy, and all Dylint"), not a standalone lane,
+# so `[lint.dylint]` is deliberately ABSENT -- there is no separate warm/cold
+# budget to declare. The CACHE families it writes are declared here.
+dylint       = { via = "setup-soldr:dylint",         max = "600MB",  per = "none", min = "1MB",                evict = "lru", promote = "ancestor" }
+dylint-out   = { via = "setup-soldr:dylint-output",  max = "700MB",  lockfile = true, per = "none", min = "1MB", evict = "lru", promote = "ancestor" }
+
+# Ancestor promotion (CACHE-024, zackees/ci.yml#335). Standardizing on
+# setup-soldr's ancestor encoding -- shortest parent-edge distance from a live
+# git DAG walk -- rather than a first-parent ordinal, which INVERTS on wide
+# merges: a 50-commit branch tip reports ordinal 53 while the merge commit
+# containing it reports 4, so a cache saved at the merge looks older than one
+# saved 50 commits before it. #335 keeps the `m<n>` label for offline audit only.
+#
+# `compile`, `dylint` and `dylint-out` are at or above CACHE-031's 256MB floor
+# and opt in; `toolchain` (200MB), `registry` (200MB), `soldr-mini` (30MB) and
+# `uv` (100MB) stay below it, where unbounded entry count is noise.
+#
+# DECLARATION ONLY: setup-soldr#566 is merged but unreleased, so CACHE-030 and
+# CACHE-032 report `needs_review` and the opt-in is inert until a tag lands.
+[cache.promote]
+mode          = "ancestor"
+max-age-hours = 168
+
+# ── Local runs ───────────────────────────────────────────────────────────────
+# Only the runner: the gate itself lives in `local-gate.toml`, and declaring
+# `[local.gate]` here as well would be GATE-001.
+[local]
+runner = "bosn-act"
+lanes  = ["precheck"]
+cache  = "machine"
+
+# ── Allowlist ────────────────────────────────────────────────────────────────
+# The full workflow set, by name. Which workflows a repository HAS is
+# repo-specific (soldr ships 29; the canonical example has 2) -- `example
+# drift` classifies that difference as repo-specific, not policy (ci.yml#341).
+[allow]
+workflows         = { "ci.yml" = ["pull_request", "merge_group", "push:main", "schedule", "workflow_dispatch"], "ci-pre.yml" = ["pull_request", "push:main", "merge_group"], "_build-and-test.yml" = ["workflow_call"], "_bootstrap-e2e.yml" = ["workflow_call"], "_ci-cross-build-linux.yml" = ["workflow_call"], "_ci-target-run.yml" = ["workflow_call"], "setup-soldr-action.yml" = ["workflow_call"], "cook-size-gate.yml" = ["workflow_call"], "cache-budget.yml" = ["schedule", "workflow_dispatch"], "cache-delta-experiment.yml" = ["workflow_call"], "baseline-zero-deps.yml" = ["workflow_call"], "benchmark-stats.yml" = ["schedule"], "build-all-from-linux.yml" = ["workflow_call"], "cargo-orchestration-telemetry.yml" = ["workflow_call"], "cross-compile-all-targets.yml" = ["workflow_call"], "cross-compile-stress.yml" = ["workflow_call"], "docker-linux-cross-smoke.yml" = ["workflow_call"], "dylint-cache-acceptance.yml" = ["workflow_call"], "dylint-cook-acceptance.yml" = ["workflow_call"], "macos-recovery-replay.yml" = ["workflow_call"], "macos-universal2-probe.yml" = ["workflow_call"], "nextest-cacheability.yml" = ["workflow_call"], "parent-cache-bench.yml" = ["workflow_call"], "perf-cold-warm.yml" = ["workflow_call"], "perf-matrix.yml" = ["workflow_call"], "published-dylint-smoke.yml" = ["workflow_call"], "release-auto.yml" = ["push:tag", "workflow_dispatch"], "windows-guest-probe.yml" = ["workflow_call"], "win-gnu-smoke.yml" = ["workflow_call"] }
+actions           = ["actions/checkout", "actions/upload-artifact", "actions/download-artifact", "zackees/setup-soldr", "astral-sh/setup-uv"]
+tools             = ["soldr", "uv", "python3", "yq", "git"]
+secrets           = []
+platform-selector = "crates/soldr-platform/src/lib.rs"
+platform-code     = ["crates/soldr-platform/src/**", "scripts/**"]
+
+# Read off the workflows: the release job publishes to PyPI/crates.io with an
+# OIDC token, and cache-budget retires entries with `actions: write`.
+permissions = { "id-token: write" = ["publish"], "actions: write" = ["cache-budget"] }
+
+# This repository calls `zackees/setup-soldr` directly from its workflows and has
+# no composite wrapper under `.github/actions/`, so `only-in` is the empty
+# string: it asserts "no wrapper anywhere" rather than naming a directory that
+# does not exist.
+setup-soldr       = { only-in = "", require = { save-cache = "plan" } }
+setup-uv          = { require = { save-cache = "plan" } }
+
+# ── Publish ──────────────────────────────────────────────────────────────────
+[publish]
+pypi = { auth = "oidc", environment = "pypi", mode = "mock" }
