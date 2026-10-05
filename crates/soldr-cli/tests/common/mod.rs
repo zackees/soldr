@@ -1422,6 +1422,29 @@ pub(crate) fn install_fake_toolchain(log_path: &Path) -> (PathBuf, PathBuf, Path
     (cargo, rustc, zccache)
 }
 
+fn fake_clang_script(log_path: &Path) -> String {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        format!(
+            "@echo off\n\
+             echo clang %*>>\"{}\"\n\
+             echo clang version 0.0.0 (fake)\n\
+             exit /b 0\n",
+            log_path.display()
+        )
+    } else {
+        format!(
+            "#!/bin/sh\n\
+             echo \"clang $*\" >> \"{}\"\n\
+             echo 'clang version 0.0.0 (fake)'\n\
+             exit 0\n",
+            log_path.display()
+        )
+    }
+}
+
 pub(crate) fn install_fake_clippy_toolchain(
     log_path: &Path,
 ) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
@@ -2000,6 +2023,15 @@ pub(crate) fn prepend_to_path(dir: &Path) -> std::ffi::OsString {
 /// On Windows we keep `System32` so `Command::new` can still spawn `.cmd`
 /// shims via `cmd.exe`.
 pub(crate) fn isolated_test_path() -> std::ffi::OsString {
+    // soldr#3578: the front door's linker shim resolves `clang` from PATH only.
+    // These tests pin PATH to the system dirs precisely so nothing ambient can
+    // satisfy a tool lookup -- but that left the driver with no clang at all on
+    // any host whose `/usr/bin` has none (the managed fallback wants a
+    // `CanonicalV2` catalogue entry and errors when it cannot fetch one), so
+    // every fixture that reached the linker died on the shim instead of testing
+    // its subject. Prepend a hermetic stub carrying only `clang`: the pinning
+    // intent is preserved, and the driver resolves without a real LLVM.
+    let fake_llvm = isolated_fake_llvm_dir();
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -2007,11 +2039,28 @@ pub(crate) fn isolated_test_path() -> std::ffi::OsString {
         let system_root = std::env::var_os("SystemRoot")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
-        let dirs = [system_root.join("System32"), system_root];
+        let dirs = [fake_llvm, system_root.join("System32"), system_root];
         std::env::join_paths(dirs).expect("failed to join isolated PATH")
     } else {
-        std::ffi::OsString::from("/usr/bin:/bin")
+        std::env::join_paths([fake_llvm, PathBuf::from("/usr/bin"), PathBuf::from("/bin")])
+            .expect("failed to join isolated PATH")
     }
+}
+
+/// One process-wide fake LLVM bin directory holding just a `clang` stub.
+///
+/// `OnceLock` so the stub is created once per test binary rather than once per
+/// `isolated_test_path()` call, and so every test in a process shares the same
+/// directory (which keeps the path stable in failure output).
+fn isolated_fake_llvm_dir() -> PathBuf {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = unique_temp_dir("isolated-fake-llvm");
+        let log = dir.join("clang-invocations.log");
+        write_fake_script(&fake_script_path(&dir, "clang"), &fake_clang_script(&log));
+        dir
+    })
+    .clone()
 }
 
 /// How long to keep retrying a spawn that answers `ETXTBSY`.
