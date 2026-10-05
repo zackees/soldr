@@ -340,7 +340,7 @@ fn gc_purge_rustup_closed_stdin_never_deletes() {
         &[],
     );
 
-    let json = run_json(purge_command(&fixture, &[]));
+    let json = run_json(purge_command(&fixture, &["--json"]));
 
     assert_eq!(json["selected_count"], 0, "no prompt was answered yes");
     assert_eq!(json["uninstalled_count"], 0);

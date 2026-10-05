@@ -191,7 +191,17 @@ fn plan_fails_closed_when_settings_are_unreadable() {
         plan.candidates.is_empty(),
         "an unreadable settings.toml must protect the whole home"
     );
-    assert_eq!(plan.protected, installed);
+    // Fail-closed protects everything the home holds AND the shared pins
+    // (the repo's stable pin must survive an unreadable settings too),
+    // sorted by the BTreeSet the implementation collects into.
+    assert_eq!(
+        plan.protected,
+        names(&[
+            "1.70-x86_64-unknown-linux-gnu",
+            "1.98.1",
+            "stable-x86_64-unknown-linux-gnu"
+        ])
+    );
 }
 
 #[test]
