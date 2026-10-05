@@ -402,6 +402,91 @@ pub(crate) fn reap_orphaned_routes(
     reaped
 }
 
+/// Route endpoint sockets this broker owns: `d-<key>.{session,control,handoff}.sock`.
+const ROUTE_ENDPOINT_SUFFIXES: [&str; 3] = [".session.sock", ".control.sock", ".handoff.sock"];
+
+/// Remove endpoint sockets no live daemon is listening on (soldr#3572).
+///
+/// A broker route's three sockets live beside the broker executable, named
+/// `d-<key>.{session,control,handoff}.sock`. A daemon that exits without
+/// unlinking them leaves the filesystem nodes behind, and nothing else removes
+/// them: `claim_control_endpoint_at` only reclaims a stale socket when a *new*
+/// daemon lands on the *same* endpoint, and every route has its own. A
+/// long-lived broker therefore accumulated one dead route per session forever
+/// -- measured 1,725 routes on one host, 1,724 of them with no listener at all.
+///
+/// Liveness is decided by trying to connect, not by age: an endpoint whose
+/// daemon is still up answers, and one whose daemon is gone refuses or is
+/// absent. That makes the sweep safe to run alongside live routes, and means a
+/// route that is merely old is never removed.
+///
+/// Returns the endpoint stems removed, for the log line and for tests.
+pub(crate) fn reap_dead_route_endpoints(broker_dir: &std::path::Path) -> Vec<String> {
+    /// True when something still answers on `path`. Liveness is a platform
+    /// question, so it goes through the platform boundary rather than naming
+    /// `std::os::unix` here.
+    fn is_live(path: &std::path::Path) -> bool {
+        crate::platform::ipc::connect::probe_accepts_connections(&path.to_string_lossy())
+    }
+
+    let Ok(entries) = std::fs::read_dir(broker_dir) else {
+        return Vec::new();
+    };
+    let mut stems: BTreeSet<String> = BTreeSet::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(text) = name.to_str() else { continue };
+        // Only `d-<key>` plus a known route suffix, or that suffix plus its
+        // `.bind.lock`. Never the broker's own `soldr-broker.sock`, the lease
+        // files, or the logs that share this directory. Match the whole suffix
+        // rather than splitting on the last dot: `.session.sock` contains one.
+        // A route whose sockets are already gone is still found through its
+        // bind locks, so its last trace is reclaimed rather than orphaned.
+        let Some(stem) = ROUTE_ENDPOINT_SUFFIXES.iter().find_map(|suffix| {
+            text.strip_suffix(suffix)
+                .or_else(|| text.strip_suffix(&format!("{suffix}.bind.lock")))
+        }) else {
+            continue;
+        };
+        if !stem.starts_with("d-") || stem.contains('.') {
+            continue;
+        }
+        stems.insert(stem.to_owned());
+    }
+
+    let mut removed = Vec::new();
+    for stem in stems {
+        // A route is dead only when *every* one of its sockets is dead. One
+        // live socket means the daemon is still up, so the whole route stays.
+        let paths: Vec<std::path::PathBuf> = ROUTE_ENDPOINT_SUFFIXES
+            .iter()
+            .map(|suffix| broker_dir.join(format!("{stem}{suffix}")))
+            .collect();
+        if paths.iter().any(|path| path.exists() && is_live(path)) {
+            continue;
+        }
+        let mut all_gone = true;
+        for path in &paths {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => all_gone = false,
+            }
+        }
+        // The bind lock each endpoint claims beside itself outlives the socket
+        // it guards: after the sockets go, these are the only thing left of the
+        // route. Remove them on the same pass, or a dead route keeps one file
+        // per endpoint forever (measured: 158 of them on one host).
+        for suffix in ROUTE_ENDPOINT_SUFFIXES {
+            let _ = std::fs::remove_file(broker_dir.join(format!("{stem}{suffix}.bind.lock")));
+        }
+        if all_gone {
+            removed.push(stem);
+        }
+    }
+    removed
+}
+
 /// Periodically stop the daemons of routes nobody is left to use.
 ///
 /// Runs in the broker rather than in each daemon because the broker is the
@@ -409,6 +494,17 @@ pub(crate) fn reap_orphaned_routes(
 /// the callers that asked for them, and is the parent that can act. See the
 /// module-level docs above for why no Unix mechanism can do this without a
 /// watcher.
+/// The directory holding the broker's route endpoint sockets: wherever the
+/// running broker executable lives. Empty when the endpoint cannot be resolved,
+/// which makes [`reap_dead_route_endpoints`] a no-op rather than a wildcard.
+fn route_endpoint_dir() -> std::path::PathBuf {
+    crate::broker_identity::ResolvedBrokerEndpoint::resolve()
+        .map(|endpoint| endpoint.executable_path)
+        .ok()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        .unwrap_or_default()
+}
+
 pub(crate) async fn run_route_reaper(
     route_owners: Arc<Mutex<RouteOwnership>>,
     registry: Arc<Mutex<BackendRegistry>>,
@@ -433,44 +529,52 @@ pub(crate) async fn run_route_reaper(
         // The sweep signals other processes, so keep it off the async worker.
         let sweep_owners = Arc::clone(&route_owners);
         let sweep_registry = Arc::clone(&registry);
-        let (reaped, removed_images, disk, cache) = tokio::task::spawn_blocking(move || {
-            let reaped = reap_orphaned_routes(&sweep_owners, &sweep_registry, grace);
-            let cache = (!reaped.is_empty() || retry_retired_cache).then(|| {
-                let mut live = BTreeSet::new();
-                live.extend(
-                    sweep_owners
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .service_names()
-                        .map(str::to_owned),
+        let (reaped, removed_images, disk, cache, dead_endpoints) =
+            tokio::task::spawn_blocking(move || {
+                let reaped = reap_orphaned_routes(&sweep_owners, &sweep_registry, grace);
+                // soldr#3572: reclaim route endpoint sockets no live daemon is
+                // listening on. Shares this sweep because it is the same moment a
+                // route is known to be finished with.
+                let dead_endpoints = reap_dead_route_endpoints(&route_endpoint_dir());
+                let cache = (!reaped.is_empty() || retry_retired_cache).then(|| {
+                    let mut live = BTreeSet::new();
+                    live.extend(
+                        sweep_owners
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .service_names()
+                            .map(str::to_owned),
+                    );
+                    live.extend(
+                        sweep_registry
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .iter()
+                            .map(|(key, _)| key.service_name.clone()),
+                    );
+                    crate::broker_daemon_cache::sweep_retired_route_caches(
+                        &running_process::broker::protocol_v2::service_definition_dir_v2(),
+                        &live,
+                        std::time::SystemTime::now(),
+                    )
+                });
+                // soldr#3164: reclaim daemon images no route has run for the
+                // stale window. Each route rescans at most once a day.
+                let removed = crate::self_relocate::sweep_route_runtime_copies(
+                    &crate::broker_launcher::routes_root(),
                 );
-                live.extend(
-                    sweep_registry
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .iter()
-                        .map(|(key, _)| key.service_name.clone()),
-                );
-                crate::broker_daemon_cache::sweep_retired_route_caches(
-                    &running_process::broker::protocol_v2::service_definition_dir_v2(),
-                    &live,
-                    std::time::SystemTime::now(),
-                )
-            });
-            // soldr#3164: reclaim daemon images no route has run for the
-            // stale window. Each route rescans at most once a day.
-            let removed = crate::self_relocate::sweep_route_runtime_copies(
-                &crate::broker_launcher::routes_root(),
-            );
-            // soldr#3251: reclaim whole routes, and their registrations, for
-            // daemon generations that are neither live nor recently used.
-            let disk = disk_sweep_due.then(|| {
-                crate::broker_daemon_disk::sweep_broker_daemon_disk(&sweep_owners, &sweep_registry)
-            });
-            (reaped, removed, disk, cache)
-        })
-        .await
-        .unwrap_or_default();
+                // soldr#3251: reclaim whole routes, and their registrations, for
+                // daemon generations that are neither live nor recently used.
+                let disk = disk_sweep_due.then(|| {
+                    crate::broker_daemon_disk::sweep_broker_daemon_disk(
+                        &sweep_owners,
+                        &sweep_registry,
+                    )
+                });
+                (reaped, removed, disk, cache, dead_endpoints)
+            })
+            .await
+            .unwrap_or_default();
         retry_retired_cache = cache.as_ref().is_some_and(|report| report.stores_live > 0);
         if let Some(cache) = cache.filter(|report| report.stores_removed > 0) {
             println!(
@@ -495,6 +599,12 @@ pub(crate) async fn run_route_reaper(
                 disk.cache_bytes_reclaimed / (1024 * 1024),
                 disk.registrations_removed,
                 disk.failed
+            );
+        }
+        if !dead_endpoints.is_empty() {
+            println!(
+                "soldr broker: removed {} dead route endpoint socket(s) whose daemons are gone",
+                dead_endpoints.len()
             );
         }
         for service_name in reaped {
