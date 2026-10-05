@@ -1683,6 +1683,7 @@ fn explicit_cross_linker_and_rustflags_override_soldr_fast() {
             &argvec(&format!("build --target {target}")),
             None,
             &paths,
+            false,
         )
         .unwrap();
 
@@ -1720,6 +1721,7 @@ fn command_target_linker_overrides_parent_environment() {
         &argvec("build --target aarch64-unknown-linux-gnu"),
         None,
         &paths,
+        false,
     )
     .unwrap();
 

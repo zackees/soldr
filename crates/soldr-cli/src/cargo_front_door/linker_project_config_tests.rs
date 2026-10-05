@@ -72,6 +72,7 @@ fn apply_from_project_with_config(body: &str) -> std::process::Command {
             &argvec(&format!("build --target {TARGET}")),
             None,
             &paths,
+            false,
         ))
         .expect("apply_linker_override");
     command
@@ -191,6 +192,7 @@ fn apply_from_project_with_cargo_toml_metadata_linker(reld_bin: &Path) -> std::p
             &argvec(&format!("build --target {TARGET}")),
             None,
             &paths,
+            false,
         ))
         .expect("apply_linker_override");
     command
@@ -257,4 +259,230 @@ fn cargo_toml_metadata_linker_reld_resolves_absolute_path_end_to_end() {
     } else {
         assert_eq!(linker, reld_bin.to_string_lossy());
     }
+}
+
+// --- soldr#3483: `cargo dylint` must keep the lint library's dylint-link ---
+
+/// A workspace that declares one Dylint library the way running-process and
+/// this repo do (`workspace.metadata.dylint.libraries`), with the lint
+/// package at `lints/fixture`. Returns the lint root; the workspace
+/// `Cargo.toml` is written but carries no `.cargo/config.toml` of its own —
+/// the outer `cargo dylint` guard used to read exactly that missing file,
+/// find nothing, and inject over the lint's declaration.
+fn workspace_with_declared_lint(project: &Path) -> std::path::PathBuf {
+    std::fs::create_dir_all(project).expect("mkdir project");
+    std::fs::write(
+        project.join("Cargo.toml"),
+        "[workspace]\nmembers = []\n\n[workspace.metadata.dylint]\nlibraries = [{ path = \"lints/fixture\" }]\n",
+    )
+    .expect("write workspace Cargo.toml");
+    let lint = project.join("lints").join("fixture");
+    std::fs::create_dir_all(lint.join(".cargo")).expect("mkdir lint .cargo");
+    lint
+}
+
+/// The task fixture for soldr#3483: a lint crate declaring its linker under
+/// an **exact** `[target.<triple>]` section of its own `.cargo/config.toml`,
+/// while the workspace root (the cwd of the outer `cargo dylint`) declares
+/// nothing. The resolution must see the lint's config — `source` proves the
+/// guard read that file; today it only ever opens the workspace root's,
+/// resolves the automatic `Fast` default, and would inject
+/// `CARGO_TARGET_<TRIPLE>_LINKER` over `dylint-link`.
+#[test]
+fn dylint_scope_resolves_through_the_declared_lint_library_config() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _soldr_linker = EnvVarGuard::remove("SOLDR_LINKER");
+    let _build_target = EnvVarGuard::remove("CARGO_BUILD_TARGET");
+    let _parent_linker = EnvVarGuard::remove(LINKER_KEY);
+    let _parent_rustflags = EnvVarGuard::remove(RUSTFLAGS_KEY);
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let project = root.path().join("project");
+    let lint = workspace_with_declared_lint(&project);
+    std::fs::write(
+        lint.join(".cargo").join("config.toml"),
+        format!("[target.{TARGET}]\nlinker = \"dylint-link\"\n"),
+    )
+    .expect("write lint config.toml");
+
+    let _cwd = crate::CwdGuard::enter(&project);
+    let selection = crate::linker::resolve_project_choice_from_cwd(Some(TARGET), &paths, true)
+        .expect("resolve");
+
+    assert_eq!(
+        selection.source,
+        crate::linker::LinkerSource::CargoConfig,
+        "the lint library's exact-triple linker declaration must be what the guard saw"
+    );
+    assert_eq!(
+        selection.choice,
+        crate::linker::LinkerChoice::Default,
+        "a declared non-reld linker suppresses the automatic default (soldr#3277)"
+    );
+}
+
+/// End-to-end through `apply_linker_override`: with the Dylint scope active,
+/// no `CARGO_TARGET_*` injection may reach the child cargo — the injected env
+/// outranks every `[target.*]` config section (exact triple beats `cfg`), so
+/// even a working injected linker silently disables `dylint-link` and the
+/// lint build fails with "Could not find lib<name>@<toolchain>.so despite
+/// successful build". This fixture's lint declares the linker the way every
+/// real lint crate does, under `[target.'cfg(all())']`.
+#[test]
+fn dylint_scope_never_injects_the_automatic_linker() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _soldr_linker = EnvVarGuard::remove("SOLDR_LINKER");
+    let _build_target = EnvVarGuard::remove("CARGO_BUILD_TARGET");
+    let _parent_linker = EnvVarGuard::remove(LINKER_KEY);
+    let _parent_rustflags = EnvVarGuard::remove(RUSTFLAGS_KEY);
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let project = root.path().join("project");
+    let lint = workspace_with_declared_lint(&project);
+    std::fs::write(
+        lint.join(".cargo").join("config.toml"),
+        "[target.'cfg(all())']\nlinker = \"dylint-link\"\n",
+    )
+    .expect("write lint config.toml");
+
+    let mut command = std::process::Command::new("cargo");
+    let _cwd = crate::CwdGuard::enter(&project);
+    tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(target::apply_linker_override(
+            &mut command,
+            &argvec(&format!("build --target {TARGET}")),
+            None,
+            &paths,
+            true,
+        ))
+        .expect("apply_linker_override");
+
+    assert_eq!(
+        command_env_override(&command, LINKER_KEY),
+        None,
+        "the automatic default must never set a target linker inside the Dylint scope",
+    );
+    assert_eq!(
+        command_env_override(&command, RUSTFLAGS_KEY),
+        None,
+        "…nor target rustflags, which would also clobber the lint's declaration",
+    );
+}
+
+/// The backstop half of soldr#3483: a lint the workspace metadata does not
+/// declare (`cargo dylint --path …`) still gets no automatic injection, even
+/// though the per-lint config read cannot see it. Only an explicit
+/// `SOLDR_LINKER` may inject inside the Dylint scope.
+#[test]
+fn dylint_scope_without_any_declared_config_still_injects_nothing() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _soldr_linker = EnvVarGuard::remove("SOLDR_LINKER");
+    let _build_target = EnvVarGuard::remove("CARGO_BUILD_TARGET");
+    let _parent_linker = EnvVarGuard::remove(LINKER_KEY);
+    let _parent_rustflags = EnvVarGuard::remove(RUSTFLAGS_KEY);
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let project = root.path().join("project");
+    // Declared, but with no `.cargo/config.toml` at all: nothing for the
+    // guard to read, so only the backstop stands between the automatic
+    // default and the lint build's env.
+    workspace_with_declared_lint(&project);
+
+    let mut command = std::process::Command::new("cargo");
+    let _cwd = crate::CwdGuard::enter(&project);
+    tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(target::apply_linker_override(
+            &mut command,
+            &argvec(&format!("build --target {TARGET}")),
+            None,
+            &paths,
+            true,
+        ))
+        .expect("apply_linker_override");
+
+    assert_eq!(command_env_override(&command, LINKER_KEY), None);
+    assert_eq!(command_env_override(&command, RUSTFLAGS_KEY), None);
+}
+
+/// The exempt case for the backstop: `SOLDR_LINKER` is an explicit user
+/// decision and outranks project config everywhere else (soldr#3277), so it
+/// keeps working inside the Dylint scope too.
+#[test]
+fn dylint_scope_still_honors_an_explicit_linker_request() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _build_target = EnvVarGuard::remove("CARGO_BUILD_TARGET");
+    let _parent_linker = EnvVarGuard::remove(LINKER_KEY);
+    let _parent_rustflags = EnvVarGuard::remove(RUSTFLAGS_KEY);
+    let _soldr_linker = EnvVarGuard::set("SOLDR_LINKER", "fast");
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let project = root.path().join("project");
+    workspace_with_declared_lint(&project);
+
+    let mut command = std::process::Command::new("cargo");
+    let _cwd = crate::CwdGuard::enter(&project);
+    tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(target::apply_linker_override(
+            &mut command,
+            &argvec(&format!("build --target {TARGET}")),
+            None,
+            &paths,
+            true,
+        ))
+        .expect("apply_linker_override");
+
+    assert_generated_linux_linker(
+        &command,
+        "an explicit SOLDR_LINKER request outranks the Dylint scope backstop",
+    );
+}
+
+/// The gate on the whole feature: outside the Dylint scope nothing changes.
+/// A lint package's config is *not* cargo config for a plain workspace
+/// build (Cargo only reads `.cargo/config.toml` from the cwd ancestry), so
+/// it must not suppress the automatic default for `cargo build` either —
+/// otherwise every dylint-enabled repo silently loses the fast linker on
+/// ordinary builds.
+#[test]
+fn plain_builds_do_not_read_lint_library_configs() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _soldr_linker = EnvVarGuard::remove("SOLDR_LINKER");
+    let _build_target = EnvVarGuard::remove("CARGO_BUILD_TARGET");
+    let _parent_linker = EnvVarGuard::remove(LINKER_KEY);
+    let _parent_rustflags = EnvVarGuard::remove(RUSTFLAGS_KEY);
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let project = root.path().join("project");
+    let lint = workspace_with_declared_lint(&project);
+    std::fs::write(
+        lint.join(".cargo").join("config.toml"),
+        format!("[target.{TARGET}]\nlinker = \"dylint-link\"\n"),
+    )
+    .expect("write lint config.toml");
+
+    let mut command = std::process::Command::new("cargo");
+    let _cwd = crate::CwdGuard::enter(&project);
+    tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(target::apply_linker_override(
+            &mut command,
+            &argvec(&format!("build --target {TARGET}")),
+            None,
+            &paths,
+            false,
+        ))
+        .expect("apply_linker_override");
+
+    assert_generated_linux_linker(
+        &command,
+        "a lint's config must not suppress the default outside the Dylint scope",
+    );
 }

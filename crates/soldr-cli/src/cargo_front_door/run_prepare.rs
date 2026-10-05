@@ -560,7 +560,14 @@ async fn apply_child_path_and_target(
     }
     let native_cache_target = known_cargo_target.filter(|target| target.ends_with("-apple-darwin"));
 
-    target::apply_linker_override(command, args, explicit_target.as_deref(), spec.paths).await?;
+    target::apply_linker_override(
+        command,
+        args,
+        explicit_target.as_deref(),
+        spec.paths,
+        spec.dylint_active,
+    )
+    .await?;
     Ok(ChildPathOutcome {
         dylint_shim_guard,
         rustfmt_shim_guard,

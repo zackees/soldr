@@ -101,11 +101,16 @@ fn known_cargo_build_target_inner(
 /// 2. a `CARGO_BUILD_TARGET` already in the parent env,
 /// 3. an `--target` flag inside `args`,
 /// 4. the auto-detected host triple from `TargetTriple::detect()`.
+///
+/// `dylint_active` marks a Dylint-scoped invocation (`cargo dylint` at the
+/// entrypoint, and every nested front-door re-entry while
+/// `SOLDR_DYLINT_TOOLCHAIN` is set — see `prepare_dylint_scope`).
 pub(super) async fn apply_linker_override(
     command: &mut std::process::Command,
     args: &[String],
     explicit_target: Option<&str>,
     paths: &SoldrPaths,
+    dylint_active: bool,
 ) -> Result<(), SoldrError> {
     // `Fast` is the automatic/default linker (soldr#3262): it is a best-effort
     // convenience, not a hard requirement. If the triple cannot be detected
@@ -119,12 +124,30 @@ pub(super) async fn apply_linker_override(
     // > Cargo.toml metadata > ~/.soldr/config.toml > default). It also owns
     // the soldr#3277 suppression: a project-declared non-reld linker for
     // this target resolves to `Default`, so nothing is injected over it.
+    // soldr#3483: a Dylint-scoped resolution additionally reads each declared
+    // lint library's own `.cargo/config.toml` ahead of the workspace root's.
     let selection = linker::resolve_project_choice_from_cwd(
         target_result.as_ref().ok().map(String::as_str),
         paths,
+        dylint_active,
     )?;
     let choice = selection.choice;
     if matches!(choice, linker::LinkerChoice::Default) {
+        return Ok(());
+    }
+    // soldr#3483 backstop: a Dylint build's linker is its lint library's own
+    // `[target.'cfg(all())'] linker = "dylint-link"` declaration — dylint-link
+    // is what stamps the `@<toolchain>` copy cargo-dylint later looks for, and
+    // Cargo gives an injected `CARGO_TARGET_<triple>_LINKER` precedence over
+    // every `[target.*]` config section (exact triple beats `cfg`), so *any*
+    // automatic injection here silently disables dylint-link and the lint
+    // build fails with "Could not find lib<name>@<toolchain>.so despite
+    // successful build". The per-lint config read above catches every lint
+    // the workspace declares; this backstop also covers lints it cannot see
+    // (`cargo dylint --path ...`, undeclared packages). An explicit
+    // `SOLDR_LINKER` is a user decision and still wins, exactly as it does
+    // over a project's own config (soldr#3277).
+    if dylint_active && !matches!(selection.source, linker::LinkerSource::Env) {
         return Ok(());
     }
     let target = match target_result {
@@ -181,10 +204,17 @@ pub(super) fn apply_linker_override_blocking(
     args: &[String],
     explicit_target: Option<&str>,
     paths: &SoldrPaths,
+    dylint_active: bool,
 ) -> Result<(), SoldrError> {
     tokio::runtime::Runtime::new()
         .map_err(|error| SoldrError::Other(error.to_string()))?
-        .block_on(apply_linker_override(command, args, explicit_target, paths))
+        .block_on(apply_linker_override(
+            command,
+            args,
+            explicit_target,
+            paths,
+            dylint_active,
+        ))
 }
 
 /// Prepend `dir` to the PATH the cargo child will see (the command's own

@@ -102,7 +102,8 @@ pub(crate) fn run_prepare_inner(
 fn fetch_selected_linker() -> Result<Option<LinkerSummary>, SoldrError> {
     let paths = SoldrPaths::new()?;
     let host_triple = crate::core::TargetTriple::host()?.triple();
-    let selection = crate::linker::resolve_project_choice_from_cwd(Some(&host_triple), &paths)?;
+    let selection =
+        crate::linker::resolve_project_choice_from_cwd(Some(&host_triple), &paths, false)?;
     if !selection.needs_reld() {
         return Ok(None);
     }
