@@ -48,7 +48,9 @@ and stays remote; it is the residual first-push risk. Their *lints* run here
 (`cross` lane).
 
 Checks in a lane run in parallel; each one's output is shown only when it
-fails, then a timing table. Exit 1 when any check fails.
+fails -- as a bounded tail, with the complete output persisted under
+`<git-dir>/local-gate/logs/<run-id>/` and its exact path printed (soldr#3564)
+-- then a timing table. Exit 1 when any check fails.
 """
 
 from __future__ import annotations
@@ -68,8 +70,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 # The zackees/ci.yml commit whose ci_lint this repository uses. ci.yml's
-# `ci-mode` job checks out the same SHA; tests/test_local_gate.py keeps the
-# two in step.
+# `ci-mode` job checks out the same SHA; tests/test_local_gate_wiring.py
+# keeps the two in step.
 CI_LINT_REF = "877810a2178122c772d53dab8572fd19c2d1a045"
 # GATE-007 lanes (zackees/ci.yml#177), split along input boundaries so each
 # can be cached on its own: Python linters read only Python; guards scan the
@@ -751,6 +753,125 @@ def run_captured(argv: list[str]) -> Captured:
         return Captured(proc.returncode, out.read().decode("utf-8", errors="replace"))
 
 
+# The console excerpt on failure: long enough to diagnose a small check from
+# the lane log alone, bounded so one runaway child cannot flood it. The
+# complete output goes to a durable file instead (soldr#3564).
+LOG_TAIL_CHARS = 20000
+
+
+def _git_dir() -> Path | None:
+    """The repository's real git directory, resolved by git itself.
+
+    `ROOT / ".git"` is a directory only in a primary checkout: in a linked
+    worktree it is a file pointing elsewhere, so path arithmetic cannot find
+    the right place to keep gate state. None when git cannot answer or names
+    no existing directory -- not a repository, or git is absent.
+    """
+    proc = run_captured(["git", "rev-parse", "--git-dir"])
+    if proc.returncode != 0:
+        return None
+    first = next((ln.strip() for ln in proc.output.splitlines() if ln.strip()), "")
+    if not first:
+        return None
+    path = Path(first)
+    if not path.is_absolute():
+        path = ROOT / path
+    path = path.resolve()
+    return path if path.is_dir() else None
+
+
+def prepare_log_dir() -> Path | None:
+    """This run's directory for complete failed-check logs (soldr#3564).
+
+    The preferred location is `<git-dir>/local-gate/logs/<run-id>/`: durable,
+    local-only (under the git dir, so it is never committed and never
+    published), correct for worktrees, and unique per run so two gate
+    invocations -- or two worktrees -- cannot overwrite each other's evidence.
+    When no log location exists at all (no git directory, or nothing
+    writable), degrade to a warning and None: losing the log is the bug being
+    fixed here, so the gate reports where it cannot write one rather than
+    crashing over its own diagnostics.
+    """
+    run_id = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{secrets.token_hex(3)}"
+    reason = "no git directory resolved"
+    git_dir = _git_dir()
+    if git_dir is not None:
+        try:
+            run_dir = git_dir / "local-gate" / "logs" / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            return run_dir
+        except OSError as exc:
+            reason = f"cannot write under {git_dir}/local-gate/logs ({exc})"
+    try:
+        fallback = Path(tempfile.mkdtemp(prefix="soldr-local-gate-logs-"))
+    except OSError as exc:
+        print(
+            f"local gate: warning: {reason}; no temp dir either ({exc}); "
+            "failed-check output will not be persisted",
+            file=sys.stderr,
+        )
+        return None
+    print(
+        f"local gate: warning: {reason}; failed-check logs go to {fallback}",
+        file=sys.stderr,
+    )
+    return fallback
+
+
+def persist_failed_log(log_dir: Path, result: Result) -> Path | None:
+    """Write the check's COMPLETE output to `log_dir` and return the path.
+
+    The console prints only a bounded tail of the same text; this file is the
+    whole capture with a provenance header, so a failure diagnosable only
+    from its first pages (a lost assertion above 20 KB of test output) stays
+    diagnosable. None when the write fails -- a missing log is warned about,
+    never allowed to change the gate's exit code.
+    """
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", result.check.name).strip("._-") or "check"
+    path = log_dir / f"{slug}.log"
+    counter = 2
+    while path.exists():  # two check names can sanitize to the same slug
+        path = log_dir / f"{slug}-{counter}.log"
+        counter += 1
+    header = (
+        f"# local gate failed check: {result.check.name}\n"
+        f"# lane: {result.check.lane}  exit: {result.code}"
+        f"  seconds: {result.seconds:.1f}\n"
+        f"# command: {' '.join(result.check.argv)}\n"
+        f"# complete output follows ({len(result.output)} chars)\n"
+    )
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(header + result.output, encoding="utf-8")
+    except OSError as exc:
+        print(f"local gate: warning: cannot persist {path} ({exc})", file=sys.stderr)
+        return None
+    return path
+
+
+def _print_failures(failed: list[Result]) -> None:
+    """Report every failed check: its exact durable log path, then the
+    bounded tail of its output (soldr#3564). The tail is labeled as a tail
+    rather than presented as the full output, and a log that could not be
+    written is named instead of silently omitted."""
+    log_dir = prepare_log_dir() if failed else None
+    for result in failed:
+        log_path = persist_failed_log(log_dir, result) if log_dir is not None else None
+        print(f"\n===== FAIL: {result.check.name} (exit {result.code}) =====")
+        print(f"$ {' '.join(result.check.argv)}")
+        if log_path is not None:
+            print(f"full log: {log_path}")
+        else:
+            print("full log: unavailable (see warning on stderr)")
+        tail = result.output.rstrip()
+        if len(tail) > LOG_TAIL_CHARS:
+            print(
+                f"(console tail: last {LOG_TAIL_CHARS} of {len(tail)} chars;"
+                " the complete output is in the full log above)"
+            )
+        print(tail[-LOG_TAIL_CHARS:])
+
+
 def tool_version(tool: str) -> tuple[int, ...] | None:
     proc = run_captured([tool, "--version"])
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", proc.output)
@@ -881,10 +1002,7 @@ def main(argv: list[str] | None = None) -> int:
 
     skipped = [r for r in results if _not_applicable(r)]
     failed = [r for r in results if r.code != 0 and not _not_applicable(r)]
-    for result in failed:
-        print(f"\n===== FAIL: {result.check.name} (exit {result.code}) =====")
-        print(f"$ {' '.join(result.check.argv)}")
-        print(result.output.rstrip()[-20000:])
+    _print_failures(failed)
     total = time.monotonic() - start
     print(
         f"\nlocal gate ({args.lane}): {len(results) - len(failed) - len(skipped)}/{len(results)} passed"
