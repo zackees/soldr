@@ -8,6 +8,13 @@ left a root-owned ``.venv`` there that broke every host ``uv`` invocation.
 
 These tests run the real script against a fake ``uv`` that records its argv,
 so they assert exactly which environment path each exec path targets.
+
+soldr#3565: CI runs this file inside a Docker container, where the script's
+container refusal (``/.dockerenv``) fires before the host-path assertions can
+run -- clearing ``container`` from the environment does not emulate a host
+filesystem. The two host-contract cases therefore set
+``SOLDR_INSTALL_CONTAINER_CHECK=off``; the container cases leave it unset so
+the refusal itself stays under test.
 """
 
 from __future__ import annotations
@@ -44,10 +51,17 @@ def _run_install(
     log = tmp_path / "uv.log"
     bin_dir = tmp_path / "bin"
     _fake_uv(bin_dir, log)
+    # soldr#3565: scrub the seam too, so an ambient value in the developer
+    # or CI environment cannot disable the refusal assertions below. Each
+    # test opts into the seam explicitly via extra_env.
+    scrubbed = {
+        "UV_PROJECT_ENVIRONMENT",
+        "VIRTUAL_ENV",
+        "container",
+        "SOLDR_INSTALL_CONTAINER_CHECK",
+    }
     env = {
-        key: value
-        for key, value in os.environ.items()
-        if key not in ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV", "container")
+        key: value for key, value in os.environ.items() if key not in scrubbed
     }
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
     env.update(extra_env)
@@ -86,7 +100,11 @@ def test_host_default_stays_in_the_checkout(tmp_path: Path) -> None:
     checkout = tmp_path / "repo"
     checkout.mkdir()
 
-    result, calls = _run_install(checkout, tmp_path, {})
+    # soldr#3565: host-contract case -- ask the script to probe as if on a
+    # host so this passes inside CI's container too.
+    result, calls = _run_install(
+        checkout, tmp_path, {"SOLDR_INSTALL_CONTAINER_CHECK": "off"}
+    )
 
     assert result.returncode == 0, result.stderr
     assert calls[0].startswith("venv .venv --python 3.13 "), calls
@@ -117,9 +135,60 @@ def test_unusable_checkout_venv_fails_with_the_remedy(tmp_path: Path) -> None:
         tmp_path / "root-only" / "python3.13"
     )
 
-    result, calls = _run_install(checkout, tmp_path, {})
+    # soldr#3565: host-contract case -- bypass the container refusal so the
+    # broken-.venv remedy is what this asserts, on any runner.
+    result, calls = _run_install(
+        checkout, tmp_path, {"SOLDR_INSTALL_CONTAINER_CHECK": "off"}
+    )
 
     assert result.returncode != 0
     assert calls == []
     assert "rm -rf .venv" in result.stderr
     assert "soldr#3519" in result.stderr
+
+
+def test_container_check_refusal_fires_without_the_override(tmp_path: Path) -> None:
+    """soldr#3565: without the seam, a container still refuses before uv.
+
+    Guards the production default: `SOLDR_INSTALL_CONTAINER_CHECK` is the
+    only thing that can suppress the soldr#3519 refusal, and only when it
+    is explicitly off. Absent -- as in every real container run -- the
+    refusal must still fire.
+    """
+    checkout = tmp_path / "repo"
+    checkout.mkdir()
+
+    for override in (None, "", "on", "maybe"):
+        extra_env: dict[str, str] = {"container": "podman"}
+        if override is not None:
+            extra_env["SOLDR_INSTALL_CONTAINER_CHECK"] = override
+
+        result, calls = _run_install(checkout, tmp_path, extra_env)
+
+        assert result.returncode != 0, override
+        assert calls == [], (override, calls)
+        assert "UV_PROJECT_ENVIRONMENT" in result.stderr, override
+        assert "soldr#3519" in result.stderr, override
+        assert not (checkout / ".venv").exists(), override
+
+
+def test_container_check_off_suppresses_every_marker(tmp_path: Path) -> None:
+    """soldr#3565: the explicit-off spellings suppress the whole probe.
+
+    The value space mirrors env_flag.rs `EXPLICIT_OFF` (crates/soldr-core):
+    trimmed, case-insensitive, and only these spellings turn the check off.
+    `container` is set here so the suppression is observable even on a
+    host, where the file markers are absent.
+    """
+    checkout = tmp_path / "repo"
+    checkout.mkdir()
+
+    for override in ("off", "OFF", " off ", "0", "false", "no"):
+        result, calls = _run_install(
+            checkout,
+            tmp_path,
+            {"container": "podman", "SOLDR_INSTALL_CONTAINER_CHECK": override},
+        )
+
+        assert result.returncode == 0, (override, result.stderr)
+        assert calls[0].startswith("venv .venv --python 3.13 "), (override, calls)

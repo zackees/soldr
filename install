@@ -26,7 +26,23 @@ fi
 # `uv run --no-sync` already resolve the project environment from it.
 VENV_DIR="${UV_PROJECT_ENVIRONMENT:-.venv}"
 
+# soldr#3565: an owned, default-on switch read the way env_flag.rs reads one
+# (crates/soldr-core/src/core/env_flag.rs `is_off_value`): trimmed,
+# case-insensitive, and only an explicit off spelling -- 0, false, no, off --
+# suppresses the container refusal. Absent, empty, or unrecognised values keep
+# it armed, so a real container run still refuses exactly as before. The
+# host-contract cases in tests/test_install_project_env.py set
+# SOLDR_INSTALL_CONTAINER_CHECK=off because their fixture cannot emulate a
+# host filesystem inside CI's Docker runner: it can scrub `container` from
+# the environment, but not /.dockerenv.
 in_container() {
+  local check="${SOLDR_INSTALL_CONTAINER_CHECK:-}"
+  # bash 3.2-safe trim (macOS /bin/bash), matching env_flag::is_off_value.
+  check="${check#"${check%%[![:space:]]*}"}"
+  check="${check%"${check##*[![:space:]]}"}"
+  case "$(printf '%s' "$check" | tr '[:upper:]' '[:lower:]')" in
+    0|false|no|off) return 1 ;;
+  esac
   [ -f /.dockerenv ] || [ -f /run/.containerenv ] || [ -n "${container:-}" ]
 }
 
