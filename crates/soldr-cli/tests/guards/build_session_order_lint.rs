@@ -56,10 +56,10 @@ const FALLIBLE_PRE_SPAWN_STEPS: &[(&str, &str)] = &[
         "pyo3_plan.materialize_compatibility(spec.paths).await?",
         "PyO3 compatibility materialization",
     ),
-    (
-        "target::apply_linker_override(command",
-        "linker override setup",
-    ),
+    // The call spans lines since soldr#3483 threaded `dylint_active`
+    // through it (rustfmt one-arg-per-line), so the needle matches the
+    // call opener rather than its first two arguments.
+    ("target::apply_linker_override(", "linker override setup"),
     (
         "CargoCachePlan::finalize(cache_enabled_for_cargo",
         "cache-plan finalization",

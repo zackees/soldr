@@ -906,12 +906,13 @@ fn linker_candidate_identity_differs_across_reld_versions() {
 }
 
 #[test]
-fn project_target_config_does_not_match_cfg_sections() {
-    // Known soldr#3277 limitation: cfg-spec target sections (e.g.
-    // `[target.'cfg(all())']`) are not detected by
-    // `target_config_value_in_root`, which only matches an exact triple key.
-    // This repo's `dylints/*` manifests rely on `SOLDR_LINKER=default` to
-    // opt out of injection rather than a cfg-spec `[target]` section.
+fn project_target_config_matches_cfg_sections() {
+    // soldr#3483 (closing the soldr#3277 limitation): cfg-spec target
+    // sections such as `[target.'cfg(all())']` — how every dylint crate
+    // declares its linker — are now detected by
+    // `target_config_value_in_root`, which previously matched only exact
+    // triple keys and silently ignored them. An exact-triple section in
+    // the same file still wins over the cfg form (cargo's precedence).
     let root = tempfile::tempdir().expect("temporary project root");
     std::fs::create_dir_all(root.path().join(".cargo")).expect("create .cargo dir");
     std::fs::write(
@@ -919,7 +920,23 @@ fn project_target_config_does_not_match_cfg_sections() {
         "[target.'cfg(all())']\nrustflags = [\"-C\", \"linker=dylint-link\"]\n",
     )
     .expect("write .cargo/config.toml");
-    assert!(target_config_value_in_root(root.path(), LINUX, "rustflags").is_none());
+    let value = target_config_value_in_root(root.path(), LINUX, "rustflags");
+    assert!(
+        value.as_deref().is_some_and(|v| v.contains("dylint-link")),
+        "cfg(all()) rustflags must be visible to the guard, got {value:?}"
+    );
+
+    // Exact triple beats cfg(all()) within one file.
+    std::fs::write(
+        root.path().join(".cargo/config.toml"),
+        "[target.'cfg(all())']\nrustflags = [\"cfg\"]\n\n[target.x86_64-unknown-linux-gnu]\nrustflags = [\"exact\"]\n",
+    )
+    .expect("rewrite .cargo/config.toml");
+    let value = target_config_value_in_root(root.path(), LINUX, "rustflags");
+    assert!(
+        value.as_deref().is_some_and(|v| v.contains("exact")),
+        "the exact triple must win over cfg(all()), got {value:?}"
+    );
 }
 
 #[test]
