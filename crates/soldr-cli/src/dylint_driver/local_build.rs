@@ -318,7 +318,9 @@ fn install_local_driver(
 }
 
 /// Write one staged driver file through a part-file + rename so a concurrent
-/// reader never observes a torn executable. Mirrors
+/// reader never observes a torn executable — or a missing one (soldr#3538):
+/// the rename goes over the destination (atomic replace on POSIX), and the
+/// destination is deleted only inside the Windows-style fallback. Mirrors
 /// `toolchain_packaged::install_driver_file_atomically`.
 fn install_driver_file_atomically(
     driver_dir: &Path,
@@ -332,12 +334,33 @@ fn install_driver_file_atomically(
     let temporary = driver_dir.join(format!(".{file_name}.part-{}", std::process::id()));
     materialize(&temporary)?;
     crate::platform::fs::permissions::make_executable(&temporary)?;
-    if destination.is_file() {
-        std::fs::remove_file(destination)?;
-    }
-    if let Err(error) = std::fs::rename(&temporary, destination) {
+    replace_installed_file(&temporary, destination, |from, to| {
+        std::fs::rename(from, to)
+    })
+    .map_err(|error| {
         let _ = std::fs::remove_file(&temporary);
-        return Err(error.into());
+        SoldrError::Io(error)
+    })
+}
+
+/// Move `temporary` onto `destination` without ever leaving the destination
+/// absent on the happy path: plain `rename` first (atomic replace on POSIX),
+/// remove-then-rename only when the rename failed while a destination still
+/// exists (Windows refuses to replace). Same seam-and-contract as
+/// `toolchain_packaged::replace_installed_file` (soldr#3538); `rename` is
+/// injected so tests can assert the ordering.
+pub(super) fn replace_installed_file(
+    temporary: &Path,
+    destination: &Path,
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if let Err(error) = rename(temporary, destination) {
+        if destination.exists() {
+            std::fs::remove_file(destination)?;
+            rename(temporary, destination)?;
+        } else {
+            return Err(error);
+        }
     }
     Ok(())
 }
@@ -405,27 +428,7 @@ pub(super) fn write_driver_build_marker(
     })?;
     let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
     std::fs::write(&temporary, bytes)?;
-    replace_driver_build_marker_file(&temporary, path, |from, to| std::fs::rename(from, to))?;
-    Ok(())
-}
-
-/// Mirrors `dylint_cook.rs`'s `replace_marker_file`: Windows `rename` does
-/// not replace an existing destination, so fall back to remove-then-rename.
-/// The per-driver-dir build lock makes this safe — interruption can only
-/// omit the marker and force a rebuild, never corrupt one.
-fn replace_driver_build_marker_file(
-    temporary: &Path,
-    path: &Path,
-    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    if let Err(error) = rename(temporary, path) {
-        if path.exists() {
-            std::fs::remove_file(path)?;
-            rename(temporary, path)?;
-        } else {
-            return Err(error);
-        }
-    }
+    replace_installed_file(&temporary, path, |from, to| std::fs::rename(from, to))?;
     Ok(())
 }
 
