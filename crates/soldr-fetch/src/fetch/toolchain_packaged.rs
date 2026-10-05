@@ -497,12 +497,19 @@ mod tests {
     /// and over. On POSIX, `rename(2)` replaces the destination atomically,
     /// so this can never observe absence — while the pre-fix
     /// delete-then-rename opened a window on every restage (soldr#3538).
-    /// Unix-only because the Windows fallback path legitimately removes.
-    #[cfg(unix)]
+    /// POSIX-only because the Windows fallback path legitimately removes.
+    /// Gated by a **runtime** host check, not `#[cfg(unix)]`: host `cfg`
+    /// outside `soldr-platform` is denied by the #2493 boundary
+    /// (`dylints/ban_platform_cfg_outside_boundary` and
+    /// `.github/scripts/platform_cfg_boundary_ratchet.py`) — the same
+    /// convention as `dylint_link_validation_tests.rs` (soldr#3284).
     #[test]
     fn a_reader_never_sees_the_destination_absent_during_repeated_installs() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         let temp = tempfile::TempDir::new().expect("tempdir");
         let source_one = temp.path().join("driver-one");
         let source_two = temp.path().join("driver-two");
