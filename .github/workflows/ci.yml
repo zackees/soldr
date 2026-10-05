@@ -153,11 +153,21 @@ jobs:
         id: select
         run: uv run --no-project --python 3.13 python .github/scripts/ci_path_policy.py
 
-  # A Markdown-only PR must still report the protected `Lint` context. Keep
-  # this no-op separate from the real Lint job so docs do not allocate the
-  # toolchain and platform fan-out that they cannot affect (soldr#3318).
+  # A Markdown-only PR must still report a lint verdict. Keep this no-op
+  # separate from the real Lint job so docs do not allocate the toolchain and
+  # platform fan-out that they cannot affect (soldr#3318).
+  #
+  # The display name must stay distinct from the real job's `Lint`. Two jobs
+  # sharing a display name makes `ci-lint reuse-check` fail closed on every
+  # run: it requires *every* job carrying a required name to conclude success,
+  # so this sibling's by-design skip read as `required-job-not-success` and
+  # soldr measured 0% reuse and was written off as a non-adopter
+  # (zackees/ci.yml#320). The old comment said this name existed to satisfy
+  # "the protected `Lint` context", but main carries no branch protection and
+  # no ruleset, so nothing requires that name any more. Every consumer here
+  # (`needs.lint.*`) refers to the job id, not this display name.
   lint-docs:
-    name: Lint
+    name: Lint (docs no-op)
     needs: [ci-mode, path-selection]
     if: ${{ needs.ci-mode.outputs.mode != 'full' && (needs.path-selection.outputs.docs_only == 'true' || needs.ci-mode.outputs.skip_lint == 'true') }}
     runs-on: ubuntu-24.04

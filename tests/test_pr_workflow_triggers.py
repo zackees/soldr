@@ -114,7 +114,14 @@ def test_canonical_ci_owns_docs_and_retained_pr_signals() -> None:
     assert "paths-ignore" not in triggers["pull_request"]
 
     jobs = document["jobs"]
-    assert jobs["lint-docs"]["name"] == "Lint"
+    # A docs-only change must still report a lint verdict, but through a job
+    # whose display name is distinct from the real `Lint`. Pinning the exact
+    # string "Lint" here is what let two jobs share one name, which made
+    # `ci-lint reuse-check` fail closed on every run and soldr measure 0%
+    # reuse (zackees/ci.yml#320). Assert the two properties that matter
+    # instead: the no-op exists, reports lint, and is unambiguous.
+    assert jobs["lint-docs"]["name"].startswith("Lint")
+    assert jobs["lint-docs"]["name"] != jobs["lint"]["name"]
     assert "docs_only == 'true'" in jobs["lint-docs"]["if"]
     assert "docs_only != 'true'" in jobs["build-linux-x64"]["if"]
     assert jobs["ci-pre"]["uses"] == "./.github/workflows/ci-pre.yml"
