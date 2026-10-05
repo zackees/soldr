@@ -100,7 +100,9 @@ def test_host_default_stays_in_the_checkout(tmp_path: Path) -> None:
 
     # soldr#3565: host-contract case -- ask the script to probe as if on a
     # host so this passes inside CI's container too.
-    result, calls = _run_install(checkout, tmp_path, {"SOLDR_INSTALL_CONTAINER_CHECK": "off"})
+    result, calls = _run_install(
+        checkout, tmp_path, {"SOLDR_INSTALL_CONTAINER_CHECK": "off"}
+    )
 
     assert result.returncode == 0, result.stderr
     assert calls[0].startswith("venv .venv --python 3.13 "), calls
@@ -127,11 +129,15 @@ def test_unusable_checkout_venv_fails_with_the_remedy(tmp_path: Path) -> None:
     (checkout / ".venv" / "bin").mkdir(parents=True)
     # The shape a container leaves behind: an interpreter link into a
     # directory the host cannot reach.
-    (checkout / ".venv" / "bin" / "python").symlink_to(tmp_path / "root-only" / "python3.13")
+    (checkout / ".venv" / "bin" / "python").symlink_to(
+        tmp_path / "root-only" / "python3.13"
+    )
 
     # soldr#3565: host-contract case -- bypass the container refusal so the
     # broken-.venv remedy is what this asserts, on any runner.
-    result, calls = _run_install(checkout, tmp_path, {"SOLDR_INSTALL_CONTAINER_CHECK": "off"})
+    result, calls = _run_install(
+        checkout, tmp_path, {"SOLDR_INSTALL_CONTAINER_CHECK": "off"}
+    )
 
     assert result.returncode != 0
     assert calls == []
