@@ -963,7 +963,7 @@ def _remove_container(name: str) -> str | None:
     return None
 
 
-def run_probe(args: argparse.Namespace) -> int:
+def run_probe(args: argparse.Namespace) -> int:  # noqa: C901
     mode = getattr(args, "mode", "cold")
     repository = getattr(args, "repository", None) or os.environ.get(
         "GITHUB_REPOSITORY"
