@@ -556,3 +556,68 @@ fn hanging_driver_probes_as_timed_out_and_stays_bounded() {
         "probe classification must stay bounded, took {elapsed:?}"
     );
 }
+
+// ---------------------------------------------------------------------
+// Driver install never deletes before renaming (soldr#3538).
+// ---------------------------------------------------------------------
+
+/// The tier-2 install path shares the catalogue path's contract: the
+/// destination must still hold its old bytes at the moment the rename
+/// runs, because concurrent `soldr cargo dylint` runs in sibling worktrees
+/// exec/probe the same driver directory. A delete-before-rename opens an
+/// ENOENT window for them (the reported `soldr: IO error: No such file or
+/// directory`); this asserts the rename-over ordering directly.
+#[test]
+fn driver_install_renames_over_the_destination_without_deleting_it_first() {
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("dylint-driver-real");
+    let temporary = temp.path().join(".dylint-driver-real.part-test");
+    std::fs::write(&destination, b"old-driver").unwrap();
+    std::fs::write(&temporary, b"new-driver").unwrap();
+
+    let mut observed_at_rename_time = Vec::new();
+    replace_installed_file(&temporary, &destination, |from, to| {
+        observed_at_rename_time = std::fs::read(to).unwrap_or_default();
+        std::fs::rename(from, to)
+    })
+    .expect("rename over an existing destination must succeed on this platform");
+
+    assert_eq!(
+        observed_at_rename_time, b"old-driver",
+        "the destination must survive intact until the rename replaces it (soldr#3538)"
+    );
+    assert_eq!(std::fs::read(&destination).unwrap(), b"new-driver");
+    assert!(!temporary.exists());
+}
+
+/// Windows-style fallback: the destination is removed only after a rename
+/// has actually failed while it is still in the way.
+#[test]
+fn replace_installed_file_falls_back_to_remove_then_rename_when_rename_refuses() {
+    let temp = tempfile::tempdir().unwrap();
+    let destination = temp.path().join("dylint-driver");
+    let temporary = temp.path().join(".dylint-driver.part-test");
+    std::fs::write(&destination, b"old-driver").unwrap();
+    std::fs::write(&temporary, b"new-driver").unwrap();
+
+    let mut attempts = 0;
+    replace_installed_file(&temporary, &destination, |from, to| {
+        attempts += 1;
+        if attempts == 1 {
+            assert!(
+                to.exists(),
+                "the fallback may only fire while a destination is still in the way"
+            );
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated Windows destination-exists failure",
+            ));
+        }
+        std::fs::rename(from, to)
+    })
+    .expect("fallback must complete the install");
+
+    assert_eq!(attempts, 2);
+    assert_eq!(std::fs::read(&destination).unwrap(), b"new-driver");
+    assert!(!temporary.exists());
+}

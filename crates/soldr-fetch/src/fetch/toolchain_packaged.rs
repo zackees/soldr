@@ -189,7 +189,19 @@ fn install_extensionless_driver(
 }
 
 /// Write one staged driver file through a part-file + rename so a
-/// concurrent reader never observes a torn executable.
+/// concurrent reader never observes a torn executable — and, since
+/// soldr#3538, never observes a missing one either.
+///
+/// The rename goes straight over the destination: POSIX `rename(2)`
+/// atomically replaces it, so readers see either the old file or the new
+/// one. The previous implementation deleted the destination first, which
+/// left a window where a concurrent `soldr cargo dylint` in another
+/// worktree got `No such file or directory` execing or probing the driver
+/// (and two racing installers could even collide on the delete itself).
+/// Removal happens only as the fallback for platforms/filesystems whose
+/// `rename` refuses to replace an existing destination (Windows), matching
+/// the `replace_marker_file` pattern in `dylint_cook.rs`,
+/// `dylint_driver/local_build.rs`, and `ci_test/dylint_library_marker.rs`.
 fn install_driver_file_atomically(
     source: &Path,
     driver_dir: &Path,
@@ -203,12 +215,37 @@ fn install_driver_file_atomically(
     let temporary = driver_dir.join(format!(".{file_name}.part-{}", std::process::id()));
     materialize(source, &temporary)?;
     crate::platform::fs::permissions::make_executable(&temporary)?;
-    if destination.is_file() {
-        std::fs::remove_file(destination)?;
-    }
-    if let Err(error) = std::fs::rename(&temporary, destination) {
+    replace_installed_file(&temporary, destination, |from, to| {
+        std::fs::rename(from, to)
+    })
+    .map_err(|error| {
         let _ = std::fs::remove_file(&temporary);
-        return Err(error.into());
+        SoldrError::Io(error)
+    })
+}
+
+/// Move `temporary` onto `destination`, replacing any existing file
+/// without ever leaving the destination absent on the happy path.
+///
+/// Extracted so tests can assert the rename-over semantics directly
+/// (soldr#3538): a plain `rename` first — atomic replace on POSIX — and
+/// the remove-then-rename fallback only when the rename failed *and* a
+/// destination is still there to get in the way.
+fn replace_installed_file(
+    temporary: &Path,
+    destination: &Path,
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if let Err(error) = rename(temporary, destination) {
+        // Windows rename does not replace an existing destination. The
+        // delete is confined to this fallback so a POSIX reader never
+        // sees the destination disappear mid-install (soldr#3538).
+        if destination.exists() {
+            std::fs::remove_file(destination)?;
+            rename(temporary, destination)?;
+        } else {
+            return Err(error);
+        }
     }
     Ok(())
 }
@@ -361,6 +398,151 @@ mod tests {
             root.join(channel).join("dylint-driver-real")
         };
         assert_eq!(std::fs::read(payload_path).expect("payload"), b"two");
+    }
+
+    /// soldr#3538: the destination must still be present — with its old
+    /// bytes — at the moment the rename runs. The pre-fix install deleted
+    /// the destination first, so a concurrent `soldr cargo dylint` in
+    /// another worktree saw `No such file or directory` execing or probing
+    /// the driver. This asserts the rename-over ordering directly: if the
+    /// helper ever deletes before renaming again, the bytes observed at
+    /// rename time drop to empty and the test fails.
+    #[test]
+    fn install_renames_over_the_destination_without_deleting_it_first() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let destination = temp.path().join("dylint-driver-real");
+        let temporary = temp.path().join(".dylint-driver-real.part-test");
+        std::fs::write(&destination, b"old-driver").expect("old driver");
+        std::fs::write(&temporary, b"new-driver").expect("staged driver");
+
+        let mut observed_at_rename_time = Vec::new();
+        replace_installed_file(&temporary, &destination, |from, to| {
+            observed_at_rename_time = std::fs::read(to).unwrap_or_default();
+            std::fs::rename(from, to)
+        })
+        .expect("rename over an existing destination must succeed on this platform");
+
+        assert_eq!(
+            observed_at_rename_time, b"old-driver",
+            "the destination must survive intact until the rename replaces it — never be \
+             deleted first (soldr#3538)"
+        );
+        assert_eq!(
+            std::fs::read(&destination).expect("installed bytes"),
+            b"new-driver"
+        );
+        assert!(!temporary.exists(), "the staged part-file must be consumed");
+    }
+
+    /// Windows-style platforms: `rename` refuses to replace an existing
+    /// destination, so the helper falls back to remove-then-rename — but
+    /// only after the rename has actually failed, never preemptively.
+    #[test]
+    fn replace_installed_file_falls_back_to_remove_then_rename_when_rename_refuses() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let destination = temp.path().join("dylint-driver");
+        let temporary = temp.path().join(".dylint-driver.part-test");
+        std::fs::write(&destination, b"old-driver").expect("old driver");
+        std::fs::write(&temporary, b"new-driver").expect("staged driver");
+
+        let mut attempts = 0;
+        replace_installed_file(&temporary, &destination, |from, to| {
+            attempts += 1;
+            if attempts == 1 {
+                assert!(
+                    to.exists(),
+                    "the fallback may only fire while a destination is still in the way"
+                );
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "simulated Windows destination-exists failure",
+                ));
+            }
+            std::fs::rename(from, to)
+        })
+        .expect("fallback must complete the install");
+
+        assert_eq!(attempts, 2, "exactly one failed rename then one retry");
+        assert_eq!(
+            std::fs::read(&destination).expect("installed bytes"),
+            b"new-driver"
+        );
+        assert!(!temporary.exists(), "the staged part-file must be consumed");
+    }
+
+    /// A rename failure with nothing to fall back to is an error, not a
+    /// silent success — and the caller cleans up the part-file.
+    #[test]
+    fn replace_installed_file_propagates_the_error_when_no_destination_blocks_the_rename() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let destination = temp.path().join("dylint-driver");
+        let temporary = temp.path().join(".dylint-driver.part-test");
+        std::fs::write(&temporary, b"new-driver").expect("staged driver");
+
+        let error = replace_installed_file(&temporary, &destination, |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "simulated failure",
+            ))
+        })
+        .expect_err("a failed rename with no destination to clear must be an error");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(!destination.exists());
+        assert!(temporary.exists(), "the caller owns part-file cleanup");
+    }
+
+    /// The issue's actual failure mode, exercised end-to-end: a reader
+    /// hammering the installed driver path while installs restage it over
+    /// and over. On POSIX, `rename(2)` replaces the destination atomically,
+    /// so this can never observe absence — while the pre-fix
+    /// delete-then-rename opened a window on every restage (soldr#3538).
+    /// Unix-only because the Windows fallback path legitimately removes.
+    #[cfg(unix)]
+    #[test]
+    fn a_reader_never_sees_the_destination_absent_during_repeated_installs() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let source_one = temp.path().join("driver-one");
+        let source_two = temp.path().join("driver-two");
+        std::fs::write(&source_one, b"one").expect("source one");
+        std::fs::write(&source_two, b"two").expect("source two");
+        let root = temp.path().join("drivers");
+        let channel = "nightly-2026-05-28-x86_64-unknown-linux-gnu";
+        install_extensionless_driver(&source_one, &root, channel).expect("first stage");
+        let wrapper = root.join(channel).join("dylint-driver");
+
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        let reader = {
+            let wrapper = wrapper.clone();
+            let done = std::sync::Arc::clone(&done);
+            std::thread::spawn(move || {
+                while !done.load(Ordering::Relaxed) {
+                    if !wrapper.is_file() {
+                        return false;
+                    }
+                }
+                true
+            })
+        };
+
+        for iteration in 0..50 {
+            let source = if iteration % 2 == 0 {
+                &source_two
+            } else {
+                &source_one
+            };
+            install_extensionless_driver(source, &root, channel)
+                .expect("restage while the reader is running");
+        }
+        done.store(true, Ordering::Relaxed);
+        assert!(
+            reader.join().expect("reader thread"),
+            "the installed driver path must never be absent while a concurrent reader watches \
+             it (soldr#3538)"
+        );
+        assert!(wrapper.is_file(), "wrapper must be installed at the end");
     }
 
     #[test]
