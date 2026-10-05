@@ -843,6 +843,62 @@ def _restore_args(tmp_path, **overrides):
     return Namespace(**values)
 
 
+def _restore_run_stub(shared, calls):
+    """A `_run` stub that plays back one warm-replay restore, recording calls.
+
+    Each `docker inspect` advances the replay by one step, so the caller sees
+    the shell-ready, tools-ready, then result checkpoints in order; anything
+    else answers with an inert success.
+    """
+    state = {"inspections": 0}
+
+    def fake_run(*command, **_kwargs):
+        calls.append(command)
+        if command[:3] == ("gh", "run", "download"):
+            target = Path(command[command.index("-D") + 1])
+            (target / probe.DISK_EXPORT_NAME).write_bytes(b"x" * 1234)
+        if command[:2] == ("gh", "api"):
+            return SimpleNamespace(stdout="8000000000\n", stderr="", returncode=0)
+        if command[:2] == ("docker", "logs"):
+            return SimpleNamespace(
+                stdout='1970-01-01T00:16:50Z BdsDxe: starting Boot0004 "Windows Boot '
+                'Manager" from HD\n',
+                stderr="",
+                returncode=0,
+            )
+        if command[:2] == ("docker", "inspect") and len(command) == 3:
+            return SimpleNamespace(stdout="", stderr="No such object", returncode=1)
+        if command[:2] == ("docker", "inspect"):
+            state["inspections"] += 1
+            _advance_warm_replay(shared, state["inspections"])
+            return SimpleNamespace(stdout="true", stderr="", returncode=0)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    return fake_run
+
+
+def _advance_warm_replay(shared, inspection):
+    """Write the checkpoint the n-th `docker inspect` observes."""
+    if inspection == 1:
+        (shared / "warm-guest-shell-ready.txt").write_text("ready")
+    elif inspection == 2:
+        (shared / "warm-tools-ready.txt").write_text("ready")
+    elif inspection == 3:
+        (shared / "warm-guest-result.json").write_text(
+            json.dumps(
+                {
+                    "mode": "warm",
+                    "nextest": {
+                        "run": 220,
+                        "passed": 220,
+                        "failed": 0,
+                        "exit_code": 0,
+                    },
+                }
+            )
+        )
+
+
 def test_restore_mode_times_download_extract_boot_and_warm_replay(
     tmp_path, monkeypatch
 ):
@@ -864,49 +920,8 @@ def test_restore_mode_times_download_extract_boot_and_warm_replay(
 
     monkeypatch.setattr(probe, "_stage_payload", stage)
     shared = tmp_path / "scratch" / "shared"
-    inspections = 0
     calls = []
-
-    def fake_run(*command, **_kwargs):
-        nonlocal inspections
-        calls.append(command)
-        if command[:3] == ("gh", "run", "download"):
-            target = Path(command[command.index("-D") + 1])
-            (target / probe.DISK_EXPORT_NAME).write_bytes(b"x" * 1234)
-        if command[:2] == ("gh", "api"):
-            return SimpleNamespace(stdout="8000000000\n", stderr="", returncode=0)
-        if command[:2] == ("docker", "logs"):
-            return SimpleNamespace(
-                stdout='1970-01-01T00:16:50Z BdsDxe: starting Boot0004 "Windows Boot '
-                'Manager" from HD\n',
-                stderr="",
-                returncode=0,
-            )
-        if command[:2] == ("docker", "inspect") and len(command) == 3:
-            return SimpleNamespace(stdout="", stderr="No such object", returncode=1)
-        if command[:2] == ("docker", "inspect"):
-            inspections += 1
-            if inspections == 1:
-                (shared / "warm-guest-shell-ready.txt").write_text("ready")
-            elif inspections == 2:
-                (shared / "warm-tools-ready.txt").write_text("ready")
-            elif inspections == 3:
-                (shared / "warm-guest-result.json").write_text(
-                    json.dumps(
-                        {
-                            "mode": "warm",
-                            "nextest": {
-                                "run": 220,
-                                "passed": 220,
-                                "failed": 0,
-                                "exit_code": 0,
-                            },
-                        }
-                    )
-                )
-            return SimpleNamespace(stdout="true", stderr="", returncode=0)
-        return SimpleNamespace(stdout="", stderr="", returncode=0)
-
+    fake_run = _restore_run_stub(shared, calls)
     monkeypatch.setattr(probe, "_run", fake_run)
     args = _restore_args(tmp_path)
     assert probe.run_probe(args) == 0
