@@ -111,6 +111,11 @@ pub enum CookLookupOutcome {
 /// `~/.soldr/cache/cook/`. Blocks for the daemon's `Ack` reply
 /// because PR 2 wants to know whether the indexing succeeded before
 /// emitting its `soldr cook: indexed` line.
+///
+/// The `Err` carries the stage the round trip failed in — connect,
+/// request-send, reply-read (with the deadline that expired), or
+/// response-decode — so a bare `WouldBlock` under workspace load says
+/// which half ran out of budget (soldr#3558).
 #[allow(clippy::too_many_arguments)]
 pub fn cook_record(
     sock_path: &Path,

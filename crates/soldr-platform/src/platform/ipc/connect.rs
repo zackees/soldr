@@ -89,10 +89,17 @@ pub fn pipe_timeout_error(operation: &str, timeout: Duration) -> io::Error {
 /// the named-pipe client is async, so the work runs inside its own
 /// tokio runtime on the worker, and the caller never blocks beyond
 /// `timeout` even if the worker wedges.
-pub fn run_in_pipe_worker<T, F>(operation: &'static str, timeout: Duration, f: F) -> io::Result<T>
+///
+/// `E` is the worker's own error type so a caller can carry structured
+/// diagnostics (the IPC stage tag, soldr#3558) out of the thread hop
+/// instead of flattening everything into an `io::Error` on the way.
+/// The worker-level bounds below are reported through `E::from`, and
+/// carry no stage: a wedged worker has no stage to attribute.
+pub fn run_in_pipe_worker<T, E, F>(operation: &'static str, timeout: Duration, f: F) -> Result<T, E>
 where
     T: Send + 'static,
-    F: FnOnce() -> io::Result<T> + Send + 'static,
+    E: From<io::Error> + Send + 'static,
+    F: FnOnce() -> Result<T, E> + Send + 'static,
 {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
@@ -104,10 +111,10 @@ where
     match rx.recv_timeout(timeout) {
         Ok(result) => result,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            Err(pipe_timeout_error(operation, timeout))
+            Err(E::from(pipe_timeout_error(operation, timeout)))
         }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::other(format!(
-            "{operation} worker exited without a result"
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(E::from(io::Error::other(
+            format!("{operation} worker exited without a result"),
         ))),
     }
 }

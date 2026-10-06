@@ -61,7 +61,11 @@ fn connect_through_override(
         .map(|connector| {
             connector
                 .connect(endpoint_marker, timeout)
-                .map_err(ClientError::from)
+                .map_err(|error| {
+                    // The connector bounds its dial by the caller's budget, so
+                    // the stage does have a deadline here (soldr#3558).
+                    at_stage(IpcStage::Connect, Some(timeout), ClientError::from(error))
+                })
         })
         .transpose()
 }
@@ -118,13 +122,58 @@ fn parse_reply_timeout(value: Option<&str>) -> Duration {
     Duration::from_secs(secs)
 }
 
+/// Which half of a daemon IPC round trip failed (soldr#3558).
+///
+/// Every transport failure the client can see arrives as the same io error:
+/// on Linux an expired `SO_RCVTIMEO` **and** an expired `SO_SNDTIMEO` both
+/// report `EAGAIN`/`WouldBlock`, so a bare `Io(Os { code: 11, ... })` cannot
+/// say whether the daemon never answered, the request never left, or the
+/// reply arrived as bytes this binary cannot parse. The stage is what makes
+/// those three distinguishable in the `expect(..)` line a failing test
+/// prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpcStage {
+    /// Opening the control connection: AF_UNIX connect, broker route dial,
+    /// or named-pipe open. Failures here are usually [`ClientError::NotRunning`]
+    /// (the endpoint is absent or refusing), which is deliberately left
+    /// untagged — see `at_stage`.
+    Connect,
+    /// Writing the framed request. A timeout here means the daemon (or the
+    /// kernel's socket buffer) never took the frame.
+    RequestSend,
+    /// Waiting for the framed reply. A timeout here means the request was
+    /// sent and the daemon produced no reply within the deadline.
+    ReplyRead,
+    /// The reply's header arrived but its body could not be turned into a
+    /// `Response`: an oversized or malformed frame. Classified from
+    /// `ErrorKind::InvalidData`, which the transport itself never produces.
+    ResponseDecode,
+}
+
 #[derive(Debug)]
 pub enum ClientError {
     /// No daemon endpoint exists at the expected path (most common case
-    /// on a fresh checkout — daemon-owned history is unavailable).
+    /// on a fresh checkout — daemon-owned history is unavailable). This
+    /// *is* the connect-stage answer: only dialing finds an absent
+    /// endpoint, so it needs no stage tag of its own (soldr#3558).
     NotRunning,
     /// Endpoint exists but the connect / read / write failed.
     Io(std::io::Error),
+    /// A transport failure tagged with the stage it failed in and the
+    /// deadline that stage was running under (soldr#3558).
+    ///
+    /// `source` is always [`Self::Io`]; use [`Self::io_kind`] rather than
+    /// matching on it so the tag cannot hide the kind being classified.
+    Ipc {
+        /// Which half of the round trip failed.
+        stage: IpcStage,
+        /// The deadline in force there. `None` when the stage is not
+        /// time-bounded (a bare AF_UNIX connect, and the decode stage,
+        /// which runs on bytes already read).
+        deadline: Option<Duration>,
+        /// The classified failure underneath the tag.
+        source: Box<ClientError>,
+    },
     /// Daemon answered something we didn't ask for (or an Error variant).
     Protocol(String),
     /// The daemon answered, but speaks a protocol this binary cannot parse
@@ -135,6 +184,95 @@ pub enum ClientError {
     /// attempts remain. The caller must displace the daemon or fall back to a
     /// direct compile rather than burning its retry budget.
     VersionMismatch(String),
+}
+
+impl ClientError {
+    /// The transport stage this failure was tagged with (soldr#3558).
+    ///
+    /// `None` for an untagged failure — including [`Self::NotRunning`],
+    /// [`Self::Protocol`] and [`Self::VersionMismatch`], which name their
+    /// own condition and are never wrapped.
+    pub fn ipc_stage(&self) -> Option<IpcStage> {
+        match self {
+            ClientError::Ipc { stage, .. } => Some(*stage),
+            _ => None,
+        }
+    }
+
+    /// The `io::ErrorKind` this failure reports, looking through the stage
+    /// tag (soldr#3558). Callers that classify by kind (deadline-vs-hangup
+    /// checks) must go through here: the tag wraps `Io`, so a raw
+    /// `matches!(error, ClientError::Io(..))` would silently stop matching
+    /// every staged failure.
+    pub fn io_kind(&self) -> Option<std::io::ErrorKind> {
+        match self {
+            ClientError::Io(error) => Some(error.kind()),
+            ClientError::Ipc { source, .. } => source.io_kind(),
+            _ => None,
+        }
+    }
+}
+
+/// Tag `error` with the stage it failed in and that stage's deadline
+/// (soldr#3558).
+///
+/// Only [`ClientError::Io`] is wrapped. `NotRunning`, `Protocol` and
+/// `VersionMismatch` already say exactly what happened — a bare endpoint is
+/// the connect-stage answer, and a decode that made it as far as a message
+/// is already a `Protocol`/`VersionMismatch` — so wrapping them would hide
+/// them from every existing `matches!(error, ClientError::NotRunning)`
+/// classification. That would be a behaviour change smuggled into a
+/// diagnostic, which is exactly what soldr#3558 forbids.
+fn at_stage(stage: IpcStage, deadline: Option<Duration>, error: ClientError) -> ClientError {
+    if matches!(&error, ClientError::Io(_)) {
+        ClientError::Ipc {
+            stage,
+            deadline,
+            source: Box::new(error),
+        }
+    } else {
+        error
+    }
+}
+
+/// Classify a failure from the reply half of a round trip (soldr#3558).
+///
+/// `read_frame_sync` reports a frame it could not turn into a `Response`
+/// (oversized body, malformed prost body) as `InvalidData`, and that kind
+/// never reaches it from the transport itself, so it identifies the decode
+/// stage precisely. Everything else — a deadline, a hang-up, a reset — is
+/// the reply-read stage and carries the deadline that expired.
+fn at_reply_stage(deadline: Duration, error: ClientError) -> ClientError {
+    match error.io_kind() {
+        Some(std::io::ErrorKind::InvalidData) => at_stage(IpcStage::ResponseDecode, None, error),
+        _ => at_stage(IpcStage::ReplyRead, Some(deadline), error),
+    }
+}
+
+/// One tagged request/response round trip on an already-open control stream
+/// (soldr#3558). `protocol` is `None` for the current wire version.
+fn round_trip<S: Read + Write>(
+    stream: &mut S,
+    req: &Request,
+    protocol: Option<u32>,
+    deadline: Duration,
+) -> Result<Response, ClientError> {
+    let written = match protocol {
+        Some(version) => write_frame_sync_for_version(stream, req, version),
+        None => write_frame_sync(stream, req),
+    };
+    written.map_err(|error| {
+        at_stage(
+            IpcStage::RequestSend,
+            Some(deadline),
+            ClientError::from(error),
+        )
+    })?;
+    let reply = match protocol {
+        Some(version) => read_frame_sync_for_version(stream, version),
+        None => read_frame_sync(stream),
+    };
+    reply.map_err(|error| at_reply_stage(deadline, ClientError::from(error)))
 }
 
 impl From<std::io::Error> for ClientError {
@@ -205,8 +343,18 @@ pub fn submit_fire_and_forget(sock_path: &Path, req: &Request) -> Result<(), Cli
 fn write_awaiting_receipt_ack<S: Read + Write>(
     stream: &mut S,
     req: &Request,
+    deadline: Duration,
 ) -> Result<ReceiptAck, ClientError> {
-    write_frame_sync(stream, req)?;
+    // The send half propagates, so it carries its stage tag (soldr#3558).
+    // The ack read does not: it is best-effort by contract and reports its
+    // reason as a string, which already carries the transport error.
+    write_frame_sync(stream, req).map_err(|error| {
+        at_stage(
+            IpcStage::RequestSend,
+            Some(deadline),
+            ClientError::from(error),
+        )
+    })?;
     Ok(match read_frame_sync::<_, Response>(stream) {
         Ok(_) => ReceiptAck::Acknowledged,
         Err(error) => ReceiptAck::Unconfirmed(format!("{error}")),
@@ -214,19 +362,11 @@ fn write_awaiting_receipt_ack<S: Read + Write>(
 }
 
 /// Submit `req`, wait for one `Response`, return it.
+///
+/// Uses the generic 2 s reply budget; the failure it returns carries the
+/// stage it failed in (soldr#3558).
 pub fn submit_request(sock_path: &Path, req: &Request) -> Result<Response, ClientError> {
-    if let Some(mut stream) = connect_through_override(sock_path, REPLY_TIMEOUT)? {
-        write_frame_sync(&mut stream, req)?;
-        return read_frame_sync(&mut stream).map_err(ClientError::from);
-    }
-    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-        submit_request_windows(sock_path, req)
-    } else {
-        let mut stream = connect(sock_path, REPLY_TIMEOUT)?;
-        write_frame_sync(&mut stream, req)?;
-        let resp: Response = read_frame_sync(&mut stream)?;
-        Ok(resp)
-    }
+    submit_request_with_timeout(sock_path, req, REPLY_TIMEOUT)
 }
 
 fn submit_request_for_version(
@@ -235,9 +375,7 @@ fn submit_request_for_version(
     protocol_version: u32,
 ) -> Result<Response, ClientError> {
     if let Some(mut stream) = connect_through_override(sock_path, REPLY_TIMEOUT)? {
-        write_frame_sync_for_version(&mut stream, req, protocol_version)?;
-        return read_frame_sync_for_version(&mut stream, protocol_version)
-            .map_err(ClientError::from);
+        return round_trip(&mut stream, req, Some(protocol_version), REPLY_TIMEOUT);
     }
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         submit_request_windows_with_timeout_and_version(
@@ -248,9 +386,7 @@ fn submit_request_for_version(
         )
     } else {
         let mut stream = connect(sock_path, REPLY_TIMEOUT)?;
-        write_frame_sync_for_version(&mut stream, req, protocol_version)?;
-        let resp: Response = read_frame_sync_for_version(&mut stream, protocol_version)?;
-        Ok(resp)
+        round_trip(&mut stream, req, Some(protocol_version), REPLY_TIMEOUT)
     }
 }
 
@@ -271,9 +407,7 @@ fn submit_direct_request_for_version(
         )
     } else {
         let mut stream = connect(sock_path, REPLY_TIMEOUT)?;
-        write_frame_sync_for_version(&mut stream, req, protocol_version)?;
-        let response: Response = read_frame_sync_for_version(&mut stream, protocol_version)?;
-        Ok(response)
+        round_trip(&mut stream, req, Some(protocol_version), REPLY_TIMEOUT)
     }
 }
 

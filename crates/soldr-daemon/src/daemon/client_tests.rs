@@ -120,6 +120,7 @@ fn a_peer_that_never_acks_is_still_a_successful_submit() {
             path: "/some/workspace/target".to_string(),
             unix_seconds: 1_700_000_000,
         },
+        Duration::from_millis(50),
     );
 
     assert!(
@@ -218,4 +219,234 @@ fn dropping_resident_capacity_lease_disconnects_without_a_release_frame() {
         Request::AcquireResidentCapacity { permits: 2 }
     ));
     assert!(read_frame_sync::<_, Request>(&mut sent).is_err());
+}
+
+// ---- soldr#3558: an IPC failure says which stage it failed in -----------
+
+/// A control stream whose halves answer or fail on demand, so each stage of
+/// a round trip can be provoked without a live daemon.
+struct ScriptedIo {
+    reply: Vec<u8>,
+    write_error: Option<std::io::Error>,
+    read_error: Option<std::io::Error>,
+}
+
+impl ScriptedIo {
+    fn new() -> Self {
+        ScriptedIo {
+            reply: Vec::new(),
+            write_error: None,
+            read_error: None,
+        }
+    }
+
+    fn reply(mut self, bytes: Vec<u8>) -> Self {
+        self.reply = bytes;
+        self
+    }
+
+    fn fail_write(mut self, error: std::io::Error) -> Self {
+        self.write_error = Some(error);
+        self
+    }
+
+    fn fail_read(mut self, error: std::io::Error) -> Self {
+        self.read_error = Some(error);
+        self
+    }
+}
+
+impl Read for ScriptedIo {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(error) = self.read_error.take() {
+            return Err(error);
+        }
+        let n = self.reply.len().min(buf.len());
+        buf[..n].copy_from_slice(&self.reply[..n]);
+        self.reply.drain(..n);
+        Ok(n)
+    }
+}
+
+impl Write for ScriptedIo {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Some(error) = self.write_error.take() {
+            return Err(error);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A reply whose header is well-formed but whose body is not decodable.
+fn malformed_reply() -> Vec<u8> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&4u32.to_le_bytes());
+    frame.extend_from_slice(&crate::daemon::protocol::PROTOCOL_VERSION.to_le_bytes());
+    frame.extend_from_slice(&[0xFF; 4]);
+    frame
+}
+
+fn deadline_of(error: &ClientError) -> Option<Duration> {
+    match error {
+        ClientError::Ipc { deadline, .. } => *deadline,
+        _ => None,
+    }
+}
+
+/// RED before soldr#3558: the same `WouldBlock` came back as a bare
+/// `Io(..)`, so a failing `cook_record` could not say whether the request
+/// left or the reply never arrived.
+#[test]
+fn a_send_failure_carries_the_request_send_stage_and_its_deadline() {
+    let deadline = Duration::from_millis(750);
+    let mut stream =
+        ScriptedIo::new().fail_write(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+
+    let error = round_trip(&mut stream, &Request::Status, None, deadline)
+        .expect_err("a peer that refuses the frame must fail");
+
+    assert_eq!(error.ipc_stage(), Some(IpcStage::RequestSend));
+    assert_eq!(error.io_kind(), Some(std::io::ErrorKind::WouldBlock));
+    assert_eq!(deadline_of(&error), Some(deadline));
+}
+
+/// The signature the issue actually reports: the request went out and the
+/// reply did not come back inside the budget.
+#[test]
+fn an_expired_reply_deadline_carries_the_reply_read_stage_and_the_deadline_that_expired() {
+    let deadline = Duration::from_secs(2);
+    let mut stream =
+        ScriptedIo::new().fail_read(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+
+    let error = round_trip(&mut stream, &Request::Status, None, deadline)
+        .expect_err("a peer that never answers must fail");
+
+    assert_eq!(error.ipc_stage(), Some(IpcStage::ReplyRead));
+    assert_eq!(error.io_kind(), Some(std::io::ErrorKind::WouldBlock));
+    assert_eq!(deadline_of(&error), Some(deadline));
+}
+
+/// A hang-up during the reply is the reply-read stage too: the frame never
+/// arrived, so there is nothing to decode.
+#[test]
+fn a_hung_up_reply_is_the_reply_read_stage() {
+    let deadline = Duration::from_secs(2);
+    let mut stream = ScriptedIo::new();
+
+    let error = round_trip(&mut stream, &Request::Status, None, deadline)
+        .expect_err("an empty stream must fail");
+
+    assert_eq!(error.ipc_stage(), Some(IpcStage::ReplyRead));
+    assert_eq!(
+        error.io_kind(),
+        Some(std::io::ErrorKind::UnexpectedEof),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_malformed_reply_carries_the_response_decode_stage_without_a_deadline() {
+    let mut stream = ScriptedIo::new().reply(malformed_reply());
+
+    let error = round_trip(&mut stream, &Request::Status, None, Duration::from_secs(2))
+        .expect_err("an undecodable body must fail");
+
+    assert_eq!(error.ipc_stage(), Some(IpcStage::ResponseDecode));
+    // Decode runs on bytes already read; no timeout governs it.
+    assert_eq!(deadline_of(&error), None);
+}
+
+/// This is the line a failing test's `expect(..)` prints, so it has to name
+/// the stage and the budget in one glance.
+#[test]
+fn the_rendered_failure_names_the_stage_and_the_deadline() {
+    let mut stream =
+        ScriptedIo::new().fail_read(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+
+    let error = round_trip(&mut stream, &Request::Status, None, Duration::from_secs(2))
+        .expect_err("a peer that never answers must fail");
+
+    let rendered = format!("{error:?}");
+    assert!(rendered.contains("ReplyRead"), "{rendered}");
+    assert!(rendered.contains("WouldBlock"), "{rendered}");
+    assert!(rendered.contains("2s"), "{rendered}");
+}
+
+/// Kind-based predicates (readiness waits, settle loops) must keep seeing
+/// the io kind underneath the tag, or staged failures silently stop
+/// matching them.
+#[test]
+fn the_stage_tag_never_hides_the_io_kind() {
+    let error = at_stage(
+        IpcStage::ReplyRead,
+        Some(Duration::from_secs(2)),
+        ClientError::from(std::io::Error::from(std::io::ErrorKind::TimedOut)),
+    );
+
+    assert_eq!(error.ipc_stage(), Some(IpcStage::ReplyRead));
+    assert_eq!(error.io_kind(), Some(std::io::ErrorKind::TimedOut));
+    assert!(!matches!(error, ClientError::Io(_)), "{error:?}");
+}
+
+/// `NotRunning`, `Protocol` and `VersionMismatch` already state what went
+/// wrong; wrapping them would hide them from every caller that matches on
+/// them, which is a behaviour change the diagnostic must not smuggle in.
+#[test]
+fn a_condition_that_already_names_itself_is_never_tagged() {
+    let conditions = [
+        ClientError::NotRunning,
+        ClientError::Protocol("cook_index upsert failed".to_string()),
+        ClientError::VersionMismatch("protocol version mismatch: peer=1".to_string()),
+    ];
+    for condition in conditions {
+        let tagged = at_stage(IpcStage::ReplyRead, Some(Duration::from_secs(2)), condition);
+        assert_eq!(tagged.ipc_stage(), None, "{tagged:?}");
+    }
+}
+
+/// A daemon that never started must stay `NotRunning`, not become a staged
+/// I/O failure: the "daemon not ready" answer and the "deadline expired"
+/// answer have to stay separable (soldr#3558).
+#[test]
+fn a_missing_endpoint_reports_not_running_without_a_stage() {
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let error = submit_request(&dir.path().join("absent.sock"), &Request::Status)
+        .expect_err("an absent endpoint must fail");
+
+    assert!(matches!(error, ClientError::NotRunning), "{error:?}");
+    assert_eq!(error.ipc_stage(), None);
+}
+
+/// A dial that fails for an I/O reason — here, a regular file where a
+/// socket path's parent should be — is the connect stage, with the errno
+/// that distinguishes it from `NotRunning`.
+///
+/// Gated at runtime rather than with `#[cfg(unix)]`: host-platform `cfg`
+/// is banned outside `crates/soldr-platform` (#2493). Windows dials a
+/// named pipe instead of AF_UNIX, so its absent endpoint answers
+/// `NotRunning`, which the test above already covers.
+#[test]
+fn a_dial_that_cannot_succeed_carries_the_connect_stage() {
+    if matches!(
+        crate::platform::host::facts::os(),
+        crate::platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("temp dir");
+    let not_a_dir = dir.path().join("not-a-directory");
+    std::fs::write(&not_a_dir, b"").expect("write blocker file");
+
+    let error = submit_request(&not_a_dir.join("control.sock"), &Request::Status)
+        .expect_err("connecting through a regular file must fail");
+
+    assert_eq!(error.ipc_stage(), Some(IpcStage::Connect));
+    // AF_UNIX connect is unbounded, so the tag reports no deadline.
+    assert_eq!(deadline_of(&error), None);
+    assert!(error.io_kind().is_some(), "{error:?}");
 }

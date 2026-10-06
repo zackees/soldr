@@ -29,13 +29,26 @@ pub const START_STATUS_READY_TIMEOUT: Duration = Duration::from_secs(120);
 /// opposed to "this endpoint answered and said no".
 ///
 /// `WouldBlock` and `TimedOut` are the two spellings of a socket/pipe read
-/// deadline — which one surfaces depends on the platform, exactly as
-/// [`crate::daemon::client`]'s own `is_deadline_error` documents — and
+/// deadline — which one surfaces depends on the platform — and
 /// `client::status` runs on a 2 s reply budget, so a daemon that has accepted
 /// the connection but is still initializing produces one of them.
+///
+/// Read through [`crate::daemon::client::ClientError::io_kind`] rather than
+/// matched as `ClientError::Io(..)`: since soldr#3558 a transport failure
+/// carries a stage tag (`ClientError::Ipc`) around the same io error, and
+/// matching the bare variant would silently stop recognising exactly the
+/// failures this predicate exists to classify.
 fn retiring_endpoint_error(error: &crate::daemon::client::ClientError) -> bool {
-    matches!(error, crate::daemon::client::ClientError::Io(io)
-        if matches!(io.kind(), ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::UnexpectedEof | ErrorKind::WouldBlock | ErrorKind::TimedOut))
+    matches!(
+        error.io_kind(),
+        Some(
+            ErrorKind::BrokenPipe
+                | ErrorKind::ConnectionReset
+                | ErrorKind::UnexpectedEof
+                | ErrorKind::WouldBlock
+                | ErrorKind::TimedOut
+        )
+    )
 }
 
 /// A negotiated-route readiness wait that ran out of budget, carrying what it

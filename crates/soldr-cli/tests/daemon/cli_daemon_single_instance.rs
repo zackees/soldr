@@ -110,15 +110,16 @@ fn settled<T>(
         match op() {
             Ok(value) => return Ok(value),
             Err(err) => {
+                // `io_kind` looks through the soldr#3558 stage tag; a raw
+                // `ClientError::Io(..)` match would stop recognising every
+                // staged deadline.
                 let transient = matches!(
-                    &err,
-                    soldr_cli::daemon::client::ClientError::Io(io)
-                        if matches!(
-                            io.kind(),
-                            std::io::ErrorKind::WouldBlock
-                                | std::io::ErrorKind::Interrupted
-                                | std::io::ErrorKind::TimedOut
-                        )
+                    err.io_kind(),
+                    Some(
+                        std::io::ErrorKind::WouldBlock
+                            | std::io::ErrorKind::Interrupted
+                            | std::io::ErrorKind::TimedOut
+                    )
                 );
                 if !transient || Instant::now() >= deadline {
                     return Err(format!("{err:?}"));

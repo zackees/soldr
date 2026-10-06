@@ -1,20 +1,22 @@
 /// Submit one daemon request with an explicit reply timeout.
+///
+/// Every failure this returns is tagged with the stage it failed in
+/// (soldr#3558): `Connect` from the dial, `RequestSend`/`ReplyRead`/
+/// `ResponseDecode` from the round trip, each carrying the deadline that
+/// was in force.
 pub fn submit_request_with_timeout(
     sock_path: &Path,
     req: &Request,
     timeout: Duration,
 ) -> Result<Response, ClientError> {
     if let Some(mut stream) = connect_through_override(sock_path, timeout)? {
-        write_frame_sync(&mut stream, req)?;
-        return read_frame_sync(&mut stream).map_err(ClientError::from);
+        return round_trip(&mut stream, req, None, timeout);
     }
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         submit_request_windows_with_timeout(sock_path, req, timeout)
     } else {
         let mut stream = connect(sock_path, timeout)?;
-        write_frame_sync(&mut stream, req)?;
-        let resp: Response = read_frame_sync(&mut stream)?;
-        Ok(resp)
+        round_trip(&mut stream, req, None, timeout)
     }
 }
 
@@ -33,7 +35,7 @@ pub enum ReceiptAck {
 /// (soldr#3169).
 pub fn submit_awaiting_receipt(sock_path: &Path, req: &Request) -> Result<ReceiptAck, ClientError> {
     if let Some(mut stream) = connect_through_override(sock_path, HOT_PATH_TIMEOUT)? {
-        return write_awaiting_receipt_ack(&mut stream, req);
+        return write_awaiting_receipt_ack(&mut stream, req, HOT_PATH_TIMEOUT);
     }
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         submit_fire_and_forget_windows(sock_path, req)
@@ -43,7 +45,7 @@ pub fn submit_awaiting_receipt(sock_path: &Path, req: &Request) -> Result<Receip
         // store write), 200ms worst case against a wedged or pre-ack
         // daemon.
         let mut stream = connect(sock_path, HOT_PATH_TIMEOUT)?;
-        write_awaiting_receipt_ack(&mut stream, req)
+        write_awaiting_receipt_ack(&mut stream, req, HOT_PATH_TIMEOUT)
     }
 }
 
@@ -120,7 +122,12 @@ fn connect(sock_path: &Path, timeout: Duration) -> Result<UnixOrPipe, ClientErro
     // AF_UNIX socket with the caller's deadline as the write timeout and a
     // read timeout of at least 200ms so a short reply deadline never starves
     // a frame read (see platform::ipc::connect::connect_unix).
-    let stream = crate::platform::ipc::connect::connect_unix(sock_path, timeout, timeout)?;
+    //
+    // No deadline on the tag: `UnixStream::connect` itself is unbounded —
+    // the timeouts above are installed on the socket only after the dial
+    // succeeds (soldr#3558).
+    let stream = crate::platform::ipc::connect::connect_unix(sock_path, timeout, timeout)
+        .map_err(|error| at_stage(IpcStage::Connect, None, ClientError::from(error)))?;
     Ok(UnixOrPipe(stream))
 }
 
@@ -148,13 +155,17 @@ fn windows_runtime() -> std::io::Result<tokio::runtime::Runtime> {
         .build()
 }
 
+/// Run `f` on the named-pipe worker with `f` already returning a
+/// `ClientError`, so the stage tag survives the thread hop (soldr#3558).
+///
+/// The worker-level wall-clock bound still reports an untagged timeout: if
+/// the worker itself wedges, there is no stage to attribute it to.
 fn run_windows_ipc<T, F>(operation: &'static str, timeout: Duration, f: F) -> Result<T, ClientError>
 where
     T: Send + 'static,
-    F: FnOnce() -> std::io::Result<T> + Send + 'static,
+    F: FnOnce() -> Result<T, ClientError> + Send + 'static,
 {
     crate::platform::ipc::connect::run_in_pipe_worker(operation, timeout, f)
-        .map_err(ClientError::from)
 }
 
 /// The bound on waiting for the daemon's receipt ack after a hot-path
@@ -176,19 +187,40 @@ fn submit_fire_and_forget_windows(
         "daemon IPC hot-path write",
         HOT_PATH_TIMEOUT + HOT_PATH_ACK_TIMEOUT,
         move || {
-            let runtime = windows_runtime()?;
+            let runtime = windows_runtime().map_err(ClientError::from)?;
             runtime.block_on(async move {
                 let mut stream = crate::platform::ipc::connect::open_pipe_with_retry(&sock_path)
-                    .await?
-                    .stream;
-                timeout(HOT_PATH_TIMEOUT, write_frame_async(&mut stream, &req))
                     .await
-                    .map_err(|_| {
-                        crate::platform::ipc::connect::pipe_timeout_error(
-                            "daemon IPC hot-path write",
-                            HOT_PATH_TIMEOUT,
+                    .map_err(|error| {
+                        // The open runs inside this call's own wall-clock
+                        // bound, so it is the one deadline it has
+                        // (soldr#3558).
+                        at_stage(
+                            IpcStage::Connect,
+                            Some(HOT_PATH_TIMEOUT + HOT_PATH_ACK_TIMEOUT),
+                            ClientError::from(error),
                         )
-                    })??;
+                    })?
+                    .stream;
+                let written = match timeout(
+                    HOT_PATH_TIMEOUT,
+                    write_frame_async(&mut stream, &req),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(crate::platform::ipc::connect::pipe_timeout_error(
+                        "daemon IPC hot-path write",
+                        HOT_PATH_TIMEOUT,
+                    )),
+                };
+                written.map_err(|error| {
+                    at_stage(
+                        IpcStage::RequestSend,
+                        Some(HOT_PATH_TIMEOUT),
+                        ClientError::from(error),
+                    )
+                })?;
                 // Best-effort receipt ack (soldr#2558); an old daemon that
                 // never acks costs only this bounded wait.
                 //
@@ -197,7 +229,7 @@ fn submit_fire_and_forget_windows(
                 // made "never delivered" indistinguishable from "delivered and
                 // the write half lost it" -- the two answers that issue is
                 // trying to separate.
-                Ok::<ReceiptAck, std::io::Error>(
+                Ok::<ReceiptAck, ClientError>(
                     match timeout(
                         HOT_PATH_ACK_TIMEOUT,
                         read_frame_async::<_, Response>(&mut stream),
@@ -214,10 +246,6 @@ fn submit_fire_and_forget_windows(
             })
         },
     )
-}
-
-fn submit_request_windows(sock_path: &Path, req: &Request) -> Result<Response, ClientError> {
-    submit_request_windows_with_timeout(sock_path, req, REPLY_TIMEOUT)
 }
 
 fn submit_request_windows_with_timeout(
@@ -244,19 +272,59 @@ fn submit_request_windows_with_timeout_and_version(
     let sock_path = sock_path.to_path_buf();
     let req = req.clone();
     run_windows_ipc("daemon IPC request", deadline, move || {
-        let runtime = windows_runtime()?;
+        let runtime = windows_runtime().map_err(ClientError::from)?;
         runtime.block_on(async move {
             let mut stream = crate::platform::ipc::connect::open_pipe_with_retry(&sock_path)
-                .await?
+                .await
+                .map_err(|error| {
+                    // The pipe open runs inside this call's wall-clock
+                    // bound, so it is the one deadline it has
+                    // (soldr#3558).
+                    at_stage(
+                        IpcStage::Connect,
+                        Some(deadline),
+                        ClientError::from(error),
+                    )
+                })?
                 .stream;
-            timeout(deadline, async {
-                write_frame_async_for_version(&mut stream, &req, protocol_version).await?;
-                read_frame_async_for_version(&mut stream, protocol_version).await
-            })
+            // One wall-clock budget covers both halves, exactly as the
+            // single `timeout(deadline, …)` did before the stages were
+            // split apart (soldr#3558).
+            let budget = std::time::Instant::now();
+            let write_left = deadline.saturating_sub(budget.elapsed());
+            let written = match timeout(
+                write_left,
+                write_frame_async_for_version(&mut stream, &req, protocol_version),
+            )
             .await
-            .map_err(|_| {
-                crate::platform::ipc::connect::pipe_timeout_error("daemon IPC request", deadline)
-            })?
+            {
+                Ok(result) => result,
+                Err(_) => Err(crate::platform::ipc::connect::pipe_timeout_error(
+                    "daemon IPC request send",
+                    deadline,
+                )),
+            };
+            written.map_err(|error| {
+                at_stage(
+                    IpcStage::RequestSend,
+                    Some(deadline),
+                    ClientError::from(error),
+                )
+            })?;
+            let read_left = deadline.saturating_sub(budget.elapsed());
+            let reply = match timeout(
+                read_left,
+                read_frame_async_for_version(&mut stream, protocol_version),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(crate::platform::ipc::connect::pipe_timeout_error(
+                    "daemon IPC reply read",
+                    deadline,
+                )),
+            };
+            reply.map_err(|error| at_reply_stage(deadline, ClientError::from(error)))
         })
     })
 }
