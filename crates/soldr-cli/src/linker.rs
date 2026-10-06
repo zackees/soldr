@@ -181,8 +181,9 @@ pub fn from_env_and_config(
 }
 
 pub use crate::linker_project::{
-    reld_fetch_error, resolve_project_choice, resolve_project_choice_from_cwd,
-    resolve_project_choice_with_lint_roots, LinkerSource, ProjectLinkerSelection, ReldCargoConfig,
+    project_config_declares_dylint_link, reld_fetch_error, resolve_project_choice,
+    resolve_project_choice_from_cwd, resolve_project_choice_with_lint_roots, LinkerSource,
+    ProjectLinkerSelection, ReldCargoConfig,
 };
 
 pub(crate) fn target_kind(target: &str) -> TargetKind {

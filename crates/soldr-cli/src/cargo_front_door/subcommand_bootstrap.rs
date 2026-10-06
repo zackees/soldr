@@ -109,8 +109,16 @@ pub(crate) async fn ensure_known_subcommand_tool(
             eprintln!("soldr: '{sub}' is not a cargo subcommand soldr ships a prebuilt for.");
             eprintln!("soldr: did you mean: cargo {suggestion}?");
         }
+        // soldr#3571: plain cargo verbs (`clippy`, `build`, `check`, `test`,
+        // …) never reach `append_subcommand_transitive_bin_dirs` — this
+        // early return fires first. But a configured lint crate's own
+        // `.cargo/config.toml` still hands rustc `-C linker=dylint-link`
+        // for exactly these invocations, so the managed binary must reach
+        // the child PATH from here too.
+        let mut bin_dirs = Vec::new();
+        ensure_dylint_link_bin_dir(sub, args, paths, &mut bin_dirs).await?;
         return Ok(SubcommandToolBootstrap {
-            bin_dirs: Vec::new(),
+            bin_dirs,
             env: Vec::new(),
             cargo_args: Vec::new(),
         });
@@ -237,6 +245,87 @@ pub(crate) async fn ensure_known_subcommand_tool(
         env: extra_env,
         cargo_args: extra_cargo_args,
     })
+}
+
+/// soldr#3571: prepend the managed `dylint-link` bin dir to the child
+/// cargo's PATH when this invocation will actually need it.
+///
+/// Two triggers share one fetch so they cannot drift:
+///   * `sub == "dylint"` — the historical `cargo dylint` condition,
+///     unchanged (its gate below is byte-equivalent to the old
+///     `force_managed || find_on_path("dylint-link").is_none()`).
+///   * any other subcommand — only when the project's own cargo config
+///     drives rustc with a bare `dylint-link`
+///     ([`project_config_needs_dylint_link`]). That is a lint crate's
+///     standalone `soldr cargo clippy`: its `.cargo/config.toml` declares
+///     `[target.'cfg(all())'] rustflags = ["-C", "linker=dylint-link"]`,
+///     and without this dir on the child PATH rustc dies with
+///     `linker dylint-link not found` before a single lint runs.
+///
+/// An ordinary project declares no `dylint-link` anywhere, so this never
+/// downloads Dylint tools merely because Clippy ran. When the fetch does
+/// fire it mirrors the `cargo dylint` path exactly: pinned prebuilt from
+/// cache or release, smoke-tested, and skipped entirely when a `dylint-link`
+/// is already resolvable on PATH (or
+/// `SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1` demands the managed one).
+async fn ensure_dylint_link_bin_dir(
+    sub: &str,
+    args: &[String],
+    paths: &SoldrPaths,
+    extra_bin_dirs: &mut Vec<std::path::PathBuf>,
+) -> Result<(), SoldrError> {
+    let needed = sub == "dylint" || project_config_needs_dylint_link(args);
+    if !needed {
+        return Ok(());
+    }
+    if !force_managed_cargo_subcommands() && find_on_path("dylint-link").is_some() {
+        return Ok(());
+    }
+    extra_bin_dirs.push(dylint_link_bin_dir(paths).await?);
+    Ok(())
+}
+
+/// soldr#3571: whether this invocation's own cargo config resolves to a
+/// bare `dylint-link` linker for the target being built.
+///
+/// The config walk mirrors `linker::resolve_project_choice_from_cwd`
+/// exactly — same project-root discovery from the current directory, same
+/// `$CARGO_HOME` fallback, and the declared Dylint library roots layered
+/// ahead of the project root only while the Dylint scope is active
+/// (soldr#3483: outside the scope Cargo would not read a lint package's
+/// `.cargo/config.toml` for this invocation either, so neither do we).
+///
+/// The target resolves as `--target` → `CARGO_BUILD_TARGET` → the
+/// compile-time host triple. Unlike the front door's linker injection
+/// (`target::resolve_active_target_triple`) this deliberately does not pay
+/// a second `rustc --print target-triple` probe per invocation: it runs
+/// before every cargo verb, and the detection that matters —
+/// `[target.'cfg(all())']`, the shape every lint crate declares — needs no
+/// triple at all. The only divergence from the injected-linker resolution
+/// is an exact-triple section under a `build.target` override with no
+/// `--target` on the command line; a lint crate pins nothing of the kind
+/// (its cdylib links for the host, soldr#2350).
+fn project_config_needs_dylint_link(args: &[String]) -> bool {
+    let Ok(cwd) = std::env::current_dir() else {
+        return false;
+    };
+    let root = crate::linker::project_root(&cwd);
+    let lint_roots = if std::env::var_os(crate::dylint_toolchain::TOOLCHAIN_ENV_VAR).is_some() {
+        crate::dylint_libraries::library_directories(&root).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let target = target::known_cargo_build_target(args, None).or_else(|| {
+        crate::core::TargetTriple::host()
+            .ok()
+            .map(|triple| triple.triple())
+    });
+    crate::linker::project_config_declares_dylint_link(
+        target.as_deref(),
+        &root,
+        crate::core::resolve_cargo_home().as_deref(),
+        &lint_roots,
+    )
 }
 
 async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, SoldrError> {
