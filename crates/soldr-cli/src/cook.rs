@@ -530,25 +530,19 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
     Ok(0)
 }
 
-/// ANSI-yellow `warning:` prefix gated on stderr being a terminal.
-/// Mirrors the existing pattern in `cargo_front_door::disk`.
-fn yellow_warning_prefix() -> &'static str {
-    use std::io::IsTerminal;
-    if std::io::stderr().is_terminal() {
-        "\x1b[33msoldr cook: warning:\x1b[0m"
-    } else {
-        "soldr cook: warning:"
-    }
+/// ANSI-yellow `warning:` prefix under the canonical color rule.
+///
+/// soldr#3437: this used to gate on the terminal alone, so `NO_COLOR` was
+/// ignored here while every other surface honored it. It now asks
+/// `crate::color_choice` like the rest.
+fn yellow_warning_prefix() -> String {
+    crate::color_choice::paint_stderr("soldr cook: warning:", crate::color_choice::YELLOW)
 }
 
-/// ANSI-green `indexed` prefix for the success line.
-fn green_indexed_prefix() -> &'static str {
-    use std::io::IsTerminal;
-    if std::io::stderr().is_terminal() {
-        "\x1b[32msoldr cook: indexed\x1b[0m"
-    } else {
-        "soldr cook: indexed"
-    }
+/// ANSI-green `indexed` prefix for the success line. Same ruling as
+/// [`yellow_warning_prefix`].
+fn green_indexed_prefix() -> String {
+    crate::color_choice::paint_stderr("soldr cook: indexed", crate::color_choice::GREEN)
 }
 
 /// Resolve the `target/<triple?>/<profile>/` directory cargo-chef

@@ -35,6 +35,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use crate::color_choice::{paint, YELLOW};
+
 /// Overrides [`DEFAULT_WARN_THRESHOLD`]. `0` disables the warning entirely.
 pub(crate) const WARN_COUNT_ENV_VAR: &str = "SOLDR_TEST_TARGET_WARN_COUNT";
 
@@ -47,9 +49,6 @@ pub(crate) const DEFAULT_WARN_THRESHOLD: u64 = 50;
 /// Second line of the soldr#2936 warning, verbatim.
 const CONSOLIDATE_LINE: &str =
     "THIS WILL RESULT IN LOTS OF STATIC LINKING, PLEASE CONSOLIDATE INTO TEST CATEGORIES";
-
-const YELLOW: &str = "\x1b[33m";
-const RESET: &str = "\x1b[0m";
 
 /// The configured threshold for this process.
 ///
@@ -108,13 +107,8 @@ pub(crate) fn render_warning(
     );
 
     let mut lines: Vec<String> = Vec::new();
-    if use_color {
-        lines.push(format!("{YELLOW}{detected}{RESET}"));
-        lines.push(format!("{YELLOW}{CONSOLIDATE_LINE}{RESET}"));
-    } else {
-        lines.push(detected.clone());
-        lines.push(CONSOLIDATE_LINE.to_string());
-    }
+    lines.push(paint(&detected, YELLOW, use_color));
+    lines.push(paint(CONSOLIDATE_LINE, YELLOW, use_color));
     lines.push(detail.clone());
     if github_actions {
         // A workflow-command annotation is one line by definition, so the
@@ -136,7 +130,12 @@ pub(crate) fn render_warning(
 /// and that is the honest reading, not a bug.
 pub(crate) fn warn_if_excessive(count: u64, threshold: u64) {
     let actions = github_actions();
-    if let Some(message) = render_warning(count, threshold, actions, use_color()) {
+    if let Some(message) = render_warning(
+        count,
+        threshold,
+        actions,
+        crate::color_choice::stderr_enabled(),
+    ) {
         eprintln!("{message}");
     }
 }
@@ -145,12 +144,6 @@ pub(crate) fn warn_if_excessive(count: u64, threshold: u64) {
 /// foreign denylist rule (soldr#2740).
 fn github_actions() -> bool {
     crate::core::foreign_flag("GITHUB_ACTIONS")
-}
-
-/// Reuses the soldr#2302 cache-states rule: colorize on a terminal *and* under
-/// Actions (whose log renders ANSI), unless `NO_COLOR` is set.
-fn use_color() -> bool {
-    crate::cargo_front_door::cache_states::use_color()
 }
 
 /// The manifest directory that owns the `[workspace]` table for `start`.
@@ -551,13 +544,17 @@ mod tests {
     }
 
     /// Terminal rendering is ANSI yellow and carries no workflow command;
-    /// Actions rendering carries both, with the block's newlines encoded so the
-    /// annotation is not truncated at the first one.
+    /// Actions rendering carries both — the human block is painted too, since
+    /// soldr#3437 made `GITHUB_ACTIONS` *imply* color — with the block's
+    /// newlines encoded so the annotation is not truncated at the first one.
+    ///
+    /// Soldr#3437 changed the Actions case: it used to be called with
+    /// `use_color = false`, pinning the divergent rule this issue removed.
     #[test]
     fn actions_annotates_while_a_terminal_only_colors() {
         let head = "WARNING: LOTS AND LOTS OF TESTS DETECTED";
         let terminal = render_warning(60, 50, false, true).expect("over");
-        let painted = format!("{YELLOW}{head} (>50){RESET}");
+        let painted = crate::color_choice::paint(&format!("{head} (>50)"), YELLOW, true);
         assert!(terminal.contains(&painted), "{terminal}");
         assert!(
             !terminal.contains("::warning::"),
@@ -567,7 +564,7 @@ mod tests {
         let plain = render_warning(60, 50, false, false).expect("over");
         assert!(!plain.contains('\u{1b}'), "no ANSI expected: {plain}");
 
-        let actions = render_warning(60, 50, true, false).expect("over");
+        let actions = render_warning(60, 50, true, true).expect("over");
         let annotation = actions
             .lines()
             .find(|line| line.starts_with("::warning::"))
@@ -579,8 +576,17 @@ mod tests {
             "a multi-line annotation must encode its newlines: {annotation}"
         );
         assert!(
+            !annotation.contains('\u{1b}'),
+            "a workflow command must stay plain even when the human block is \
+             painted: {annotation}"
+        );
+        assert!(
             actions.lines().any(|line| line.starts_with(head)),
             "the annotation is *additional* to the human block: {actions}"
+        );
+        assert!(
+            actions.contains(&painted),
+            "soldr#3437: Actions implies color for the human block too: {actions}"
         );
     }
 

@@ -13,15 +13,17 @@ fn resolved_toolchain_is_nightly(explicit_toolchain: Option<&str>) -> bool {
 }
 
 fn emit_zthreads_fallback_warning(value: &str) {
-    use std::io::IsTerminal;
-
     let github_actions = foreign_env_flag("GITHUB_ACTIONS");
-    let use_color = !github_actions
-        && std::env::var_os("NO_COLOR").is_none()
-        && std::io::stderr().is_terminal();
+    // Under Actions the warning is emitted as a `::warning::` workflow command
+    // (plain text by contract), so the color bit only matters off-Actions —
+    // where it is the canonical soldr#3437 rule like everywhere else.
     eprintln!(
         "{}",
-        zthreads_fallback::render_warning(value, github_actions, use_color)
+        zthreads_fallback::render_warning(
+            value,
+            github_actions,
+            crate::color_choice::stderr_enabled()
+        )
     );
 }
 

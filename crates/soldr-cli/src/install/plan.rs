@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use super::refs::{Form, Ref, ReleaseSel};
 use super::target::InstallTarget;
+use crate::color_choice::{paint, GREEN, YELLOW};
 
 /// Fully-resolved inputs (network already consulted for sha/release),
 /// ready to acquire + build. Never mutated after construction.
@@ -55,35 +56,18 @@ pub(crate) enum AcquisitionPlan {
     },
 }
 
-const GREEN: &str = "\x1b[32m";
-const YELLOW: &str = "\x1b[33m";
-const RESET: &str = "\x1b[0m";
-
-/// Colorize when stderr can render ANSI and `NO_COLOR` is unset. Mirrors
-/// the `cache_states` convention (on under GitHub Actions too).
-pub(crate) fn use_color() -> bool {
-    use std::io::IsTerminal;
-    std::env::var_os("NO_COLOR").is_none()
-        && (std::io::stderr().is_terminal() || std::env::var_os("GITHUB_ACTIONS").is_some())
-}
-
-fn paint(text: &str, color: &str, use_color: bool) -> String {
-    if use_color {
-        format!("{color}{text}{RESET}")
-    } else {
-        text.to_string()
-    }
-}
-
-/// Paint `text` yellow (used for warnings outside this module).
-pub(crate) fn paint_yellow(text: &str, use_color: bool) -> String {
-    paint(text, YELLOW, use_color)
-}
-
-/// Render the green/yellow resolution block to stderr. This is also the
-/// entire output of `--dry-run`.
-pub(crate) fn render_resolution_line(resolved: &ResolvedInstall, plan: &AcquisitionPlan) {
-    let color = use_color();
+/// The green/yellow resolution block, as one string per line.
+///
+/// Pure so the soldr#3437 agreement test can assert it without capturing
+/// stderr — the same split as `log_summary::summary_message`,
+/// `cache_states::cache_stats_message` and `line_endings::crlf_warning_message`.
+/// [`render_resolution_line`] prints exactly these.
+pub(crate) fn resolution_lines(
+    resolved: &ResolvedInstall,
+    plan: &AcquisitionPlan,
+    color: bool,
+) -> Vec<String> {
+    let mut lines = Vec::new();
 
     // Header: `install <name> ← <origin>`
     let origin = match &resolved.target {
@@ -92,7 +76,10 @@ pub(crate) fn render_resolution_line(resolved: &ResolvedInstall, plan: &Acquisit
         } => format!("{host}/{owner}/{repo}"),
         InstallTarget::Local(path) => path.display().to_string(),
     };
-    eprintln!("soldr: install {} \u{2190} {origin}", resolved.name);
+    lines.push(format!(
+        "soldr: install {} \u{2190} {origin}",
+        resolved.name
+    ));
 
     // Ref line (skipped for local installs, which have no ref).
     if !matches!(resolved.target, InstallTarget::Local(_)) {
@@ -101,10 +88,10 @@ pub(crate) fn render_resolution_line(resolved: &ResolvedInstall, plan: &Acquisit
             .clone()
             .unwrap_or_else(|| resolved.git_ref.describe());
         if resolved.sha.is_empty() {
-            eprintln!("soldr:   ref     {ref_desc}");
+            lines.push(format!("soldr:   ref     {ref_desc}"));
         } else {
             let short = short_sha(&resolved.sha);
-            eprintln!("soldr:   ref     {ref_desc}  (\u{2192} {short})");
+            lines.push(format!("soldr:   ref     {ref_desc}  (\u{2192} {short})"));
         }
     }
 
@@ -143,7 +130,20 @@ pub(crate) fn render_resolution_line(resolved: &ResolvedInstall, plan: &Acquisit
             color,
         ),
     };
-    eprintln!("soldr:   source  {source_desc}");
+    lines.push(format!("soldr:   source  {source_desc}"));
+    lines
+}
+
+/// Render the green/yellow resolution block to stderr. This is also the
+/// entire output of `--dry-run`.
+///
+/// The color decision is the canonical soldr#3437 rule — this surface used to
+/// own a seventh copy of it that read `GITHUB_ACTIONS` raw, so
+/// `GITHUB_ACTIONS=false` still colored the block.
+pub(crate) fn render_resolution_line(resolved: &ResolvedInstall, plan: &AcquisitionPlan) {
+    for line in resolution_lines(resolved, plan, crate::color_choice::stderr_enabled()) {
+        eprintln!("{line}");
+    }
 }
 
 pub(crate) fn short_sha(sha: &str) -> String {

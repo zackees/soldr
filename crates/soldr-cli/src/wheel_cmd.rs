@@ -196,9 +196,6 @@ pub enum GlibcNotice {
     },
 }
 
-const GREEN: &str = "\x1b[32m";
-const RESET: &str = "\x1b[0m";
-
 impl GlibcNotice {
     /// The plain-text line.
     pub fn message(&self) -> String {
@@ -235,12 +232,7 @@ impl GlibcNotice {
 
     /// The line as printed: green when `use_color`, plain otherwise.
     pub fn render(&self, use_color: bool) -> String {
-        let message = self.message();
-        if use_color {
-            format!("{GREEN}{message}{RESET}")
-        } else {
-            message
-        }
+        crate::color_choice::paint(&self.message(), crate::color_choice::GREEN, use_color)
     }
 }
 
@@ -529,10 +521,7 @@ pub(crate) fn maturin_invocation(
     let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     crate::wheel_bundle::request_for_workspace(&workspace_root, &plan.bundle)?;
     if let Some(notice) = &plan.notice {
-        eprintln!(
-            "{}",
-            notice.render(crate::cargo_front_door::stderr_should_use_color())
-        );
+        eprintln!("{}", notice.render(crate::color_choice::stderr_enabled()));
     }
 
     let mut argv = Vec::with_capacity(plan.argv.len() + 2);

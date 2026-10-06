@@ -102,10 +102,8 @@ pub(crate) fn render_warning(value: &str, github_actions: bool, use_color: bool)
     );
     if github_actions {
         format!("::warning::{message}")
-    } else if use_color {
-        format!("\x1b[33m{message}\x1b[0m")
     } else {
-        message
+        crate::color_choice::paint(&message, crate::color_choice::YELLOW, use_color)
     }
 }
 

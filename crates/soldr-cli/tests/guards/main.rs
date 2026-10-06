@@ -14,6 +14,7 @@ mod canonical_targets_parity;
 mod cli_ci_test;
 mod cli_lint;
 mod cli_startup_smoke;
+mod color_predicate_guard;
 mod daemon_console_policy_guard;
 mod daemon_state_db_ownership_guard;
 mod env_lock_lint;

@@ -104,14 +104,16 @@ issue describes (concurrent caller generations through the broker path) and a
 bounded regression proving convergence; check explicitly whether #3573
 already removed the stale-endpoint variant before building anything.
 
-**9 — color predicates (#3437).** Five implementations on `main`, with
-divergent rules: `install/plan.rs:64` treats `GITHUB_ACTIONS` as
-color-capable, the others do not; `cache_states.rs:91` and
-`log_summary.rs:175` and `ci_test/test_targets.rs:152` are three separate
-`use_color()`s; `disk.rs:61` has the pure `color_enabled(no_color_set,
-stderr_is_terminal)` rule. Meets the code-smell rule's three bars (multiplicity,
-observable divergence, design call). Resolve to one predicate — pick which
-behavior is canonical, don't inline-pick silently.
+**9 — color predicates (#3437).** **Done — do not re-triage.** What was five
+(and, counted with `output_capture.rs`, six) `use_color()`s with divergent
+rules is now one: `crates/soldr-cli/src/color_choice.rs` owns
+`enabled(no_color_set, github_actions, stream_is_terminal)` and the
+`stderr_enabled()` convenience, ruled `NO_COLOR` unset AND (`GITHUB_ACTIONS`
+OR the surface's own stream is a terminal). Every former predicate and every
+copy of the `GREEN`/`YELLOW`/`DIM`/`RESET` palette was deleted in favour of
+that module's `paint`.
+`crates/soldr-cli/tests/guards/color_predicate_guard.rs` scans for a
+seventh.
 
 **10 — two Nextest wrappers (#3454).** Both exist on `main`: the Python
 `.github/scripts/nextest_timeout_wrapper.py` and the Rust

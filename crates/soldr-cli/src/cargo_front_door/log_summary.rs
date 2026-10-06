@@ -16,6 +16,7 @@
 
 use std::path::PathBuf;
 
+use crate::color_choice::{paint, DIM};
 use crate::daemon::protocol::BuildLogPaths;
 
 /// Opt-out, following the `SOLDR_NO_*` convention (`SOLDR_NO_TRAMPOLINE`).
@@ -25,10 +26,6 @@ pub(super) const NO_LOG_SUMMARY_ENV_VAR: &str = "SOLDR_NO_LOG_SUMMARY";
 const FULL_INVENTORY_HINT: &str = "soldr logs paths";
 
 const HEADER: &str = "soldr: logs for this build session:";
-
-/// ANSI dim, applied to the paths only when the sink is a color-capable TTY.
-const DIM: &str = "\x1b[2m";
-const RESET: &str = "\x1b[0m";
 
 /// The log files a single build session wrote.
 ///
@@ -123,13 +120,7 @@ pub(super) fn summary_message(logs: &SessionLogs, use_color: bool) -> Option<Str
             out.push(' ');
         }
         out.push_str("  ");
-        if use_color {
-            out.push_str(DIM);
-            out.push_str(&path);
-            out.push_str(RESET);
-        } else {
-            out.push_str(&path);
-        }
+        out.push_str(&paint(&path, DIM, use_color));
     }
     out.push_str("\n  (all log locations: ");
     out.push_str(FULL_INVENTORY_HINT);
@@ -165,17 +156,7 @@ pub(super) fn emit_session_log_summary(logs: &SessionLogs, exit_code: i32) {
     ) {
         return;
     }
-    if let Some(message) = summary_message(logs, use_color()) {
+    if let Some(message) = summary_message(logs, crate::color_choice::stderr_enabled()) {
         eprintln!("{message}");
     }
-}
-
-/// Same gate as `emit_zthreads_fallback_warning`: never colorize for GitHub
-/// Actions, an explicit `NO_COLOR`, or a non-TTY stderr.
-fn use_color() -> bool {
-    use std::io::IsTerminal;
-
-    !super::foreign_env_flag("GITHUB_ACTIONS")
-        && std::env::var_os("NO_COLOR").is_none()
-        && std::io::stderr().is_terminal()
 }

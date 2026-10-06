@@ -11,7 +11,7 @@ use crate::TEST_FREE_DISK_BYTES_ENV_VAR;
 
 pub(super) fn maybe_emit_low_disk_warning(path: &std::path::Path) {
     if let Some(message) =
-        low_disk_warning_for_path(path, stderr_should_use_color(), available_space)
+        low_disk_warning_for_path(path, crate::color_choice::stderr_enabled(), available_space)
     {
         eprintln!("{message}");
     }
@@ -34,32 +34,11 @@ pub(crate) fn low_disk_warning_for_free_bytes(free_bytes: u64, use_color: bool) 
     if free_bytes >= LOW_DISK_WARNING_THRESHOLD_BYTES {
         return None;
     }
-    let warning = if use_color {
-        "\x1b[33mwarning\x1b[0m"
-    } else {
-        "warning"
-    };
+    let warning = crate::color_choice::paint("warning", crate::color_choice::YELLOW, use_color);
     Some(format!(
         "soldr: {warning}: disk space is low ({} free). Run `soldr gc` to review reclaimable Rust target directories.",
         crate::cache_lib::target_registry::human_size(free_bytes),
     ))
-}
-
-/// Colorize stderr only when it is a terminal and `NO_COLOR` is unset. A
-/// redirected or captured stderr (CI logs, `2>file`) always gets plain text.
-pub(crate) fn stderr_should_use_color() -> bool {
-    use std::io::IsTerminal;
-
-    color_enabled(
-        std::env::var_os("NO_COLOR").is_some(),
-        std::io::stderr().is_terminal(),
-    )
-}
-
-/// The pure rule behind [`stderr_should_use_color`]: any `NO_COLOR` value
-/// disables color (no-color.org), and so does a non-terminal sink.
-pub(crate) fn color_enabled(no_color_set: bool, stderr_is_terminal: bool) -> bool {
-    !no_color_set && stderr_is_terminal
 }
 
 pub(crate) fn available_space(path: &std::path::Path) -> std::io::Result<u64> {

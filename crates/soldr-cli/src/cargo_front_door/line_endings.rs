@@ -19,7 +19,7 @@ pub(super) fn maybe_emit_crlf_warning(repo_root: &Path) {
     };
     eprintln!(
         "{}",
-        crlf_warning_message(setting, repo_root, super::cache_states::use_color())
+        crlf_warning_message(setting, repo_root, crate::color_choice::stderr_enabled())
     );
 }
 
@@ -48,11 +48,7 @@ fn crlf_warning_message(setting: CrlfCheckoutSetting, repo_root: &Path, use_colo
         ),
         CrlfCheckoutSetting::CoreEol => ("core.eol=crlf", "`git config --local core.eol lf`"),
     };
-    let warning = if use_color {
-        "\x1b[33mwarning\x1b[0m"
-    } else {
-        "warning"
-    };
+    let warning = crate::color_choice::paint("warning", crate::color_choice::YELLOW, use_color);
     format!(
         "soldr: {warning}: Git CRLF checkout mode is enabled by `{configured_by}` for {}; \
          CRLF source bytes can cause avoidable recompiles and cross-platform cache misses. \
