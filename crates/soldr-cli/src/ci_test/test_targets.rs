@@ -580,8 +580,14 @@ mod tests {
             "a workflow command must stay plain even when the human block is \
              painted: {annotation}"
         );
+        // Color-agnostic under the soldr#3437 ruling: the human block is
+        // painted, so its line starts with an ANSI escape, not the text —
+        // and the annotation line contains `head` too, so exclude it by its
+        // workflow-command prefix rather than by position.
         assert!(
-            actions.lines().any(|line| line.starts_with(head)),
+            actions
+                .lines()
+                .any(|line| !line.starts_with("::warning::") && line.contains(head)),
             "the annotation is *additional* to the human block: {actions}"
         );
         assert!(
