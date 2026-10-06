@@ -1,5 +1,6 @@
 //! Linux PID inspection: liveness, zombie state, and image lookup.
 
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// Linux does not use the Windows console-attachment policy probe.
@@ -123,6 +124,70 @@ pub fn executable_path_matches(pid: u32, expected_path: &Path) -> bool {
 /// running-image deletion problem this diagnoses is Windows-specific.
 pub fn holders_under(_dir: &Path) -> Vec<ProcessHolder> {
     Vec::new()
+}
+
+/// Find processes holding a specific file by scanning `/proc/*/fd` for matching inode.
+///
+/// Returns a list of `(pid, exe_path)` for each live process that has the file open.
+/// The file is identified by its device and inode numbers.
+/// This is a best-effort diagnostic: it may miss holders due to permission restrictions,
+/// and it only runs on Linux.
+pub fn find_file_holders(path: &Path) -> Vec<ProcessHolder> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return Vec::new(),
+    };
+    let target_dev = metadata.dev();
+    let target_ino = metadata.ino();
+
+    let mut holders = Vec::new();
+
+    // Iterate over /proc/*/fd directories
+    let proc_dir = Path::new("/proc");
+    if let Ok(entries) = std::fs::read_dir(proc_dir) {
+        for entry in entries.flatten() {
+            let pid_str = entry.file_name();
+            let pid_str = pid_str.to_string_lossy();
+            let pid: u32 = match pid_str.parse() {
+                Ok(p) => p,
+                Err(_) => continue, // Not a PID directory (e.g., "self", "thread-self")
+            };
+
+            // Skip our own process
+            if pid == std::process::id() {
+                continue;
+            }
+
+            // Check if process is alive (not a zombie)
+            if !is_alive(pid) {
+                continue;
+            }
+
+            // Scan /proc/<pid>/fd for matching inode
+            let fd_dir = proc_dir.join(&*pid_str).join("fd");
+            if let Ok(fd_entries) = std::fs::read_dir(&fd_dir) {
+                for fd_entry in fd_entries.flatten() {
+                    let fd_path = fd_entry.path();
+                    if let Ok(metadata) = std::fs::metadata(&fd_path) {
+                        if metadata.dev() == target_dev && metadata.ino() == target_ino {
+                            // Found a match - get the executable path
+                            if let Some(exe) = executable_path(pid) {
+                                holders.push(ProcessHolder { pid, exe });
+                            } else {
+                                holders.push(ProcessHolder {
+                                    pid,
+                                    exe: PathBuf::from("<unknown>"),
+                                });
+                            }
+                            break; // No need to check other FDs for this process
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    holders
 }
 
 /// A PID-reuse-safe identity token for `pid`: its creation time.

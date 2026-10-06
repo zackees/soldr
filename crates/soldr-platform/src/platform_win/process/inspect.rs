@@ -160,6 +160,12 @@ pub fn executable_path_matches(pid: u32, expected_path: &Path) -> bool {
         .eq_ignore_ascii_case(&expected.to_string_lossy())
 }
 
+/// Windows has no /proc filesystem, so we cannot scan for file holders by inode.
+/// Returns an empty vector.
+pub fn find_file_holders(_path: &Path) -> Vec<ProcessHolder> {
+    Vec::new()
+}
+
 /// Every process whose image lives under `dir` (recursively).
 ///
 /// Most failures here are ordinary and expected: system processes refuse
