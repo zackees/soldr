@@ -149,6 +149,12 @@ pub fn holders_under(_dir: &Path) -> Vec<ProcessHolder> {
     Vec::new()
 }
 
+/// macOS has no /proc filesystem, so we cannot scan for file holders.
+/// Returns an empty vector.
+pub fn find_file_holders(_path: &Path) -> Vec<ProcessHolder> {
+    Vec::new()
+}
+
 /// A PID-reuse-safe identity token for `pid`: its creation time.
 ///
 /// `proc_pidinfo(PROC_PIDTBSDINFO)` -- the same call `is_zombie` above uses

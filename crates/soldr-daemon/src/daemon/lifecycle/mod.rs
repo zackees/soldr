@@ -31,6 +31,7 @@ pub(crate) use spawn_env::*;
 
 use crate::cache_lib::{daemon_lifecycle_log_path, soldr_daemon_dir};
 use crate::core::SoldrPaths;
+use crate::platform::process::inspect::find_file_holders;
 use fs2::FileExt;
 use serde::Serialize;
 use std::fs::{self, File, OpenOptions};
@@ -164,11 +165,38 @@ pub fn describe_root_ownership_conflict(paths: &SoldrPaths) -> String {
             // route's private lock. Never suggest killing sibling daemons.
             let lock = crate::daemon::generation_key::generation_state_dir(paths)
                 .join("root-owner.lock");
-            format!(
-                "soldr root ownership is busy: {root} -- recorded owner PID {pid} is dead, but this route's lock is still held (soldr#2316).\n\
-                 soldr: inspect {} to identify its holder, then terminate only that process. Other daemon routes can coexist and must keep serving.",
-                lock.display()
-            )
+            let holders = find_file_holders(&lock);
+            if holders.is_empty() {
+                format!(
+                    "soldr root ownership is busy: {root} -- recorded owner PID {pid} is dead, but this route's lock is still held (soldr#2316).\n\
+                     soldr: no live process currently holds {}.\n\
+                     soldr: the lock may be held by a process we cannot inspect (permission denied) or the holder exited without releasing it.\n\
+                     soldr: run `soldr status` and `soldr logs paths` to inspect this route. Use SOLDR_CACHE_DIR=<scratch dir> to build with a separate root.",
+                    lock.display()
+                )
+            } else {
+                let mut details = String::new();
+                for (i, holder) in holders.iter().enumerate() {
+                    let is_soldr_daemon = holder.exe.file_stem()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|stem| stem.eq_ignore_ascii_case("soldr-daemon") || stem.eq_ignore_ascii_case("soldr"));
+                    let daemon_note = if is_soldr_daemon { " (soldr-daemon)" } else { "" };
+                    details.push_str(&format!(
+                        "  {}: PID {} image {}{}\n",
+                        i + 1,
+                        holder.pid,
+                        holder.exe.display(),
+                        daemon_note
+                    ));
+                }
+                format!(
+                    "soldr root ownership is busy: {root} -- recorded owner PID {pid} is dead, but this route's lock is still held (soldr#2316).\n\
+                     soldr: the following live process(es) hold the lock:\n{}\
+                     soldr: terminate only the process(es) holding this lock. Other daemon routes can coexist and must keep serving.\n\
+                     soldr: run `soldr status` and `soldr logs paths` to inspect this route.",
+                    details
+                )
+            }
         }
     }
 }

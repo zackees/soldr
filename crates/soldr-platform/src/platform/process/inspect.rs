@@ -2,8 +2,8 @@
 
 pub use crate::platform_imp::process::inspect::{
     child_pids, console_attached, executable_path, executable_path_matches,
-    executable_stem_matches, holders_under, is_alive, is_zombie, process_start_token,
-    working_directory, ProcessHolder,
+    executable_stem_matches, find_file_holders, holders_under, is_alive, is_zombie,
+    process_start_token, working_directory, ProcessHolder,
 };
 
 #[cfg(test)]

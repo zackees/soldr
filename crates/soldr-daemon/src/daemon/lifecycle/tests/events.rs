@@ -591,10 +591,11 @@ mod root_ownership_diagnostic_tests {
         );
     }
 
-    // soldr#2316: recorded owner is dead but acquisition still failed, so an
-    // unrecorded process (an orphaned soldr-daemon) holds the lock. The old
-    // message dead-ended on "an unrecorded process"; it must now hand the
-    // operator an actionable remediation command instead of naming nobody.
+    // soldr#2316 / #3581: recorded owner is dead but acquisition still failed,
+    // so an unrecorded process (an orphaned soldr-daemon) holds the lock.
+    // The message now enumerates actual lock holders via /proc/*/fd scan
+    // instead of asking the operator to find them, and never recommends
+    // blind `pkill -f soldr-daemon` which would kill sibling routes.
     #[test]
     fn a_dead_recorded_owner_points_at_the_orphan_remediation() {
         let temp = TempDir::new().expect("tempdir");
@@ -614,7 +615,13 @@ mod root_ownership_diagnostic_tests {
             "must point at the orphan-holder issue: {msg}"
         );
         assert!(msg.contains("root-owner.lock"), "{msg}");
-        assert!(msg.contains("terminate only that process"), "{msg}");
+        // New message enumerates holders (or explains none found) instead of
+        // the old "terminate only that process" guidance.
+        assert!(msg.contains("no live process currently holds"), "{msg}");
+        assert!(msg.contains("permission denied"), "{msg}");
+        assert!(msg.contains("SOLDR_CACHE_DIR"), "{msg}");
+        assert!(msg.contains("soldr status"), "{msg}");
+        assert!(msg.contains("soldr logs paths"), "{msg}");
         assert!(
             !msg.contains("pkill"),
             "must preserve sibling routes: {msg}"
