@@ -5,6 +5,7 @@
 //! A route-local protobuf claim records the daemon process and its private
 //! endpoint. Readers verify the live process before acting on that claim.
 
+mod busy_lock;
 mod displacement_policy;
 mod journal_hygiene;
 mod legacy_endpoint;
@@ -135,6 +136,10 @@ impl MissingImageDetector {
 /// which is *probably* the lock holder but is not proven to be, so the wording
 /// says "recorded" rather than asserting identity. Naming a plausible suspect
 /// beats today's silence; claiming certainty we do not have would be worse.
+///
+/// The dead-recorded-owner arm enumerates the lock's live holders itself
+/// rather than asking the operator to inspect a file that cannot name them
+/// (soldr#3581); see the `busy_lock` module for that branch.
 pub fn describe_root_ownership_conflict(paths: &SoldrPaths) -> String {
     let root = paths.root.display();
     let Some((pid, exe)) = read_recorded_daemon_identity(paths) else {
@@ -159,17 +164,11 @@ pub fn describe_root_ownership_conflict(paths: &SoldrPaths) -> String {
             "soldr root ownership is busy: {root} (held by PID {pid}, image {})",
             exe.display()
         ),
-        (false, _) => {
-            // The stale claim does not identify the process holding this
-            // route's private lock. Never suggest killing sibling daemons.
-            let lock = crate::daemon::generation_key::generation_state_dir(paths)
-                .join("root-owner.lock");
-            format!(
-                "soldr root ownership is busy: {root} -- recorded owner PID {pid} is dead, but this route's lock is still held (soldr#2316).\n\
-                 soldr: inspect {} to identify its holder, then terminate only that process. Other daemon routes can coexist and must keep serving.",
-                lock.display()
-            )
-        }
+        // The stale claim does not identify the process holding this route's
+        // private lock, and neither does the lock file itself: it records the
+        // dead PID only (soldr#3581). Enumerate the live holders instead, and
+        // never suggest killing sibling daemons.
+        (false, _) => busy_lock::describe_dead_owner_busy_lock(paths, pid),
     }
 }
 

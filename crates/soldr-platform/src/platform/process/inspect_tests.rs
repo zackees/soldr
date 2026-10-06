@@ -1,6 +1,7 @@
-//! Facade tests for the working-directory and child-enumeration probes.
+//! Facade tests for the working-directory, child-enumeration, and
+//! file-holder probes.
 
-use super::{child_pids, working_directory};
+use super::{child_pids, holders_of_file, working_directory, FileHolderScan};
 
 /// Where a host answers these probes at all, it must answer them about
 /// the live process asked for: its own working directory, and a child it
@@ -39,4 +40,39 @@ fn working_directory_and_children_describe_the_live_process() {
     done_tx.send(()).expect("release spawner");
     spawner.join().expect("spawner thread");
     assert!(found.contains(&pid), "{found:?} lacks {pid}");
+}
+
+/// Where a host can enumerate a file's holders at all (soldr#3581), it must
+/// name this process while this process holds the file, and name nobody once
+/// it lets go — the empty-answer contract the busy-lock diagnostic's "no
+/// holder found" branch relies on.
+///
+/// Hosts that cannot enumerate answer `Unsupported` instead, which is the
+/// other half of that contract: the diagnostic must say so rather than
+/// report an empty list that would read as "nobody holds it".
+#[test]
+fn holders_of_file_names_this_process_only_while_it_holds_the_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let lock = dir.path().join("root-owner.lock");
+    std::fs::write(&lock, b"").expect("touch lock");
+
+    let during_handle = std::fs::File::open(&lock).expect("open lock holder");
+    let FileHolderScan::Enumerated(during) = holders_of_file(&lock) else {
+        return;
+    };
+    assert!(
+        during.iter().any(|holder| holder.pid == std::process::id()),
+        "this process holds the lock file and must be enumerated: {during:?}"
+    );
+
+    // Release the handle, then re-scan: the same file with no holder must
+    // enumerate as empty, not as a stale entry for a process that let go.
+    drop(during_handle);
+    let FileHolderScan::Enumerated(after) = holders_of_file(&lock) else {
+        return;
+    };
+    assert!(
+        !after.iter().any(|holder| holder.pid == std::process::id()),
+        "released the file, so this process must no longer be a holder: {after:?}"
+    );
 }

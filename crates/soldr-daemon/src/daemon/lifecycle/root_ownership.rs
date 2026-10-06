@@ -7,7 +7,9 @@ use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::time::{Duration, Instant};
 
-const ROOT_OWNER_LOCK_NAME: &str = "root-owner.lock";
+/// The lock file's name, shared with the diagnostic that explains a busy
+/// one (soldr#3581) so the two cannot spell it differently.
+pub(crate) const ROOT_OWNER_LOCK_NAME: &str = "root-owner.lock";
 
 /// Ownership of one broker daemon generation. Different images may serve the
 /// same product root concurrently; duplicate starts of one image still race

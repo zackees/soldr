@@ -1,5 +1,6 @@
 //! macOS PID inspection: liveness, zombie state, and image lookup.
 
+use crate::platform::process::inspect::FileHolderScan;
 use std::path::{Path, PathBuf};
 
 /// macOS does not use the Windows console-attachment policy probe.
@@ -147,6 +148,20 @@ pub fn executable_path_matches(pid: u32, expected_path: &Path) -> bool {
 /// this diagnoses is Windows-specific.
 pub fn holders_under(_dir: &Path) -> Vec<ProcessHolder> {
     Vec::new()
+}
+
+/// macOS has no supported soldr-side enumeration of which processes hold an
+/// arbitrary file open (soldr#3581).
+///
+/// Naming the holders would mean walking every pid through
+/// `proc_pidfdinfo(PROC_PIDLISTFDS)` and comparing each descriptor's
+/// device/inode identity -- a per-process syscall loop over a table this
+/// crate does not otherwise drive. Until that exists, the honest answer is
+/// [`FileHolderScan::Unsupported`]: the busy-lock diagnostic must say this
+/// host cannot name the holder rather than point the operator at a lock file
+/// that records only a (possibly dead) PID.
+pub fn holders_of_file(_path: &Path) -> FileHolderScan {
+    FileHolderScan::Unsupported
 }
 
 /// A PID-reuse-safe identity token for `pid`: its creation time.

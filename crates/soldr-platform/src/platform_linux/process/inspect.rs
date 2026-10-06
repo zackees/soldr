@@ -1,5 +1,8 @@
-//! Linux PID inspection: liveness, zombie state, and image lookup.
+//! Linux PID inspection: liveness, zombie state, image lookup, and the
+//! procfs enumeration of a file's holders.
 
+use crate::platform::process::inspect::{FileHolder, FileHolderScan};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// Linux does not use the Windows console-attachment policy probe.
@@ -123,6 +126,92 @@ pub fn executable_path_matches(pid: u32, expected_path: &Path) -> bool {
 /// running-image deletion problem this diagnoses is Windows-specific.
 pub fn holders_under(_dir: &Path) -> Vec<ProcessHolder> {
     Vec::new()
+}
+
+/// Every live process holding `path` open, enumerated through procfs
+/// (soldr#3581).
+///
+/// This is the answer the busy-lock diagnostic used to ask the operator to
+/// derive by hand: `root-owner.lock` records only a (possibly dead) PID, so
+/// the holder has to be read from the live process table instead. Matching
+/// is by device + inode rather than by path text, so a holder that opened
+/// the file through a symlink, a bind mount, or a renamed ancestor still
+/// matches, and the file's own path never has to be spelled the same way
+/// twice.
+///
+/// Failures along the way are ordinary, not exceptional: a process that
+/// exits mid-scan has no `fd` directory to read, another user's process is
+/// invisible to an unelevated scan (a holder we simply cannot name), and a
+/// host whose procfs is unmounted answers [`FileHolderScan::Unsupported`]
+/// so the caller can say the platform cannot enumerate rather than report
+/// an empty list that would read as "nobody holds it".
+pub fn holders_of_file(path: &Path) -> FileHolderScan {
+    let Ok(target) = std::fs::metadata(path) else {
+        // No inode to match against: the file is gone or unreadable, so
+        // nothing on this host can be holding *this* file.
+        return FileHolderScan::Enumerated(Vec::new());
+    };
+    let (want_dev, want_ino) = (target.dev(), target.ino());
+    let Ok(processes) = std::fs::read_dir("/proc") else {
+        // procfs is the only enumeration source Linux has here.
+        return FileHolderScan::Unsupported;
+    };
+    let mut holders = Vec::new();
+    for entry in processes.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        // Liveness is re-checked after the fd match: the process table can
+        // recycle a pid between the two reads, and naming a dead (or worse,
+        // reused) pid as "the holder" is the exact defect this diagnostic
+        // exists to fix.
+        if !process_holds(pid, want_dev, want_ino) || !is_alive(pid) {
+            continue;
+        }
+        holders.push(FileHolder {
+            pid,
+            exe: executable_path(pid),
+            parent_pid: parent_pid(pid),
+            children: child_pids(pid).unwrap_or_default(),
+        });
+    }
+    holders.sort_by_key(|holder| holder.pid);
+    FileHolderScan::Enumerated(holders)
+}
+
+/// True when `pid` has at least one open fd resolving to this dev + inode.
+fn process_holds(pid: u32, want_dev: u64, want_ino: u64) -> bool {
+    let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+        // Ordinary and expected: the process exited between the directory
+        // walk and this read, or belongs to another user and procfs denies
+        // the listing. Either way it is not a holder this scan can name.
+        return false;
+    };
+    fds.flatten().any(|fd| {
+        std::fs::metadata(fd.path())
+            .ok()
+            // `metadata` follows the fd's symlink to the target file, so
+            // sockets and pipes (which resolve to `socket:[ino]` pseudo
+            // paths and cannot be stat'ed) simply do not match.
+            .is_some_and(|meta| meta.dev() == want_dev && meta.ino() == want_ino)
+    })
+}
+
+/// The holder's parent pid: field 4 of `/proc/<pid>/stat`.
+///
+/// The comm field is parenthesized and may itself contain spaces or `)`, so
+/// this reuses the LAST `") "` split that `is_zombie` and `process_start_token`
+/// already agree on -- a second, differently-written parser for the same line
+/// is how two readers silently disagree about the same process.
+fn parent_pid(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, tail) = stat.rsplit_once(") ")?;
+    // tail: state(0), ppid(1), pgrp(2), ...
+    tail.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// A PID-reuse-safe identity token for `pid`: its creation time.

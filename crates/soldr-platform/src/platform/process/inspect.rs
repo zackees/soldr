@@ -1,9 +1,50 @@
-//! PID liveness, zombie state, and running-process image lookup.
+//! PID liveness, zombie state, running-process image lookup, and the
+//! enumeration of which live processes hold a given file open.
+
+use std::path::PathBuf;
+
+/// A live process observed holding a specific file open (soldr#3581).
+///
+/// Produced by [`holders_of_file`] on hosts that can enumerate a file's
+/// openers. Every field is a best-effort reading: a holder can exit between
+/// the enumeration and the identity read, and a host may refuse to expose
+/// one field while still exposing the others, so `None` means "not readable
+/// here" rather than "does not exist".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileHolder {
+    /// The holding process's id.
+    pub pid: u32,
+    /// The holder's running executable path, when the host lets the caller read it.
+    pub exe: Option<PathBuf>,
+    /// The holder's parent process id, when the host exposes one.
+    pub parent_pid: Option<u32>,
+    /// The holder's live children at enumeration time.
+    ///
+    /// Empty means "childless", which is half of the evidence behind a
+    /// busy-lock diagnostic's orphan label; a `None`-shaped absence is
+    /// deliberately not representable here, because claiming a holder is
+    /// childless when its children could not be read would be a safety
+    /// claim built on a failed probe.
+    pub children: Vec<u32>,
+}
+
+/// The outcome of asking the host which live processes hold a file open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileHolderScan {
+    /// The host enumerated holders. The list may be empty: nobody visible
+    /// holds the file right now (the holder exited between checks, or lives
+    /// where this scan is not allowed to look).
+    Enumerated(Vec<FileHolder>),
+    /// The host has no supported way to enumerate a file's holders. Callers
+    /// must say so explicitly instead of implying that inspecting the file
+    /// itself would name its holder.
+    Unsupported,
+}
 
 pub use crate::platform_imp::process::inspect::{
     child_pids, console_attached, executable_path, executable_path_matches,
-    executable_stem_matches, holders_under, is_alive, is_zombie, process_start_token,
-    working_directory, ProcessHolder,
+    executable_stem_matches, holders_of_file, holders_under, is_alive, is_zombie,
+    process_start_token, working_directory, ProcessHolder,
 };
 
 #[cfg(test)]

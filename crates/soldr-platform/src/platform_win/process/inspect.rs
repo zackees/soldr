@@ -1,5 +1,6 @@
 //! Windows PID inspection: liveness and running-image lookup.
 
+use crate::platform::process::inspect::FileHolderScan;
 use std::path::{Path, PathBuf};
 use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole};
 
@@ -208,6 +209,20 @@ pub fn holders_under(dir: &Path) -> Vec<ProcessHolder> {
     // SAFETY: `snapshot` is a valid handle from CreateToolhelp32Snapshot.
     unsafe { CloseHandle(snapshot) };
     found
+}
+
+/// Windows has no supported soldr-side enumeration of which processes hold
+/// an arbitrary file open (soldr#3581).
+///
+/// The Restart Manager API (`RmGetList`) answers exactly this question, but
+/// linking `Rstrtmgr` for a diagnostic path is not something this crate does
+/// today, and Toolhelp (which [`holders_under`] uses) only walks executable
+/// images -- not open handles. Until one of those exists, the honest answer
+/// is [`FileHolderScan::Unsupported`]: the busy-lock diagnostic must say
+/// this host cannot name the holder rather than point the operator at a lock
+/// file that records only a (possibly dead) PID.
+pub fn holders_of_file(_path: &Path) -> FileHolderScan {
+    FileHolderScan::Unsupported
 }
 
 /// A PID-reuse-safe identity token for `pid`: its creation time.

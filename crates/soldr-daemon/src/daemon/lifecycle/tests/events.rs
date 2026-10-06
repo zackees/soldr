@@ -456,7 +456,10 @@ mod status_retry_tests {
 mod root_ownership_diagnostic_tests {
     use super::lifecycle_event_tests::write_route_claim;
     use crate::core::SoldrPaths;
+    use crate::daemon::lifecycle::busy_lock::describe_with_scan;
     use crate::daemon::lifecycle::*;
+    use crate::daemon::other_generations::GenerationOwner;
+    use crate::platform::process::inspect::{FileHolder, FileHolderScan};
     use tempfile::TempDir;
 
     fn write_legacy_pid_file(paths: &SoldrPaths, pid: u32, exe_path: &std::path::Path) {
@@ -623,6 +626,270 @@ mod root_ownership_diagnostic_tests {
             !msg.contains("Stop-Process"),
             "must preserve sibling routes: {msg}"
         );
+    }
+
+    // soldr#3581: "inspect the lock file" was a dead end — the file records
+    // only the dead PID, so nothing in the diagnostic could answer "who
+    // holds it now". The arm must enumerate the live holder itself. These
+    // pins drive the renderer's three branches directly, because a test
+    // host cannot reach them all through the real path: a Linux host can
+    // never produce `Unsupported`, and a TempDir lock has nobody holding it.
+    #[test]
+    fn a_dead_owner_on_a_host_that_cannot_enumerate_says_so() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let dead = i32::MAX as u32;
+        let msg = describe_with_scan(
+            &paths.root,
+            dead,
+            &lock_file(&paths),
+            FileHolderScan::Unsupported,
+            &[],
+        );
+
+        assert!(
+            msg.contains("cannot enumerate"),
+            "must say the platform cannot answer: {msg}"
+        );
+        assert!(msg.contains("root-owner.lock"), "{msg}");
+        assert!(msg.contains("soldr#2316"), "{msg}");
+        assert!(msg.contains("terminate only that process"), "{msg}");
+        assert!(
+            !msg.contains("pkill"),
+            "must preserve sibling routes: {msg}"
+        );
+        assert!(
+            !msg.contains("Stop-Process"),
+            "must preserve sibling routes: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_dead_owner_whose_holder_exited_says_enumeration_found_no_one() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let dead = i32::MAX as u32;
+        let msg = describe_with_scan(
+            &paths.root,
+            dead,
+            &lock_file(&paths),
+            FileHolderScan::Enumerated(vec![]),
+            &[],
+        );
+
+        assert!(
+            msg.contains("enumeration found no holder"),
+            "must distinguish 'nobody found' from 'cannot look': {msg}"
+        );
+        assert!(msg.contains("exited between checks"), "{msg}");
+        assert!(msg.contains("root-owner.lock"), "{msg}");
+        assert!(msg.contains("terminate only that process"), "{msg}");
+        assert!(
+            !msg.contains("pkill"),
+            "must preserve sibling routes: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_live_holder_is_named_with_exe_parentage_and_its_own_terminate_pid() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let dead = i32::MAX as u32;
+        let holder = FileHolder {
+            pid: 4242,
+            exe: Some(std::path::PathBuf::from("/srv/soldr-daemon")),
+            parent_pid: Some(7),
+            children: Vec::new(),
+        };
+        let msg = describe_with_scan(
+            &paths.root,
+            dead,
+            &lock_file(&paths),
+            FileHolderScan::Enumerated(vec![holder]),
+            &[],
+        );
+
+        assert!(msg.contains("PID 4242"), "{msg}");
+        assert!(
+            msg.contains("/srv/soldr-daemon"),
+            "must name the exe: {msg}"
+        );
+        assert!(msg.contains("parent PID 7"), "must give parentage: {msg}");
+        assert!(
+            msg.contains("orphaned (no children, stale route claim)"),
+            "a childless holder with a dead claim is the orphan shape: {msg}"
+        );
+        assert!(msg.contains("safe to terminate"), "{msg}");
+        assert!(
+            msg.contains("terminate PID 4242 to recover"),
+            "must name exactly what to signal: {msg}"
+        );
+        assert!(msg.contains("terminate only that process"), "{msg}");
+        assert!(
+            !msg.contains("pkill"),
+            "must preserve sibling routes: {msg}"
+        );
+    }
+
+    // The safety claim is conditional: it is what tells an operator whether
+    // signalling is reckless, so a holder that still has a process tree
+    // must be named without it.
+    #[test]
+    fn a_holder_with_children_is_named_without_the_safe_to_terminate_claim() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let holder = FileHolder {
+            pid: 4242,
+            exe: Some(std::path::PathBuf::from("/srv/soldr-daemon")),
+            parent_pid: Some(7),
+            children: vec![4243],
+        };
+        let msg = describe_with_scan(
+            &paths.root,
+            i32::MAX as u32,
+            &lock_file(&paths),
+            FileHolderScan::Enumerated(vec![holder]),
+            &[],
+        );
+
+        assert!(msg.contains("PID 4242"), "{msg}");
+        assert!(
+            !msg.contains("safe to terminate"),
+            "a holder with live children must not be called safe to kill: {msg}"
+        );
+        assert!(!msg.contains("orphaned"), "{msg}");
+        assert!(msg.contains("terminate PID 4242 to recover"), "{msg}");
+    }
+
+    // soldr#3581's smaller ask: distinguish an orphan from a sibling
+    // generation that is legitimately serving. The blanket `pkill` advice of
+    // soldr#2316 died for exactly this case, so the message must withhold
+    // the terminate instruction from a holder some generation still claims.
+    #[test]
+    fn a_holder_recorded_by_a_sibling_generation_is_not_a_terminate_target() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let holder = FileHolder {
+            pid: 4242,
+            exe: Some(std::path::PathBuf::from("/srv/soldr-daemon")),
+            parent_pid: Some(7),
+            children: Vec::new(),
+        };
+        let sibling = GenerationOwner {
+            generation: "gen-two".to_string(),
+            pid: 4242,
+            exe: std::path::PathBuf::from("/srv/soldr-daemon"),
+        };
+        let msg = describe_with_scan(
+            &paths.root,
+            i32::MAX as u32,
+            &lock_file(&paths),
+            FileHolderScan::Enumerated(vec![holder]),
+            &[sibling],
+        );
+
+        assert!(
+            msg.contains("recorded owner of generation gen-two"),
+            "{msg}"
+        );
+        assert!(msg.contains("legitimately serving"), "{msg}");
+        assert!(msg.contains("do not terminate"), "{msg}");
+        assert!(
+            !msg.contains("safe to terminate"),
+            "a serving sibling is never the orphan case: {msg}"
+        );
+        assert!(
+            !msg.contains("terminate PID 4242"),
+            "must not instruct the operator to kill a serving daemon: {msg}"
+        );
+        assert!(
+            !msg.contains("pkill"),
+            "must preserve sibling routes: {msg}"
+        );
+    }
+
+    // End-to-end: the arm must find a real holder through procfs and name
+    // it, rather than dead-ending on the lock file path as it did before
+    // soldr#3581.
+    #[test]
+    fn the_dead_owner_arm_enumerates_a_live_holder_named_in_proc() {
+        // A runtime host gate, never `#[cfg(unix)]`: host cfg outside
+        // soldr-platform is denied by the #2493 boundary (soldr#3284).
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+            return;
+        }
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let dead = i32::MAX as u32;
+        write_route_claim(&paths, dead, &temp.path().join("soldr-daemon"));
+        let lock = lock_file(&paths);
+        std::fs::create_dir_all(lock.parent().expect("lock file has a parent"))
+            .expect("generation dir");
+        std::fs::write(&lock, b"").expect("create lock file");
+
+        // A live child holds the lock open as its stdin; dropping `command`
+        // releases this process's own copy of the handle, so the child is
+        // the only holder the scan should find.
+        let held = std::fs::File::open(&lock).expect("open lock for the child");
+        let mut command = std::process::Command::new("sleep");
+        command.arg("300");
+        command.stdin(std::process::Stdio::from(held));
+        command.stdout(std::process::Stdio::null());
+        command.stderr(std::process::Stdio::null());
+        let mut child = command.spawn().expect("spawn holder child");
+        drop(command);
+        let holder_pid = child.id();
+
+        // The child's fd table is populated while it starts, so poll the
+        // scan instead of sampling once: enumeration is the thing under
+        // test, and a single early sample could race the exec.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut msg = describe_root_ownership_conflict(&paths);
+        while !msg.contains(&format!("PID {holder_pid}")) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            msg = describe_root_ownership_conflict(&paths);
+        }
+        // Read the exe while the child is still alive, then reap it before
+        // asserting: the captured message is the input, and a leaked
+        // sleeper must not outlive this test on failure.
+        let exe = crate::platform::process::inspect::executable_path(holder_pid)
+            .map(|path| path.display().to_string());
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            msg.contains(&format!("PID {holder_pid}")),
+            "must name the live holder: {msg}"
+        );
+        assert!(
+            msg.contains(&format!("parent PID {}", std::process::id())),
+            "must give the holder's parentage: {msg}"
+        );
+        if let Some(exe) = exe {
+            assert!(msg.contains(&exe), "must name the holder's exe: {msg}");
+        }
+        assert!(
+            msg.contains(&format!("terminate PID {holder_pid} to recover")),
+            "must point at exactly what to signal: {msg}"
+        );
+        assert!(msg.contains("soldr#2316"), "{msg}");
+        assert!(msg.contains("root-owner.lock"), "{msg}");
+        assert!(msg.contains("terminate only that process"), "{msg}");
+        assert!(
+            !msg.contains("pkill"),
+            "must preserve sibling routes: {msg}"
+        );
+        assert!(
+            !msg.contains("Stop-Process"),
+            "must preserve sibling routes: {msg}"
+        );
+    }
+
+    /// The lock path the diagnostic renders, built exactly as the arm builds
+    /// it so an injected scan cannot name a file the real path would not.
+    fn lock_file(paths: &SoldrPaths) -> std::path::PathBuf {
+        crate::daemon::generation_key::generation_state_dir(paths)
+            .join(crate::daemon::lifecycle::root_ownership::ROOT_OWNER_LOCK_NAME)
     }
 
     // No route claim at all must still produce something better than silence.
