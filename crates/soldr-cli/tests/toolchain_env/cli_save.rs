@@ -306,6 +306,10 @@ fn save_ci_load_preserves_real_warm_rustc_hits() {
     shutdown.env("SOLDR_CACHE_DIR", &warm_root);
     run_command(shutdown, "warm cache shutdown before assertions");
     let warm_events = native_library_events(&warm_root);
+    println!(
+        "native library events: {}",
+        serde_json::json!({"cold": cold_events, "warm": warm_events})
+    );
     assert!(
         warm_events.iter().any(|event| event["outcome"] == "hit"),
         "warm cacheable library must hit the relocated archive: {warm_events:#?}"
