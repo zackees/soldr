@@ -4,6 +4,7 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Protocol
+from unittest.mock import Mock
 
 import pytest
 from conftest import load_script_module
@@ -575,3 +576,31 @@ def test_smoke_command_runs_the_complete_repository_pipeline() -> None:
         "ci/smoke_local.sh",
     ]
     assert perf_local.container_argv(["cargo", "check"]) == ["cargo", "check"]
+
+
+@pytest.mark.parametrize("step_index", [3, 4])
+def test_source_handoff_removes_image_caps_before_daemon_and_cargo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, step_index: int
+) -> None:
+    handoff = load_script_module(
+        Path(__file__).parents[1] / "ci" / "bosn_workspace_test.py",
+        "bosn_source_handoff_environment",
+    )
+    plan = handoff.workspace_test_plan(
+        target=Path("/target"), bootstrap=Path("/opt/soldr-bootstrap/bin/soldr")
+    )
+    monkeypatch.setenv("CARGO_BUILD_JOBS", "2")
+    monkeypatch.setenv("SOLDR_JOBS", "2")
+    monkeypatch.setenv("CARGO_PROFILE_TEST_DEBUG", "0")
+    monkeypatch.setenv("CARGO_PROFILE_CI_NEXTEST_CODEGEN_UNITS", "256")
+    monkeypatch.setenv("BUILD_UNRELATED_SETTING", "preserved")
+    launch = Mock()
+    monkeypatch.setattr(handoff.subprocess, "run", launch)
+
+    handoff.run_step(plan[step_index], repo=tmp_path)
+
+    child_env = launch.call_args.kwargs["env"]
+    assert "CARGO_BUILD_JOBS" not in child_env
+    assert "SOLDR_JOBS" not in child_env
+    assert not any(name.startswith("CARGO_PROFILE_") for name in child_env)
+    assert child_env["BUILD_UNRELATED_SETTING"] == "preserved"

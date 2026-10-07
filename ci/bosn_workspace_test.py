@@ -46,6 +46,8 @@ def workspace_test_plan(*, target: Path, bootstrap: Path) -> list[Step]:
     source = target / "debug" / "soldr"
     source_text = container_path(source)
     base_env = (EnvVar("CARGO_TARGET_DIR", container_path(target)),)
+    source_unset = ("CARGO_BUILD_JOBS", "SOLDR_JOBS")
+    source_unset_prefixes = ("CARGO_PROFILE_",)
     return [
         Step(
             [
@@ -74,7 +76,15 @@ def workspace_test_plan(*, target: Path, bootstrap: Path) -> list[Step]:
             (),
         ),
         Step([container_path(bootstrap), "broker", "remove"], ()),
-        Step([source_text, "daemon", "start"], ()),
+        # The daemon fixes its admission limit at startup. Remove the image's
+        # dev-loop overrides here as well as for Cargo, or the source route
+        # keeps the image's two-compile ceiling for the whole validation run.
+        Step(
+            [source_text, "daemon", "start"],
+            (),
+            unset=source_unset,
+            unset_prefixes=source_unset_prefixes,
+        ),
         # zackees/ci.yml#168/#172: exactly the two *test* stages of the frozen
         # DAG CI's build-linux-x64 lane runs (`soldr ci-test --explain-plan`:
         # `nextest` and `doctests`). Its lint stages -- rustfmt, Clippy,
@@ -97,8 +107,8 @@ def workspace_test_plan(*, target: Path, bootstrap: Path) -> list[Step]:
                 f' && "{source_text}" cargo nextest run --no-fail-fast --workspace --lib --tests',
             ],
             base_env,
-            unset=("CARGO_BUILD_JOBS", "SOLDR_JOBS"),
-            unset_prefixes=("CARGO_PROFILE_",),
+            unset=source_unset,
+            unset_prefixes=source_unset_prefixes,
         ),
         Step(
             [source_text, "cache", "shutdown", "--shutdown-timeout-seconds", "30"],
