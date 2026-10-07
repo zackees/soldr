@@ -60,7 +60,7 @@ def test_cli_probe_failure_keeps_the_wheel_stderr(
             1, observed, output="", stderr="loader error"
         )
 
-    monkeypatch.setattr(smoke.subprocess, "run", failed_run)
+    monkeypatch.setattr(smoke, "run_captured", failed_run)
 
     with pytest.raises(smoke.WheelSmokeError, match="loader error"):
         smoke.run_cli(command)
@@ -91,6 +91,7 @@ def test_smoke_installs_all_wheels_and_exercises_both_cli_paths(
             return SimpleNamespace(stdout='{"soldr_version":"0.9.2"}\n')
         raise AssertionError(f"unexpected command: {command}")
 
+    monkeypatch.setattr(smoke, "run_captured", fake_run)
     monkeypatch.setattr(smoke.subprocess, "run", fake_run)
 
     smoke.smoke_wheel(expected_version="v0.9.2", dist=dist, venv=venv)

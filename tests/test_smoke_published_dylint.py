@@ -132,7 +132,7 @@ def test_smoke_installs_exact_wheel_and_proves_version_channel_and_driver(
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         raise AssertionError(f"unexpected published-Dylint command: {command}")
 
-    monkeypatch.setattr(smoke.subprocess, "run", fake_run)
+    monkeypatch.setattr(smoke, "run_captured", fake_run)
     smoke.smoke(version="0.9.11", repo_root=repo, venv=venv, state_root=state)
     assert calls[0] == ["uv", "venv", "--clear", str(venv)]
     assert calls[1] == uv_pip_install_command(
@@ -193,7 +193,7 @@ def test_smoke_rejects_wrong_binary_version_or_channel(
             )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(smoke.subprocess, "run", fake_run)
+    monkeypatch.setattr(smoke, "run_captured", fake_run)
     with pytest.raises(smoke.PublishedDylintSmokeError, match="provenance mismatch"):
         smoke.smoke(
             version="0.9.11", repo_root=repo, venv=venv, state_root=tmp_path / "state"
@@ -232,7 +232,7 @@ def test_smoke_times_out_a_stalled_probe_with_a_named_command(
         assert timeout is not None, "every probe needs a timeout budget"
         raise subprocess.TimeoutExpired(command, timeout, output=None)
 
-    monkeypatch.setattr(smoke.subprocess, "run", fake_run)
+    monkeypatch.setattr(smoke, "run_captured", fake_run)
     with pytest.raises(
         smoke.PublishedDylintSmokeError,
         match="timed out after 1500s.*soldr.exe.*dylint",

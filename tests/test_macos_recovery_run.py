@@ -12,12 +12,20 @@ the pure/subprocess-only surfaces this module exposes.
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from conftest import (
     assert_recovery_verify_collected_contract,
     load_script_module,
     write_collected_recovery_summary,
+)
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -87,8 +95,7 @@ def test_guest_script_samples_memory_around_nextest_run() -> None:
     stop = script.index('kill "$MEM_SAMPLER_PID" 2>/dev/null')
     assert script.index("mem_sample() {") < start < run < stop
     assert (
-        f"( while :; do sleep {MODULE.MEM_SAMPLE_SECS} >/dev/null 2>&1; "
-        "mem_sample; done ) &"
+        f"( while :; do sleep {MODULE.MEM_SAMPLE_SECS} >/dev/null 2>&1; mem_sample; done ) &"
     ) in script
     # Outside the continued nextest command, which comments would split.
     assert script.index('echo $? > "$WORK/nextest-run.rc"') < stop
@@ -108,7 +115,7 @@ def _run_mem_sample(tmp_path: Path, stub_dir: Path) -> str:
     )
     # Stubs shadow `sysctl`/`ps`; the text tools resolve from the real PATH.
     path = f"{stub_dir}{os.pathsep}{os.environ.get('PATH', '')}"
-    result = subprocess.run(
+    result = run_captured(
         ["sh", str(runner)],
         capture_output=True,
         text=True,
@@ -164,8 +171,7 @@ def test_mem_sample_reports_macos_memory_probes(tmp_path: Path) -> None:
     assert "reclaim_spec/purge/ext=1/2/100M" in line
     assert "comp=300M" in line
     assert (
-        "procs=7 daemon=1/10M broker=2/350M soldr=1/500M rustup=1/4M"
-        " cargo=0/0M rustc=1/2048M"
+        "procs=7 daemon=1/10M broker=2/350M soldr=1/500M rustup=1/4M cargo=0/0M rustc=1/2048M"
     ) in line
     assert "top=[rustc:2048M soldr:500M soldr-broker:200M ]" in line
     assert "swap_used=1024.00M" in line
@@ -229,7 +235,7 @@ def test_no_case_statement_inside_a_command_substitution() -> None:
 def test_build_guest_script_is_valid_posix_sh_syntax() -> None:
     """`bash -n` catches gross syntax breakage even though this is /bin/sh."""
     script = MODULE.build_guest_script()
-    result = subprocess.run(
+    result = run_captured(
         ["bash", "-n", "/dev/stdin"],
         input=script,
         capture_output=True,
@@ -398,8 +404,8 @@ def test_executor_contract_matches_the_emitted_guest_program() -> None:
     for block in (selected, run):
         assert f'FILTER=$(cat "{filter_contract["source_file"]}")' in block
         assert (
-            f"{filter_contract['argument']} "
-            f'"{filter_contract["expression_variable"]}"' in block
+            f'{filter_contract["argument"]} "{filter_contract["expression_variable"]}"'
+            in block
         )
     assert_arguments(selected, contract["nextest"]["selected_list_arguments"])
     assert_arguments(run, contract["nextest"]["run_arguments"])
@@ -672,3 +678,40 @@ def test_main_verify_collected_requires_repo_root_and_target_with_manifest(
         raise AssertionError("expected SystemExit")
     except SystemExit:
         pass
+
+
+def test_guest_phase_timing_runs_under_posix_sh(tmp_path: Path) -> None:
+    """Execute the generated phase functions with a deterministic clock."""
+    script = MODULE.build_guest_script().split("stage_start core", 1)[0]
+    script = script.replace("/tmp/results", str(tmp_path))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    date = bin_dir / "date"
+    date.write_text(
+        '#!/bin/sh\nif [ -e "$DATE_STATE" ]; then echo 105; '
+        'else : > "$DATE_STATE"; echo 100; fi\n',
+        encoding="utf-8",
+    )
+    date.chmod(0o755)
+    guest = tmp_path / "phase-test.sh"
+    guest.write_text(
+        script + "\nstage_start toolchain\nstage_end toolchain\n", encoding="utf-8"
+    )
+    with (tmp_path / "phase-output.log").open("w", encoding="utf-8") as output:
+        subprocess.run(
+            ["sh", str(guest)],
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "DATE_STATE": str(tmp_path / "date-state"),
+            },
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            check=True,
+        )
+    lines = (tmp_path / "phase-times.tsv").read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "stage\tevent\tunix_time\tduration_seconds",
+        "toolchain\tstart\t100\t",
+        "toolchain\tend\t105\t5",
+    ]

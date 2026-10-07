@@ -98,6 +98,7 @@
       "binary": "cargo_front_door",
       "modules": [
         "cli_cargo_basic",
+        "cli_cargo_clippy_fixture",
         "cli_cargo_doc_routes",
         "cli_cargo_linker",
         "cli_cargo_native_cc",
@@ -509,7 +510,7 @@
     {
       "id": "cargo-clippy-wrapper",
       "source_id": "cargo-front-target-replay",
-      "test_name": "cli_cargo_wrappers::cargo_clippy_routes_workspace_clippy_driver_through_zccache",
+      "test_name": "cli_cargo_clippy_fixture::cargo_clippy_routes_workspace_clippy_driver_through_zccache",
       "reason": "Prove target-native clippy-driver resolution and wrapper routing."
     },
     {

@@ -218,33 +218,6 @@ fn cargo_miri_keeps_inner_rustc_wrapped_by_policy() {
 }
 
 #[test]
-fn cargo_clippy_routes_workspace_clippy_driver_through_zccache() {
-    let cache_root = unique_temp_dir("cargo-clippy-clippy-driver-zccache");
-    let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, _zccache, _clippy_driver) = install_fake_clippy_toolchain(&log_path);
-    let output = isolated_soldr_command_in(&cache_root)
-        .args(["cargo", "clippy"])
-        .env("SOLDR_CACHE_DIR", &cache_root)
-        .env("SOLDR_TEST_CARGO_BIN", &cargo)
-        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env_remove("SOLDR_TARGET_CACHE_MODE")
-        .env_remove("SOLDR_BUILD_CACHE_MODE")
-        .output()
-        .expect("failed to run soldr cargo clippy with fake tools");
-    assert!(
-        output.status.success(),
-        "cargo clippy front door failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
-    assert!(
-        log.contains("cargo wrapper=") && log.contains("workspace_wrapper="),
-        "cargo clippy should retain Soldr-owned compiler shim routing: {log}"
-    );
-}
-
-#[test]
 fn direct_rustc_like_commands_route_through_zccache_with_and_without_global_flags() {
     let cache_root = unique_temp_dir("direct-rustc-like-zccache");
     let home_root = cache_root.join("home");

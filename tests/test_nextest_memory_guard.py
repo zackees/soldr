@@ -21,6 +21,13 @@ from pathlib import Path
 import pytest
 from conftest import load_script_module, nextest_wrapper_argv
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = REPO_ROOT / ".github" / "scripts" / "nextest_timeout_wrapper.py"
 WRAPPER_ARGV = nextest_wrapper_argv()
@@ -64,7 +71,7 @@ def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
 def _run(
     args: list[str], env: dict[str, str], timeout: float = 60, **kwargs
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_captured(
         [*WRAPPER_ARGV, sys.executable, *args],
         capture_output=True,
         text=True,
@@ -523,7 +530,7 @@ def test_delegated_cgroup_v2_ceiling_is_enforced_by_the_kernel(tmp_path: Path) -
     """
 
     probe = (
-        subprocess.run(
+        run_captured(
             [
                 "systemd-run",
                 "--user",
@@ -547,7 +554,7 @@ def test_delegated_cgroup_v2_ceiling_is_enforced_by_the_kernel(tmp_path: Path) -
         SOLDR_NEXTEST_ADMISSION_DIR=str(admission),
         SOLDR_NEXTEST_TEST_MEMORY_CEILING_BYTES=str(96 * MIB),
     )
-    result = subprocess.run(
+    result = run_captured(
         [
             "systemd-run",
             "--user",

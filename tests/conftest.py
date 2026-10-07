@@ -14,6 +14,13 @@ from types import ModuleType
 
 import pytest
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 NEXTEST_WRAPPER_UNDER_TEST_ENV = "SOLDR_NEXTEST_WRAPPER_UNDER_TEST"
 
 
@@ -302,7 +309,7 @@ def docker_available() -> bool:
 def git(repo: Path, *args: str) -> str:
     """Run git in `repo` and return stdout, raising on failure."""
 
-    return subprocess.run(
+    return run_captured(
         ["git", *args], cwd=repo, check=True, capture_output=True, text=True
     ).stdout
 

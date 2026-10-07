@@ -64,7 +64,7 @@ def test_installed_package_version_reads_the_soldr_cli_metadata(
         assert kwargs["check"] is False
         return SimpleNamespace(returncode=0, stdout=json.dumps(metadata))
 
-    monkeypatch.setattr(wheel.subprocess, "run", fake_run)
+    monkeypatch.setattr(wheel, "run_captured", fake_run)
 
     assert wheel.installed_package_version(Path("soldr"), cwd=tmp_path) == "0.9.2"
 

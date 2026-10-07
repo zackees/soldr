@@ -49,6 +49,11 @@ import time
 from pathlib import Path
 from types import ModuleType
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import run_captured  # noqa: E402 -- source-relative bootstrap precedes this import
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_DIR = Path(__file__).resolve().parent / "dylint_fixture"
 APP_MAIN = FIXTURE_DIR / "app" / "src" / "main.rs"
@@ -99,7 +104,7 @@ class HostRunner:
     def run(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env["CARGO_TARGET_DIR"] = str(self.target_dir)
-        return subprocess.run(
+        return run_captured(
             argv,
             cwd=FIXTURE_DIR,
             env=env,
@@ -151,7 +156,7 @@ class DockerRunner:
         # rustup) intact instead of forcing us to restate it here.
         wrapped = ["sh", "-c", f'PATH="{SOLDR_BIN_DIR}:$PATH"; exec "$@"', "sh", *argv]
         command.extend(["-w", workdir or self.container_fixture_dir, self.container, *wrapped])
-        return subprocess.run(command, capture_output=True, text=True, check=False)
+        return run_captured(command, capture_output=True, text=True, check=False)
 
     def ensure_soldr(self) -> None:
         """Build the soldr under test into the container's target volume.

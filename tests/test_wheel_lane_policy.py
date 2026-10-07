@@ -15,10 +15,18 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "wheel_lane_policy.py"
@@ -166,10 +174,8 @@ def test_policy_script_emits_a_json_matrix(tmp_path: Path) -> None:
     # fail at schedule time, not at test time.
     out = tmp_path / "out.txt"
     out.touch()
-    import subprocess
-    import sys
 
-    subprocess.run(
+    run_captured(
         [
             sys.executable,
             str(SCRIPT),

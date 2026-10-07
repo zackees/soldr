@@ -215,18 +215,7 @@ fn write_awaiting_receipt_ack<S: Read + Write>(
 
 /// Submit `req`, wait for one `Response`, return it.
 pub fn submit_request(sock_path: &Path, req: &Request) -> Result<Response, ClientError> {
-    if let Some(mut stream) = connect_through_override(sock_path, REPLY_TIMEOUT)? {
-        write_frame_sync(&mut stream, req)?;
-        return read_frame_sync(&mut stream).map_err(ClientError::from);
-    }
-    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-        submit_request_windows(sock_path, req)
-    } else {
-        let mut stream = connect(sock_path, REPLY_TIMEOUT)?;
-        write_frame_sync(&mut stream, req)?;
-        let resp: Response = read_frame_sync(&mut stream)?;
-        Ok(resp)
-    }
+    submit_request_with_timeout(sock_path, req, REPLY_TIMEOUT)
 }
 
 fn submit_request_for_version(

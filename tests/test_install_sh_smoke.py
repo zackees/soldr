@@ -26,12 +26,19 @@ import json
 import os
 import shutil
 import stat
-import subprocess
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
 
 import pytest
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO_ROOT / "install.sh"
@@ -66,7 +73,7 @@ def _usable_bash() -> "str | None":
         if not candidate:
             continue
         try:
-            probe = subprocess.run(
+            probe = run_captured(
                 [candidate, "-c", "printf ok"],
                 capture_output=True,
                 text=True,
@@ -180,7 +187,7 @@ def _run_install(tmp: Path, *, with_assets: bool, extra_args: list[str] | None =
     env.pop("SOLDR_INSTALL_DIR", None)
 
     return (
-        subprocess.run(
+        run_captured(
             [BASH, str(INSTALL_SH), "--bin-dir", str(install_dir)] + (extra_args or []),
             capture_output=True,
             text=True,
@@ -223,8 +230,7 @@ def test_reports_when_no_asset_matches(tmp_path: Path) -> None:
     result, _ = _run_install(tmp_path, with_assets=False)
 
     assert "no release asset found" in result.stderr, (
-        f"expected the fallback message\nstdout:\n{result.stdout}"
-        f"\nstderr:\n{result.stderr}"
+        f"expected the fallback message\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
 
 
@@ -238,7 +244,7 @@ def test_help_exits_zero(tmp_path: Path) -> None:
     mistake this file exists to correct.
     """
     assert BASH is not None
-    result = subprocess.run(
+    result = run_captured(
         [BASH, str(INSTALL_SH), "--help"],
         capture_output=True,
         text=True,

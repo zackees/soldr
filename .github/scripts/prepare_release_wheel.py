@@ -24,6 +24,13 @@ from pathlib import Path
 
 from release_artifacts import normalized_release_version, runner_binary_suffix
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 DEFAULT_WHEEL_HOOK = "python -m build --wheel"
 BUILD_SCRIPT = Path(__file__).with_name("build_release_wheel.py")
 
@@ -61,7 +68,7 @@ def best_effort(command: list[str], *, cwd: Path) -> None:
 
 def installed_package_version(driver: Path, *, cwd: Path) -> str:
     """Ask the release driver for the workspace facade package version."""
-    completed = subprocess.run(
+    completed = run_captured(
         [
             str(driver),
             "cargo",

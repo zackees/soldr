@@ -6,8 +6,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
+import sys
 from pathlib import Path, PurePosixPath
+
+# Dependency-free capture also works when this script is invoked by absolute path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 
 def normalized(path: str) -> str:
@@ -48,7 +55,7 @@ def pull_request_paths(event: dict[str, object]) -> list[str]:
     base_sha, head_sha = base.get("sha"), head.get("sha")
     if not isinstance(base_sha, str) or not isinstance(head_sha, str):
         return []
-    result = subprocess.run(
+    result = run_captured(
         [
             "git",
             "diff",

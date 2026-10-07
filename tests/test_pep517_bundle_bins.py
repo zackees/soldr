@@ -211,7 +211,7 @@ class BuildTest(unittest.TestCase):
 
             def run(command: Any, **kwargs: Any) -> Any:
                 self.assertEqual(kwargs["env"], {"K": "V"})
-                self.assertEqual(kwargs["stdout"], subprocess.PIPE)
+                self.assertTrue(kwargs["capture_stdout"])
                 return subprocess.CompletedProcess(command, 0, stdout=message)
 
             self.assertEqual(
@@ -332,7 +332,7 @@ class SoldrWheelCliTest(unittest.TestCase):
             )
             return subprocess.CompletedProcess(command, 0, stdout=message)
 
-        with mock.patch.object(self.helper.subprocess, "run", run):
+        with mock.patch.object(self.helper, "run_captured", run):
             code = self.helper.main(
                 [
                     "stage",
@@ -406,7 +406,7 @@ class SoldrWheelCliTest(unittest.TestCase):
             return subprocess.CompletedProcess(command, 101, stdout="")
 
         stderr = io.StringIO()
-        with mock.patch.object(self.helper.subprocess, "run", run):
+        with mock.patch.object(self.helper, "run_captured", run):
             with contextlib.redirect_stderr(stderr):
                 code = self.helper.main(
                     [
@@ -545,10 +545,7 @@ class BackendIntegrationTest(unittest.TestCase):
             self.assertEqual(subcommand, "write-sdist")
             root_cargo = '[workspace]\nmembers = [\n    "crates/demo",\n]\n'
             extension_cargo = '[package]\nname = "demo"\n'
-            cli_cargo = (
-                '[package]\nname = "demo-cli"\n\n'
-                '[[bin]]\nname = "demo-cli"\npath = "src/main.rs"\n'
-            )
+            cli_cargo = '[package]\nname = "demo-cli"\n\n[[bin]]\nname = "demo-cli"\npath = "src/main.rs"\n'
             with tarfile.open(self.out / sdist_name, "w:gz") as archive:
                 for name, text in (
                     ("demo-0.1.0/Cargo.toml", root_cargo),

@@ -91,6 +91,37 @@ def test_x64_lane_uses_the_recovery_guest_on_an_ubuntu_runner() -> None:
     assert "uses: ./.github/workflows/_ci-target-run.yml" in run_job
 
 
+def _assert_single_full_recovery_partition(job: str) -> None:
+    match = re.search(r"(?m)^\s+replay_partitions: '([^']+)'$", job)
+    assert match is not None, "all entry points must declare the same full partition"
+    partitions = json.loads(match.group(1))
+    assert len(partitions) == 1
+    assert partitions[0]["label"] == "all"
+    assert partitions[0]["value"] == "hash:1/1"
+    assert partitions[0]["run_followup"] is True
+    assert "target_execution: x86_64-recovery" in job
+    assert "runs_on: ubuntu-24.04" in job
+
+
+def test_scheduled_recovery_replay_uses_one_full_owned_partition() -> None:
+    replay = (WORKFLOWS / "macos-recovery-replay.yml").read_text(encoding="utf-8")
+    assert "schedule:" in replay
+    assert "workflow_dispatch:" in replay
+    assert "workflow_call:" in replay
+    job = replay.split("\n  replay:\n", 1)[1]
+    _assert_single_full_recovery_partition(job)
+    assert "source_ref: ${{ github.sha }}" in job
+
+
+def test_release_recovery_replay_uses_one_full_owned_partition() -> None:
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    job = release.split("\n  e2e_macos_x64_replay:\n", 1)[1].split(
+        "\n  release_execution_contract:\n", 1
+    )[0]
+    _assert_single_full_recovery_partition(job)
+    assert "source_ref: ${{ needs.prepare.outputs.commit_sha }}" in job
+
+
 def test_x64_replay_lane_is_off_the_pull_request_critical_path() -> None:
     """soldr#3116: the replay lane produced 0 green results in 25 CI runs and
     was the last job to finish in most of them (34-40 min of a wedged guest).
@@ -155,7 +186,7 @@ def test_recovery_lane_ships_the_tests_archive_to_the_guest() -> None:
     assert "nextest_list_all" in target_run or "nextest list" in target_run
 
 
-def test_recovery_replays_shard_the_full_suite_in_fresh_guests() -> None:
+def test_recovery_replay_keeps_partition_routing_and_guest_diagnostics() -> None:
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
     assert '--partition "$REPLAY_PARTITION"' in target_run
     assert '--partition "$REPLAY_PARTITION" \\' in target_run
@@ -163,11 +194,6 @@ def test_recovery_replays_shard_the_full_suite_in_fresh_guests() -> None:
         "name: target-run-${{ inputs.target }}-${{ matrix.replay.label }}-recovery-diagnostics"
         in target_run
     )
-    for workflow_name in ("macos-recovery-replay.yml", "release-auto.yml"):
-        workflow = (WORKFLOWS / workflow_name).read_text(encoding="utf-8")
-        assert workflow.count('"value":"hash:1/3"') == 1
-        assert workflow.count('"value":"hash:2/3"') == 1
-        assert workflow.count('"value":"hash:3/3"') == 1
 
 
 def test_recovery_lane_records_the_executor_contract_as_diagnostics() -> None:

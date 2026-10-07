@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import os
-import subprocess
+import sys
 from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 SCRIPT = Path(__file__).resolve().parents[1] / ".github/scripts/cache_path_inventory.sh"
 WORKFLOW = SCRIPT.parents[1] / "workflows/ci.yml"
@@ -20,7 +27,7 @@ def test_release_profiles_are_split_into_retained_components(tmp_path: Path) -> 
             (directory / "artifact").write_bytes(b"x" * 13)
     (cross / "deps" / "large.rlib").write_bytes(b"x" * 100)
 
-    result = subprocess.run(
+    result = run_captured(
         ["bash", str(SCRIPT), "aarch64-unknown-linux-gnu"],
         cwd=tmp_path,
         env={**os.environ, "CARGO_HOME": str(tmp_path / "empty-cargo")},

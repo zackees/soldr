@@ -7,11 +7,18 @@ part a mock would assume rather than verify.
 
 from __future__ import annotations
 
-import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from conftest import load_script_module
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 SCRIPT = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "loc_ratchet.py"
 
@@ -22,7 +29,7 @@ def mod():
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(
+    return run_captured(
         ["git", *args], cwd=repo, check=True, capture_output=True, text=True
     ).stdout
 

@@ -10,6 +10,13 @@ from pathlib import Path
 import pytest
 from conftest import nextest_wrapper_argv
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = REPO_ROOT / ".github" / "scripts" / "nextest_timeout_wrapper.py"
 WRAPPER_ARGV = nextest_wrapper_argv()
@@ -79,14 +86,18 @@ def _start_wrapper(child: str, env: dict[str, str]) -> subprocess.Popen[str]:
 @pytest.mark.skipif(
     os.name != "posix", reason="Nextest has no Windows timeout grace hook"
 )
-def test_sigterm_dumps_threads_and_drains_child_output() -> None:
+@pytest.mark.parametrize("signal_during_flush", [False, True])
+def test_sigterm_dumps_threads_and_drains_child_output(
+    signal_during_flush: bool,
+) -> None:
     child = """
+import os
 import signal
 import threading
 import time
 
 def stop(_signum, _frame):
-    print("child output after termination", flush=True)
+    os.write(1, b"child output after termination\\n")
     raise SystemExit(0)
 
 signal.signal(signal.SIGTERM, stop)
@@ -95,6 +106,32 @@ print("child output before timeout", flush=True)
 while True:
     time.sleep(0.1)
 """
+    if signal_during_flush:
+        # Hold the buffered writer's lock after emitting readiness, so the
+        # parent delivers SIGTERM during flush rather than relying on a race.
+        child = child.replace(
+            'print("child output before timeout", flush=True)',
+            """import io
+import os
+import sys
+
+class SignalWindowRaw(io.RawIOBase):
+    first = True
+    def writable(self):
+        return True
+    def write(self, data):
+        first = self.first
+        self.first = False
+        # Commit the state before readiness is visible: SIGTERM can arrive
+        # immediately after os.write, and shutdown may retry this write.
+        written = os.write(1, data)
+        if first:
+            signal.pause()
+        return written
+
+sys.stdout = io.TextIOWrapper(io.BufferedWriter(SignalWindowRaw()))
+print("child output before timeout", flush=True)""",
+        )
     env = os.environ.copy()
     env["SOLDR_NEXTEST_DISABLE_DEBUGGER"] = "1"
     env["SOLDR_NEXTEST_CHILD_EXIT_GRACE_SECS"] = "0.5"
@@ -105,7 +142,7 @@ while True:
     stdout_tail, stderr = process.communicate(timeout=15)
     stdout = before_timeout + stdout_tail
 
-    assert process.returncode == 0
+    assert process.returncode == 0, f"stdout={stdout!r}\nstderr={stderr!r}"
     assert "child output before timeout" in stdout
     assert "child output after termination" in stdout
     assert "nextest timeout: thread dump for pid" in stderr
@@ -171,20 +208,30 @@ while True:
 )
 def test_signal_during_drain_kills_descendant_after_leader_already_exited() -> None:
     child = """
+import os
 import signal
 import subprocess
 import sys
 
 grandchild = '''
+import os
 import signal
+import sys
 import time
 
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
+# Readiness means the leader actually exited, not merely printed its intent.
+parent_pid = int(sys.argv[1])
+deadline = time.monotonic() + 5
+while os.getppid() == parent_pid:
+    if time.monotonic() >= deadline:
+        raise RuntimeError("direct child did not exit before orphan readiness")
+    time.sleep(0.01)
 print("orphan grandchild retained output pipes", flush=True)
 while True:
     time.sleep(1)
 '''
-subprocess.Popen([sys.executable, "-c", grandchild])
+subprocess.Popen([sys.executable, "-c", grandchild, str(os.getpid())])
 print("direct child exiting normally", flush=True)
 """
     env = os.environ.copy()
@@ -201,7 +248,7 @@ print("direct child exiting normally", flush=True)
     stdout_tail, stderr = process.communicate(timeout=10)
     stdout = "".join(ready_lines) + stdout_tail
 
-    assert process.returncode == 0
+    assert process.returncode == 0, f"stdout={stdout!r}\nstderr={stderr!r}"
     assert "direct child exiting normally" in stdout
     assert "orphan grandchild retained output pipes" in stdout
     assert "descendants retained output pipes; forcing exit" in stderr
@@ -608,7 +655,7 @@ def test_a_trivial_child_is_reaped_well_under_the_old_fifty_millisecond_floor(
     """
 
     started = time.monotonic()
-    completed = subprocess.run(
+    completed = run_captured(
         [*WRAPPER_ARGV, sys.executable, "-c", "pass"],
         capture_output=True,
         check=False,
@@ -676,7 +723,7 @@ def _run_wrapper_under_tmpdir(
     env = {**os.environ, "TMPDIR": str(base)}
     env.pop("SOLDR_NEXTEST_KEEP_TMPDIR", None)
     env.update(extra_env or {})
-    result = subprocess.run(
+    result = run_captured(
         [
             *WRAPPER_ARGV,
             sys.executable,
@@ -740,7 +787,7 @@ def _wrapper_env_for(extra_env: dict[str, str]) -> list[str]:
     for key in ("SOLDR_TEST_FORBID_TOOLCHAIN_INSTALL", "RUSTUP_AUTO_INSTALL"):
         if key not in extra_env:
             env.pop(key, None)
-    result = subprocess.run(
+    result = run_captured(
         [*WRAPPER_ARGV, sys.executable, "-c", _ENV_CHILD],
         capture_output=True,
         text=True,
@@ -776,7 +823,7 @@ def test_every_test_process_names_its_binary_for_the_target_tripwire() -> None:
         if key != "SOLDR_TEST_FORBID_TARGET_CONTAINING"
     }
     child = "import os; print(os.environ['SOLDR_TEST_FORBID_TARGET_CONTAINING'])"
-    result = subprocess.run(
+    result = run_captured(
         [*WRAPPER_ARGV, sys.executable, "-c", child],
         capture_output=True,
         text=True,

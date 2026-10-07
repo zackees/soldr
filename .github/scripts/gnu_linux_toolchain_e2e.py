@@ -19,6 +19,13 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 TARGETS = {
     "x86_64-unknown-linux-gnu": ("x86_64", "Advanced Micro Devices X86-64"),
     "aarch64-unknown-linux-gnu": ("aarch64", "AArch64"),
@@ -43,13 +50,13 @@ def fresh_checkout_env(source: dict[str, str] | None = None) -> dict[str, str]:
 def run(
     args: list[str], *, env: dict[str, str] | None = None, cwd: Path | None = None
 ) -> str:
-    completed = subprocess.run(
+    completed = run_captured(
         args,
         check=False,
         cwd=cwd,
         env=env,
         text=True,
-        stdout=subprocess.PIPE,
+        capture_stdout=True,
         stderr=subprocess.STDOUT,
     )
     if completed.returncode:

@@ -31,8 +31,15 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import subprocess
 import sys
+from pathlib import Path
+
+# Dependency-free capture also works when this script is invoked by absolute path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 # `readelf -d` prints exactly this for a fully static ELF. Matched
 # case-insensitively on a normalized string so binutils wording drift in
@@ -116,7 +123,7 @@ def _readelf_program_headers(binary: str) -> "tuple[int, str]":
     tool = shutil.which("readelf") or shutil.which("llvm-readelf")
     if tool is None:
         raise FileNotFoundError("readelf not found on PATH")
-    completed = subprocess.run(
+    completed = run_captured(
         [tool, "-l", binary],
         capture_output=True,
         text=True,
@@ -138,7 +145,7 @@ def _readelf(binary: str) -> "tuple[int, str]":
     tool = shutil.which("readelf") or shutil.which("llvm-readelf")
     if tool is None:
         raise FileNotFoundError("readelf not found on PATH")
-    completed = subprocess.run(
+    completed = run_captured(
         [tool, "-d", binary],
         capture_output=True,
         text=True,
@@ -182,8 +189,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
         if headers_code != 0:
             print(
-                f"verify_static_link: cannot inspect {binary}: "
-                f"readelf -l exited {headers_code}",
+                f"verify_static_link: cannot inspect {binary}: readelf -l exited {headers_code}",
                 file=sys.stderr,
             )
             failures += 1

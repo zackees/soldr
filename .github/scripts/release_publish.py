@@ -27,6 +27,13 @@ import sys
 from pathlib import Path
 from typing import Callable, Sequence
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
 
 BLOCKED_NOTE = (
@@ -37,7 +44,7 @@ BLOCKED_NOTE = (
 
 def default_runner(args: Sequence[str]) -> subprocess.CompletedProcess:
     """Run a command, capturing output; never raises on non-zero."""
-    return subprocess.run(list(args), capture_output=True, text=True, check=False)
+    return run_captured(list(args), capture_output=True, text=True, check=False)
 
 
 EXCERPT_CHARS = 500
@@ -121,8 +128,7 @@ def release_recovery_summary(repo: str, tag: str, sha: str, run_id: str) -> str:
         [
             "## Manual release recovery needed (GitHub release)",
             "```",
-            f"gh run download {run_id} --repo {repo} "
-            "--pattern 'release-soldr-*' --dir dist",
+            f"gh run download {run_id} --repo {repo} --pattern 'release-soldr-*' --dir dist",
             f"gh release create {tag} dist/* --repo {repo} "
             f"--generate-notes --target {sha} --title {tag}",
             "```",

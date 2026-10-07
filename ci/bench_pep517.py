@@ -28,6 +28,13 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 PHASE_PATTERNS = {
     "packaging": re.compile(r"wheel|editable|dist-info|setuptools|maturin", re.I),
     "cargo": re.compile(r"cargo|compiling|fresh|finished|rustc", re.I),
@@ -43,13 +50,13 @@ def _python_path(venv: Path) -> Path:
 def _run(
     cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_captured(
         cmd,
         cwd=str(cwd) if cwd else None,
         env=env,
         check=False,
         text=True,
-        stdout=subprocess.PIPE,
+        capture_stdout=True,
         stderr=subprocess.STDOUT,
         encoding="utf-8",
         errors="replace",
@@ -371,10 +378,7 @@ def main() -> int:
     if args.repetitions < 1:
         parser.error("--repetitions must be positive")
     backend_source = args.backend_source.resolve() if args.backend_source else None
-    if (
-        backend_source
-        and not (backend_source / "src" / "soldr" / "__init__.py").is_file()
-    ):
+    if backend_source and not (backend_source / "src" / "__init__.py").is_file():
         parser.error(
             "--backend-source must be a soldr checkout containing src/soldr/__init__.py"
         )

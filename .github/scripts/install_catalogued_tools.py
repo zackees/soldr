@@ -9,7 +9,7 @@ import http.client
 import json
 import os
 import shutil
-import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -21,6 +21,13 @@ from typing import Any, Callable, TypeGuard, TypeVar
 from urllib.parse import urlsplit
 
 from catalogue_http import display_url, open_url, validate_https_url
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 DEFAULT_CATALOGUE_URL = "https://zackees.github.io/soldr-toolchain/catalogue.v2.json"
 SUPPORTED_TARGETS = {
@@ -58,8 +65,7 @@ def retry_network(action: Callable[[], T], *, label: str) -> T:
         ) as error:
             if attempt == DOWNLOAD_ATTEMPTS:
                 raise SystemExit(
-                    f"{label} failed after {DOWNLOAD_ATTEMPTS} attempts: "
-                    f"{type(error).__name__}"
+                    f"{label} failed after {DOWNLOAD_ATTEMPTS} attempts: {type(error).__name__}"
                 ) from None
             time.sleep(RETRY_BASE_DELAY_SECS * (2 ** (attempt - 1)))
     raise AssertionError("retry loop exhausted without returning or raising")
@@ -706,8 +712,7 @@ def download_verified(entry: dict[str, Any], output: Path) -> None:
         actual_size = temporary.stat().st_size
         if actual_size != expected_size:
             raise SystemExit(
-                f"catalogued asset size mismatch: expected {expected_size}, "
-                f"got {actual_size}"
+                f"catalogued asset size mismatch: expected {expected_size}, got {actual_size}"
             )
         actual = sha256(temporary)
         if actual != expected:
@@ -821,7 +826,7 @@ def smoke_version(binary: Path, *, tool: str, version: str, target: str) -> str:
     environment = os.environ.copy()
     if tool == "dylint-link":
         environment["RUSTUP_TOOLCHAIN"] = f"nightly-{target}"
-    result = subprocess.run(
+    result = run_captured(
         arguments,
         check=False,
         capture_output=True,

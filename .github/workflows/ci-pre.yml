@@ -52,6 +52,8 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/scripts/check_cache_budget.py
+            src/soldr/__init__.py
+            src/soldr/_process.py
             ci/cache-ownership.json
           sparse-checkout-cone-mode: false
       - name: Sweep reclaimable and evictable cache entries
@@ -86,6 +88,8 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/scripts/check_cache_budget.py
+            src/soldr/__init__.py
+            src/soldr/_process.py
             ci/cache-ownership.json
           sparse-checkout-cone-mode: false
       - name: Repository Actions cache budget

@@ -17,6 +17,13 @@ from pathlib import Path
 import pytest
 from conftest import load_script_module
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 REPO_ROOT = Path(__file__).parents[1]
 COMMON_SH = REPO_ROOT / "perf" / "lib" / "common.sh"
 BASH = shutil.which("bash")
@@ -42,7 +49,7 @@ def fake_soldr(tmp_path: Path, code: int, stdout: str, stderr: str) -> dict[str,
 
 def run_bash(script: str, env: dict[str, str]) -> subprocess.CompletedProcess:
     assert BASH is not None
-    return subprocess.run(
+    return run_captured(
         [BASH, "-c", f'. "{COMMON_SH}"; {script}'],
         capture_output=True,
         text=True,

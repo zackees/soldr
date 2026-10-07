@@ -7,7 +7,15 @@ import argparse
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 FIRST_PARTY_PACKAGES = (
     "soldr-cli",
@@ -42,7 +50,7 @@ def validate_pe(path: Path, *, context: str) -> None:
 def archive_members(path: Path) -> list[str]:
     if not path.is_file() or path.stat().st_size == 0:
         raise SystemExit(f"nextest archive is missing or empty: {path}")
-    result = subprocess.run(
+    result = run_captured(
         ["tar", "--list", "--file", str(path)],
         check=True,
         capture_output=True,

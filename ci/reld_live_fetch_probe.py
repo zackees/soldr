@@ -23,9 +23,16 @@ import json
 import os
 import pathlib
 import re
-import subprocess
 import sys
 import tempfile
+from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -123,7 +130,7 @@ def main() -> int:
         # stderr and a JSONL record per successful invocation.
         env["RELD_LOG_ENGINE"] = "1"
         env["RELD_INVOCATION_LOG"] = str(invocation_log)
-        result = subprocess.run(
+        result = run_captured(
             [
                 str(soldr_bin),
                 "cargo",
@@ -161,7 +168,7 @@ def main() -> int:
                 "reld_live_fetch_probe: reld recorded no successful link of "
                 f"reld-live-probe in {invocation_log}; the binary was not linked by reld."
             )
-        run_result = subprocess.run(
+        run_result = run_captured(
             [str(built_bin)], capture_output=True, text=True, timeout=30, check=False
         )
         if (

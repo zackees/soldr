@@ -48,9 +48,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 GUEST_HTTP_BASE = "http://10.0.2.2:8000"
 RESULTS_FILE = "summary.txt"
@@ -253,6 +259,8 @@ def build_guest_script(partition: str = "hash:1/1") -> str:
             f"SUMMARY=/tmp/results/{RESULTS_FILE}",
             ': > "$SUMMARY"',
             "FAIL=0",
+            "PHASE_TIMES=/tmp/results/phase-times.tsv",
+            "printf 'stage\\tevent\\tunix_time\\tduration_seconds\\n' > \"$PHASE_TIMES\"",
             "",
             "# record NAME STATUS [DETAIL] -- flat key=value line, one per stage.",
             "# DETAIL is sanitized to a single line and length-capped: a raw",
@@ -273,8 +281,19 @@ def build_guest_script(partition: str = "hash:1/1") -> str:
             "  fi",
             "}",
             "",
-            'stage_start() { echo "[$1] start"; }',
-            'stage_end() { echo "[$1] end"; }',
+            "# These stages run serially in this one guest script; timestamps",
+            "# remain on the ramdisk if the work volume or a later stage fails.",
+            "stage_start() {",
+            "  PHASE_STARTED=$(date +%s)",
+            '  echo "[$1] start unix=$PHASE_STARTED"',
+            '  printf \'%s\\tstart\\t%s\\t\\n\' "$1" "$PHASE_STARTED" >> "$PHASE_TIMES"',
+            "}",
+            "stage_end() {",
+            "  PHASE_ENDED=$(date +%s)",
+            "  PHASE_DURATION=$((PHASE_ENDED - PHASE_STARTED))",
+            '  echo "[$1] end unix=$PHASE_ENDED duration_seconds=$PHASE_DURATION"',
+            '  printf \'%s\\tend\\t%s\\t%s\\n\' "$1" "$PHASE_ENDED" "$PHASE_DURATION" >> "$PHASE_TIMES"',
+            "}",
             "",
             "# fetch NAME DEST [x] -- GET http://10.0.2.2:8000/NAME into DEST,",
             "# chmod +x DEST when the third arg is 'x'. Records fetch_NAME.",
@@ -976,7 +995,7 @@ def verify_replay_artifacts(
         )
     else:
         filter_output = collected_dir / "_verify_filter.txt"
-        result = subprocess.run(
+        result = run_captured(
             [
                 sys.executable,
                 str(ownership_script),
@@ -1023,13 +1042,10 @@ def verify_replay_artifacts(
         ]
         if github_summary is not None:
             summary_args += ["--github-summary", str(github_summary)]
-        result = subprocess.run(
-            summary_args, capture_output=True, text=True, check=False
-        )
+        result = run_captured(summary_args, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             failures.append(
-                "target-run coverage summary failed:\n"
-                f"{result.stdout}{result.stderr}".strip()
+                f"target-run coverage summary failed:\n{result.stdout}{result.stderr}".strip()
             )
 
     if failures:
@@ -1039,8 +1055,7 @@ def verify_replay_artifacts(
         )
 
     print(
-        "macOS Recovery replay artifacts verified: ownership inventory + "
-        "coverage summary OK"
+        "macOS Recovery replay artifacts verified: ownership inventory + coverage summary OK"
     )
     return 0
 

@@ -30,9 +30,15 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import subprocess
 import sys
 from pathlib import Path
+
+# Dependency-free capture also works when this script is invoked by absolute path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 # CentOS 7 based, glibc 2.17 -- the exact floor soldr#1060 targets and the
 # same baseline `manylinux_2_17` names. Pulled from quay.io (not Docker Hub)
@@ -59,7 +65,7 @@ def run_smoke(binary: Path, image: str) -> None:
         "--version",
     ]
     print(f"glibc_container_smoke: $ {' '.join(command)}", flush=True)
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    result = run_captured(command, capture_output=True, text=True, check=False)
     print(result.stdout, end="")
     print(result.stderr, end="", file=sys.stderr)
     if result.returncode != 0:

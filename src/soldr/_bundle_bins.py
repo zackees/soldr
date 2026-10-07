@@ -34,18 +34,26 @@ import argparse
 import base64
 import csv
 import hashlib
+import importlib
 import io
 import json
 import os
 import re
 import stat
-import subprocess
 import sys
 import tarfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
+
+# The native wheel verb extracts this module and its capture helper together.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+if __package__ == "soldr":
+    from ._process import run_captured
+else:
+    # The native CLI extracts these two standalone modules together.
+    run_captured = importlib.import_module("_process").run_captured
 
 BUNDLE_BINS_KEY = "bundle-bins"
 DEFAULT_DEST = "scripts"
@@ -272,13 +280,13 @@ def build_bundle_bin(
     entry: BundleBin,
     command: Sequence[str],
     env: "dict[str, str]",
-    run: Callable[..., Any] = subprocess.run,
+    run: Callable[..., Any] = run_captured,
 ) -> Path:
     """Run ``command`` and return the built executable for ``entry``."""
     result = run(
         list(command),
         env=env,
-        stdout=subprocess.PIPE,
+        capture_stdout=True,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -411,8 +419,7 @@ def _sdist_top_level(names: "Sequence[str]") -> str:
     tops = {name.split("/", 1)[0] for name in names if "/" in name}
     if len(tops) != 1:
         raise BundleBinsError(
-            f"expected exactly one top-level directory in the sdist, found "
-            f"{sorted(tops)}"
+            f"expected exactly one top-level directory in the sdist, found {sorted(tops)}"
         )
     return next(iter(tops))
 
@@ -446,8 +453,7 @@ def _append_workspace_members(text: str, additions: "Sequence[str]") -> str:
     match = re.search(r"members\s*=\s*\[(.*?)\]", text, re.DOTALL)
     if not match:
         raise BundleBinsError(
-            "sdist root Cargo.toml has a [workspace] table but no `members` "
-            "array to patch"
+            "sdist root Cargo.toml has a [workspace] table but no `members` array to patch"
         )
     existing = match.group(1).rstrip()
     if existing and not existing.endswith(","):
@@ -604,7 +610,7 @@ def main(argv: "Optional[Sequence[str]]" = None) -> int:
                 target_args=target_args,
                 soldr=args.soldr,
             )
-            return build_bundle_bin(entry, command, env, run=subprocess.run)
+            return build_bundle_bin(entry, command, env, run=run_captured)
 
         added = bundle_into_wheel(args.wheel, entries, build)
     except BundleBinsError as error:

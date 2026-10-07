@@ -59,8 +59,18 @@ pub(crate) struct IsolatedDaemon {
 
 impl IsolatedDaemon {
     pub(crate) fn spawn(source: &Path, root: &Path, home: &Path) -> Self {
+        Self::spawn_with_readiness_timeout(source, root, home, Duration::from_secs(90))
+    }
+
+    /// Reuse logged daemon ownership without changing the caller's readiness budget.
+    pub(crate) fn spawn_with_readiness_timeout(
+        source: &Path,
+        root: &Path,
+        home: &Path,
+        readiness_timeout: Duration,
+    ) -> Self {
         let command = isolated_daemon_command(source, root);
-        Self::spawn_with_command(command, source, root, home)
+        Self::spawn_command_with_readiness_timeout(command, source, root, home, readiness_timeout)
     }
 
     /// [`Self::spawn`], but driven by an already-constructed `command` rather
@@ -70,10 +80,26 @@ impl IsolatedDaemon {
     /// against a fake, fast-failing daemon without a real `soldr-daemon`
     /// binary (soldr#3380's RED/GREEN test drives this directly).
     pub(crate) fn spawn_with_command(
+        command: Command,
+        source: &Path,
+        root: &Path,
+        home: &Path,
+    ) -> Self {
+        Self::spawn_command_with_readiness_timeout(
+            command,
+            source,
+            root,
+            home,
+            Duration::from_secs(90),
+        )
+    }
+
+    fn spawn_command_with_readiness_timeout(
         mut command: Command,
         source: &Path,
         root: &Path,
         home: &Path,
+        readiness_timeout: Duration,
     ) -> Self {
         std::fs::create_dir_all(root).expect("create isolated daemon root");
         let stdout_log = root.join("daemon-stdout.log");
@@ -99,7 +125,7 @@ impl IsolatedDaemon {
             stdout_log,
             stderr_log,
         };
-        daemon.wait_until_ready();
+        daemon.wait_until_ready(readiness_timeout);
         daemon
     }
 
@@ -122,13 +148,13 @@ impl IsolatedDaemon {
         )
     }
 
-    fn wait_until_ready(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(90);
+    fn wait_until_ready(&mut self, readiness_timeout: Duration) {
+        let deadline = Instant::now() + readiness_timeout;
         let mut last_probe: Option<std::process::Output> = None;
         while Instant::now() < deadline {
             // Check first: a daemon that died on startup or mid-poll should
             // fail immediately with its own diagnostics, not after the full
-            // 90s deadline with nothing but "never became ready" (soldr#3380).
+            // readiness deadline with nothing but "never became ready" (soldr#3380).
             if let Some(status) = self
                 .child
                 .as_mut()

@@ -22,9 +22,17 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL = REPO_ROOT / "install"
@@ -63,7 +71,7 @@ def _run_install(
     env = {key: value for key, value in os.environ.items() if key not in scrubbed}
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
     env.update(extra_env)
-    result = subprocess.run(
+    result = run_captured(
         ["bash", str(INSTALL)],
         cwd=workdir,
         env=env,

@@ -25,6 +25,13 @@ from pathlib import Path
 
 import pytest
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 SCRIPTS = Path(__file__).resolve().parents[1] / ".github" / "scripts"
 TS_STEP = SCRIPTS / "ts_step.py"
 RUN_WITH_TS_PY = SCRIPTS / "run_with_ts.py"
@@ -35,7 +42,7 @@ PREFIX_RE = re.compile(rb"^ *\d+\.\d{2} ")
 
 
 def _ts_step(stdin: bytes) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    return run_captured(
         [sys.executable, "-u", str(TS_STEP)],
         input=stdin,
         capture_output=True,
@@ -99,7 +106,7 @@ def test_elapsed_seconds_are_monotonically_non_decreasing():
 
 
 def _run_with_ts(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    return run_captured(
         [sys.executable, "-u", str(RUN_WITH_TS_PY), *args],
         capture_output=True,
     )
@@ -190,7 +197,7 @@ def _find_working_bash() -> str | None:
             step = Path(td) / "probe.sh"
             step.write_text("exit 0\n", encoding="utf-8", newline="\n")
             try:
-                probe = subprocess.run(
+                probe = run_captured(
                     [candidate, _bash_path(RUN_WITH_TS_SH), _bash_path(step)],
                     capture_output=True,
                     timeout=60,
@@ -217,7 +224,7 @@ def _run_shell_wrapper(tmp_path: Path, body: str) -> subprocess.CompletedProcess
     step = tmp_path / "step.sh"
     step.write_text(body, encoding="utf-8", newline="\n")
     assert BASH is not None
-    return subprocess.run(
+    return run_captured(
         [BASH, _bash_path(RUN_WITH_TS_SH), _bash_path(step)],
         capture_output=True,
         cwd=SCRIPTS.parents[1],

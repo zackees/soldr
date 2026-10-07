@@ -44,6 +44,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, TypedDict
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 IMAGE = "soldr-cook-dev"
 DOCKERFILE = "docker/cook-shared-cache/Dockerfile"
 DOCKER_CONTEXT = "docker/cook-shared-cache"
@@ -183,7 +190,7 @@ def mark_runner_used(source_root: Path) -> float:
 
 
 def _managed_runner_roots() -> list[Path]:
-    result = subprocess.run(
+    result = run_captured(
         [
             "docker",
             "ps",
@@ -290,7 +297,7 @@ def output_excerpt(result: subprocess.CompletedProcess, limit: int = 500) -> str
 
 def _run_small(args: list[str]) -> subprocess.CompletedProcess:
     """Run a small docker probe; always forward its stderr, prefixed (soldr#3386)."""
-    result = subprocess.run(args, capture_output=True, text=True, check=False)
+    result = run_captured(args, capture_output=True, text=True, check=False)
     prefix = " ".join(args[:3])
     for line in (result.stderr or "").splitlines():
         if line.strip():
@@ -340,7 +347,7 @@ def runner_over_budget(usage_bytes: int) -> bool:
 
 
 def runner_volume_usage_bytes(runner: Runner) -> int | None:
-    result = subprocess.run(
+    result = run_captured(
         [
             "docker",
             "exec",
@@ -473,7 +480,7 @@ def retain_debug_trace(runner: Runner) -> None:
 
 def shared_source_root(repo_root: Path) -> Path:
     """Return the checkout root whose .git directory owns all worktrees."""
-    out = subprocess.run(
+    out = run_captured(
         ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
         cwd=repo_root,
         capture_output=True,
@@ -542,7 +549,7 @@ def dockerfile_digest(repo_root: Path) -> str:
 
 
 def image_info() -> dict[str, object] | None:
-    inspected = subprocess.run(
+    inspected = run_captured(
         ["docker", "image", "inspect", IMAGE],
         capture_output=True,
         text=True,
@@ -682,7 +689,7 @@ def exec_command(
 
 def ensure_runner(runner: Runner, image_id: str) -> None:
     labels = expected_labels(runner.source_root, image_id)
-    inspected = subprocess.run(
+    inspected = run_captured(
         ["docker", "inspect", runner.container],
         capture_output=True,
         text=True,
@@ -725,7 +732,7 @@ def ensure_runner(runner: Runner, image_id: str) -> None:
 
 
 def docker_output(args: list[str]) -> str:
-    out = subprocess.run(["docker", *args], capture_output=True, text=True, check=False)
+    out = run_captured(["docker", *args], capture_output=True, text=True, check=False)
     return out.stdout.strip() if out.returncode == 0 else ""
 
 

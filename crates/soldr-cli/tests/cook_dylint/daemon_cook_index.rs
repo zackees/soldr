@@ -22,8 +22,7 @@
 #![allow(clippy::print_stdout)]
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use soldr_cli::daemon::client::{self, cook_lookup, cook_record, cook_touch, CookLookupOutcome};
 use soldr_cli::daemon::protocol::Response;
@@ -50,14 +49,11 @@ fn skip_unless_in_container(test_name: &str) -> bool {
     true
 }
 
-fn unique_temp_dir(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time went backwards")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("soldr-cook-{label}-{nanos}"));
-    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
-    dir
+fn unique_temp_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("soldr-cook-{label}-"))
+        .tempdir()
+        .expect("create cook test directory")
 }
 
 fn soldr_daemon_bin() -> PathBuf {
@@ -79,71 +75,26 @@ fn direct_sock(root: &Path) -> PathBuf {
 }
 
 struct DaemonProc {
-    child: Option<Child>,
+    _daemon: common::isolated_daemon::IsolatedDaemon,
     cache_root: PathBuf,
 }
 
 impl DaemonProc {
     fn spawn(cache_root: &Path, home_root: &Path) -> Self {
-        let mut cmd =
-            common::isolated_daemon::isolated_daemon_command(&soldr_daemon_bin(), cache_root);
-        cmd.args(["--foreground", "--idle-timeout-secs", "60"])
-            .env("SOLDR_CACHE_DIR", cache_root)
-            .env("HOME", home_root)
-            .env("USERPROFILE", home_root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let child = cmd.spawn().expect("spawn soldr-daemon");
-        let deadline = Instant::now() + Duration::from_secs(40);
-        let pid_path = cache_root
-            .join("cache")
-            .join("soldr-daemon")
-            .join("broker-route-claim.pb");
-        let sock = direct_sock(cache_root);
-        while Instant::now() < deadline {
-            if pid_path.exists() && client::status(&sock).is_ok() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        assert!(
-            pid_path.exists() && client::status(&sock).is_ok(),
-            "soldr-daemon failed to become ready at {} within 40s",
-            pid_path.display()
+        let daemon = common::isolated_daemon::IsolatedDaemon::spawn_with_readiness_timeout(
+            &soldr_daemon_bin(),
+            cache_root,
+            home_root,
+            Duration::from_secs(40),
         );
         Self {
-            child: Some(child),
+            _daemon: daemon,
             cache_root: cache_root.to_path_buf(),
         }
     }
 
     fn sock_path(&self) -> PathBuf {
-        // Construct `SoldrPaths::with_root(...)` directly rather than
-        // mutating `SOLDR_CACHE_DIR` on the process env — these tests
-        // run concurrently under `cargo test` and env mutation is
-        // process-wide, so an EnvScope-based approach races between
-        // tests. `with_root` is the same shape the daemon resolves
-        // to internally (its own SOLDR_CACHE_DIR was set on its
-        // child env at spawn).
         direct_sock(&self.cache_root)
-    }
-}
-
-impl Drop for DaemonProc {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = client::shutdown(&direct_sock(&self.cache_root));
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < deadline {
-                if let Ok(Some(_)) = child.try_wait() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
     }
 }
 
@@ -161,8 +112,10 @@ fn cook_record_then_lookup_round_trips_through_daemon() {
     if skip_unless_in_container("cook_record_then_lookup_round_trips_through_daemon") {
         return;
     }
-    let cache_root = unique_temp_dir("rt-cache");
-    let home_root = unique_temp_dir("rt-home");
+    let cache_root_dir = unique_temp_dir("rt-cache");
+    let cache_root = cache_root_dir.path().to_path_buf();
+    let home_root_dir = unique_temp_dir("rt-home");
+    let home_root = home_root_dir.path().to_path_buf();
     // soldr#3193: stop the broker this HOME spawns when the test ends.
     let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
@@ -223,8 +176,10 @@ fn cook_lookup_recipe_miss_falls_back_to_newest_same_origin_artifact() {
     {
         return;
     }
-    let cache_root = unique_temp_dir("drift-cache");
-    let home_root = unique_temp_dir("drift-home");
+    let cache_root_dir = unique_temp_dir("drift-cache");
+    let cache_root = cache_root_dir.path().to_path_buf();
+    let home_root_dir = unique_temp_dir("drift-home");
+    let home_root = home_root_dir.path().to_path_buf();
     // soldr#3193: stop the broker this HOME spawns when the test ends.
     let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
@@ -295,8 +250,10 @@ fn concurrent_cook_records_all_land_consistently() {
     if skip_unless_in_container("concurrent_cook_records_all_land_consistently") {
         return;
     }
-    let cache_root = unique_temp_dir("concur-cache");
-    let home_root = unique_temp_dir("concur-home");
+    let cache_root_dir = unique_temp_dir("concur-cache");
+    let cache_root = cache_root_dir.path().to_path_buf();
+    let home_root_dir = unique_temp_dir("concur-home");
+    let home_root = home_root_dir.path().to_path_buf();
     // soldr#3193: stop the broker this HOME spawns when the test ends.
     let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
@@ -343,8 +300,10 @@ fn per_target_safety_isolates_via_ipc() {
     if skip_unless_in_container("per_target_safety_isolates_via_ipc") {
         return;
     }
-    let cache_root = unique_temp_dir("target-cache");
-    let home_root = unique_temp_dir("target-home");
+    let cache_root_dir = unique_temp_dir("target-cache");
+    let cache_root = cache_root_dir.path().to_path_buf();
+    let home_root_dir = unique_temp_dir("target-home");
+    let home_root = home_root_dir.path().to_path_buf();
     // soldr#3193: stop the broker this HOME spawns when the test ends.
     let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
@@ -443,8 +402,10 @@ fn status_reports_aggregate_cook_metrics() {
     if skip_unless_in_container("status_reports_aggregate_cook_metrics") {
         return;
     }
-    let cache_root = unique_temp_dir("status-cache");
-    let home_root = unique_temp_dir("status-home");
+    let cache_root_dir = unique_temp_dir("status-cache");
+    let cache_root = cache_root_dir.path().to_path_buf();
+    let home_root_dir = unique_temp_dir("status-home");
+    let home_root = home_root_dir.path().to_path_buf();
     // soldr#3193: stop the broker this HOME spawns when the test ends.
     let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
@@ -495,8 +456,10 @@ fn cook_touch_is_fire_and_forget_and_silent_on_unknown_sha() {
     if skip_unless_in_container("cook_touch_is_fire_and_forget_and_silent_on_unknown_sha") {
         return;
     }
-    let cache_root = unique_temp_dir("touch-cache");
-    let home_root = unique_temp_dir("touch-home");
+    let cache_root_dir = unique_temp_dir("touch-cache");
+    let cache_root = cache_root_dir.path().to_path_buf();
+    let home_root_dir = unique_temp_dir("touch-home");
+    let home_root = home_root_dir.path().to_path_buf();
     // soldr#3193: stop the broker this HOME spawns when the test ends.
     let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
@@ -519,8 +482,10 @@ fn status_response_decodes_as_expected_variant() {
     if skip_unless_in_container("status_response_decodes_as_expected_variant") {
         return;
     }
-    let cache_root = unique_temp_dir("variant-cache");
-    let home_root = unique_temp_dir("variant-home");
+    let cache_root_dir = unique_temp_dir("variant-cache");
+    let cache_root = cache_root_dir.path().to_path_buf();
+    let home_root_dir = unique_temp_dir("variant-home");
+    let home_root = home_root_dir.path().to_path_buf();
     // soldr#3193: stop the broker this HOME spawns when the test ends.
     let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
@@ -528,4 +493,63 @@ fn status_response_decodes_as_expected_variant() {
     let resp = client::submit_request(&sock, &soldr_cli::daemon::protocol::Request::Status)
         .expect("submit_request");
     assert!(matches!(resp, Response::Status(_)));
+}
+
+/// #3558: correctness-critical SQLite writes may wait longer than the
+/// generic two-second status deadline. Exercise the real daemon, with an
+/// independent writer holding its state database for three seconds.
+#[test]
+fn cook_record_waits_for_sqlite_writer_and_returns_the_committed_row() {
+    let fixture = tempfile::tempdir().expect("fixture");
+    let root = fixture.path().join("cache");
+    let home = fixture.path().join("home");
+    std::fs::create_dir_all(&home).expect("home");
+    let _broker = common::BrokerHomeGuard::new(&root, &home);
+    let _daemon = common::isolated_daemon::IsolatedDaemon::spawn(&soldr_daemon_bin(), &root, &home);
+    let sock = direct_sock(&root);
+    let paths = soldr_cli::core::SoldrPaths::with_root(root.clone());
+    let database = soldr_cli::cache_lib::state_store::open_state_db(
+        &soldr_cli::cache_lib::data_db_path(&paths),
+    )
+    .expect("open independent writer");
+    database
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("hold write transaction");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker_sock = sock.clone();
+    let worker = std::thread::spawn(move || {
+        let (triple, profile, channel, rustc) = standard_key_fields();
+        let result = cook_record(
+            &worker_sock,
+            [0xD1; 32],
+            triple,
+            profile,
+            channel,
+            rustc,
+            [0xD2; 32],
+            1024,
+            None,
+            "contention fixture".into(),
+        );
+        tx.send(result).expect("report result");
+    });
+    // Keep the lock past the old IPC deadline without sleep-based startup
+    // coordination. Completion here is necessarily an error: no writer can
+    // commit before the explicitly held transaction is released.
+    let premature = rx.recv_timeout(Duration::from_secs(3));
+    database.execute_batch("ROLLBACK").expect("release writer");
+    worker.join().expect("record worker");
+    assert!(
+        matches!(premature, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+        "cook record returned before the writer lock was released: {premature:?}"
+    );
+    rx.recv_timeout(Duration::from_secs(10))
+        .expect("record completion")
+        .expect("record commits after contention");
+    let (triple, profile, channel, rustc) = standard_key_fields();
+    assert!(matches!(
+        cook_lookup(&sock, [0xD1; 32], triple, profile, channel, rustc, None)
+            .expect("lookup committed row"),
+        CookLookupOutcome::Hit { sha256, .. } if sha256 == [0xD2; 32]
+    ));
 }

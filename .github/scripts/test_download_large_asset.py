@@ -5,12 +5,17 @@ from __future__ import annotations
 
 import hashlib
 import os
-import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 ROOT = Path(__file__).resolve().parent
 HELPER = ROOT / "download_large_asset.sh"
@@ -45,7 +50,7 @@ class DownloadLargeAssetTests(unittest.TestCase):
             ]
             if size is not None:
                 command += ["--expected-size", str(size)]
-            result = subprocess.run(command, capture_output=True, text=True, env=env)
+            result = run_captured(command, capture_output=True, text=True, env=env)
             return (
                 result,
                 output.exists(),

@@ -10,6 +10,13 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    checked_output,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SETUP_SOLDR_REPO = "https://github.com/zackees/setup-soldr.git"
 SETUP_SOLDR_RELEASE_REF = "refs/tags/v0.9.82"
@@ -37,7 +44,7 @@ SUBPROCESS_TIMEOUT_SECS = 300
 
 
 def resolve_setup_soldr_release_sha() -> str:
-    output = subprocess.check_output(
+    output = checked_output(
         [
             "git",
             "ls-remote",
@@ -49,6 +56,7 @@ def resolve_setup_soldr_release_sha() -> str:
         encoding="utf-8",
         timeout=GIT_LS_REMOTE_TIMEOUT_SECS,
     )
+    assert isinstance(output, str), "UTF-8 capture must return text"
     refs: dict[str, str] = {}
     for line in output.splitlines():
         sha, ref = line.split(maxsplit=1)

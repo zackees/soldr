@@ -17,8 +17,8 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use soldr_cli::cache_lib::cook_archive::{
     artifact_path_for_sha, cook_cache_dir, pack_cook_archive,
@@ -48,14 +48,11 @@ fn skip_unless_in_container(test_name: &str) -> bool {
     true
 }
 
-fn unique_temp_dir(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time went backwards")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("soldr-cookwrites-{label}-{nanos}"));
-    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
-    dir
+fn unique_temp_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("soldr-cook-{label}-"))
+        .tempdir()
+        .expect("create cook test directory")
 }
 
 fn write_file(p: &Path, bytes: &[u8]) {
@@ -86,64 +83,26 @@ fn direct_sock(root: &Path) -> PathBuf {
 }
 
 struct DaemonProc {
-    child: Option<Child>,
+    _daemon: common::isolated_daemon::IsolatedDaemon,
     cache_root: PathBuf,
 }
 
 impl DaemonProc {
     fn spawn(cache_root: &Path, home_root: &Path) -> Self {
-        let mut cmd =
-            common::isolated_daemon::isolated_daemon_command(&soldr_daemon_bin(), cache_root);
-        cmd.args(["--foreground", "--idle-timeout-secs", "60"])
-            .env("SOLDR_CACHE_DIR", cache_root)
-            .env("HOME", home_root)
-            .env("USERPROFILE", home_root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let child = cmd.spawn().expect("spawn soldr-daemon");
-        let deadline = Instant::now() + Duration::from_secs(40);
-        let pid_path = cache_root
-            .join("cache")
-            .join("soldr-daemon")
-            .join("broker-route-claim.pb");
-        let sock = direct_sock(cache_root);
-        while Instant::now() < deadline {
-            if pid_path.exists() && client::status(&sock).is_ok() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        assert!(
-            pid_path.exists() && client::status(&sock).is_ok(),
-            "soldr-daemon failed to become ready at {} within 40s",
-            pid_path.display()
+        let daemon = common::isolated_daemon::IsolatedDaemon::spawn_with_readiness_timeout(
+            &soldr_daemon_bin(),
+            cache_root,
+            home_root,
+            Duration::from_secs(40),
         );
         Self {
-            child: Some(child),
+            _daemon: daemon,
             cache_root: cache_root.to_path_buf(),
         }
     }
 
     fn sock_path(&self) -> PathBuf {
         direct_sock(&self.cache_root)
-    }
-}
-
-impl Drop for DaemonProc {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = client::shutdown(&direct_sock(&self.cache_root));
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < deadline {
-                if let Ok(Some(_)) = child.try_wait() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
     }
 }
 
@@ -189,15 +148,18 @@ fn end_to_end_pack_then_record_then_lookup_hits() {
     if skip_unless_in_container("end_to_end_pack_then_record_then_lookup_hits") {
         return;
     }
-    let cache_root = unique_temp_dir("e2e-cache");
-    let home_root = unique_temp_dir("e2e-home");
+    let cache_root_dir = unique_temp_dir("e2e-cache");
+    let cache_root = cache_root_dir.path().to_path_buf();
+    let home_root_dir = unique_temp_dir("e2e-home");
+    let home_root = home_root_dir.path().to_path_buf();
     // soldr#3193: stop the broker this HOME spawns when the test ends.
     let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 
     // Pack a synthetic target/release tree into ~/.soldr/cache/cook/.
-    let project_target = unique_temp_dir("e2e-project").join("target");
+    let project_target_dir = unique_temp_dir("e2e-project");
+    let project_target = project_target_dir.path().join("target");
     let release_dir = project_target.join("release");
     write_synthetic_target_release(&release_dir);
     let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.clone());
@@ -274,7 +236,8 @@ fn origin_url_helper_extracts_and_normalizes() {
     if skip_unless_in_container("origin_url_helper_extracts_and_normalizes") {
         return;
     }
-    let repo = unique_temp_dir("origin-repo");
+    let repo_dir = unique_temp_dir("origin-repo");
+    let repo = repo_dir.path().to_path_buf();
     init_git_repo_with_origin(&repo, "https://User:PASS@GitHub.com/Owner/Repo.git");
     let out = origin_url(&repo).expect("origin_url");
     assert_eq!(out, "https://github.com/Owner/Repo");
@@ -295,7 +258,8 @@ fn cargo_lock_tracked_returns_true_after_commit() {
     if skip_unless_in_container("cargo_lock_tracked_returns_true_after_commit") {
         return;
     }
-    let repo = unique_temp_dir("tracked-repo");
+    let repo_dir = unique_temp_dir("tracked-repo");
+    let repo = repo_dir.path().to_path_buf();
     init_git_repo_with_origin(&repo, "git@github.com:zackees/soldr.git");
     assert!(cargo_lock_is_tracked(&repo));
     assert!(!cargo_lock_is_gitignored(&repo));
@@ -306,7 +270,8 @@ fn cargo_lock_tracked_returns_false_when_lock_is_untracked() {
     if skip_unless_in_container("cargo_lock_tracked_returns_false_when_lock_is_untracked") {
         return;
     }
-    let repo = unique_temp_dir("untracked-repo");
+    let repo_dir = unique_temp_dir("untracked-repo");
+    let repo = repo_dir.path().to_path_buf();
     std::fs::create_dir_all(&repo).unwrap();
     run_git_in(&repo, &["init", "-q", "-b", "main"]);
     run_git_in(&repo, &["config", "user.email", "u@example.com"]);
@@ -327,7 +292,8 @@ fn cargo_lock_gitignored_returns_true_when_pattern_matches() {
     if skip_unless_in_container("cargo_lock_gitignored_returns_true_when_pattern_matches") {
         return;
     }
-    let repo = unique_temp_dir("gitignored-repo");
+    let repo_dir = unique_temp_dir("gitignored-repo");
+    let repo = repo_dir.path().to_path_buf();
     std::fs::create_dir_all(&repo).unwrap();
     run_git_in(&repo, &["init", "-q", "-b", "main"]);
     run_git_in(&repo, &["config", "user.email", "u@example.com"]);
@@ -349,7 +315,8 @@ fn no_git_workspace_reports_no_origin_and_no_worktree() {
     if skip_unless_in_container("no_git_workspace_reports_no_origin_and_no_worktree") {
         return;
     }
-    let dir = unique_temp_dir("no-git");
+    let dir_dir = unique_temp_dir("no-git");
+    let dir = dir_dir.path().to_path_buf();
     write_file(
         &dir.join("Cargo.toml"),
         b"[package]\nname='nogit'\nversion='0'\n",

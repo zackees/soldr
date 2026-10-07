@@ -107,11 +107,17 @@ def _installed_version(binary_path: Path) -> str | None:
     if not binary_path.exists():
         return None
 
-    output = subprocess.check_output(
-        [str(binary_path), "version", "--json"],
-        text=True,
-        timeout=30,
-    )
+    # A daemon inheriting a pipe can keep check_output waiting for EOF.
+    # A regular file has no EOF dependency on descendants.
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as captured:
+        subprocess.run(
+            [str(binary_path), "version", "--json"],
+            stdout=captured,
+            check=True,
+            timeout=30,
+        )
+        captured.seek(0)
+        output = captured.read()
     payload = json.loads(output)
     return str(payload["soldr_version"])
 

@@ -18,8 +18,8 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::process::Command;
+use std::time::Duration;
 
 use soldr_cli::cache_lib::cook_archive::{
     compute_recipe_hash_proxy, cook_cache_dir, extract_skip_existing, pack_cook_archive,
@@ -27,7 +27,7 @@ use soldr_cli::cache_lib::cook_archive::{
 };
 use soldr_cli::core::{probe_toolchain_binary, TargetTriple};
 use soldr_cli::daemon::client::{
-    self, cook_lookup, cook_record, cook_record_with_branch_timing, CookLookupOutcome,
+    cook_lookup, cook_record, cook_record_with_branch_timing, CookLookupOutcome,
 };
 
 use crate::common;
@@ -49,14 +49,11 @@ fn skip_unless_in_container(test_name: &str) -> bool {
     true
 }
 
-fn unique_temp_dir(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time went backwards")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("soldr-cookhydrate-{label}-{nanos}"));
-    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
-    dir
+fn unique_temp_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("soldr-cook-{label}-"))
+        .tempdir()
+        .expect("create cook test directory")
 }
 
 fn write_file(p: &Path, bytes: &[u8]) {
@@ -135,64 +132,26 @@ fn rustc_version_string(manifest_dir: &Path) -> String {
 }
 
 struct DaemonProc {
-    child: Option<Child>,
+    _daemon: common::isolated_daemon::IsolatedDaemon,
     cache_root: PathBuf,
 }
 
 impl DaemonProc {
     fn spawn(cache_root: &Path, home_root: &Path) -> Self {
-        let mut cmd =
-            common::isolated_daemon::isolated_daemon_command(&soldr_daemon_bin(), cache_root);
-        cmd.args(["--foreground", "--idle-timeout-secs", "60"])
-            .env("SOLDR_CACHE_DIR", cache_root)
-            .env("HOME", home_root)
-            .env("USERPROFILE", home_root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let child = cmd.spawn().expect("spawn soldr-daemon");
-        let deadline = Instant::now() + Duration::from_secs(40);
-        let pid_path = cache_root
-            .join("cache")
-            .join("soldr-daemon")
-            .join("broker-route-claim.pb");
-        let sock = direct_sock(cache_root);
-        while Instant::now() < deadline {
-            if pid_path.exists() && soldr_cli::daemon::client::status(&sock).is_ok() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        assert!(
-            pid_path.exists() && soldr_cli::daemon::client::status(&sock).is_ok(),
-            "soldr-daemon failed to become ready at {} within 40s",
-            pid_path.display()
+        let daemon = common::isolated_daemon::IsolatedDaemon::spawn_with_readiness_timeout(
+            &soldr_daemon_bin(),
+            cache_root,
+            home_root,
+            Duration::from_secs(40),
         );
         Self {
-            child: Some(child),
+            _daemon: daemon,
             cache_root: cache_root.to_path_buf(),
         }
     }
 
     fn sock_path(&self) -> PathBuf {
         direct_sock(&self.cache_root)
-    }
-}
-
-impl Drop for DaemonProc {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = client::shutdown(&direct_sock(&self.cache_root));
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < deadline {
-                if let Ok(Some(_)) = child.try_wait() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
     }
 }
 
@@ -219,15 +178,18 @@ fn pack_record_lookup_verify_extract_completes_hydrate_cycle() {
     if skip_unless_in_container("pack_record_lookup_verify_extract_completes_hydrate_cycle") {
         return;
     }
-    let cache_root = unique_temp_dir("hyd-e2e-cache");
-    let home_root = unique_temp_dir("hyd-e2e-home");
+    let cache_root_dir = unique_temp_dir("hyd-e2e-cache");
+    let cache_root = cache_root_dir.path().to_path_buf();
+    let home_root_dir = unique_temp_dir("hyd-e2e-home");
+    let home_root = home_root_dir.path().to_path_buf();
     // soldr#3193: stop the broker this HOME spawns when the test ends.
     let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 
     // Producer side: pack a synthetic target/release tree.
-    let project_target = unique_temp_dir("hyd-e2e-project").join("target");
+    let project_target_dir = unique_temp_dir("hyd-e2e-project");
+    let project_target = project_target_dir.path().join("target");
     let release_dir = project_target.join("release");
     write_synthetic_target_release(&release_dir);
     let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.clone());
@@ -279,7 +241,8 @@ fn pack_record_lookup_verify_extract_completes_hydrate_cycle() {
     let artifact = PathBuf::from(&path);
     assert!(verify_sha256(&artifact, &sha256).expect("verify"));
 
-    let restore_target = unique_temp_dir("hyd-e2e-restore").join("target");
+    let restore_target_dir = unique_temp_dir("hyd-e2e-restore");
+    let restore_target = restore_target_dir.path().join("target");
     std::fs::create_dir_all(&restore_target).unwrap();
     let report = extract_skip_existing(&artifact, &restore_target).expect("extract");
     assert!(report.files_written >= 3, "expected at least 3 files");
@@ -303,14 +266,17 @@ fn sha_mismatch_quarantines_artifact_and_does_not_extract() {
     if skip_unless_in_container("sha_mismatch_quarantines_artifact_and_does_not_extract") {
         return;
     }
-    let cache_root = unique_temp_dir("hyd-mismatch-cache");
-    let home_root = unique_temp_dir("hyd-mismatch-home");
+    let cache_root_dir = unique_temp_dir("hyd-mismatch-cache");
+    let cache_root = cache_root_dir.path().to_path_buf();
+    let home_root_dir = unique_temp_dir("hyd-mismatch-home");
+    let home_root = home_root_dir.path().to_path_buf();
     // soldr#3193: stop the broker this HOME spawns when the test ends.
     let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
     let sock = daemon.sock_path();
 
-    let project_target = unique_temp_dir("hyd-mismatch-project").join("target");
+    let project_target_dir = unique_temp_dir("hyd-mismatch-project");
+    let project_target = project_target_dir.path().join("target");
     let release_dir = project_target.join("release");
     write_synthetic_target_release(&release_dir);
     let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.clone());
@@ -343,7 +309,8 @@ fn sha_mismatch_quarantines_artifact_and_does_not_extract() {
         .ends_with(".quarantine"));
 
     // Nothing extracted to a fresh restore target.
-    let restore_target = unique_temp_dir("hyd-mismatch-restore").join("target");
+    let restore_target_dir = unique_temp_dir("hyd-mismatch-restore");
+    let restore_target = restore_target_dir.path().join("target");
     std::fs::create_dir_all(&restore_target).unwrap();
     // (We don't call extract on the quarantine path; the
     // hydrate code path would have already returned None.)
@@ -375,14 +342,17 @@ fn hydrate_is_additive_skip_existing_preserves_user_files() {
     if skip_unless_in_container("hydrate_is_additive_skip_existing_preserves_user_files") {
         return;
     }
-    let cache_root = unique_temp_dir("hyd-add-cache");
-    let home_root = unique_temp_dir("hyd-add-home");
+    let cache_root_dir = unique_temp_dir("hyd-add-cache");
+    let cache_root = cache_root_dir.path().to_path_buf();
+    let home_root_dir = unique_temp_dir("hyd-add-home");
+    let home_root = home_root_dir.path().to_path_buf();
     // soldr#3193: stop the broker this HOME spawns when the test ends.
     let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let _daemon = DaemonProc::spawn(&cache_root, &home_root);
 
     // Source: an archive containing libfoo with content FROM_ARCHIVE.
-    let project = unique_temp_dir("hyd-add-project").join("target");
+    let project_dir = unique_temp_dir("hyd-add-project");
+    let project = project_dir.path().join("target");
     let release = project.join("release");
     write_file(&release.join("deps").join("libfoo.rlib"), b"FROM_ARCHIVE\n");
     let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.clone());
@@ -393,7 +363,8 @@ fn hydrate_is_additive_skip_existing_preserves_user_files() {
     // Destination: user-owned target/ already contains libfoo
     // with a different content. extract_skip_existing must
     // preserve the user's bytes.
-    let dest_target = unique_temp_dir("hyd-add-restore").join("target");
+    let dest_target_dir = unique_temp_dir("hyd-add-restore");
+    let dest_target = dest_target_dir.path().join("target");
     let user_path = dest_target.join("release").join("deps").join("libfoo.rlib");
     write_file(&user_path, b"USER_OWNED\n");
 
@@ -415,8 +386,10 @@ fn cook_lookup_miss_is_silent_and_returns_cleanly() {
     if skip_unless_in_container("cook_lookup_miss_is_silent_and_returns_cleanly") {
         return;
     }
-    let cache_root = unique_temp_dir("hyd-miss-cache");
-    let home_root = unique_temp_dir("hyd-miss-home");
+    let cache_root_dir = unique_temp_dir("hyd-miss-cache");
+    let cache_root = cache_root_dir.path().to_path_buf();
+    let home_root_dir = unique_temp_dir("hyd-miss-home");
+    let home_root = home_root_dir.path().to_path_buf();
     // soldr#3193: stop the broker this HOME spawns when the test ends.
     let _broker = crate::common::BrokerHomeGuard::new(&cache_root, &home_root);
     let daemon = DaemonProc::spawn(&cache_root, &home_root);
@@ -460,8 +433,10 @@ fn feature_branch_soldr_cargo_build_hydrates_from_main_fallback() {
         return;
     }
 
-    let cache_root = unique_temp_dir("branch-fallback-cache");
-    let home_root = unique_temp_dir("branch-fallback-home");
+    let cache_root_dir = unique_temp_dir("branch-fallback-cache");
+    let cache_root = cache_root_dir.path().to_path_buf();
+    let home_root_dir = unique_temp_dir("branch-fallback-home");
+    let home_root = home_root_dir.path().to_path_buf();
 
     // soldr#3193: stop the broker this HOME spawns when the test ends.
 
@@ -470,7 +445,8 @@ fn feature_branch_soldr_cargo_build_hydrates_from_main_fallback() {
     let sock = daemon.sock_path();
 
     let origin = "https://github.com/example/branch-fallback-demo";
-    let repo = unique_temp_dir("branch-fallback-repo");
+    let repo_dir = unique_temp_dir("branch-fallback-repo");
+    let repo = repo_dir.path().to_path_buf();
     run_git_in(&repo, &["init", "-q", "-b", "main"]);
     run_git_in(&repo, &["config", "user.email", "cook@example.com"]);
     run_git_in(&repo, &["config", "user.name", "cook test"]);
@@ -507,7 +483,8 @@ marker = "main"
     let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.clone());
     let cook_dir = cook_cache_dir(&paths);
     std::fs::create_dir_all(&cook_dir).unwrap();
-    let artifact_root = unique_temp_dir("branch-main-artifact");
+    let artifact_root_dir = unique_temp_dir("branch-main-artifact");
+    let artifact_root = artifact_root_dir.path().to_path_buf();
     let debug_dir = artifact_root.join("debug");
     let sentinel_path = Path::new("debug")
         .join("deps")
