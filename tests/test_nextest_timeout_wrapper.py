@@ -86,14 +86,18 @@ def _start_wrapper(child: str, env: dict[str, str]) -> subprocess.Popen[str]:
 @pytest.mark.skipif(
     os.name != "posix", reason="Nextest has no Windows timeout grace hook"
 )
-def test_sigterm_dumps_threads_and_drains_child_output() -> None:
+@pytest.mark.parametrize("signal_during_flush", [False, True])
+def test_sigterm_dumps_threads_and_drains_child_output(
+    signal_during_flush: bool,
+) -> None:
     child = """
+import os
 import signal
 import threading
 import time
 
 def stop(_signum, _frame):
-    print("child output after termination", flush=True)
+    os.write(1, b"child output after termination\\n")
     raise SystemExit(0)
 
 signal.signal(signal.SIGTERM, stop)
@@ -102,6 +106,29 @@ print("child output before timeout", flush=True)
 while True:
     time.sleep(0.1)
 """
+    if signal_during_flush:
+        # Hold the buffered writer's lock after emitting readiness, so the
+        # parent delivers SIGTERM during flush rather than relying on a race.
+        child = child.replace(
+            'print("child output before timeout", flush=True)',
+            """import io
+import os
+import sys
+
+class SignalWindowRaw(io.RawIOBase):
+    first = True
+    def writable(self):
+        return True
+    def write(self, data):
+        written = os.write(1, data)
+        if self.first:
+            self.first = False
+            signal.pause()
+        return written
+
+sys.stdout = io.TextIOWrapper(io.BufferedWriter(SignalWindowRaw()))
+print("child output before timeout", flush=True)""",
+        )
     env = os.environ.copy()
     env["SOLDR_NEXTEST_DISABLE_DEBUGGER"] = "1"
     env["SOLDR_NEXTEST_CHILD_EXIT_GRACE_SECS"] = "0.5"
@@ -112,7 +139,7 @@ while True:
     stdout_tail, stderr = process.communicate(timeout=15)
     stdout = before_timeout + stdout_tail
 
-    assert process.returncode == 0
+    assert process.returncode == 0, f"stdout={stdout!r}\nstderr={stderr!r}"
     assert "child output before timeout" in stdout
     assert "child output after termination" in stdout
     assert "nextest timeout: thread dump for pid" in stderr
@@ -178,20 +205,30 @@ while True:
 )
 def test_signal_during_drain_kills_descendant_after_leader_already_exited() -> None:
     child = """
+import os
 import signal
 import subprocess
 import sys
 
 grandchild = '''
+import os
 import signal
+import sys
 import time
 
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
+# Readiness means the leader actually exited, not merely printed its intent.
+parent_pid = int(sys.argv[1])
+deadline = time.monotonic() + 5
+while os.getppid() == parent_pid:
+    if time.monotonic() >= deadline:
+        raise RuntimeError("direct child did not exit before orphan readiness")
+    time.sleep(0.01)
 print("orphan grandchild retained output pipes", flush=True)
 while True:
     time.sleep(1)
 '''
-subprocess.Popen([sys.executable, "-c", grandchild])
+subprocess.Popen([sys.executable, "-c", grandchild, str(os.getpid())])
 print("direct child exiting normally", flush=True)
 """
     env = os.environ.copy()
@@ -208,7 +245,7 @@ print("direct child exiting normally", flush=True)
     stdout_tail, stderr = process.communicate(timeout=10)
     stdout = "".join(ready_lines) + stdout_tail
 
-    assert process.returncode == 0
+    assert process.returncode == 0, f"stdout={stdout!r}\nstderr={stderr!r}"
     assert "direct child exiting normally" in stdout
     assert "orphan grandchild retained output pipes" in stdout
     assert "descendants retained output pipes; forcing exit" in stderr
