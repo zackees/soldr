@@ -157,7 +157,9 @@ def test_macos_arm64_run_job_exists_for_opt_in_ci() -> None:
 def test_docker_mac_x64_action_is_pinned_to_a_full_sha_with_a_main_comment() -> None:
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
     for workflow_name, text in (("_ci-target-run.yml", target_run),):
-        pattern = re.compile(rf"uses:\s*zackees/docker-mac-x64@{DOCKER_MAC_X64_PIN}\s*#\s*main")
+        pattern = re.compile(
+            rf"uses:\s*zackees/docker-mac-x64@{DOCKER_MAC_X64_PIN}\s*#\s*main"
+        )
         assert pattern.search(text), (
             f"{workflow_name} must pin zackees/docker-mac-x64 to a full commit "
             f"SHA ({DOCKER_MAC_X64_PIN}) with a '# main' comment"
@@ -218,13 +220,17 @@ def test_release_workflow_has_the_macos_x64_replay_jobs() -> None:
 
 def test_release_macos_x64_smoke_executes_the_shipped_wheel() -> None:
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
-    smoke = release.split("\n  smoke_macos_x64:\n", 1)[1].split("\n  smoke_macos_arm64:\n", 1)[0]
+    smoke = release.split("\n  smoke_macos_x64:\n", 1)[1].split(
+        "\n  smoke_macos_arm64:\n", 1
+    )[0]
     assert "pypi-soldr-x86_64-apple-darwin" in smoke
     assert "--require-wheel-import" in smoke
     assert "runs-on: macos-15-intel" in smoke
     assert "--require-daemon-cache-smoke" in smoke
     contract = json.loads((REPO_ROOT / "ci" / "canonical-targets.json").read_text())
-    x64 = next(row for row in contract["targets"] if row["triple"] == "x86_64-apple-darwin")
+    x64 = next(
+        row for row in contract["targets"] if row["triple"] == "x86_64-apple-darwin"
+    )
     assert x64["release"]["artifact_provenance"]["execution"]["wheel"] == {
         "status": "required-before-publication",
         "gate_job": "smoke_macos_x64",
