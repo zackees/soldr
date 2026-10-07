@@ -192,7 +192,10 @@ impl TrackedDescendant {
     fn times(&self) -> io::Result<ProcessTimes> {
         let times = process_times(self.query_handle)?;
         if !is_same_process(self.created, Some(times.created)) {
-            return Err(io::Error::other("process identity changed"));
+            return Err(io::Error::other(format!(
+                "process identity changed for PID {}: retained creation {}, queried creation {}, exit {}",
+                self.pid, self.created, times.created, times.exited
+            )));
         }
         Ok(times)
     }

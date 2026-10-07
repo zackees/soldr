@@ -16,6 +16,27 @@ fn is_alive(pid: u32) -> bool {
     crate::process::inspect::is_alive(pid)
 }
 
+/// Wine can publish a snapshot entry before initializing the process's
+/// creation FILETIME (observed as 0x5555555555555555). Fixture readiness
+/// requires a valid, stable creation time, not merely an enumerated PID.
+fn descendants_have_initialized_times(pids: &[u32]) -> bool {
+    let mut now = windows_sys::Win32::Foundation::FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    // SAFETY: `now` is a writable FILETIME, and the API retains no pointer.
+    unsafe { windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime(&mut now) };
+    let now = filetime_value(now);
+    !pids.is_empty()
+        && pids.iter().all(|pid| {
+            TrackedDescendant::open(*pid).is_ok_and(|observed| {
+                observed.created != 0
+                    && observed.created <= now
+                    && observed.times().is_ok_and(|times| times.exited == 0)
+            })
+        })
+}
+
 #[test]
 fn descendants_are_ordered_parents_before_children() {
     // 100 -> 200 -> 300, plus an unrelated 400.
@@ -74,7 +95,7 @@ fn spawn_cmd_with_ping_grandchild() -> (std::process::Child, Vec<u32>) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let found = descendants_of(root).expect("snapshot");
-        if !found.is_empty() {
+        if descendants_have_initialized_times(&found) {
             return (child, found);
         }
         if Instant::now() >= deadline {
@@ -114,7 +135,7 @@ fn spawn_cmd_with_ping_grandchild_and_stderr_pipe(
     let deadline = Instant::now() + Duration::from_secs(10);
     let descendants = loop {
         let found = descendants_of(root).expect("snapshot");
-        if !found.is_empty() {
+        if descendants_have_initialized_times(&found) {
             break found;
         }
         if Instant::now() >= deadline {
