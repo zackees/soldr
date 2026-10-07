@@ -58,6 +58,8 @@ fn cargo_clippy_routes_workspace_clippy_driver_through_zccache() {
     );
     assert!(
         log.lines().any(|line| line.starts_with("clippy-driver ")),
-        "the workspace Clippy driver must actually execute: {log}"
+        "the workspace Clippy driver must actually execute: {log}\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }
