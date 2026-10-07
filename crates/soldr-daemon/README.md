@@ -13,7 +13,7 @@ service.
   handlers, split out of `server.rs` for the per-file LOC ratchet.
 - `src/daemon/client.rs` — the client side used by the CLI, including the
   best-effort `RecordTargetTouch` write on every rustc-wrapper call.
-- `src/daemon/db.rs` — synchronous `state.redb` access for the daemon-owned
+- `src/daemon/db.rs` — synchronous `state.sqlite3` access for the daemon-owned
   tables; `db_async.rs` is the `spawn_blocking` wrapper the async handlers
   must use.
 - `src/daemon/maintenance.rs` — the scheduled pressure (5 min) and full
@@ -26,7 +26,7 @@ service.
 the daemon, and reporting commands. SQLite WAL permits concurrent readers and
 one writer. Connections do not hold an exclusive file lock or a process-wide
 open mutex for their lifetime. Write transactions use `BEGIN IMMEDIATE` and
-wait up to 5 seconds for writer contention; best-effort bookkeeping uses a
+wait up to 5 seconds for writer contention; latency-critical wrapper bookkeeping uses a
 50 ms budget. See `soldr-cache/src/cache_lib/state_store.rs`.
 
 1. **Keep transactions short.** Filesystem sizing, deletion, subprocesses,
