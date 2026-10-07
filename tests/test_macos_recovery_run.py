@@ -677,3 +677,40 @@ def test_main_verify_collected_requires_repo_root_and_target_with_manifest(
         raise AssertionError("expected SystemExit")
     except SystemExit:
         pass
+
+
+def test_guest_phase_timing_runs_under_posix_sh(tmp_path: Path) -> None:
+    """Execute the generated phase functions with a deterministic clock."""
+    script = MODULE.build_guest_script().split("stage_start core", 1)[0]
+    script = script.replace("/tmp/results", str(tmp_path))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    date = bin_dir / "date"
+    date.write_text(
+        '#!/bin/sh\nif [ -e "$DATE_STATE" ]; then echo 105; '
+        'else : > "$DATE_STATE"; echo 100; fi\n',
+        encoding="utf-8",
+    )
+    date.chmod(0o755)
+    guest = tmp_path / "phase-test.sh"
+    guest.write_text(
+        script + "\nstage_start toolchain\nstage_end toolchain\n", encoding="utf-8"
+    )
+    with (tmp_path / "phase-output.log").open("w", encoding="utf-8") as output:
+        subprocess.run(
+            ["sh", str(guest)],
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "DATE_STATE": str(tmp_path / "date-state"),
+            },
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            check=True,
+        )
+    lines = (tmp_path / "phase-times.tsv").read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "stage\tevent\tunix_time\tduration_seconds",
+        "toolchain\tstart\t100\t",
+        "toolchain\tend\t105\t5",
+    ]
