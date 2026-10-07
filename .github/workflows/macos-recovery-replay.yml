@@ -29,12 +29,6 @@ on:
     # Cache Budget sweep at :17.
     - cron: '23 3 * * *'
   workflow_dispatch:
-    inputs:
-      unsharded_canary:
-        description: Replay the full owned partition in one fresh Recovery guest
-        type: boolean
-        required: false
-        default: false
   workflow_call:
 
 permissions:
@@ -71,13 +65,13 @@ jobs:
       runs_on: ubuntu-24.04
       target: x86_64-apple-darwin
       artifact_name: soldr-macos-replay-x64
+      source_ref: ${{ github.sha }}
       target_execution: x86_64-recovery
-      # A frozen Recovery guest stops both Nextest and the memory sampler
-      # late in an unsharded suite (#3136). Each shard boots a fresh guest;
-      # the union still covers the full owned archive.
-      # Only explicit dispatch opts into one complete partition. Scheduled,
-      # PR and reusable calls retain the mitigation until the canary proves it.
-      replay_partitions: ${{ github.event_name == 'workflow_dispatch' && inputs.unsharded_canary && '[{"label":"all","value":"hash:1/1","run_followup":true}]' || '[{"label":"1-of-3","value":"hash:1/3","run_followup":true},{"label":"2-of-3","value":"hash:2/3","run_followup":true},{"label":"3-of-3","value":"hash:3/3","run_followup":true}]' }}
+      # soldr#3333: canary 37567981489 accounted for all 139 owned tests in
+      # one fresh guest (288.747s). Scheduled and release replay share that
+      # full selection. The ten-run scheduled reliability bar remains open;
+      # release publication stays independent under soldr#3088.
+      replay_partitions: '[{"label":"all","value":"hash:1/1","run_followup":true}]'
       # Recovery replays the archive at its own pace inside one guest script
       # (soldr#3078); `extended_replay` only widens the *native* multi-step
       # replay's per-step budget, which this execution mode does not use.
