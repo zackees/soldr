@@ -691,20 +691,11 @@ fn run_local_components(
 
 /// The daemon's periodic `target/` eviction pass.
 ///
-/// **Never holds the `state.sqlite3` handle across filesystem work**
-/// (soldr#2224). `TargetRegistry::open` takes redb's exclusive whole-file
-/// lock *and* the process-wide `state_db_open_lock` for the handle's whole
-/// lifetime (#608), and this sweep's middle phase — directory sizing plus
-/// recursive `remove_dir_all` of every candidate — is unbounded in
-/// wall-clock. Holding the handle across it locked out the `soldr cargo`
-/// front door, the per-compile rustc wrapper, and the reporting CLI for
-/// however long the deletion took, which is how a background build's
-/// maintenance tick produced `Database already open. Cannot acquire lock.`
-/// in a concurrent foreground build (soldr#2223).
-///
-/// The CLI-side GC learned this in #1681; the phases here mirror it:
-/// snapshot-and-release → scan/delete with no handle → bounded reopen to
-/// record the outcomes.
+/// Snapshot-and-release, scan/delete, then bounded bookkeeping (#2224).
+/// SQLite connections no longer own redb's exclusive whole-file lock.
+/// Keeping the filesystem phase outside database work still prevents an
+/// unbounded scan or deletion from extending a write transaction; an open
+/// connection by itself does not exclude other readers or writers.
 pub(crate) fn sweep_workspace_targets(
     paths: &SoldrPaths,
     config: &crate::core::SoldrConfig,

@@ -10,6 +10,13 @@ from pathlib import Path
 import pytest
 from conftest import nextest_wrapper_argv
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = REPO_ROOT / ".github" / "scripts" / "nextest_timeout_wrapper.py"
 WRAPPER_ARGV = nextest_wrapper_argv()
@@ -608,7 +615,7 @@ def test_a_trivial_child_is_reaped_well_under_the_old_fifty_millisecond_floor(
     """
 
     started = time.monotonic()
-    completed = subprocess.run(
+    completed = run_captured(
         [*WRAPPER_ARGV, sys.executable, "-c", "pass"],
         capture_output=True,
         check=False,
@@ -676,7 +683,7 @@ def _run_wrapper_under_tmpdir(
     env = {**os.environ, "TMPDIR": str(base)}
     env.pop("SOLDR_NEXTEST_KEEP_TMPDIR", None)
     env.update(extra_env or {})
-    result = subprocess.run(
+    result = run_captured(
         [
             *WRAPPER_ARGV,
             sys.executable,
@@ -740,7 +747,7 @@ def _wrapper_env_for(extra_env: dict[str, str]) -> list[str]:
     for key in ("SOLDR_TEST_FORBID_TOOLCHAIN_INSTALL", "RUSTUP_AUTO_INSTALL"):
         if key not in extra_env:
             env.pop(key, None)
-    result = subprocess.run(
+    result = run_captured(
         [*WRAPPER_ARGV, sys.executable, "-c", _ENV_CHILD],
         capture_output=True,
         text=True,
@@ -776,7 +783,7 @@ def test_every_test_process_names_its_binary_for_the_target_tripwire() -> None:
         if key != "SOLDR_TEST_FORBID_TARGET_CONTAINING"
     }
     child = "import os; print(os.environ['SOLDR_TEST_FORBID_TARGET_CONTAINING'])"
-    result = subprocess.run(
+    result = run_captured(
         [*WRAPPER_ARGV, sys.executable, "-c", child],
         capture_output=True,
         text=True,

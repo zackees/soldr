@@ -40,7 +40,6 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 import urllib.error
 from dataclasses import dataclass, field
@@ -51,6 +50,13 @@ from release_completeness import (
     expected_github_assets,
     fetch_json,
     included_triples,
+)
+
+# Dependency-free capture also works when this script is invoked by absolute path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -141,8 +147,7 @@ def validate_candidate(cargo_version: str, npm_package_version: str) -> str:
         raise DetectionError("derived version must look like vX.Y.Z")
     if npm_package_version != cargo_version:
         raise DetectionError(
-            f"package.json version ({npm_package_version}) must match "
-            f"Cargo.toml ({cargo_version})"
+            f"package.json version ({npm_package_version}) must match Cargo.toml ({cargo_version})"
         )
     return version
 
@@ -230,7 +235,7 @@ def _render(value: object) -> str:
 
 
 def tag_exists(version: str) -> bool:
-    result = subprocess.run(
+    result = run_captured(
         ["git", "ls-remote", "--exit-code", "--tags", "origin", version],
         cwd=REPO_ROOT,
         capture_output=True,

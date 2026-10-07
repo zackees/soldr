@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 
 def _command_name(command: list[str]) -> str:
@@ -12,15 +13,31 @@ def _command_name(command: list[str]) -> str:
 
 
 def _check_output(command: list[str]) -> str:
-    try:
-        return subprocess.check_output(command, text=True, timeout=30)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"{_command_name(command)} timed out after 30s") from exc
+    return _run(command, capture_output=True, text=True).stdout
 
 
-def _run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+def _run(
+    command: list[str], *, capture_output: bool = False, **kwargs
+) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(command, check=True, timeout=30, **kwargs)
+        if not capture_output:
+            return subprocess.run(command, check=True, timeout=30, **kwargs)
+        # Regular files avoid pipe-buffer and inherited-pipe EOF waits.
+        kwargs.pop("text", None)
+        with (
+            tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdout,
+            tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr,
+        ):
+            result = subprocess.run(
+                command, stdout=stdout, stderr=stderr, check=False, timeout=30, **kwargs
+            )
+            stdout.seek(0)
+            stderr.seek(0)
+            completed = subprocess.CompletedProcess(
+                command, result.returncode, stdout.read(), stderr.read()
+            )
+        completed.check_returncode()
+        return completed
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"{_command_name(command)} timed out after 30s") from exc
 
@@ -63,4 +80,8 @@ if __name__ == "__main__":
     except RuntimeError as exc:
         sys.exit(str(exc))
     except subprocess.CalledProcessError as exc:
+        # Captured probes must replay their diagnostics at the action boundary.
+        for diagnostic in (exc.stdout, exc.stderr):
+            if diagnostic:
+                sys.stderr.write(diagnostic)
         sys.exit(exc.returncode)

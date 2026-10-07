@@ -53,6 +53,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import run_captured  # noqa: E402 -- source-relative bootstrap precedes this import
+
 ZCCACHE_REPO_URL = "https://github.com/zackees/zccache"
 DEFAULT_THRESHOLD = 5.0
 
@@ -134,7 +139,7 @@ def _defender_exclusion_paths() -> list[str] | None:
     if shutil.which("powershell") is None:
         return None
     try:
-        result = subprocess.run(
+        result = run_captured(
             [
                 "powershell",
                 "-NoProfile",
@@ -242,7 +247,7 @@ def _capture_process_snapshot(
     Windows-only; macOS/Linux callers should never reach here.
     """
     try:
-        result = subprocess.run(
+        result = run_captured(
             [
                 "powershell",
                 "-NoProfile",
@@ -547,7 +552,7 @@ def main() -> int:  # noqa: C901
             # repo's .git/worktrees bookkeeping is cleaned up too.
             if worktree_b.exists() and cloned_source_root is None:
                 try:
-                    subprocess.run(
+                    run_captured(
                         ["git", "worktree", "remove", "--force", str(worktree_b)],
                         check=False,
                         capture_output=True,

@@ -29,11 +29,18 @@ at `target/x86_64-unknown-linux-gnu/{debug,release}/soldr`).
 
 from __future__ import annotations
 
-import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from conftest import docker_available
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 ACT_IMAGE = "catthehacker/ubuntu:act-24.04"
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -158,9 +165,7 @@ def test_soldr_bootstrap_installs_rustup_on_act_image(tmp_path: Path) -> None:
         "/soldr/bin/rustup --version",
     ]
 
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=600, check=False
-    )
+    result = run_captured(cmd, capture_output=True, text=True, timeout=600, check=False)
     assert result.returncode == 0, (
         f"docker run failed (exit {result.returncode})\n"
         f"stdout:\n{result.stdout}\n"

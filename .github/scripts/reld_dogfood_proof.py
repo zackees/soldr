@@ -32,9 +32,16 @@ from __future__ import annotations
 import argparse
 import pathlib
 import re
-import subprocess
 import sys
 import time
+from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 # A `-C linker=<path>` value soldr injects must always be an absolute path:
 # either the content-addressed clang driver shim (Linux) or the direct
@@ -84,7 +91,7 @@ def force_rebuild(repo_root: pathlib.Path) -> None:
 def run_verbose_build(
     soldr_bin: pathlib.Path, package: str, repo_root: pathlib.Path
 ) -> str:
-    result = subprocess.run(
+    result = run_captured(
         [str(soldr_bin), "cargo", "build", "-p", package, "-v"],
         cwd=repo_root,
         capture_output=True,

@@ -20,10 +20,17 @@ outlives the lag, fails.
 from __future__ import annotations
 
 import re
-import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "_build-and-test.yml"
@@ -94,7 +101,7 @@ def test_declaration_matches_the_pinned_release_when_its_tag_is_present() -> Non
     """
     workflow = WORKFLOW.read_text(encoding="utf-8")
     tag = f"v{bootstrap_version(workflow)}"
-    shown = subprocess.run(
+    shown = run_captured(
         ["git", "show", f"{tag}:{DAEMON_MANIFEST}"],
         cwd=REPO_ROOT,
         capture_output=True,

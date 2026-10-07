@@ -121,7 +121,7 @@ def test_run_passes_the_argv_to_subprocess(monkeypatch: pytest.MonkeyPatch) -> N
         captured["argv"] = argv
         return _Result()
 
-    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+    monkeypatch.setattr(MODULE, "run_captured", fake_run)
     result = MODULE.run([Path("/extracted/soldr"), "--version"])
     assert captured["argv"] == ["/extracted/soldr", "--version"]
     assert result.stdout == "soldr 0.9.10\n"

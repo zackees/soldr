@@ -126,6 +126,9 @@ line-length = 100
 #        `def`; RUF100 flags one that stops suppressing anything, so a refactor
 #        deletes it in the same change and the list only shrinks.
 [tool.ruff.lint]
+# Flake8 requires E402 annotations after source-relative sys.path setup;
+# Ruff recognizes that setup itself, so retain the external tool's annotation.
+external = ["E402"]
 select = ["E4", "E7", "E9", "F", "B", "C4", "RET", "RUF", "C901"]
 
 # RUF001/2/3 flag characters that could be a homoglyph attack. `×` is not one

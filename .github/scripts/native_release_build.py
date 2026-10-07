@@ -20,8 +20,16 @@ import os
 import shlex
 import stat
 import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 TOOLCHAIN = "1.98.1"
 ARM64_MUSL = "aarch64-unknown-linux-musl"
@@ -252,11 +260,11 @@ def wheel_environment(
 def resolve_toolchain_rustc(driver: Path, base: Mapping[str, str]) -> Path:
     """Resolve the pinned real rustc for host build-backend probes."""
 
-    completed = subprocess.run(
+    completed = run_captured(
         [str(driver), "rustup", "which", "rustc", "--toolchain", TOOLCHAIN],
         check=True,
         env=dict(base),
-        stdout=subprocess.PIPE,
+        capture_stdout=True,
         text=True,
     )
     rustc = Path(completed.stdout.strip())
@@ -303,7 +311,7 @@ def host_tool_environment(
 def build_musl_wheel(driver: Path, target: str, expected_version: str) -> None:
     if target not in MUSL_TARGETS:
         raise ValueError(f"not a release musl target: {target}")
-    metadata = subprocess.run(
+    metadata = run_captured(
         cargo_command(
             driver,
             "metadata",
@@ -314,7 +322,7 @@ def build_musl_wheel(driver: Path, target: str, expected_version: str) -> None:
             "crates/soldr-cli/Cargo.toml",
         ),
         check=True,
-        stdout=subprocess.PIPE,
+        capture_stdout=True,
         text=True,
     ).stdout
     actual_version = soldr_cli_version(metadata)

@@ -37,6 +37,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator, Mapping, Optional, TextIO
 
+if __package__ == "soldr":
+    from ._process import run_captured
+else:
+    # Backend fixtures load this file directly under an isolated module name.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    run_captured = importlib.import_module("soldr._process").run_captured
+
 _FAST_PROFILE_ENV = "SOLDR_PEP517_PROFILE"
 _STATS_ENV = "SOLDR_PEP517_STATS"
 _WHEEL_CACHE_ENV = "SOLDR_PEP517_WHEEL_CACHE"
@@ -500,11 +507,10 @@ def _session_command(
 ) -> "dict | None":
     """Run a best-effort session command without perturbing a wheel build."""
     try:
-        result = subprocess.run(
+        result = run_captured(
             ["soldr", subcommand, *args, "--json"],
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             check=False,
         )
@@ -921,10 +927,7 @@ def _collapse_process_command(line: str) -> str:
             crate = f" {token}"
             break
     elided = max(len(tokens) - 1, 0)
-    return (
-        f"{match.group('prefix')}`{program}{crate} … ({elided} args elided)`"
-        f"{match.group('suffix')}"
-    )
+    return f"{match.group('prefix')}`{program}{crate} … ({elided} args elided)`{match.group('suffix')}"
 
 
 def _cap_excerpt_line(line: str) -> str:
@@ -1395,11 +1398,10 @@ def _query_soldr_root(environment: "Mapping[str, str]") -> "Path | None":
             return cached
         for subcommand in ("version", "status"):
             try:
-                result = subprocess.run(
+                result = run_captured(
                     ["soldr", subcommand, "--json"],
                     env=environment,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    capture_output=True,
                     text=True,
                     check=False,
                     timeout=5,

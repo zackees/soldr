@@ -21,6 +21,13 @@ import sysconfig
 import tempfile
 from pathlib import Path
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -81,11 +88,11 @@ def run(
 
 
 def shims_path(soldr: Path, env: dict[str, str]) -> Path:
-    completed = subprocess.run(
+    completed = run_captured(
         [str(soldr), "shims", "--json"],
         env=env,
         text=True,
-        stdout=subprocess.PIPE,
+        capture_stdout=True,
         timeout=60,
         check=True,
     )
@@ -208,8 +215,7 @@ def main() -> int:
         all_wheels = sorted(wheelhouse.glob("*.whl"))
         if len(built) != 1 or all_wheels != built:
             raise SystemExit(
-                "expected exactly one soldr-*-py3-none-win_amd64.whl, "
-                f"found {all_wheels}"
+                f"expected exactly one soldr-*-py3-none-win_amd64.whl, found {all_wheels}"
             )
         print(f"source-wheel shim smoke built {built[0].name}", flush=True)
     return 0

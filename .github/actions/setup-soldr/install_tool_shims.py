@@ -5,6 +5,7 @@ import os
 import shutil
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 
 TOOL_GROUPS = {
@@ -57,15 +58,17 @@ def parse_requested_tools(value: str) -> list[str]:
 def resolve_tool(tool: str) -> str:
     rustup = shutil.which("rustup")
     if rustup:
-        result = subprocess.run(
-            [rustup, "which", tool],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=RUSTUP_WHICH_TIMEOUT_SECS,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as captured:
+            result = subprocess.run(
+                [rustup, "which", tool],
+                check=False,
+                stdout=captured,
+                timeout=RUSTUP_WHICH_TIMEOUT_SECS,
+            )
+            captured.seek(0)
+            resolved = captured.read().strip()
+        if result.returncode == 0 and resolved:
+            return resolved
 
     path = shutil.which(tool)
     if path:

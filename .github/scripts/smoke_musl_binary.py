@@ -20,6 +20,13 @@ from pathlib import Path
 
 from release_artifacts import normalized_release_version, version_json_status
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 
 class MuslBinarySmokeError(RuntimeError):
     """The standalone musl binary is missing or violates its CLI contract."""
@@ -58,7 +65,7 @@ def version_json_problem(output: str, expected: str) -> str | None:
 
 def run_cli(command: list[str], *, capture: bool) -> str:
     try:
-        completed = subprocess.run(
+        completed = run_captured(
             command, check=True, capture_output=capture, text=capture
         )
     except subprocess.CalledProcessError as error:

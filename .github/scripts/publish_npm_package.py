@@ -6,14 +6,22 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
+
+# Dependency-free capture also works when this script is invoked by absolute path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 
 def run_npm(
     arguments: Sequence[str], source_dir: Path
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_captured(
         ["npm", *arguments],
         cwd=source_dir,
         check=False,

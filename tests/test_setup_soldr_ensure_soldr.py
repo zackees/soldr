@@ -101,3 +101,31 @@ def test_export_bundle_env_preserves_explicit_overrides(
     module._export_bundle_env(install_dir)
 
     assert github_env.read_text(encoding="utf-8") == ""
+
+
+def test_installed_version_handles_output_larger_than_pipe_capacity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import sys
+
+    module = _load_module()
+    binary = tmp_path / "soldr"
+    binary.write_text("fixture", encoding="utf-8")
+    original_run = module.subprocess.run
+
+    def run_probe(command, **kwargs):
+        assert command == [str(binary), "version", "--json"]
+        assert "capture_output" not in kwargs
+        assert kwargs["stdout"].fileno() >= 0
+        return original_run(
+            [
+                sys.executable,
+                "-c",
+                "import json; print(json.dumps({'soldr_version': '0.9.29', "
+                "'padding': 'x' * 262144}))",
+            ],
+            **kwargs,
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", run_probe)
+    assert module._installed_version(binary) == "0.9.29"

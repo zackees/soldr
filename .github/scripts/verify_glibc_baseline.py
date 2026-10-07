@@ -32,8 +32,15 @@ from __future__ import annotations
 import argparse
 import re
 import shutil
-import subprocess
 import sys
+from pathlib import Path
+
+# Dependency-free capture also works when this script is invoked by absolute path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 # `readelf -V` lists each requirement as `Name: GLIBC_2.14` inside the
 # version-needs section. Anchoring on `Name:` keeps version *definitions*
@@ -86,7 +93,7 @@ def _readelf_versions(binary: str) -> "tuple[int, str]":
     tool = shutil.which("readelf") or shutil.which("llvm-readelf")
     if tool is None:
         raise FileNotFoundError("readelf not found on PATH")
-    completed = subprocess.run(
+    completed = run_captured(
         [tool, "-V", binary],
         capture_output=True,
         text=True,
@@ -132,8 +139,7 @@ def main(argv: "list[str] | None" = None) -> int:
         if code != 0:
             last = output.strip().splitlines()[-1] if output.strip() else "no output"
             print(
-                f"verify_glibc_baseline: cannot inspect {binary}: "
-                f"readelf exited {code}: {last}",
+                f"verify_glibc_baseline: cannot inspect {binary}: readelf exited {code}: {last}",
                 file=sys.stderr,
             )
             failures += 1

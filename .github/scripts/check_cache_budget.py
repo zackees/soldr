@@ -114,6 +114,14 @@ import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 # ci-pre.yml runs this with the runner image's own `python3` (no setup-python,
 # no uv), so it must stay standard-library only and say so if the image's
@@ -274,7 +282,7 @@ def run_gh(args: list[str]) -> str:
     Kept as its own function so tests can monkeypatch exactly this call to
     simulate a missing/broken `gh` without touching the network.
     """
-    result = subprocess.run(["gh", *args], capture_output=True, text=True, check=True)
+    result = run_captured(["gh", *args], capture_output=True, text=True, check=True)
     return result.stdout
 
 
@@ -1300,8 +1308,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
             print(f"  {entry.key} ({entry.ref}) {entry.size_bytes / GIB:.3f} GiB")
         for entry in deferred:
             print(
-                f"  deferred, younger than {SWEEP_GRACE_SECONDS}s: "
-                f"{entry.key} ({entry.ref})"
+                f"  deferred, younger than {SWEEP_GRACE_SECONDS}s: {entry.key} ({entry.ref})"
             )
         candidate_ids = {id(entry) for entry in candidates}
         effective_entries = [e for e in entries if id(e) not in candidate_ids]

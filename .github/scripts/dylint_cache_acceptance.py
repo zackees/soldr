@@ -14,6 +14,13 @@ import tempfile
 from pathlib import Path
 from typing import cast
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 ROOT = Path(__file__).resolve().parents[2]
 
 BASH = r"""
@@ -437,7 +444,7 @@ def main() -> int:  # noqa: C901
     if mode not in {"full", "sibling-diagnostic"}:
         print(f"error: unsupported Dylint acceptance mode: {mode}", file=sys.stderr)
         return 5
-    common_dir = subprocess.run(
+    common_dir = run_captured(
         ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
         cwd=ROOT,
         capture_output=True,
@@ -611,7 +618,7 @@ def main() -> int:  # noqa: C901
         print(f"error: failed to execute Docker acceptance: {error}", file=sys.stderr)
         return 4
     finally:
-        copied = subprocess.run(
+        copied = run_captured(
             [
                 "docker",
                 "cp",
@@ -627,7 +634,7 @@ def main() -> int:  # noqa: C901
                 f"warning: failed to copy watchdog diagnostics: {copied.stderr.strip()}",
                 file=sys.stderr,
             )
-        subprocess.run(
+        run_captured(
             [
                 "docker",
                 "exec",

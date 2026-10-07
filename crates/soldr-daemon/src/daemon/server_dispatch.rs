@@ -480,13 +480,12 @@ where
                 channel,
                 rustc_version,
             };
-            // The two cook_index calls below each serialize their own
-            // redb open via `redb_lock::state_db_open_lock` (#608), so
-            // no outer mutex is needed. The window between the two
-            // opens admits a concurrent writer; the worst case is a
-            // stale `previous_origin_recipe_hashes` drift list, which
-            // is purely advisory.
-            let reply = {
+            // Each lookup uses its own SQLite connection. WAL permits
+            // concurrent readers; the gaps between queries can admit a
+            // writer, so the advisory drift list is not one atomic snapshot.
+            let lookup_state = state.clone();
+            let reply = tokio::task::spawn_blocking(move || {
+                let state = lookup_state;
                 match cook_index::lookup(&state.db_path, &key) {
                     Ok(Some(entry)) => {
                         state.cook_hits_this_session.fetch_add(1, Ordering::Relaxed);
@@ -548,7 +547,9 @@ where
                     }
                     Err(e) => Response::Error(format!("cook_index lookup failed: {e}")),
                 }
-            };
+            })
+            .await
+            .unwrap_or_else(|error| Response::Error(format!("cook lookup task failed: {error}")));
             let _ = write_frame_async(&mut stream, &reply).await;
         }
         Request::CookRecord {
@@ -584,7 +585,16 @@ where
                 compile_duration_ms,
                 save_elapsed_ms,
             };
-            let result = cook_index::upsert(&state.db_path, &key, &entry);
+            let db_path = state.db_path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                cook_index::upsert(&db_path, &key, &entry)
+            })
+            .await
+            .unwrap_or_else(|error| {
+                Err(crate::cache_lib::target_registry::RegistryError::Io(
+                    std::io::Error::other(format!("cook record task failed: {error}")),
+                ))
+            });
             match result {
                 Ok(()) => {
                     let _ = write_frame_async(&mut stream, &Response::Ack).await;
@@ -602,7 +612,11 @@ where
             // Fire-and-forget bump of last_used_unix_ms, its receipt already
             // acknowledged (soldr#3169). Silent on failure — the caller
             // already moved on.
-            let _ = cook_index::touch(&state.db_path, &sha256, current_unix_ms());
+            let db_path = state.db_path.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                cook_index::touch(&db_path, &sha256, current_unix_ms())
+            })
+            .await;
         }
     }
     Ok(())

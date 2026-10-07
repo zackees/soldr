@@ -22,40 +22,32 @@ service.
 
 ## State-database discipline
 
-`~/.soldr/state.redb` is a single file shared by four process classes — the
-`soldr cargo` front door, the per-compile rustc wrapper, this daemon, and the
-reporting CLI — and redb takes an **exclusive whole-file lock per `Database`
-handle**. `TargetRegistry::open` holds that lock *and* the process-wide
-`state_db_open_lock` for the handle's entire lifetime (#608), so handle
-lifetime is a cross-process concurrency decision, not a local one.
+`~/.soldr/state.sqlite3` is shared by the Cargo front door, compiler wrappers,
+the daemon, and reporting commands. SQLite WAL permits concurrent readers and
+one writer. Connections do not hold an exclusive file lock or a process-wide
+open mutex for their lifetime. Write transactions use `BEGIN IMMEDIATE` and
+wait up to 5 seconds for writer contention; best-effort bookkeeping uses a
+50 ms budget. See `soldr-cache/src/cache_lib/state_store.rs`.
 
-Three rules follow, each with a regression behind it:
+1. **Keep transactions short.** Filesystem sizing, deletion, subprocesses,
+   and human prompts belong outside a database transaction. GC snapshots rows,
+   releases its connection, performs filesystem work, then records outcomes.
+   This preserves the phases introduced in #1681/#2225 without relying on
+   the removed redb exclusive-open behavior.
+2. **Reuse a connection within one logical operation.** Prefer the `_in`
+   variants when several database calls belong to one operation. A connection
+   alone does not serialize other connections.
+3. **Keep blocking database work off tokio workers.** SQLite opens, writes,
+   and commits are synchronous; a contended writer can consume its full busy
+   budget. Async database operations use the blocking pool through `db_async`; cook
+   handlers run their cook-index operations with `spawn_blocking`.
 
-1. **Never hold a handle across unbounded work.** Directory sizing, recursive
-   deletion, and anything that waits on a human all outlast every other
-   opener's budget (5 s `Required`, 50 ms `BestEffort`). The sanctioned shape
-   is three phases — snapshot with the handle open, do the filesystem work
-   with **no** handle open, then reopen for the bounded bookkeeping write.
-   See `sweep_workspace_targets` in `src/daemon/maintenance.rs` and
-   `cache_lib::gc::scan_released`. Fixed CLI-side in #1681, daemon-side in
-   #2225 (reported as #2223, diagnosed in #2224).
-2. **Acquire once per logical operation.** Opening per call turns one session
-   start into several acquire/release cycles, each able to lose its record to
-   a contended budget. Prefer the handle-taking `_in` variants in `db.rs`.
-3. **Never open on a tokio worker.** A contended open parks the runtime
-   thread for up to 5 s; async callers go through `db_async` (#1669).
+## Testing transaction contention
 
-Contention is recorded durably to `~/.soldr/logs/redb-contention.jsonl`;
-`budget-exhausted` entries there are the signal that one of these rules has
-regressed.
-
-## Testing the lock rules
-
-Concurrency tests against `state.redb` **must spawn a real second process.**
-`state_db_open_lock` is an in-process mutex, so a second opener on another
-thread merely *waits* on it and then succeeds — it never surfaces redb's
-`Database already open. Cannot acquire lock.`, and the test passes against
-broken code. That is precisely how #2225 survived. See
-`sweep_never_holds_state_db_across_filesystem_work` in
-`src/daemon/maintenance.rs` for the established shape, and
-`cache_lib::redb_lock`'s `subprocess_lock_holder` for the general idiom.
+Use independent connections and an explicitly held write transaction to test
+writer contention. Merely holding a `TargetRegistry` connection is no longer a
+negative control: another connection can read and write while it remains open.
+Cross-process fixtures still exercise the boundary between maintenance and the
+front door, but their successful second open proves reachability at the fixture
+barrier, rather than proving that every connection was dropped. SQLite
+transaction tests in `state_store.rs` cover the writer-lock behavior directly.

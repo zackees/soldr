@@ -51,7 +51,7 @@ def test_successful_run_passes(mod, monkeypatch, tmp_path):
         assert "--version" in command
         return _Result(0, stdout="soldr 0.9.21\n")
 
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod, "run_captured", fake_run)
     assert mod.main([str(binary)]) == 0
 
 
@@ -63,7 +63,7 @@ def test_nonzero_exit_fails(mod, monkeypatch, tmp_path):
     def fake_run(command, capture_output, text, check):
         return _Result(1, stdout="", stderr="version `GLIBC_2.39' not found\n")
 
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod, "run_captured", fake_run)
     assert mod.main([str(binary)]) == 1
 
 
@@ -77,7 +77,7 @@ def test_silent_success_is_treated_as_suspicious(mod, monkeypatch, tmp_path):
     def fake_run(command, capture_output, text, check):
         return _Result(0, stdout="")
 
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod, "run_captured", fake_run)
     assert mod.main([str(binary)]) == 1
 
 
@@ -97,6 +97,6 @@ def test_custom_image_is_used(mod, monkeypatch, tmp_path):
         seen["command"] = command
         return _Result(0, stdout="soldr 0.9.21\n")
 
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod, "run_captured", fake_run)
     assert mod.main(["--image", "centos:7", str(binary)]) == 0
     assert "centos:7" in seen["command"]

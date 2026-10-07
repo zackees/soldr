@@ -7,11 +7,18 @@ The 127-line heredoc this replaces published a corrupted manifest once
 from __future__ import annotations
 
 import json
-import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from conftest import load_script_module
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 REPO_ROOT = Path(__file__).parents[1]
 SCRIPTS = REPO_ROOT / ".github" / "scripts"
@@ -213,7 +220,7 @@ def test_end_to_end_writes_a_manifest_the_verifier_accepts(tmp_path: Path) -> No
     # See TestDebugSidecars.test_a_dwp_staged_in_package_dir_is_never_recorded.
     assert written["soldr"]["debug_info"] == []
 
-    verify = subprocess.run(
+    verify = run_captured(
         [
             "python3" if Path("/usr/bin/python3").exists() else "python",
             str(SCRIPTS / "verify_release_manifest.py"),

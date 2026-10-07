@@ -20,6 +20,13 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 RELEASE_TARGETS = frozenset(
     {
         "x86_64-unknown-linux-gnu",
@@ -200,11 +207,11 @@ def source_build_environment(base: Mapping[str, str]) -> dict[str, str]:
 def resolve_toolchain_rustc(driver: Path, env: Mapping[str, str]) -> Path:
     """Resolve rustc through the pinned Soldr without exposing its shim to probes."""
 
-    completed = subprocess.run(
+    completed = run_captured(
         [str(driver), "rustup", "which", "rustc"],
         check=True,
         env=dict(env),
-        stdout=subprocess.PIPE,
+        capture_stdout=True,
         text=True,
     )
     rustc = Path(completed.stdout.strip())

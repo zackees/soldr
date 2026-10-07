@@ -529,3 +529,62 @@ fn status_response_decodes_as_expected_variant() {
         .expect("submit_request");
     assert!(matches!(resp, Response::Status(_)));
 }
+
+/// #3558: correctness-critical SQLite writes may wait longer than the
+/// generic two-second status deadline. Exercise the real daemon, with an
+/// independent writer holding its state database for three seconds.
+#[test]
+fn cook_record_waits_for_sqlite_writer_and_returns_the_committed_row() {
+    let fixture = tempfile::tempdir().expect("fixture");
+    let root = fixture.path().join("cache");
+    let home = fixture.path().join("home");
+    std::fs::create_dir_all(&home).expect("home");
+    let _broker = common::BrokerHomeGuard::new(&root, &home);
+    let _daemon = common::isolated_daemon::IsolatedDaemon::spawn(&soldr_daemon_bin(), &root, &home);
+    let sock = direct_sock(&root);
+    let paths = soldr_cli::core::SoldrPaths::with_root(root.clone());
+    let database = soldr_cli::cache_lib::state_store::open_state_db(
+        &soldr_cli::cache_lib::data_db_path(&paths),
+    )
+    .expect("open independent writer");
+    database
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("hold write transaction");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker_sock = sock.clone();
+    let worker = std::thread::spawn(move || {
+        let (triple, profile, channel, rustc) = standard_key_fields();
+        let result = cook_record(
+            &worker_sock,
+            [0xD1; 32],
+            triple,
+            profile,
+            channel,
+            rustc,
+            [0xD2; 32],
+            1024,
+            None,
+            "contention fixture".into(),
+        );
+        tx.send(result).expect("report result");
+    });
+    // Keep the lock past the old IPC deadline without sleep-based startup
+    // coordination. Completion here is necessarily an error: no writer can
+    // commit before the explicitly held transaction is released.
+    let premature = rx.recv_timeout(Duration::from_secs(3));
+    database.execute_batch("ROLLBACK").expect("release writer");
+    worker.join().expect("record worker");
+    assert!(
+        matches!(premature, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+        "cook record returned before the writer lock was released: {premature:?}"
+    );
+    rx.recv_timeout(Duration::from_secs(10))
+        .expect("record completion")
+        .expect("record commits after contention");
+    let (triple, profile, channel, rustc) = standard_key_fields();
+    assert!(matches!(
+        cook_lookup(&sock, [0xD1; 32], triple, profile, channel, rustc, None)
+            .expect("lookup committed row"),
+        CookLookupOutcome::Hit { sha256, .. } if sha256 == [0xD2; 32]
+    ));
+}

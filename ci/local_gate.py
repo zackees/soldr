@@ -96,6 +96,8 @@ PY_DIRS = (
     ".claude/hooks",
 )
 RUFF = (*PY, "--with", "ruff>=0.12,<0.13")
+# Resolve imports against the source under review, ahead of an installed soldr.
+PYLINT_SOURCE_ARGS = ("--init-hook", "import sys; sys.path.insert(0, 'src')")
 PYLINT = (
     *PY,
     "--with",
@@ -480,12 +482,27 @@ def checks() -> list[Check]:
         # tests/ ruleset, and everything else takes the default one.
         Check(
             "Python lint (pylint src)",
-            (*PYLINT, "python", "-m", "pylint", "src"),
+            (
+                *PYLINT,
+                "python",
+                "-m",
+                "pylint",
+                *PYLINT_SOURCE_ARGS,
+                "src",
+            ),
             "py-static",
         ),
         Check(
             "Python lint (pylint tests)",
-            (*PYLINT, "python", "-m", "pylint", "--rcfile=tests/.pylintrc", "tests"),
+            (
+                *PYLINT,
+                "python",
+                "-m",
+                "pylint",
+                *PYLINT_SOURCE_ARGS,
+                "--rcfile=tests/.pylintrc",
+                "tests",
+            ),
             "py-static",
             slow=True,
         ),
@@ -496,6 +513,7 @@ def checks() -> list[Check]:
                 "python",
                 "-m",
                 "pylint",
+                *PYLINT_SOURCE_ARGS,
                 ".github/scripts",
                 ".github/actions/setup-soldr",
                 "ci",
@@ -513,6 +531,7 @@ def checks() -> list[Check]:
                 "python",
                 "-m",
                 "pylint",
+                *PYLINT_SOURCE_ARGS,
                 "--rcfile=tests/.pylintrc",
                 *_script_tests(),
             ),

@@ -24,6 +24,13 @@ from pathlib import Path
 import pytest
 from conftest import docker_available, load_script_module
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = REPO_ROOT / "ci" / "assert_nextest_archive_cacheability.py"
 cacheability = load_script_module(_SCRIPT, "cacheability_verdict")
@@ -142,11 +149,11 @@ def test_warm_dependency_cacheability_acceptance() -> None:
     if not docker_available():
         pytest.skip("docker daemon not reachable")
 
-    result = subprocess.run(
+    result = run_captured(
         [sys.executable, str(_SCRIPT)],
         cwd=REPO_ROOT,
         text=True,
-        stdout=subprocess.PIPE,
+        capture_stdout=True,
         stderr=subprocess.STDOUT,
         timeout=3600,
         check=False,

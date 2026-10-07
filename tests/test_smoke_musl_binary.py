@@ -119,7 +119,7 @@ def test_json_probe_failure_keeps_the_binary_stderr(
             )
         raise AssertionError(f"unexpected command: {command}")
 
-    monkeypatch.setattr(smoke.subprocess, "run", failed_json_probe)
+    monkeypatch.setattr(smoke, "run_captured", failed_json_probe)
 
     with pytest.raises(smoke.MuslBinarySmokeError, match="loader error"):
         smoke.smoke_binary(

@@ -4,18 +4,54 @@ pub fn submit_request_with_timeout(
     req: &Request,
     timeout: Duration,
 ) -> Result<Response, ClientError> {
-    if let Some(mut stream) = connect_through_override(sock_path, timeout)? {
-        write_frame_sync(&mut stream, req)?;
-        return read_frame_sync(&mut stream).map_err(ClientError::from);
+    let context = |stage, error| request_transport_error(sock_path, req, timeout, stage, error);
+    if let Some(mut stream) = connect_through_override(sock_path, timeout)
+        .map_err(|error| context("connect", error))?
+    {
+        write_frame_sync(&mut stream, req)
+            .map_err(|error| context("write request", ClientError::from(error)))?;
+        return read_frame_sync(&mut stream)
+            .map_err(|error| context("read reply", ClientError::from(error)));
     }
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         submit_request_windows_with_timeout(sock_path, req, timeout)
+            .map_err(|error| context("named-pipe request/reply", error))
     } else {
-        let mut stream = connect(sock_path, timeout)?;
-        write_frame_sync(&mut stream, req)?;
-        let resp: Response = read_frame_sync(&mut stream)?;
-        Ok(resp)
+        let mut stream = connect(sock_path, timeout)
+            .map_err(|error| context("connect", error))?;
+        write_frame_sync(&mut stream, req)
+            .map_err(|error| context("write request", ClientError::from(error)))?;
+        read_frame_sync(&mut stream)
+            .map_err(|error| context("read reply", ClientError::from(error)))
     }
+}
+
+/// Add operation context after platform-specific error classification, so a
+/// missing daemon, busy Windows pipe, or protocol mismatch retains its meaning.
+fn request_transport_error(
+    endpoint: &Path,
+    request: &Request,
+    timeout: Duration,
+    stage: &str,
+    error: ClientError,
+) -> ClientError {
+    let ClientError::Io(source) = error else {
+        return error;
+    };
+    let operation = match request {
+        Request::CookLookup { .. } => "cook lookup",
+        Request::CookRecord { .. } => "cook record",
+        Request::RemoveTargetRegistry { .. } => "target registry removal",
+        _ => "daemon request",
+    };
+    ClientError::Io(std::io::Error::new(
+        source.kind(),
+        format!(
+            "{operation}: {stage} at {} (timeout {} ms): {source}",
+            endpoint.display(),
+            timeout.as_millis(),
+        ),
+    ))
 }
 
 /// Whether the daemon acknowledged receipt of a fire-and-forget request
@@ -214,10 +250,6 @@ fn submit_fire_and_forget_windows(
             })
         },
     )
-}
-
-fn submit_request_windows(sock_path: &Path, req: &Request) -> Result<Response, ClientError> {
-    submit_request_windows_with_timeout(sock_path, req, REPLY_TIMEOUT)
 }
 
 fn submit_request_windows_with_timeout(

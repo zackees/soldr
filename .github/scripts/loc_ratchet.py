@@ -38,6 +38,14 @@ import argparse
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 DEFAULT_CEILING = 1500
 # Only source we own; generated files are not something a PR author can
@@ -71,7 +79,7 @@ class NoMergeBase(Exception):
 
 
 def _run(args: list[str]) -> str:
-    return subprocess.run(args, check=True, capture_output=True, text=True).stdout
+    return run_captured(args, check=True, capture_output=True, text=True).stdout
 
 
 def resolve_base(base_ref: str, base_sha: str | None) -> str:
@@ -129,7 +137,7 @@ def changed_files(base: str, roots: tuple[str, ...]) -> list[str]:
 def line_count_at(ref: str, path: str) -> int | None:
     """Line count of `path` at `ref`, or None when it did not exist there."""
     try:
-        blob = subprocess.run(
+        blob = run_captured(
             ["git", "show", f"{ref}:{path}"],
             check=True,
             capture_output=True,

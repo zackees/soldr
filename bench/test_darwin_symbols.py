@@ -20,10 +20,14 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import run_captured  # noqa: E402 -- source-relative bootstrap precedes this import
 
 DEFAULT_TARGET = "x86_64-apple-darwin"
 
@@ -55,7 +59,7 @@ def tool(name: str) -> str:
 
 def run(command: list[str], *, cwd: Path) -> str:
     print("+", " ".join(command))
-    result = subprocess.run(command, cwd=cwd, text=True, capture_output=True)
+    result = run_captured(command, cwd=cwd, text=True, capture_output=True)
     if result.returncode:
         sys.stderr.write(result.stdout)
         sys.stderr.write(result.stderr)
@@ -129,4 +133,4 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except (OSError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from error

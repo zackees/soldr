@@ -67,7 +67,7 @@ use std::time::Duration;
 
 /// Busy timeout for correctness-critical openers: a writer waits up to
 /// this long for a concurrent writer's transaction to finish.
-const REQUIRED_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+pub const REQUIRED_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Busy timeout for latency-critical, losable writes (issue #1814): the
 /// wrapper's per-rustc `target/` touch would rather skip its GC

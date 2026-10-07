@@ -8,13 +8,19 @@ import importlib.util
 import json
 import os
 import re
-import subprocess
 import sys
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 _completeness_path = Path(__file__).resolve().with_name("release_completeness.py")
 _completeness_spec = importlib.util.spec_from_file_location(
@@ -64,7 +70,7 @@ def fetch_json(url: str, token: str | None = None) -> JsonObject:
 
 
 def git_output(source_dir: Path, arguments: Sequence[str]) -> str:
-    result = subprocess.run(
+    result = run_captured(
         ["git", *arguments],
         cwd=source_dir,
         check=False,

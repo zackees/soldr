@@ -197,11 +197,9 @@ fn make_workspace(root: &Path, name: &str, size_bytes: u64) -> (PathBuf, PathBuf
 /// #1681: a GC pass must not hold the state-database handle across
 /// its long filesystem/prompting phases.
 ///
-/// `TargetRegistry::open` takes the process-wide `state_db_open_lock`
-/// for the handle's whole lifetime (#608), so anything else that
-/// opens `state.sqlite3` — `daemon::db`, `cook_index`, and the
-/// `RecordTargetTouch` handler on every rustc-wrapper call — is
-/// blocked for as long as GC holds it.
+/// Under SQLite this proves that a snapshot can be followed by a concurrent
+/// registry write. It cannot prove connection release: holding a connection
+/// without a transaction no longer excludes other writers.
 #[test]
 fn snapshot_releases_the_handle_before_long_work() {
     let dir = tempdir().unwrap();
@@ -219,17 +217,10 @@ fn snapshot_releases_the_handle_before_long_work() {
     // sizing, prompting, and deleting. A state write must still get
     // through.
     //
-    // Done on another thread with a bounded wait, because `open`
-    // blocks rather than failing when the handle is still held:
-    // `state_db_open_lock` is a plain in-process mutex, and
-    // `open_best_effort`'s short budget covers only the
-    // cross-process redb file lock, so it would block here too.
-    // Without the thread a regression would hang the whole suite
-    // instead of failing; with it, it fails in ten seconds.
-    //
-    // That same mutex is why there is no negative control: taking a
-    // handle and asserting a second open is refused would deadlock
-    // the test itself.
+    // Probe from an independent connection with a bounded wait. A held
+    // write transaction, rather than a held connection, would contend
+    // through SQLite's busy timeout. Transaction-lock tests live in
+    // state_store; this test checks the GC operation sequence.
     let (tx, rx) = std::sync::mpsc::channel();
     let probe_db = db.clone();
     let probe_target = target.clone();

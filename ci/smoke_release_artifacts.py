@@ -65,6 +65,13 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 MIN_SOLDR_BYTES = 2 * 1024 * 1024  # soldr#1140 stub floor
 
 # soldr#3076: `lipo`/`file` need Xcode CLT, which neither a bare Linux host
@@ -143,8 +150,7 @@ def check_macho_architecture(binary: Path, expected_arch: str) -> None:
     cputype = header[4:8]
     if cputype != expected_bytes:
         sys.exit(
-            f"ERROR: {binary}: expected Mach-O cputype for {expected_arch}, "
-            f"got {cputype!r}"
+            f"ERROR: {binary}: expected Mach-O cputype for {expected_arch}, got {cputype!r}"
         )
     print(f"Mach-O architecture OK: {binary} is {expected_arch}")
 
@@ -163,8 +169,7 @@ def wheel_version(wheel: Path) -> str:
         ]
         if len(metadata_names) != 1:
             raise RuntimeError(
-                f"expected exactly one *.dist-info/METADATA in {wheel}, "
-                f"found {metadata_names}"
+                f"expected exactly one *.dist-info/METADATA in {wheel}, found {metadata_names}"
             )
         metadata = archive.read(metadata_names[0]).decode("utf-8", errors="replace")
     match = re.search(r"^Version:\s*(\S+)\s*$", metadata, re.MULTILINE)
@@ -187,7 +192,7 @@ def extract_archive(archive: Path, dest: Path) -> None:
 def run(cmd: list[str | Path]) -> subprocess.CompletedProcess[str]:
     argv = [str(part) for part in cmd]
     print(f"+ {' '.join(argv)}", flush=True)
-    return subprocess.run(argv, check=True, capture_output=True, text=True)
+    return run_captured(argv, check=True, capture_output=True, text=True)
 
 
 # The module a shipped wheel must import. The wheel is a maturin binary
@@ -239,15 +244,13 @@ def check_version_output(binary: Path, expected: str, label: str) -> None:
     json_out = run([binary, "version", "--json"]).stdout.strip()
     if not json_out:
         sys.exit(
-            f"ERROR: {label}: 'soldr version --json' produced empty stdout "
-            "(soldr#1202)."
+            f"ERROR: {label}: 'soldr version --json' produced empty stdout (soldr#1202)."
         )
     print(f"{label} — soldr version --json: {json_out}")
     reported = json.loads(json_out).get("soldr_version")
     if reported != expected:
         sys.exit(
-            f"ERROR: {label}: soldr_version {reported!r} != expected {expected!r} "
-            "(soldr#1202)."
+            f"ERROR: {label}: soldr_version {reported!r} != expected {expected!r} (soldr#1202)."
         )
 
 

@@ -10,6 +10,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 ROOT = Path(__file__).resolve().parents[2]
 
 BASH = r"""
@@ -164,7 +171,7 @@ grep -F "soldr Dylint fixture diagnostic" "$DIAGNOSTICS/real_dylint.log"
 
 
 def main() -> int:  # noqa: C901
-    common_result = subprocess.run(
+    common_result = run_captured(
         ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
         cwd=ROOT,
         capture_output=True,

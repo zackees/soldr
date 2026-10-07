@@ -116,6 +116,13 @@ from platform_cfg_boundary_ratchet import (  # noqa: E402  # pylint: disable=wro
     mask_comments_and_strings,
 )
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 EXCLUDED_DIR_NAMES = {"_vender", "target", ".venv"}
 SHELL_ROOT_NAMES = {"install", "lint", "test"}
 SHEBANG_RE = re.compile(r"^#!.*\bsh\b")
@@ -454,7 +461,7 @@ def file_violation_map(
 
 
 def _run(args: list[str]) -> str:
-    return subprocess.run(args, check=True, capture_output=True, text=True).stdout
+    return run_captured(args, check=True, capture_output=True, text=True).stdout
 
 
 def changed_files(base: str) -> list[str]:
@@ -478,7 +485,7 @@ def read_worktree(path: str) -> str | None:
 
 def read_at_ref(ref: str, path: str) -> str | None:
     try:
-        blob = subprocess.run(
+        blob = run_captured(
             ["git", "show", f"{ref}:{path}"], check=True, capture_output=True
         ).stdout
     except subprocess.CalledProcessError:

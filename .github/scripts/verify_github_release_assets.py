@@ -17,6 +17,13 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 
 def load_release_completeness() -> Any:
     """Load the sibling helper in direct-exec and file-loaded test modes."""
@@ -56,7 +63,7 @@ def verify_release_assets(tag: str, release: dict[str, Any]) -> list[str]:
 
 def fetch_release(tag: str, repo: str) -> dict[str, Any]:
     """Read release metadata through the runner's authenticated gh CLI."""
-    result = subprocess.run(
+    result = run_captured(
         ["gh", "release", "view", tag, "--repo", repo, "--json", "assets,isDraft"],
         check=True,
         capture_output=True,

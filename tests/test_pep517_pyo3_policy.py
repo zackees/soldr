@@ -196,9 +196,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
         stream = io.StringIO()
         with mock.patch.object(self.backend, "_prep_env", return_value={}):
-            with mock.patch.object(
-                self.backend.subprocess, "run", side_effect=fake_run
-            ):
+            with mock.patch.object(self.backend, "run_captured", side_effect=fake_run):
                 with mock.patch.object(
                     self.backend,
                     "_run_pep517_streaming",
@@ -254,9 +252,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         with mock.patch.object(
             self.backend, "_prep_env", return_value={"SOLDR_PEP517_STATS": "full"}
         ):
-            with mock.patch.object(
-                self.backend.subprocess, "run", side_effect=fake_run
-            ):
+            with mock.patch.object(self.backend, "run_captured", side_effect=fake_run):
                 with mock.patch.object(self.backend, "_run_pep517_streaming"):
                     with mock.patch.object(
                         self.backend.time, "perf_counter", side_effect=[1.0, 2.0]
@@ -286,9 +282,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
         stream = io.StringIO()
         with mock.patch.object(self.backend, "_prep_env", return_value={}):
-            with mock.patch.object(
-                self.backend.subprocess, "run", side_effect=fake_run
-            ):
+            with mock.patch.object(self.backend, "run_captured", side_effect=fake_run):
                 with mock.patch.object(
                     self.backend,
                     "_run_pep517_streaming",
@@ -388,7 +382,9 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                     "",
                 )
                 with self.subTest(name=name):
-                    with mock.patch("subprocess.run", return_value=completed):
+                    with mock.patch.object(
+                        self.backend, "run_captured", return_value=completed
+                    ):
                         resolved = self.original_query_soldr_root({"PATH": name})
                     self.assertEqual(resolved, selected)
                     with mock.patch.object(
@@ -419,7 +415,9 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
             "HOME": "/same/home",
             "USERPROFILE": "C:/same/home",
         }
-        with mock.patch("subprocess.run", return_value=completed) as run:
+        with mock.patch.object(
+            self.backend, "run_captured", return_value=completed
+        ) as run:
             first = self.original_query_soldr_root(environment)
             second = self.original_query_soldr_root(dict(environment))
 
@@ -444,7 +442,9 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                     "",
                 ),
             ]
-            with mock.patch("subprocess.run", side_effect=responses) as run:
+            with mock.patch.object(
+                self.backend, "run_captured", side_effect=responses
+            ) as run:
                 resolved = self.original_query_soldr_root({})
         self.assertEqual(resolved, selected)
         self.assertEqual(run.call_count, 2)

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import os
-import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from conftest import load_script_module
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "install_ci_cargo_guard.py"
@@ -19,8 +26,7 @@ def test_allowed_cargo_reenters_source_soldr_while_bare_cargo_fails_closed(
     source_soldr = tmp_path / "source soldr"
     invocation_log = tmp_path / "invocation.log"
     source_soldr.write_text(
-        "#!/bin/sh\n"
-        f"printf '%s\\n' \"$@\" > {guard.shlex.quote(str(invocation_log))}\n",
+        f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {guard.shlex.quote(str(invocation_log))}\n",
         encoding="utf-8",
     )
     source_soldr.chmod(0o755)
@@ -43,7 +49,7 @@ def test_allowed_cargo_reenters_source_soldr_while_bare_cargo_fails_closed(
         }
     )
 
-    allowed = subprocess.run(
+    allowed = run_captured(
         [environment["CARGO"], "metadata", "--no-deps"],
         env=environment,
         text=True,
@@ -57,7 +63,7 @@ def test_allowed_cargo_reenters_source_soldr_while_bare_cargo_fails_closed(
         "--no-deps",
     ]
 
-    trapped = subprocess.run(
+    trapped = run_captured(
         ["cargo", "metadata"],
         env=environment,
         text=True,
@@ -93,7 +99,7 @@ def test_nextest_runner_restores_cargo_after_cargo_overwrites_it(
     # binary performing the build before crates and test tooling run.
     cargo_overwritten["CARGO"] = str(real_cargo)
 
-    without_runtime_boundary = subprocess.run(
+    without_runtime_boundary = run_captured(
         [probe],
         env=cargo_overwritten,
         text=True,
@@ -102,7 +108,7 @@ def test_nextest_runner_restores_cargo_after_cargo_overwrites_it(
     )
     assert without_runtime_boundary.stdout.strip() == str(real_cargo)
 
-    through_nextest_runner = subprocess.run(
+    through_nextest_runner = run_captured(
         [paths.test_runner, probe],
         env=cargo_overwritten,
         text=True,

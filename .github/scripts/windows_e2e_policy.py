@@ -33,9 +33,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple, Sequence
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 FAST_BUILD_LABEL = "fast-build"
 
@@ -105,7 +112,7 @@ def _pull_request_paths(event: dict[str, object]) -> list[str]:
     if not isinstance(base_sha, str) or not isinstance(head_sha, str):
         return []
 
-    result = subprocess.run(
+    result = run_captured(
         [
             "git",
             "diff",
