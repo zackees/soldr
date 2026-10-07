@@ -9,14 +9,56 @@ fast, it never blocks a build, and every trigger reaches one janitor.
 from __future__ import annotations
 
 import ast
+import shutil
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
+
+from soldr._process import run_captured
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 BUDGET_SCRIPT = REPO_ROOT / ".github" / "scripts" / "check_cache_budget.py"
+
+
+@pytest.mark.parametrize(
+    "cell",
+    [
+        "ci-pre.yml/cache-janitor",
+        "ci-pre.yml/cache-budget",
+        "cache-budget.yml/closed-pr-cleanup",
+    ],
+)
+def test_cache_script_runs_from_declared_sparse_checkout(
+    tmp_path: Path, cell: str
+) -> None:
+    workflow, job_id = cell.split("/")
+    job = _load(workflow)["jobs"][job_id]
+    checkout = next(step for step in job["steps"] if "checkout" in step.get("uses", ""))
+    for entry in checkout["with"]["sparse-checkout"].splitlines():
+        relative = Path(entry.strip())
+        source = REPO_ROOT / relative
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, destination)
+        else:
+            shutil.copyfile(source, destination)
+    result = run_captured(
+        [
+            sys.executable,
+            "-I",
+            str(tmp_path / ".github/scripts/check_cache_budget.py"),
+            "--help",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--require-live" in result.stdout
 
 
 def _load(name: str) -> dict:
