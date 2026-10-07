@@ -120,9 +120,12 @@ class SignalWindowRaw(io.RawIOBase):
     def writable(self):
         return True
     def write(self, data):
+        first = self.first
+        self.first = False
+        # Commit the state before readiness is visible: SIGTERM can arrive
+        # immediately after os.write, and shutdown may retry this write.
         written = os.write(1, data)
-        if self.first:
-            self.first = False
+        if first:
             signal.pause()
         return written
 
