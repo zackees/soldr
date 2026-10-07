@@ -11,6 +11,7 @@ the pure/subprocess-only surfaces this module exposes.
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
