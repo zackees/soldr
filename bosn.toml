@@ -196,3 +196,8 @@ cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo
 [task.cargo-home-config-dir]
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-core --lib toolchain_resolve; a=$?; CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test toolchain_env -E 'test(/^cli_toolchain_home_boundary::/)'; b=$?; exit $((a | b))"
+
+# soldr#3604: existing real-compiler save/load fixture with relocated roots.
+[task.cache-snapshot-acceptance]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test toolchain_env --run-ignored only -E 'test(=cli_save::save_ci_load_preserves_real_warm_rustc_hits)'"
