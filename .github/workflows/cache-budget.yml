@@ -68,6 +68,8 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/scripts/check_cache_budget.py
+            src/soldr/__init__.py
+            src/soldr/_process.py
             ci/cache-ownership.json
           sparse-checkout-cone-mode: false
       # A fork PR's token is read-only: a refused delete is logged, the job
