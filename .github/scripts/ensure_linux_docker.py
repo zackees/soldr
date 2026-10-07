@@ -6,8 +6,16 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+# Dependency-free capture also works when this script is invoked by absolute path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 
 def docker_info_command() -> list[str]:
@@ -32,7 +40,7 @@ def main() -> int:
     subprocess.run([str(cli), "-SwitchLinuxEngine"], check=True)
     deadline = time.monotonic() + args.timeout_seconds
     while time.monotonic() < deadline:
-        result = subprocess.run(
+        result = run_captured(
             docker_info_command(), text=True, capture_output=True, check=False
         )
         if result.returncode == 0 and result.stdout.strip().lower() == "linux":

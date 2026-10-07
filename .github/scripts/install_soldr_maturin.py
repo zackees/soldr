@@ -12,6 +12,13 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_PATH = REPO_ROOT / "contracts" / "zccache-runtime.v1.json"
 SOLDR_TOOLCHAIN = "1.98.1"
@@ -97,11 +104,11 @@ def main() -> int:
         ],
         env=base_env,
     )
-    completed = subprocess.run(
+    completed = run_captured(
         [str(driver), "rustup", "which", "rustc"],
         check=True,
         env=base_env,
-        stdout=subprocess.PIPE,
+        capture_stdout=True,
         text=True,
     )
     rustc = Path(completed.stdout.strip())

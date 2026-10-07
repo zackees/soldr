@@ -48,9 +48,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 GUEST_HTTP_BASE = "http://10.0.2.2:8000"
 RESULTS_FILE = "summary.txt"
@@ -976,7 +982,7 @@ def verify_replay_artifacts(
         )
     else:
         filter_output = collected_dir / "_verify_filter.txt"
-        result = subprocess.run(
+        result = run_captured(
             [
                 sys.executable,
                 str(ownership_script),
@@ -1023,13 +1029,10 @@ def verify_replay_artifacts(
         ]
         if github_summary is not None:
             summary_args += ["--github-summary", str(github_summary)]
-        result = subprocess.run(
-            summary_args, capture_output=True, text=True, check=False
-        )
+        result = run_captured(summary_args, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             failures.append(
-                "target-run coverage summary failed:\n"
-                f"{result.stdout}{result.stderr}".strip()
+                f"target-run coverage summary failed:\n{result.stdout}{result.stderr}".strip()
             )
 
     if failures:
@@ -1039,8 +1042,7 @@ def verify_replay_artifacts(
         )
 
     print(
-        "macOS Recovery replay artifacts verified: ownership inventory + "
-        "coverage summary OK"
+        "macOS Recovery replay artifacts verified: ownership inventory + coverage summary OK"
     )
     return 0
 

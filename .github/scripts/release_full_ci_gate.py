@@ -8,7 +8,16 @@ import json
 import os
 import re
 import subprocess
+import sys
 import urllib.request
+from pathlib import Path
+
+# Dependency-free capture also works when this script is invoked by absolute path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    checked_output,
+)
 
 
 class GateError(RuntimeError):
@@ -61,7 +70,7 @@ def get_json(url: str, token: str) -> dict:
 def verify_candidate(sha: str) -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise GateError("candidate_sha must be a full lowercase commit SHA")
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    head = checked_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if head != sha:
         raise GateError("checked-out candidate does not match candidate_sha")
     subprocess.run(["git", "fetch", "origin", "main"], check=True)

@@ -43,18 +43,11 @@ fn sweep_fs_phase_child_holds_the_barrier() {
 // soldr#2224 acceptance: the daemon's maintenance sweep must not hold
 // `state.sqlite3` across its filesystem phase.
 //
-// Real processes, deliberately. The process-wide `state_db_open_lock`
-// masks this bug in-thread — a second opener in the same process just
-// *waits* on the mutex instead of failing — so an in-process test
-// would pass against the broken code. Two processes see redb's actual
-// file lock, which is what the front door hits in soldr#2223.
-//
-// It asserts the property rather than racing it: the child parks at
-// the start of the handle-free phase and does not proceed until the
-// parent has finished proving the database is reachable. Before this
-// fix the child would still be holding the registry handle at that
-// point and the parent's open would burn its whole 5 s budget and
-// fail.
+// A real child process parks at the filesystem-phase barrier while the
+// parent verifies that an independent connection can write. This checks
+// cross-process reachability at that phase. Since the SQLite migration,
+// an open connection alone does not block another writer, so this test
+// does not prove connection lifetime or replace transaction-lock tests.
 #[test]
 #[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn sweep_never_holds_state_db_across_filesystem_work() {

@@ -102,13 +102,10 @@ pub struct RegistrySnapshot {
 /// Read the registry into an owned snapshot and **release the database
 /// handle before returning** (#1681).
 ///
-/// [`TargetRegistry`] holds the process-wide `state_db_open_lock` guard
-/// and the redb file lock for its whole lifetime (#608). A GC pass that
-/// keeps one alive across directory sizing, per-candidate prompting, and
-/// recursive deletion therefore blocks every other `state.sqlite3` opener —
-/// `daemon::db`, `cache_lib::cook_index`, and the `RecordTargetTouch`
-/// handler that runs on every rustc-wrapper call — for the whole
-/// duration. Prompting in particular is unbounded: it waits on a human.
+/// SQLite connections do not exclude other openers. This phase separation
+/// keeps registry work and any write transaction outside directory sizing,
+/// prompting, and deletion, which can take an unbounded amount of time.
+/// The original #1681 fix addressed redb's now-removed exclusive-open lock.
 ///
 /// Pruning missing rows stays inside this short phase because it is the
 /// one registry write the scan needs, and it is bounded by the row

@@ -52,6 +52,13 @@ import time
 from pathlib import Path
 from typing import Callable, Mapping, NamedTuple
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 # Imported by the wrapper around EVERY Unix test, so keep it cheap to load:
 # NamedTuple rather than dataclasses (whose `inspect` import alone costs ~8 ms
 # per test), and rarely used modules are imported where they are needed.
@@ -244,7 +251,7 @@ def _mem_available(meminfo: str) -> int | None:
 
 def _vm_stat_available() -> int | None:
     try:
-        text = subprocess.run(
+        text = run_captured(
             ["/usr/bin/vm_stat"], capture_output=True, text=True, timeout=5, check=False
         ).stdout
     except (OSError, subprocess.TimeoutExpired):
@@ -483,7 +490,7 @@ def sample_tree(root: int) -> TreeSample | None:
 
     if not _IS_LINUX:
         try:
-            text = subprocess.run(
+            text = run_captured(
                 ["/bin/ps", "-A", "-o", "pid=,ppid=,rss="],
                 capture_output=True,
                 text=True,

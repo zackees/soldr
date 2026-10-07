@@ -43,6 +43,13 @@ from release_artifacts import (
     version_json_status,
 )
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 # soldr#1202: real soldr is ~13-15 MB on every platform. Two MiB is far below
 # that and far above any conceivable stub, so it rejects the regression
 # without becoming a size assertion nobody can maintain.
@@ -135,7 +142,7 @@ def find_pdb(extract_dir: Path) -> Path | None:
 
 
 def run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, capture_output=True, text=True, check=False)
+    return run_captured(command, capture_output=True, text=True, check=False)
 
 
 def smoke(args: argparse.Namespace) -> None:  # noqa: C901

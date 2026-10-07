@@ -55,6 +55,14 @@ import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 GIB = 1024**3
 FAMILY = "zccache-unit"
@@ -250,7 +258,7 @@ def trial_trim(
         env["ZCCACHE_CACHE_SIZE_BYTES"] = str(cap_bytes)
         env["SOLDR_CACHE_DIR"] = str(root)
         started = time.monotonic()
-        proc = subprocess.run(
+        proc = run_captured(
             [str(soldr), "gc", "maintain", "--root", str(root), "--json"],
             capture_output=True,
             text=True,
@@ -290,7 +298,7 @@ def trim_store(store: pathlib.Path, soldr: pathlib.Path, cap_bytes: int) -> dict
         env["ZCCACHE_CACHE_SIZE_BYTES"] = str(cap_bytes)
         env["SOLDR_CACHE_DIR"] = str(root)
         started = time.monotonic()
-        proc = subprocess.run(
+        proc = run_captured(
             [str(soldr), "gc", "maintain", "--root", str(root), "--json"],
             capture_output=True,
             text=True,

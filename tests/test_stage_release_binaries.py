@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from conftest import load_script_module
 from test_check_linked_libs import build_elf64
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 REPO_ROOT = Path(__file__).parents[1]
 SCRIPTS = REPO_ROOT / ".github" / "scripts"
@@ -249,8 +256,6 @@ def test_stage_debug_symbols_requires_the_binary_already_staged(
 
 
 def test_run_tool_wraps_a_failing_command_in_a_staging_error() -> None:
-    import sys
-
     with pytest.raises(stage.StagingError, match="exit 3"):
         stage.run_tool([sys.executable, "-c", "import sys; sys.exit(3)"])
 
@@ -661,7 +666,7 @@ def build_foreign_binary(tmp_path: Path, clang_target: str, name: str) -> Path |
     source = tmp_path / "probe.c"
     source.write_text("int probe(int x){return x*37+11;}\n", encoding="utf-8")
     artifact = tmp_path / name
-    result = subprocess.run(
+    result = run_captured(
         [
             clang,
             f"--target={clang_target}",
@@ -704,7 +709,7 @@ def test_selected_tool_reads_a_real_foreign_binary_the_host_one_rejects(
     if artifact is None:
         pytest.skip(f"clang cannot target {clang_target} here")
 
-    host_attempt = subprocess.run(
+    host_attempt = run_captured(
         ["objcopy", "--only-keep-debug", str(artifact), str(tmp_path / "host.debug")],
         capture_output=True,
         text=True,

@@ -20,8 +20,15 @@ local check stays green.
 
 from __future__ import annotations
 
-import subprocess
+import sys
 from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,7 +46,7 @@ ILLEGAL_CHARS = set('<>:"|?*')
 
 
 def tracked_paths() -> list[str]:
-    out = subprocess.run(
+    out = run_captured(
         ["git", "ls-files", "-z"],
         cwd=REPO_ROOT,
         check=True,

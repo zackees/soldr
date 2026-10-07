@@ -28,6 +28,12 @@ import subprocess
 import sys
 import time
 from typing import Any
+from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import run_captured  # noqa: E402 -- source-relative bootstrap precedes this import
 
 Check = dict[str, Any]
 
@@ -36,7 +42,7 @@ DONE_BUCKETS = {"pass", "skipping"}
 
 
 def run_gh(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["gh", *args], text=True, capture_output=True, check=False)
+    return run_captured(["gh", *args], text=True, capture_output=True, check=False)
 
 
 def fetch_checks(pr: str, repo: str | None) -> list[Check]:

@@ -62,10 +62,17 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Iterable
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 BOT_EMAIL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^github-actions\[bot\]@", re.IGNORECASE),
@@ -84,7 +91,7 @@ def is_bot(email: str) -> bool:
 
 def walk_main_commits(limit: int, ref: str) -> Iterable[tuple[int, str]]:
     """Yield `(unix_ts, author_email)` for the most recent `limit` commits on `ref`."""
-    proc = subprocess.run(
+    proc = run_captured(
         ["git", "log", f"-n{limit}", "--format=%at|%ae", ref],
         capture_output=True,
         text=True,

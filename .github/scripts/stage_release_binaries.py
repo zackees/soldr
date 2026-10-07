@@ -56,11 +56,17 @@ import importlib.util
 import os
 import platform
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 from release_artifacts import binary_suffix
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 # Loaded with importlib.util.spec_from_file_location rather than a package
 # import: this script lives in `.github/scripts/` and `check_linked_libs.py`
@@ -334,7 +340,7 @@ def select_binutils(target: str) -> tuple[str, str]:
 
 def run_tool(args: list[str]) -> None:
     """Run one objcopy/strip step, folding output into a StagingError."""
-    completed = subprocess.run(args, capture_output=True, text=True, check=False)
+    completed = run_captured(args, capture_output=True, text=True, check=False)
     if completed.returncode != 0:
         raise StagingError(
             f"{' '.join(args)} failed (exit {completed.returncode}):\n"
@@ -534,8 +540,7 @@ def stage_debug_symbols(  # noqa: C901
             copy_or_link(binary, daemon)
             mark_executable(daemon)
             print(
-                f"{daemon.name} was not byte-identical to the stripped "
-                f"{binary.name}; re-derived it"
+                f"{daemon.name} was not byte-identical to the stripped {binary.name}; re-derived it"
             )
         elif daemon.is_file():
             print(

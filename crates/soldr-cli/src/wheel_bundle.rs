@@ -38,6 +38,7 @@ use crate::core::SoldrError;
 
 /// The staging helper, byte-for-byte the PEP 517 backend's own module.
 const BUNDLE_BINS_PY: &str = include_str!("../../../src/soldr/_bundle_bins.py");
+const PROCESS_CAPTURE_PY: &str = include_str!("../../../src/soldr/_process.py");
 
 /// How the bins are built so they match the extension.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -199,14 +200,14 @@ pub(crate) fn stage_requested(wheel: &Path) -> Result<(), SoldrError> {
         ))
     };
     let soldr = std::env::current_exe().map_err(|error| failure(error.to_string()))?;
-    let mut script = tempfile::Builder::new()
+    let scripts = tempfile::Builder::new()
         .prefix("soldr-bundle-bins-")
-        .suffix(".py")
-        .tempfile()
+        .tempdir()
         .map_err(|error| failure(error.to_string()))?;
-    std::io::Write::write_all(&mut script, BUNDLE_BINS_PY.as_bytes())
+    let script = scripts.path().join("_bundle_bins.py");
+    std::fs::write(&script, BUNDLE_BINS_PY).map_err(|error| failure(error.to_string()))?;
+    std::fs::write(scripts.path().join("_process.py"), PROCESS_CAPTURE_PY)
         .map_err(|error| failure(error.to_string()))?;
-    let script = script.into_temp_path();
     let args = stage_args(&script, wheel, &soldr, &request);
     for python in python_candidates() {
         // The interpreter's `soldr build` children are soldr's own sequential

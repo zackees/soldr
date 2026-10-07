@@ -1,3 +1,10 @@
+/// Cook operations open the store and may perform three sequential queries.
+/// Each SQLite operation can spend the required writer-contention budget;
+/// retain a separate transport allowance without changing ordinary IPC deadlines.
+const COOK_REPLY_TIMEOUT: Duration =
+    crate::cache_lib::state_store::REQUIRED_BUSY_TIMEOUT.saturating_mul(4)
+        .saturating_add(REPLY_TIMEOUT);
+
 /// PR 1 cook-index client surface (#576). PR 2 (`soldr cook`) and PR 3
 /// (cargo-front-door pre-flight) consume these; PR 1 ships dormant so
 /// the helpers here are unused outside integration tests.
@@ -53,7 +60,7 @@ pub fn cook_lookup_with_branch_lineage(
         origin_url_normalized,
         branch_lineage,
     };
-    match submit_request(sock_path, &req)? {
+    match submit_request_with_timeout(sock_path, &req, COOK_REPLY_TIMEOUT)? {
         Response::CookHit {
             sha256,
             path,
@@ -203,7 +210,7 @@ pub fn cook_record_with_branch_timing(
         compile_duration_ms,
         save_elapsed_ms,
     };
-    match submit_request(sock_path, &req)? {
+    match submit_request_with_timeout(sock_path, &req, COOK_REPLY_TIMEOUT)? {
         Response::Ack => Ok(()),
         Response::Error(msg) => Err(ClientError::Protocol(msg)),
         other => Err(ClientError::Protocol(format!(

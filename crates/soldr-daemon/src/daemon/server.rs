@@ -368,10 +368,8 @@ impl State {
     }
 
     fn status(&self) -> StatusInfo {
-        // Serialization of concurrent redb opens against `state.sqlite3`
-        // is handled inside `cook_index::stats` itself via the shared
-        // `redb_lock::state_db_open_lock` (#608) — no extra mutex
-        // needed here.
+        // SQLite WAL allows this read alongside other connections;
+        // no process-wide open mutex is involved.
         let (entries, total_bytes) = cook_index::stats(&self.db_path).unwrap_or((0, 0));
         let (compile_jobs, compile_jobs_source) =
             crate::compile_limit::wire_pair(self.compile_service.applied_jobs());

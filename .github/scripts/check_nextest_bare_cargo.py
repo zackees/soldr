@@ -3,9 +3,15 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
+
+# Dependency-free capture also works when this script is invoked by absolute path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PATTERN = r'Command\s*::\s*new\s*\(\s*"cargo"\s*\)'
@@ -28,7 +34,7 @@ def ripgrep_bare_cargo(repo_root: Path = REPO_ROOT) -> tuple[str, ...]:
         PATTERN,
         *(str(root) for root in roots),
     ]
-    result = subprocess.run(
+    result = run_captured(
         command,
         cwd=repo_root,
         text=True,

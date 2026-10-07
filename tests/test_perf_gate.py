@@ -16,12 +16,18 @@ all six outcomes, plus the bot classifier the signal depends on.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 from conftest import load_script_module
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 SCRIPT = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "perf_gate.py"
 
@@ -75,7 +81,7 @@ def _git(repo: Path, *args: str, env: "dict[str, str] | None" = None) -> str:
     import os
 
     full_env = {**os.environ, **(env or {})}
-    return subprocess.run(
+    return run_captured(
         ["git", *args],
         cwd=repo,
         check=True,

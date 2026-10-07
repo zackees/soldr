@@ -33,8 +33,16 @@ import argparse
 import json
 import re
 import statistics
-import subprocess
+import sys
 from datetime import datetime
+from pathlib import Path
+
+# Dependency-free capture also works when this script is invoked by absolute path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    checked_output,
+)
 
 PAGE_SIZE = 100
 EVENT_WINDOW_SECONDS = 120
@@ -46,7 +54,7 @@ class GhAPI:
         cmd = ["gh", "api", "--method", "GET", endpoint]
         for key, value in (params or {}).items():
             cmd += ["-f", f"{key}={value}"]
-        return json.loads(subprocess.check_output(cmd, text=True))
+        return json.loads(checked_output(cmd, text=True))
 
 
 def parse_parent_receipt(title, run_id):

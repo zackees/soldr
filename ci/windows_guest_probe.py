@@ -25,6 +25,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 import urllib.request
@@ -32,6 +33,13 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 # Upstream dockur/windows v6.03, commit f6fcb46958fb9635df49e2af09f7c800b65a89e3.
 # Pin the published multi-arch image digest, not the moving tag or stale fork.
@@ -346,7 +354,7 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 def _run(
     *args: str, check: bool = True, capture: bool = False
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, check=check, text=True, capture_output=capture)
+    return run_captured(args, check=check, text=True, capture_output=capture)
 
 
 def _fetch_pinned(

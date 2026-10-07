@@ -26,6 +26,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, cast
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / ".github" / "scripts"
 if str(SCRIPTS) not in sys.path:
@@ -177,7 +184,7 @@ def run(
     """
 
     try:
-        completed = subprocess.run(
+        completed = run_captured(
             command,
             cwd=cwd,
             env=env,

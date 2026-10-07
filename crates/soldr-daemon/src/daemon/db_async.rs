@@ -171,8 +171,8 @@ mod tests {
     //
     // The IPC handlers are `async`, so a sync `db::*` call in one runs on
     // the worker that is polling the connection. Those calls are not
-    // "short transactions": the *open* alone waits up to 5 s for another
-    // process to release redb's file lock, which parks the worker and
+    // "short transactions": a SQLite write waits up to 5 s for another
+    // transaction to release its writer lock, which parks the worker and
     // stalls every other connection the runtime is serving — the very
     // thing soldr#1669 moved the event batcher's writes to avoid.
     //

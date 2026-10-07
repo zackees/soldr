@@ -21,10 +21,16 @@ from __future__ import annotations
 
 import argparse
 import platform
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
 
 # The env keys that name an executable the build will later invoke. A path
 # exported under any of these has to run on this host.
@@ -70,7 +76,7 @@ def is_executable_here(path: str) -> tuple[bool, str]:
     different thing entirely -- the binary ran -- so it is not a failure here.
     """
     try:
-        completed = subprocess.run(
+        completed = run_captured(
             [path, "--version"],
             capture_output=True,
             timeout=60,
@@ -87,7 +93,7 @@ def check(soldr: str, target: str) -> int:
         env_file = Path(scratch) / "prepared.env"
         env_file.touch()
         print(f"$ {soldr} prepare --target {target} --github-env {env_file}")
-        completed = subprocess.run(
+        completed = run_captured(
             [soldr, "prepare", "--target", target, "--github-env", str(env_file)],
             capture_output=False,
             check=False,

@@ -5,6 +5,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "perf" / "lib" / "cargo_units.py"
 
@@ -23,7 +30,7 @@ def write_log(path: Path, *, first_party_fresh: bool) -> None:
 
 
 def run(log: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_captured(
         [
             sys.executable,
             str(SCRIPT),

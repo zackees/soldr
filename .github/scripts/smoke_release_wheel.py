@@ -19,6 +19,13 @@ from pathlib import Path
 
 from release_artifacts import normalized_release_version, version_json_status
 
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
+)
+
 
 class WheelSmokeError(RuntimeError):
     """The release wheel cannot be installed or fails its CLI contract."""
@@ -62,7 +69,7 @@ def version_json_problem(output: str, expected_version: str) -> str | None:
 
 def run_cli(command: list[str]) -> str:
     try:
-        completed = subprocess.run(command, check=True, capture_output=True, text=True)
+        completed = run_captured(command, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as error:
         stderr = error.stderr.strip() if isinstance(error.stderr, str) else ""
         stdout = error.stdout.strip() if isinstance(error.stdout, str) else ""

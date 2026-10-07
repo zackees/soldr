@@ -11,13 +11,20 @@ the pure/subprocess-only surfaces this module exposes.
 
 import json
 import os
-import subprocess
+import sys
 from pathlib import Path
 
 from conftest import (
     assert_recovery_verify_collected_contract,
     load_script_module,
     write_collected_recovery_summary,
+)
+
+# Use regular-file capture without an installed Python dependency.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# pylint: disable-next=wrong-import-position
+from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes this import
+    run_captured,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -87,8 +94,7 @@ def test_guest_script_samples_memory_around_nextest_run() -> None:
     stop = script.index('kill "$MEM_SAMPLER_PID" 2>/dev/null')
     assert script.index("mem_sample() {") < start < run < stop
     assert (
-        f"( while :; do sleep {MODULE.MEM_SAMPLE_SECS} >/dev/null 2>&1; "
-        "mem_sample; done ) &"
+        f"( while :; do sleep {MODULE.MEM_SAMPLE_SECS} >/dev/null 2>&1; mem_sample; done ) &"
     ) in script
     # Outside the continued nextest command, which comments would split.
     assert script.index('echo $? > "$WORK/nextest-run.rc"') < stop
@@ -108,7 +114,7 @@ def _run_mem_sample(tmp_path: Path, stub_dir: Path) -> str:
     )
     # Stubs shadow `sysctl`/`ps`; the text tools resolve from the real PATH.
     path = f"{stub_dir}{os.pathsep}{os.environ.get('PATH', '')}"
-    result = subprocess.run(
+    result = run_captured(
         ["sh", str(runner)],
         capture_output=True,
         text=True,
@@ -164,8 +170,7 @@ def test_mem_sample_reports_macos_memory_probes(tmp_path: Path) -> None:
     assert "reclaim_spec/purge/ext=1/2/100M" in line
     assert "comp=300M" in line
     assert (
-        "procs=7 daemon=1/10M broker=2/350M soldr=1/500M rustup=1/4M"
-        " cargo=0/0M rustc=1/2048M"
+        "procs=7 daemon=1/10M broker=2/350M soldr=1/500M rustup=1/4M cargo=0/0M rustc=1/2048M"
     ) in line
     assert "top=[rustc:2048M soldr:500M soldr-broker:200M ]" in line
     assert "swap_used=1024.00M" in line
@@ -229,7 +234,7 @@ def test_no_case_statement_inside_a_command_substitution() -> None:
 def test_build_guest_script_is_valid_posix_sh_syntax() -> None:
     """`bash -n` catches gross syntax breakage even though this is /bin/sh."""
     script = MODULE.build_guest_script()
-    result = subprocess.run(
+    result = run_captured(
         ["bash", "-n", "/dev/stdin"],
         input=script,
         capture_output=True,
@@ -398,8 +403,8 @@ def test_executor_contract_matches_the_emitted_guest_program() -> None:
     for block in (selected, run):
         assert f'FILTER=$(cat "{filter_contract["source_file"]}")' in block
         assert (
-            f"{filter_contract['argument']} "
-            f'"{filter_contract["expression_variable"]}"' in block
+            f'{filter_contract["argument"]} "{filter_contract["expression_variable"]}"'
+            in block
         )
     assert_arguments(selected, contract["nextest"]["selected_list_arguments"])
     assert_arguments(run, contract["nextest"]["run_arguments"])
