@@ -204,4 +204,4 @@ cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo
 # soldr#3604: existing real-compiler save/load fixture with relocated roots.
 [task.cache-snapshot-acceptance]
 stack = "cook"
-cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test toolchain_env --run-ignored only -E 'test(=cli_save::save_ci_load_preserves_real_warm_rustc_hits)'"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test toolchain_env --run-ignored only --success-output final -E 'test(=cli_save::save_ci_load_preserves_real_warm_rustc_hits)'"
