@@ -60,6 +60,10 @@ cmd = "cd /repo && python3 .github/scripts/platform_cfg_boundary_ratchet.py"
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo fmt --all"
 
+[task.cache-projection-acceptance]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cache --lib -E 'test(/^cache_lib::save::tests::projected_snapshot_/)'"
+
 [task.ci-test-acceptance]
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test guards -E 'test(/^cli_ci_test::/)'"
