@@ -43,6 +43,10 @@ impl CacheProjection<'_> {
             relative.starts_with(self.exclude_prefix) || relative.starts_with(self.archive_prefix)
         })
     }
+
+    fn protects_manifest_path(&self, path: &str) -> bool {
+        manifest_rel_to_path(path).is_ok_and(|relative| relative.starts_with(self.exclude_prefix))
+    }
 }
 
 fn walk_cache_with_projection(
@@ -55,7 +59,6 @@ fn walk_cache_with_projection(
     let Some(projection) = projection else {
         return Ok(walk);
     };
-    projection.validate(cache_dir)?;
     let mut retained = Vec::new();
     for source in walk.included_paths {
         if projection.excludes(cache_dir, &source) {
@@ -71,14 +74,14 @@ fn walk_cache_with_projection(
         walk.excluded_files += u64::from(excluded);
         !excluded
     });
-    let projected = walk_cache_files_for_profile(projection.source, threads, profile)?;
-    if !projected.symlinks.is_empty() || projected.skipped_symlinks != 0 {
+    // The producer's directory is opaque: profile rules for Cargo trees must
+    // not prune staged output names or invalidate the producer's own index.
+    let (projected, symlinks) = walk_cache_files(projection.source, threads)?;
+    if !symlinks.is_empty() {
         return Err(SaveLoadError::BadArchivePath(
             "projected immutable directory must not contain symlinks".into(),
         ));
     }
-    walk.included_paths.extend(projected.included_paths);
-    walk.excluded_files += projected.excluded_files;
-    walk.excluded_bytes = walk.excluded_bytes.saturating_add(projected.excluded_bytes);
+    walk.included_paths.extend(projected);
     Ok(walk)
 }

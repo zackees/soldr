@@ -366,6 +366,7 @@ pub fn save_delta_with_projection(
         .cache_files
         .iter()
         .filter(|entry| !manifest_path_is_daemon_runtime(&entry.path))
+        .filter(|entry| !projection.is_some_and(|projection| projection.protects_manifest_path(&entry.path)))
         .map(|entry| (entry.path.as_str(), entry))
         .collect();
     let current_by_path: BTreeMap<&str, (&CacheFile, &PathBuf, &std::fs::Metadata)> =
@@ -408,7 +409,9 @@ pub fn save_delta_with_projection(
         .collect();
     for base_link in &opts.base_manifest.cache_symlinks {
         let path = base_link.path.as_str();
-        if manifest_path_is_daemon_runtime(path) {
+        if manifest_path_is_daemon_runtime(path)
+            || projection.is_some_and(|projection| projection.protects_manifest_path(path))
+        {
             continue;
         }
         if !current_symlink_paths.contains(path) && !current_paths.contains(path) {
