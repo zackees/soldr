@@ -821,7 +821,7 @@ fn derive_identity() -> HostIdentity {
     identity_for_route(route.as_deref())
 }
 
-fn identity_for_route(route: Option<&str>) -> HostIdentity {
+pub(super) fn identity_for_route(route: Option<&str>) -> HostIdentity {
     let id = match route {
         Some(route) => format!("embedded-v1-{route}"),
         // Direct test helpers without a registered broker route still need a
@@ -841,13 +841,6 @@ fn identity_for_route(route: Option<&str>) -> HostIdentity {
 pub fn embedded_version_root(paths: &SoldrPaths) -> PathBuf {
     private_zccache_cache_root(paths, &derive_identity())
         .join(zccache::core::config::versioned_subdir())
-}
-
-/// Snapshot transport selects a root explicitly, independently of CLI env.
-pub fn embedded_snapshot_root(paths: &SoldrPaths) -> std::io::Result<PathBuf> {
-    let route = crate::daemon::backend_handle_adoption::broker_service_name_at(paths)?;
-    Ok(private_zccache_cache_root(paths, &identity_for_route(Some(&route)))
-        .join(zccache::core::config::versioned_subdir()))
 }
 
 pub fn embedded_compile_journal_path(paths: &SoldrPaths) -> PathBuf {
@@ -977,7 +970,7 @@ pub use legacy::{measure_retired_stores, RetiredStoresUsage};
 // (`#![cfg(unix)]`) — creating a dangling link is inherently host-specific
 // (#2493).
 
-fn private_zccache_cache_root(paths: &SoldrPaths, identity: &HostIdentity) -> std::path::PathBuf {
+pub(super) fn private_zccache_cache_root(paths: &SoldrPaths, identity: &HostIdentity) -> std::path::PathBuf {
     paths
         .cache
         .join("zccache")

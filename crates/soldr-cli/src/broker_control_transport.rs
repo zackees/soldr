@@ -21,6 +21,13 @@ use crate::broker_server::{
 };
 
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+const SELECTED_ROUTE_MARKER: &str = "<broker-selected-route>";
+
+/// Opaque broker route marker, never a private daemon endpoint.
+pub(crate) fn selected_route_marker(paths: &crate::core::SoldrPaths) -> io::Result<std::path::PathBuf> {
+    let route = crate::daemon::backend_handle_adoption::broker_service_name_at(paths)?;
+    Ok(Path::new(SELECTED_ROUTE_MARKER).join(route))
+}
 
 pub(crate) fn install() -> Result<(), &'static str> {
     crate::daemon::client::install_control_connector(Arc::new(BrokerControlConnector))
@@ -31,13 +38,16 @@ struct BrokerControlConnector;
 impl crate::daemon::client::ControlConnector for BrokerControlConnector {
     fn connect(
         &self,
-        _endpoint_marker: &Path,
+        endpoint_marker: &Path,
         timeout: Duration,
     ) -> io::Result<crate::daemon::client::BoxedControlStream> {
         // Route derivation may hash a freshly-built daemon image. Complete it
         // before connecting so the broker's post-connect first-frame deadline
         // measures transport responsiveness, not client-side preparation.
-        let service_name = crate::daemon::backend_handle_adoption::broker_service_name()?;
+        let service_name = match endpoint_marker.strip_prefix(SELECTED_ROUTE_MARKER) {
+            Ok(route) => route.to_str().ok_or_else(|| io::Error::other("invalid broker route"))?.to_owned(),
+            Err(_) => crate::daemon::backend_handle_adoption::broker_service_name()?,
+        };
         let endpoint =
             crate::broker_identity::ResolvedBrokerEndpoint::resolve().map_err(io::Error::other)?;
         // A replacement broker performs one exact BackendHandle verification

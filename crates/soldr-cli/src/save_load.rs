@@ -182,7 +182,8 @@ fn quiesce_embedded_state_before_save(cache_dir: &Path) -> Result<(), String> {
         return Ok(());
     };
 
-    let sock = crate::daemon::server::server_sock_path(&paths);
+    let sock = crate::broker_control_transport::selected_route_marker(&paths)
+        .map_err(|error| error.to_string())?;
     match crate::daemon::client::flush_caches(&sock) {
         Ok(report) if report.is_complete() => {}
         Ok(report) => Err(format!(

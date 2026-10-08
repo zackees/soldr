@@ -9,6 +9,13 @@ use zccache::artifact::snapshot::{export_store_snapshot, import_snapshot, Snapsh
 pub const ARCHIVE_PREFIX: &str = "zccache/compiler-snapshot-v1";
 pub const PRIVATE_PREFIX: &str = "zccache/daemon-state";
 
+fn selected_store(paths: &SoldrPaths) -> io::Result<std::path::PathBuf> {
+    let route = crate::daemon::backend_handle_adoption::broker_service_name_at(paths)?;
+    let identity = crate::zccache_embedded::identity_for_route(Some(&route));
+    Ok(crate::zccache_embedded::private_zccache_cache_root(paths, &identity)
+        .join(zccache::core::config::versioned_subdir()))
+}
+
 fn compatibility() -> String {
     // Store format compatibility is separate from compiler compatibility:
     // the backend still checks each compiler context when replaying an object.
@@ -23,7 +30,7 @@ fn compatibility() -> String {
 
 /// The caller must checkpoint and gracefully stop the selected daemon first.
 pub fn export(paths: &SoldrPaths, destination: &Path) -> io::Result<Option<SnapshotReceipt>> {
-    let source = crate::zccache_embedded::embedded_snapshot_root(paths)?;
+    let source = selected_store(paths)?;
     if !source.exists() {
         return Ok(None);
     }
@@ -32,6 +39,6 @@ pub fn export(paths: &SoldrPaths, destination: &Path) -> io::Result<Option<Snaps
 
 /// Import before daemon startup. Existing destination stores are never replaced.
 pub fn import(paths: &SoldrPaths, source: &Path) -> io::Result<SnapshotReceipt> {
-    let destination = crate::zccache_embedded::embedded_snapshot_root(paths)?;
+    let destination = selected_store(paths)?;
     import_snapshot(source, &compatibility(), &destination)
 }
