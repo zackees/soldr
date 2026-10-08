@@ -299,6 +299,7 @@ fn ns_to_systime(ns: i64) -> SystemTime {
 }
 
 include!("save_inventory.rs");
+include!("save_projection.rs");
 include!("save_archive.rs");
 include!("load_extract.rs");
 include!("load_replay.rs");

@@ -259,6 +259,11 @@ fn save_ci_load_preserves_real_warm_rustc_hits() {
         .arg("--out")
         .arg(&archive);
     let save_output = run_command(save, "soldr save --ci");
+    println!(
+        "save transport receipt: stdout={} stderr={}",
+        String::from_utf8_lossy(&save_output.stdout),
+        String::from_utf8_lossy(&save_output.stderr)
+    );
     let save_json: Value = serde_json::from_slice(&save_output.stdout).expect("parse save json");
     assert_eq!(save_json["profile"], "ci");
     assert!(
@@ -293,7 +298,12 @@ fn save_ci_load_preserves_real_warm_rustc_hits() {
         .arg(&warm_cache)
         .arg("--workspace")
         .arg(&workspace);
-    run_command(load, "soldr load ci archive");
+    let load_output = run_command(load, "soldr load ci archive");
+    println!(
+        "load transport receipt: stdout={} stderr={}",
+        String::from_utf8_lossy(&load_output.stdout),
+        String::from_utf8_lossy(&load_output.stderr)
+    );
     assert!(
         !warm_cache.join("zccache/runtime-binaries/zccache").exists(),
         "ci load must not restore zccache runtime binaries"

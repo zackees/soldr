@@ -760,6 +760,13 @@ fn cache_file_entry(
     let rel = abs
         .strip_prefix(cache_dir)
         .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
+    cache_file_entry_at(abs, rel)
+}
+
+fn cache_file_entry_at(
+    abs: &Path,
+    rel: &Path,
+) -> Result<Option<(CacheFile, std::fs::Metadata)>> {
     let meta = match std::fs::metadata(abs) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

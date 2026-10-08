@@ -102,9 +102,28 @@ fn validate_save_inputs(opts: &SaveOptions<'_>) -> Result<()> {
 /// When [`SaveOptions::mtimes_only`] is `true`, the cache walk is skipped
 /// entirely and the archive contains only `SOLDR_MANIFEST.pb`. That mode
 /// requires `workspace` to be `Some` — there is nothing else to snapshot.
-#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
+    save_with_projection(opts, None)
+}
+
+/// Save through the existing archive writer with an optional immutable subtree.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
+pub fn save_with_projection(
+    opts: &SaveOptions<'_>,
+    projection: Option<&CacheProjection<'_>>,
+) -> Result<SaveReport> {
     validate_save_inputs(opts)?;
+    if let Some(projection) = projection {
+        let cache_dir = opts.cache_dir.ok_or_else(|| {
+            SaveLoadError::BadArchivePath("cache projection requires a cache directory".into())
+        })?;
+        projection.validate(cache_dir)?;
+    }
+    if projection.is_some() && opts.mtimes_only {
+        return Err(SaveLoadError::BadArchivePath(
+            "manifest-only save cannot project cache contents".into(),
+        ));
+    }
     let start = std::time::Instant::now();
 
     // Build the manifest (parallel hash if a workspace is provided)
@@ -145,7 +164,7 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
                     }
                     match opts.cache_dir {
                         Some(dir) if dir.exists() => {
-                            walk_cache_files_for_profile(dir, opts.threads, opts.profile)
+                            walk_cache_with_projection(dir, opts.threads, opts.profile, projection)
                         }
                         _ => Ok(CacheWalk::default()),
                     }
@@ -161,13 +180,13 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
     // tar append below can never zip a surviving path against another
     // file's metadata (#3533).
     let cache_manifest_entries =
-        build_cache_manifest_entries(&pool, opts.cache_dir, &cache_files_paths)?;
+        build_cache_manifest_entries(&pool, opts.cache_dir, &cache_files_paths, projection)?;
     let mut cache_manifest_files = Vec::with_capacity(cache_manifest_entries.len());
-    let mut cache_tar_entries: Vec<(PathBuf, std::fs::Metadata)> =
+    let mut cache_tar_entries: Vec<(PathBuf, String, std::fs::Metadata)> =
         Vec::with_capacity(cache_manifest_entries.len());
     for (abs, entry, meta) in cache_manifest_entries {
+        cache_tar_entries.push((abs, entry.path.clone(), meta));
         cache_manifest_files.push(entry);
-        cache_tar_entries.push((abs, meta));
     }
 
     let manifest = Manifest {
@@ -246,11 +265,16 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
             let cache_dir = opts
                 .cache_dir
                 .expect("cache_tar_entries non-empty implies cache_dir was set");
-            for (abs, meta) in &cache_tar_entries {
+            for (abs, relative, meta) in &cache_tar_entries {
                 // Counts what actually landed in the archive: a file the
                 // daemon renamed away between the manifest pass and this
                 // append is skipped, not fatal, and not counted (#3533).
-                if append_cache_file_entry(&mut tar_builder, cache_dir, abs, meta)? {
+                let appended = if projection.is_some() {
+                    append_cache_file_entry_at(&mut tar_builder, abs, Path::new(relative), meta)?
+                } else {
+                    append_cache_file_entry(&mut tar_builder, cache_dir, abs, meta)?
+                };
+                if appended {
                     cache_files += 1;
                 }
             }
@@ -279,8 +303,19 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
     })
 }
 
-#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
+    save_delta_with_projection(opts, None)
+}
+
+/// Compare projected archive paths with the base using the same delta writer.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
+pub fn save_delta_with_projection(
+    opts: &SaveDeltaOptions<'_>,
+    projection: Option<&CacheProjection<'_>>,
+) -> Result<SaveReport> {
+    if let Some(projection) = projection {
+        projection.validate(opts.cache_dir)?;
+    }
     let start = std::time::Instant::now();
     let pool = build_pool(opts.threads)?;
 
@@ -309,7 +344,7 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
                 },
                 || -> Result<CacheWalk> {
                     if opts.cache_dir.exists() {
-                        walk_cache_files_for_profile(opts.cache_dir, opts.threads, opts.profile)
+                        walk_cache_with_projection(opts.cache_dir, opts.threads, opts.profile, projection)
                     } else {
                         Ok(CacheWalk::default())
                     }
@@ -324,7 +359,7 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
     // below can never pair a surviving path with another file's metadata
     // (#3533).
     let cache_manifest_entries =
-        build_cache_manifest_entries(&pool, Some(opts.cache_dir), &cache_files_paths)?;
+        build_cache_manifest_entries(&pool, Some(opts.cache_dir), &cache_files_paths, projection)?;
 
     let base_by_path: BTreeMap<&str, &CacheFile> = opts
         .base_manifest
@@ -349,7 +384,7 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
             }
             _ => {
                 delta_entries.push((*entry).clone());
-                delta_paths.push(((*abs).clone(), (*meta).clone()));
+                delta_paths.push(((*abs).clone(), entry.path.clone(), (*meta).clone()));
             }
         }
     }
@@ -412,7 +447,6 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
         opts.zstd_level,
         opts.threads,
         &manifest,
-        opts.cache_dir,
         &delta_paths,
     )?;
     let archive_bytes = std::fs::metadata(opts.out).map(|m| m.len()).unwrap_or(0);
@@ -441,6 +475,7 @@ fn build_cache_manifest_entries(
     pool: &rayon::ThreadPool,
     cache_dir: Option<&Path>,
     cache_files_paths: &[PathBuf],
+    projection: Option<&CacheProjection<'_>>,
 ) -> Result<Vec<(PathBuf, CacheFile, std::fs::Metadata)>> {
     let Some(cache_dir) = cache_dir else {
         return Ok(Vec::new());
@@ -449,7 +484,12 @@ fn build_cache_manifest_entries(
         cache_files_paths
             .par_iter()
             .filter_map(|abs| {
-                cache_file_entry(cache_dir, abs)
+                let result = match projection {
+                    Some(projection) => projection.relative_path(cache_dir, abs)
+                        .and_then(|relative| cache_file_entry_at(abs, &relative)),
+                    None => cache_file_entry(cache_dir, abs),
+                };
+                result
                     .transpose()
                     .map(|result| result.map(|(entry, meta)| (abs.clone(), entry, meta)))
             })
@@ -507,6 +547,15 @@ fn append_cache_file_entry<W: Write>(
     let rel = abs
         .strip_prefix(cache_dir)
         .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
+    append_cache_file_entry_at(tar_builder, abs, rel, meta)
+}
+
+fn append_cache_file_entry_at<W: Write>(
+    tar_builder: &mut tar::Builder<W>,
+    abs: &Path,
+    rel: &Path,
+    meta: &std::fs::Metadata,
+) -> Result<bool> {
     let mut archive_path = PathBuf::from(CACHE_DIR_NAME);
     archive_path.push(rel);
     let archive_path_str = rel_to_posix(&archive_path);
@@ -542,8 +591,7 @@ fn write_delta_archive(
     zstd_level: i32,
     threads: Option<usize>,
     manifest: &Manifest,
-    cache_dir: &Path,
-    cache_files_paths: &[(PathBuf, std::fs::Metadata)],
+    cache_files_paths: &[(PathBuf, String, std::fs::Metadata)],
 ) -> Result<()> {
     let manifest_bytes = encode_manifest(manifest)?;
     if let Some(parent) = out.parent() {
@@ -565,8 +613,8 @@ fn write_delta_archive(
 
         append_manifest_entry(&mut tar_builder, manifest, &manifest_bytes)?;
 
-        for (abs, meta) in cache_files_paths {
-            append_cache_file_entry(&mut tar_builder, cache_dir, abs, meta)?;
+        for (abs, relative, meta) in cache_files_paths {
+            append_cache_file_entry_at(&mut tar_builder, abs, Path::new(relative), meta)?;
         }
         tar_builder.finish().map_err(SaveLoadError::BareIo)?;
     }
