@@ -79,6 +79,7 @@ fn native_library_events(cache_root: &Path) -> Vec<Value> {
         .expect("canonical embedded logs entry");
     let journal =
         Path::new(logs["path"].as_str().expect("logs path")).join("compile_journal.jsonl");
+    println!("selected native compiler journal: {}", journal.display());
     fs::read_to_string(&journal)
         .unwrap_or_else(|err| panic!("read native journal {}: {err}", journal.display()))
         .lines()
@@ -270,6 +271,15 @@ fn save_ci_load_preserves_real_warm_rustc_hits() {
     );
 
     let cold_events = native_library_events(&cold_root);
+    let manifest = soldr_cli::cache_lib::save::read_manifest_from_archive(&archive)
+        .expect("read production save manifest");
+    let archived_indexes: Vec<_> = manifest
+        .cache_files
+        .iter()
+        .filter(|entry| entry.path.ends_with("/index.bin"))
+        .map(|entry| &entry.path)
+        .collect();
+    println!("archived compiler indexes: {archived_indexes:?}");
     assert!(
         cold_events.iter().any(|event| event["outcome"] == "miss"),
         "cold fixture must actually compile a cacheable library: {cold_events:#?}"
