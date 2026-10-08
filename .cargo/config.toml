@@ -20,3 +20,10 @@
 # such override and inherit the flag from here.
 [build]
 rustflags = ["--cfg", "tokio_unstable"]
+
+# Issue #362 development composition for setup-soldr's existing source-ref
+# installer. This exact backend tree passed its full declared local gate.
+# Replace this development override with a released exact dependency before
+# landing or releasing Soldr; it is not a production dependency policy.
+[patch.crates-io]
+zccache = { git = "https://github.com/zackees/zccache.git", rev = "797a9a2b9893c00f2279f979b928895c8407a48e" }

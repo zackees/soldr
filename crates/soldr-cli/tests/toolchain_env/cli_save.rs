@@ -101,9 +101,10 @@ fn u64_field(json: &Value, key: &str) -> u64 {
         .unwrap_or_else(|| panic!("missing numeric {key} in {json:#?}"))
 }
 
-fn load_real_compiler_archive(archive: &Path, cache_root: &Path, workspace: &Path) -> Output {
+fn load_real_compiler_archive(archive: &Path, cache_root: &Path, workspace: &Path, explicit_dir_only: bool) -> Output {
     let mut load = soldr_command(&["load", "--json"]);
-    load.env("SOLDR_CACHE_DIR", cache_root)
+    let ambient_root = cache_root.parent().expect("cache parent").join("ambient-unused-cache");
+    load.env("SOLDR_CACHE_DIR", if explicit_dir_only { &ambient_root } else { cache_root })
         .arg("--archive")
         .arg(archive)
         .arg("--cache-dir")
@@ -233,6 +234,16 @@ fn save_profile_env_selects_ci_when_flag_absent() {
 #[test]
 #[ignore = "two real compiler builds; bosn cache-snapshot-acceptance, soldr#3604"]
 fn save_ci_load_preserves_real_warm_rustc_hits() {
+    run_real_compiler_archive_case(false);
+}
+
+#[test]
+#[ignore = "two real compiler builds; bosn cache-snapshot-acceptance, ci.yml#362"]
+fn save_ci_load_preserves_real_warm_rustc_hits_with_explicit_cache_dir_only() {
+    run_real_compiler_archive_case(true);
+}
+
+fn run_real_compiler_archive_case(explicit_dir_only: bool) {
     let root = common::unique_temp_dir("save-ci-real-hits");
     let workspace = root.join("workspace");
     let cold_root = root.join("cold-cache-root");
@@ -256,6 +267,12 @@ fn save_ci_load_preserves_real_warm_rustc_hits() {
     let mut flush = soldr_command(&["cache", "flush", "--json"]);
     flush.env("SOLDR_CACHE_DIR", &cold_root);
     run_command(flush, "cold cache flush");
+    if explicit_dir_only {
+        // The canonical archive scenario shuts its cold daemon down first.
+        let mut shutdown = soldr_command(&["cache", "shutdown", "--json"]);
+        shutdown.env("SOLDR_CACHE_DIR", &cold_root);
+        run_command(shutdown, "cold cache shutdown before explicit-directory save");
+    }
 
     write(
         &cold_cache.join("zccache/runtime-binaries/zccache"),
@@ -263,7 +280,8 @@ fn save_ci_load_preserves_real_warm_rustc_hits() {
     );
 
     let mut save = soldr_command(&["save", "--ci", "--json", "--zstd-level", "1"]);
-    save.env("SOLDR_CACHE_DIR", &cold_root)
+    let ambient_root = root.join("ambient-unused-cache");
+    save.env("SOLDR_CACHE_DIR", if explicit_dir_only { &ambient_root } else { &cold_root })
         .arg("--cache-dir")
         .arg(&cold_cache)
         .arg("--workspace")
@@ -298,11 +316,15 @@ fn save_ci_load_preserves_real_warm_rustc_hits() {
         .collect();
     println!("archived compiler indexes: {archived_indexes:?}");
     assert!(
+        archived_indexes.iter().any(|path| path.as_str() == "zccache/compiler-snapshot-v1/index.bin"),
+        "explicit --cache-dir must publish the selected compiler store: {archived_indexes:?}"
+    );
+    assert!(
         cold_events.iter().any(|event| event["outcome"] == "miss"),
         "cold fixture must actually compile a cacheable library: {cold_events:#?}"
     );
 
-    let load_output = load_real_compiler_archive(&archive, &warm_root, &workspace);
+    let load_output = load_real_compiler_archive(&archive, &warm_root, &workspace, explicit_dir_only);
     println!(
         "load transport receipt: stdout={} stderr={}",
         String::from_utf8_lossy(&load_output.stdout),
@@ -343,7 +365,7 @@ fn save_ci_load_preserves_real_warm_rustc_hits() {
         "every warm cacheable-library invocation must hit: {warm_events:#?}"
     );
     // A second restore must preserve the already populated, quiescent store.
-    let repeated = load_real_compiler_archive(&archive, &warm_root, &workspace);
+    let repeated = load_real_compiler_archive(&archive, &warm_root, &workspace, explicit_dir_only);
     println!(
         "same-root load receipt: stdout={} stderr={}",
         String::from_utf8_lossy(&repeated.stdout),
