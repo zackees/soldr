@@ -25,19 +25,18 @@ impl PreparedSnapshot {
 /// Recognize only the Soldr cache layouts the archive transport supports.
 /// Generic archives retain their existing behavior and never stop an unrelated
 /// ambient daemon. All three transport phases use this same selection.
-pub(super) fn selected_paths(
-    cache_dir: &Path,
-) -> Result<Option<crate::core::SoldrPaths>, String> {
+pub(super) fn selected_paths(cache_dir: &Path) -> Result<Option<crate::core::SoldrPaths>, String> {
     let archive = super::path_for_containment(cache_dir)?;
     let cache = if archive.file_name().is_some_and(|name| name == "cache") {
         archive.clone()
     } else {
         archive.join("cache")
     };
-    if cache.join(backend::PRIVATE_PREFIX).is_dir()
-        || cache.join(backend::ARCHIVE_PREFIX).is_dir()
+    if cache.join(backend::PRIVATE_PREFIX).is_dir() || cache.join(backend::ARCHIVE_PREFIX).is_dir()
     {
-        let root = cache.parent().ok_or("Soldr cache has no parent directory")?;
+        let root = cache
+            .parent()
+            .ok_or("Soldr cache has no parent directory")?;
         return Ok(Some(crate::core::SoldrPaths::with_root(root.to_path_buf())));
     }
     let ambient = crate::core::SoldrPaths::new().map_err(|error| error.to_string())?;
@@ -126,7 +125,9 @@ mod tests {
         std::fs::create_dir_all(cache.join(backend::PRIVATE_PREFIX)).expect("private store");
         let expected = std::fs::canonicalize(&root).expect("canonical root");
         for archive in [&cache, &root] {
-            let paths = selected_paths(archive).expect("resolve").expect("owned root");
+            let paths = selected_paths(archive)
+                .expect("resolve")
+                .expect("owned root");
             assert_eq!(paths.root, expected);
         }
     }
@@ -136,8 +137,13 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temporary root");
         let cache = temporary.path().join("cache");
         std::fs::create_dir_all(cache.join(backend::ARCHIVE_PREFIX)).expect("portable store");
-        let paths = selected_paths(&cache).expect("resolve").expect("owned root");
-        assert_eq!(paths.cache, std::fs::canonicalize(cache).expect("canonical cache"));
+        let paths = selected_paths(&cache)
+            .expect("resolve")
+            .expect("owned root");
+        assert_eq!(
+            paths.cache,
+            std::fs::canonicalize(cache).expect("canonical cache")
+        );
     }
 
     #[test]

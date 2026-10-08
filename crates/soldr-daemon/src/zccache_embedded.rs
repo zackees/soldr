@@ -966,11 +966,12 @@ pub use legacy::sweep_legacy_cache_roots;
 use legacy::{derive_legacy_identity, select_legacy_candidate};
 pub use legacy::{measure_retired_stores, RetiredStoresUsage};
 
-// The broken-symlink retention test moved to `tests/daemon_zccache_embedded.rs`
-// (`#![cfg(unix)]`) — creating a dangling link is inherently host-specific
-// (#2493).
+// Broken-symlink retention is tested in `tests/daemon_zccache_embedded.rs` (#2493).
 
-pub(super) fn private_zccache_cache_root(paths: &SoldrPaths, identity: &HostIdentity) -> std::path::PathBuf {
+pub(super) fn private_zccache_cache_root(
+    paths: &SoldrPaths,
+    identity: &HostIdentity,
+) -> std::path::PathBuf {
     paths
         .cache
         .join("zccache")

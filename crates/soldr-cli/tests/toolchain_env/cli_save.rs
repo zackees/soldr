@@ -101,16 +101,31 @@ fn u64_field(json: &Value, key: &str) -> u64 {
         .unwrap_or_else(|| panic!("missing numeric {key} in {json:#?}"))
 }
 
-fn load_real_compiler_archive(archive: &Path, cache_root: &Path, workspace: &Path, explicit_dir_only: bool) -> Output {
+fn load_real_compiler_archive(
+    archive: &Path,
+    cache_root: &Path,
+    workspace: &Path,
+    explicit_dir_only: bool,
+) -> Output {
     let mut load = soldr_command(&["load", "--json"]);
-    let ambient_root = cache_root.parent().expect("cache parent").join("ambient-unused-cache");
-    load.env("SOLDR_CACHE_DIR", if explicit_dir_only { &ambient_root } else { cache_root })
-        .arg("--archive")
-        .arg(archive)
-        .arg("--cache-dir")
-        .arg(cache_root.join("cache"))
-        .arg("--workspace")
-        .arg(workspace);
+    let ambient_root = cache_root
+        .parent()
+        .expect("cache parent")
+        .join("ambient-unused-cache");
+    load.env(
+        "SOLDR_CACHE_DIR",
+        if explicit_dir_only {
+            &ambient_root
+        } else {
+            cache_root
+        },
+    )
+    .arg("--archive")
+    .arg(archive)
+    .arg("--cache-dir")
+    .arg(cache_root.join("cache"))
+    .arg("--workspace")
+    .arg(workspace);
     run_command(load, "soldr load ci archive")
 }
 
@@ -267,12 +282,6 @@ fn run_real_compiler_archive_case(explicit_dir_only: bool) {
     let mut flush = soldr_command(&["cache", "flush", "--json"]);
     flush.env("SOLDR_CACHE_DIR", &cold_root);
     run_command(flush, "cold cache flush");
-    if explicit_dir_only {
-        // The canonical archive scenario shuts its cold daemon down first.
-        let mut shutdown = soldr_command(&["cache", "shutdown", "--json"]);
-        shutdown.env("SOLDR_CACHE_DIR", &cold_root);
-        run_command(shutdown, "cold cache shutdown before explicit-directory save");
-    }
 
     write(
         &cold_cache.join("zccache/runtime-binaries/zccache"),
@@ -281,14 +290,25 @@ fn run_real_compiler_archive_case(explicit_dir_only: bool) {
 
     let mut save = soldr_command(&["save", "--ci", "--json", "--zstd-level", "1"]);
     let ambient_root = root.join("ambient-unused-cache");
-    save.env("SOLDR_CACHE_DIR", if explicit_dir_only { &ambient_root } else { &cold_root })
-        .arg("--cache-dir")
-        .arg(&cold_cache)
-        .arg("--workspace")
-        .arg(&workspace)
-        .arg("--out")
-        .arg(&archive);
+    save.env(
+        "SOLDR_CACHE_DIR",
+        if explicit_dir_only {
+            &ambient_root
+        } else {
+            &cold_root
+        },
+    )
+    .arg("--cache-dir")
+    .arg(&cold_cache)
+    .arg("--workspace")
+    .arg(&workspace)
+    .arg("--out")
+    .arg(&archive);
     let save_output = run_command(save, "soldr save --ci");
+    assert!(
+        String::from_utf8_lossy(&save_output.stderr).contains("quiesced"),
+        "save must quiesce the selected live daemon before exporting"
+    );
     println!(
         "save transport receipt: stdout={} stderr={}",
         String::from_utf8_lossy(&save_output.stdout),
@@ -316,7 +336,9 @@ fn run_real_compiler_archive_case(explicit_dir_only: bool) {
         .collect();
     println!("archived compiler indexes: {archived_indexes:?}");
     assert!(
-        archived_indexes.iter().any(|path| path.as_str() == "zccache/compiler-snapshot-v1/index.bin"),
+        archived_indexes
+            .iter()
+            .any(|path| path.as_str() == "zccache/compiler-snapshot-v1/index.bin"),
         "explicit --cache-dir must publish the selected compiler store: {archived_indexes:?}"
     );
     assert!(
@@ -324,7 +346,8 @@ fn run_real_compiler_archive_case(explicit_dir_only: bool) {
         "cold fixture must actually compile a cacheable library: {cold_events:#?}"
     );
 
-    let load_output = load_real_compiler_archive(&archive, &warm_root, &workspace, explicit_dir_only);
+    let load_output =
+        load_real_compiler_archive(&archive, &warm_root, &workspace, explicit_dir_only);
     println!(
         "load transport receipt: stdout={} stderr={}",
         String::from_utf8_lossy(&load_output.stdout),

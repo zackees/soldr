@@ -24,7 +24,9 @@ static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 const SELECTED_ROUTE_MARKER: &str = "<broker-selected-route>";
 
 /// Opaque broker route marker, never a private daemon endpoint.
-pub(crate) fn selected_route_marker(paths: &crate::core::SoldrPaths) -> io::Result<std::path::PathBuf> {
+pub(crate) fn selected_route_marker(
+    paths: &crate::core::SoldrPaths,
+) -> io::Result<std::path::PathBuf> {
     let route = crate::daemon::backend_handle_adoption::broker_service_name_at(paths)?;
     Ok(Path::new(SELECTED_ROUTE_MARKER).join(route))
 }
@@ -45,7 +47,10 @@ impl crate::daemon::client::ControlConnector for BrokerControlConnector {
         // before connecting so the broker's post-connect first-frame deadline
         // measures transport responsiveness, not client-side preparation.
         let service_name = match endpoint_marker.strip_prefix(SELECTED_ROUTE_MARKER) {
-            Ok(route) => route.to_str().ok_or_else(|| io::Error::other("invalid broker route"))?.to_owned(),
+            Ok(route) => route
+                .to_str()
+                .ok_or_else(|| io::Error::other("invalid broker route"))?
+                .to_owned(),
             Err(_) => crate::daemon::backend_handle_adoption::broker_service_name()?,
         };
         let endpoint =

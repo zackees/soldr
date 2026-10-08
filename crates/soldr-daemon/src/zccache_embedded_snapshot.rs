@@ -12,8 +12,10 @@ pub const PRIVATE_PREFIX: &str = "zccache/daemon-state";
 fn selected_store(paths: &SoldrPaths) -> io::Result<std::path::PathBuf> {
     let route = crate::daemon::backend_handle_adoption::broker_service_name_at(paths)?;
     let identity = crate::zccache_embedded::identity_for_route(Some(&route));
-    Ok(crate::zccache_embedded::private_zccache_cache_root(paths, &identity)
-        .join(zccache::core::config::versioned_subdir()))
+    Ok(
+        crate::zccache_embedded::private_zccache_cache_root(paths, &identity)
+            .join(zccache::core::config::versioned_subdir()),
+    )
 }
 
 fn compatibility() -> String {
