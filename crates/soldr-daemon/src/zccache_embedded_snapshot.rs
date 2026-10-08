@@ -23,7 +23,7 @@ fn compatibility() -> String {
 
 /// The caller must checkpoint and gracefully stop the selected daemon first.
 pub fn export(paths: &SoldrPaths, destination: &Path) -> io::Result<Option<SnapshotReceipt>> {
-    let source = crate::zccache_embedded::embedded_version_root(paths);
+    let source = crate::zccache_embedded::embedded_snapshot_root(paths)?;
     if !source.exists() {
         return Ok(None);
     }
@@ -32,6 +32,6 @@ pub fn export(paths: &SoldrPaths, destination: &Path) -> io::Result<Option<Snaps
 
 /// Import before daemon startup. Existing destination stores are never replaced.
 pub fn import(paths: &SoldrPaths, source: &Path) -> io::Result<SnapshotReceipt> {
-    let destination = crate::zccache_embedded::embedded_version_root(paths);
+    let destination = crate::zccache_embedded::embedded_snapshot_root(paths)?;
     import_snapshot(source, &compatibility(), &destination)
 }

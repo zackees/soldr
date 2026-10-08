@@ -178,11 +178,9 @@ fn archive_contains_embedded_cache(cache_dir: &Path, embedded_root: &Path) -> Re
 /// request graceful daemon shutdown and wait for the exact acknowledged
 /// generation. An unrelated `--cache-dir` never depends on the ambient daemon.
 fn quiesce_embedded_state_before_save(cache_dir: &Path) -> Result<(), String> {
-    let paths = crate::core::SoldrPaths::new().map_err(|error| error.to_string())?;
-    let embedded_root = crate::zccache_embedded::embedded_cache_root(&paths);
-    if !archive_contains_embedded_cache(cache_dir, &embedded_root)? {
+    let Some(paths) = snapshot::selected_paths(cache_dir)? else {
         return Ok(());
-    }
+    };
 
     let sock = crate::daemon::server::server_sock_path(&paths);
     match crate::daemon::client::flush_caches(&sock) {

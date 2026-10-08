@@ -120,6 +120,11 @@ pub fn broker_service_name() -> io::Result<String> {
         return Ok(service);
     }
     let paths = SoldrPaths::new().map_err(|err| io::Error::other(err.to_string()))?;
+    broker_service_name_at(&paths)
+}
+
+/// Resolve a selected root without inheriting another root's route override.
+pub fn broker_service_name_at(paths: &SoldrPaths) -> io::Result<String> {
     let current = std::env::current_exe()?;
     let sibling = current
         .parent()
@@ -135,8 +140,8 @@ pub fn broker_service_name() -> io::Result<String> {
             )
         })
         .unwrap_or_else(|| PathBuf::from("soldr-daemon"));
-    let daemon = resolve_daemon_image_for_route(&paths, sibling);
-    broker_service_name_for(&paths, &daemon)
+    let daemon = resolve_daemon_image_for_route(paths, sibling);
+    broker_service_name_for(paths, &daemon)
 }
 
 /// Pick the daemon image whose hash names the broker route.
