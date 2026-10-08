@@ -101,6 +101,18 @@ fn u64_field(json: &Value, key: &str) -> u64 {
         .unwrap_or_else(|| panic!("missing numeric {key} in {json:#?}"))
 }
 
+fn load_real_compiler_archive(archive: &Path, cache_root: &Path, workspace: &Path) -> Output {
+    let mut load = soldr_command(&["load", "--json"]);
+    load.env("SOLDR_CACHE_DIR", cache_root)
+        .arg("--archive")
+        .arg(archive)
+        .arg("--cache-dir")
+        .arg(cache_root.join("cache"))
+        .arg("--workspace")
+        .arg(workspace);
+    run_command(load, "soldr load ci archive")
+}
+
 #[test]
 fn save_ci_json_reports_profile_and_exclusions() {
     let (ws, cache, archive) = fixture("save-ci-json");
@@ -290,15 +302,7 @@ fn save_ci_load_preserves_real_warm_rustc_hits() {
         "cold fixture must actually compile a cacheable library: {cold_events:#?}"
     );
 
-    let mut load = soldr_command(&["load", "--json"]);
-    load.env("SOLDR_CACHE_DIR", &warm_root)
-        .arg("--archive")
-        .arg(&archive)
-        .arg("--cache-dir")
-        .arg(&warm_cache)
-        .arg("--workspace")
-        .arg(&workspace);
-    let load_output = run_command(load, "soldr load ci archive");
+    let load_output = load_real_compiler_archive(&archive, &warm_root, &workspace);
     println!(
         "load transport receipt: stdout={} stderr={}",
         String::from_utf8_lossy(&load_output.stdout),
@@ -337,5 +341,12 @@ fn save_ci_load_preserves_real_warm_rustc_hits() {
     assert!(
         warm_events.iter().all(|event| event["outcome"] == "hit"),
         "every warm cacheable-library invocation must hit: {warm_events:#?}"
+    );
+    // A second restore must preserve the already populated, quiescent store.
+    let repeated = load_real_compiler_archive(&archive, &warm_root, &workspace);
+    println!(
+        "same-root load receipt: stdout={} stderr={}",
+        String::from_utf8_lossy(&repeated.stdout),
+        String::from_utf8_lossy(&repeated.stderr)
     );
 }
