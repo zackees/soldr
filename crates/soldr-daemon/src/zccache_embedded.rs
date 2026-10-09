@@ -578,14 +578,17 @@ fn prepare_embedded_cache_root(
     Ok(())
 }
 
+/// Artifact-budget env names (upstream's are `pub(crate)`); the daemon spawn
+/// allowlist forwards them by path (soldr#3503).
+pub(crate) const CACHE_SIZE_BYTES_ENV: &str = "ZCCACHE_CACHE_SIZE_BYTES";
+pub(crate) const CACHE_SIZE_PERCENT_ENV: &str = "ZCCACHE_CACHE_SIZE_PERCENT";
+
 fn disk_cache_limits_from_env(
 ) -> Result<(DiskCacheLimits, EmbeddedDiskPolicy), EmbeddedServiceError> {
-    const BYTES_ENV: &str = "ZCCACHE_CACHE_SIZE_BYTES";
-    const PERCENT_ENV: &str = "ZCCACHE_CACHE_SIZE_PERCENT";
-    let bytes_raw = std::env::var(BYTES_ENV)
+    let bytes_raw = std::env::var(CACHE_SIZE_BYTES_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty());
-    let percent_raw = std::env::var(PERCENT_ENV)
+    let percent_raw = std::env::var(CACHE_SIZE_PERCENT_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty());
     disk_cache_limits_from_values(bytes_raw.as_deref(), percent_raw.as_deref())
@@ -595,39 +598,37 @@ fn disk_cache_limits_from_values(
     bytes_raw: Option<&str>,
     percent_raw: Option<&str>,
 ) -> Result<(DiskCacheLimits, EmbeddedDiskPolicy), EmbeddedServiceError> {
-    const BYTES_ENV: &str = "ZCCACHE_CACHE_SIZE_BYTES";
-    const PERCENT_ENV: &str = "ZCCACHE_CACHE_SIZE_PERCENT";
     if bytes_raw.is_some() && percent_raw.is_some() {
         return Err(EmbeddedServiceError::Start(format!(
-            "{BYTES_ENV} and {PERCENT_ENV} are mutually exclusive"
+            "{CACHE_SIZE_BYTES_ENV} and {CACHE_SIZE_PERCENT_ENV} are mutually exclusive"
         )));
     }
     let max_cache_bytes = bytes_raw
         .map(|value| {
             value.parse::<u64>().map_err(|_| {
                 EmbeddedServiceError::Start(format!(
-                    "{BYTES_ENV} must be a positive integer byte count"
+                    "{CACHE_SIZE_BYTES_ENV} must be a positive integer byte count"
                 ))
             })
         })
         .transpose()?;
     if max_cache_bytes == Some(0) {
         return Err(EmbeddedServiceError::Start(format!(
-            "{BYTES_ENV} must be greater than zero"
+            "{CACHE_SIZE_BYTES_ENV} must be greater than zero"
         )));
     }
     let max_cache_percent = percent_raw
         .map(|value| {
             value.parse::<u8>().map_err(|_| {
                 EmbeddedServiceError::Start(format!(
-                    "{PERCENT_ENV} must be an integer from 1 through 100"
+                    "{CACHE_SIZE_PERCENT_ENV} must be an integer from 1 through 100"
                 ))
             })
         })
         .transpose()?;
     if max_cache_percent.is_some_and(|percent| !(1..=100).contains(&percent)) {
         return Err(EmbeddedServiceError::Start(format!(
-            "{PERCENT_ENV} must be an integer from 1 through 100"
+            "{CACHE_SIZE_PERCENT_ENV} must be an integer from 1 through 100"
         )));
     }
     let source = if max_cache_bytes.is_some() {

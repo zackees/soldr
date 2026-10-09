@@ -23,7 +23,7 @@ pub(crate) const FORWARDED_ENV_PREFIX: &str = "SOLDR_";
 /// The `ZCCACHE_*` names that must survive the scrub, and why each one does.
 ///
 /// The rule is not "zccache variables are forwarded" -- `ZCCACHE_DISABLE` is
-/// deliberately dropped, and the test below asserts that. The rule is
+/// deliberately dropped, and `spawn_env_tests.rs` asserts that. The rule is
 /// narrower: **a variable crosses when the daemon's own process is what reads
 /// it.** Anything consumed by the caller before it ever spawns a daemon has
 /// no reason to cross, and forwarding it would only widen the surface.
@@ -43,10 +43,16 @@ pub(crate) const FORWARDED_ENV_PREFIX: &str = "SOLDR_";
 /// - `ZCCACHE_STAGING_DIR` -- soldr#2188. The embedded service reads this
 ///   override inside the detached daemon so Windows compilers receive a short
 ///   private output path even when `SOLDR_CACHE_DIR` is deeply nested.
+/// - `ZCCACHE_CACHE_SIZE_BYTES` / `ZCCACHE_CACHE_SIZE_PERCENT` -- soldr#3503;
+///   the embedded maintenance loop resolves the artifact budget inside the
+///   daemon, so scrubbed the documented knob is inert on the auto-spawn path
+///   (same class as soldr#1931).
 pub(crate) const FORWARDED_ZCCACHE_ENV: &[&str] = &[
     "ZCCACHE_INNER_TRACE",
     crate::core::jobs::ZCCACHE_MAX_PARALLEL_COMPILES_ENV_VAR,
     zccache::core::config::STAGING_DIR_ENV,
+    crate::zccache_embedded::CACHE_SIZE_BYTES_ENV,
+    crate::zccache_embedded::CACHE_SIZE_PERCENT_ENV,
 ];
 
 /// The environment overlay applied on top of `running-process`'s user
@@ -76,3 +82,7 @@ pub(crate) fn forwarded_env_name(name: &std::ffi::OsStr) -> bool {
     let name = name.to_string_lossy().to_ascii_uppercase();
     name.starts_with(FORWARDED_ENV_PREFIX) || FORWARDED_ZCCACHE_ENV.contains(&name.as_str())
 }
+
+#[cfg(test)]
+#[path = "spawn_env_tests.rs"]
+mod tests;

@@ -142,8 +142,9 @@ Carried forward from round 1's rejections (still valid):
 
 - **#3435** musl host-target wheel — intended, pinned by
   `wheel_cmd_tests.rs:333-341`.
-- **#3503** `ZCCACHE_CACHE_SIZE_BYTES` inert — the knob is read and drives
-  the maintenance loop.
+- **#3503** `ZCCACHE_CACHE_SIZE_BYTES` inert — wrongly rejected; re-verified
+  as a real bug (the daemon spawn allowlist dropped it) and fixed by
+  soldr#3503's PR.
 - **#3499** cook-index pack cost — perf request, not a defect.
 - **#2924** nested-Cargo self-locks — `nested_cargo_guard` is wired (note:
   #3278's claim of "zero callers" was checked and disagrees with the tree).
