@@ -36,50 +36,92 @@ class Step:
     unset_prefixes: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class WorkspaceTestPlan:
+    """The handoff, by phase rather than by position (soldr#3454).
+
+    ``main`` runs ``setup`` unconditionally, then ``source_start`` and
+    ``validation`` under a guard that always runs ``teardown``. Naming the
+    phases keeps an added step from silently shifting which one is guarded.
+    """
+
+    setup: tuple[Step, ...]
+    source_start: Step
+    validation: Step
+    teardown: tuple[Step, ...]
+
+    @property
+    def steps(self) -> list[Step]:
+        return [*self.setup, self.source_start, self.validation, *self.teardown]
+
+
 def container_path(path: Path) -> str:
     """Render a Linux container path even when the contract test runs on Windows."""
     return path.as_posix()
 
 
-def workspace_test_plan(*, target: Path, bootstrap: Path) -> list[Step]:
+def workspace_test_plan(*, target: Path, bootstrap: Path) -> WorkspaceTestPlan:
     """Return the ordered bootstrap-to-source validation handoff."""
     source = target / "debug" / "soldr"
     source_text = container_path(source)
+    wrapper_text = container_path(target / "debug" / "soldr-nextest-wrapper")
     base_env = (EnvVar("CARGO_TARGET_DIR", container_path(target)),)
     source_unset = ("CARGO_BUILD_JOBS", "SOLDR_JOBS")
     source_unset_prefixes = ("CARGO_PROFILE_",)
-    return [
-        Step(
-            [
-                container_path(bootstrap),
-                "cargo",
-                "build",
-                "-p",
-                "soldr-cli",
-                "--bin",
-                "soldr",
-                "-p",
-                "soldr-nextest-wrapper",
-                "--bin",
-                "soldr-nextest-wrapper",
-            ],
-            base_env,
+    return WorkspaceTestPlan(
+        setup=(
+            Step(
+                [
+                    container_path(bootstrap),
+                    "cargo",
+                    "build",
+                    "-p",
+                    "soldr-cli",
+                    "--bin",
+                    "soldr",
+                    "-p",
+                    "soldr-nextest-wrapper",
+                    "--bin",
+                    "soldr-nextest-wrapper",
+                ],
+                base_env,
+            ),
+            # soldr#3454: parity contract between the Python and native Nextest
+            # run wrappers. The same pytest suites run against the freshly built
+            # native binary so the two implementations cannot drift silently.
+            # This does not pick a canonical implementation. Needs no daemon.
+            Step(
+                [
+                    "uv",
+                    "run",
+                    "--no-project",
+                    "--with",
+                    "pytest>=8.0",
+                    "python",
+                    "-m",
+                    "pytest",
+                    "-q",
+                    "tests/test_nextest_timeout_wrapper.py",
+                    "tests/test_nextest_memory_guard.py",
+                ],
+                (EnvVar("SOLDR_NEXTEST_WRAPPER_UNDER_TEST", wrapper_text),),
+            ),
+            Step(
+                [
+                    container_path(bootstrap),
+                    "cache",
+                    "shutdown",
+                    "--shutdown-timeout-seconds",
+                    "30",
+                ],
+                (),
+            ),
+            Step([container_path(bootstrap), "broker", "remove"], ()),
         ),
-        Step(
-            [
-                container_path(bootstrap),
-                "cache",
-                "shutdown",
-                "--shutdown-timeout-seconds",
-                "30",
-            ],
-            (),
-        ),
-        Step([container_path(bootstrap), "broker", "remove"], ()),
         # The daemon fixes its admission limit at startup. Remove the image's
         # dev-loop overrides here as well as for Cargo, or the source route
         # keeps the image's two-compile ceiling for the whole validation run.
-        Step(
+        source_start=Step(
             [source_text, "daemon", "start"],
             (),
             unset=source_unset,
@@ -99,7 +141,7 @@ def workspace_test_plan(*, target: Path, bootstrap: Path) -> list[Step]:
         # nextest, not a bare `cargo test --workspace`: libtest's shared
         # process let one panicking test poison a crate-wide env lock and fail
         # six unrelated tests, which nextest's process-per-test model cannot.
-        Step(
+        validation=Step(
             [
                 "sh",
                 "-c",
@@ -110,12 +152,14 @@ def workspace_test_plan(*, target: Path, bootstrap: Path) -> list[Step]:
             unset=source_unset,
             unset_prefixes=source_unset_prefixes,
         ),
-        Step(
-            [source_text, "cache", "shutdown", "--shutdown-timeout-seconds", "30"],
-            (),
+        teardown=(
+            Step(
+                [source_text, "cache", "shutdown", "--shutdown-timeout-seconds", "30"],
+                (),
+            ),
+            Step([source_text, "broker", "remove"], ()),
         ),
-        Step([source_text, "broker", "remove"], ()),
-    ]
+    )
 
 
 def run_step(step: Step, *, repo: Path) -> None:
@@ -156,16 +200,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"gate-nonce: {seen}", flush=True)
 
     plan = workspace_test_plan(target=args.target, bootstrap=args.bootstrap)
-    setup, source_start, validation, teardown = plan[:3], plan[3], plan[4], plan[5:]
-    for step in setup:
+    for step in plan.setup:
         run_step(step, repo=args.repo.resolve())
     try:
-        run_step(source_start, repo=args.repo.resolve())
-        run_step(validation, repo=args.repo.resolve())
+        run_step(plan.source_start, repo=args.repo.resolve())
+        run_step(plan.validation, repo=args.repo.resolve())
     except BaseException:
-        cleanup(teardown, repo=args.repo.resolve(), preserve_primary=True)
+        cleanup(list(plan.teardown), repo=args.repo.resolve(), preserve_primary=True)
         raise
-    cleanup(teardown, repo=args.repo.resolve(), preserve_primary=False)
+    cleanup(list(plan.teardown), repo=args.repo.resolve(), preserve_primary=False)
     return 0
 
 

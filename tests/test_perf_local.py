@@ -100,7 +100,7 @@ def test_bosn_workspace_test_hands_off_from_bootstrap_to_source() -> None:
         bootstrap=Path("/opt/soldr-bootstrap/bin/soldr"),
     )
 
-    assert [step.argv for step in plan] == [
+    assert [step.argv for step in plan.steps] == [
         [
             "/opt/soldr-bootstrap/bin/soldr",
             "cargo",
@@ -113,6 +113,19 @@ def test_bosn_workspace_test_hands_off_from_bootstrap_to_source() -> None:
             "soldr-nextest-wrapper",
             "--bin",
             "soldr-nextest-wrapper",
+        ],
+        [
+            "uv",
+            "run",
+            "--no-project",
+            "--with",
+            "pytest>=8.0",
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "tests/test_nextest_timeout_wrapper.py",
+            "tests/test_nextest_memory_guard.py",
         ],
         [
             "/opt/soldr-bootstrap/bin/soldr",
@@ -139,7 +152,18 @@ def test_bosn_workspace_test_hands_off_from_bootstrap_to_source() -> None:
         ],
         ["/target/debug/soldr", "broker", "remove"],
     ]
-    validation = plan[4]
+    parity = plan.setup[1]
+    assert [(v.name, v.value) for v in parity.env] == [
+        (
+            "SOLDR_NEXTEST_WRAPPER_UNDER_TEST",
+            "/target/debug/soldr-nextest-wrapper",
+        )
+    ]
+    # No daemon is needed, so the parity step precedes the source daemon start.
+    assert plan.steps.index(parity) < [s.argv for s in plan.steps].index(
+        ["/target/debug/soldr", "daemon", "start"]
+    )
+    validation = plan.validation
     assert [(v.name, v.value) for v in validation.env] == [
         ("CARGO_TARGET_DIR", "/target")
     ]
@@ -165,7 +189,7 @@ def test_bosn_workspace_test_cleans_up_source_route_after_validation_failure(
     def fake_run(step: StepLike, *, repo: Path) -> None:
         argv = step.argv
         calls.append(argv)
-        if argv == plan[4].argv:
+        if argv == plan.validation.argv:
             raise subprocess.CalledProcessError(101, argv)
 
     monkeypatch.setattr(handoff, "workspace_test_plan", lambda **_: plan)
@@ -174,8 +198,8 @@ def test_bosn_workspace_test_cleans_up_source_route_after_validation_failure(
     with pytest.raises(subprocess.CalledProcessError) as error:
         handoff.main([])
 
-    assert error.value.cmd == plan[4].argv
-    assert calls == [step.argv for step in plan]
+    assert error.value.cmd == plan.validation.argv
+    assert calls == [step.argv for step in plan.steps]
 
 
 def test_bosn_workspace_test_cleans_up_source_route_after_start_failure(
@@ -194,7 +218,7 @@ def test_bosn_workspace_test_cleans_up_source_route_after_start_failure(
     def fake_run(step: StepLike, *, repo: Path) -> None:
         argv = step.argv
         calls.append(argv)
-        if argv == plan[3].argv:
+        if argv == plan.source_start.argv:
             raise subprocess.CalledProcessError(101, argv)
 
     monkeypatch.setattr(handoff, "workspace_test_plan", lambda **_: plan)
@@ -203,8 +227,10 @@ def test_bosn_workspace_test_cleans_up_source_route_after_start_failure(
     with pytest.raises(subprocess.CalledProcessError) as error:
         handoff.main([])
 
-    assert error.value.cmd == plan[3].argv
-    assert calls == [step.argv for step in plan[:4]] + [step.argv for step in plan[5:]]
+    assert error.value.cmd == plan.source_start.argv
+    assert calls == [
+        step.argv for step in (*plan.setup, plan.source_start, *plan.teardown)
+    ]
 
 
 def test_bosn_workspace_test_preserves_validation_error_when_cleanup_fails(
@@ -223,7 +249,7 @@ def test_bosn_workspace_test_preserves_validation_error_when_cleanup_fails(
     def fake_run(step: StepLike, *, repo: Path) -> None:
         argv = step.argv
         calls.append(argv)
-        if argv in (plan[4].argv, plan[5].argv):
+        if argv in (plan.validation.argv, plan.teardown[0].argv):
             raise subprocess.CalledProcessError(101, argv)
 
     monkeypatch.setattr(handoff, "workspace_test_plan", lambda **_: plan)
@@ -232,8 +258,8 @@ def test_bosn_workspace_test_preserves_validation_error_when_cleanup_fails(
     with pytest.raises(subprocess.CalledProcessError) as error:
         handoff.main([])
 
-    assert error.value.cmd == plan[4].argv
-    assert calls == [step.argv for step in plan]
+    assert error.value.cmd == plan.validation.argv
+    assert calls == [step.argv for step in plan.steps]
 
 
 def test_bosn_workspace_test_preserves_validation_error_when_cleanup_launch_fails(
@@ -253,9 +279,9 @@ def test_bosn_workspace_test_preserves_validation_error_when_cleanup_launch_fail
     def fake_run(step: StepLike, *, repo: Path) -> None:
         argv = step.argv
         calls.append(argv)
-        if argv == plan[4].argv:
+        if argv == plan.validation.argv:
             raise subprocess.CalledProcessError(101, argv)
-        if argv == plan[5].argv:
+        if argv == plan.teardown[0].argv:
             raise FileNotFoundError("source cache shutdown unavailable")
 
     monkeypatch.setattr(handoff, "workspace_test_plan", lambda **_: plan)
@@ -264,8 +290,8 @@ def test_bosn_workspace_test_preserves_validation_error_when_cleanup_launch_fail
     with pytest.raises(subprocess.CalledProcessError) as error:
         handoff.main([])
 
-    assert error.value.cmd == plan[4].argv
-    assert calls == [step.argv for step in plan]
+    assert error.value.cmd == plan.validation.argv
+    assert calls == [step.argv for step in plan.steps]
 
 
 def test_dockerfile_digest_changes_with_content(tmp_path: Path) -> None:
@@ -578,9 +604,9 @@ def test_smoke_command_runs_the_complete_repository_pipeline() -> None:
     assert perf_local.container_argv(["cargo", "check"]) == ["cargo", "check"]
 
 
-@pytest.mark.parametrize("step_index", [3, 4])
+@pytest.mark.parametrize("phase", ["source_start", "validation"])
 def test_source_handoff_removes_image_caps_before_daemon_and_cargo(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, step_index: int
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, phase: str
 ) -> None:
     handoff = load_script_module(
         Path(__file__).parents[1] / "ci" / "bosn_workspace_test.py",
@@ -597,7 +623,7 @@ def test_source_handoff_removes_image_caps_before_daemon_and_cargo(
     launch = Mock()
     monkeypatch.setattr(handoff.subprocess, "run", launch)
 
-    handoff.run_step(plan[step_index], repo=tmp_path)
+    handoff.run_step(getattr(plan, phase), repo=tmp_path)
 
     child_env = launch.call_args.kwargs["env"]
     assert "CARGO_BUILD_JOBS" not in child_env
