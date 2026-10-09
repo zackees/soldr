@@ -134,8 +134,15 @@ fn ordinary_cargo_child_keeps_the_callers_homes() {
     let _home = EnvVarGuard::remove(crate::core::RUSTUP_HOME_ENV_VAR);
 
     // soldr#1799/#1768: a host Cargo outside Dylint scope never inherits the
-    // default-less managed home.
-    assert_eq!(child_rustup_home(&fixture, &["check"], None), None);
+    // default-less managed home. It keeps the caller's homes, which
+    // `apply_implicit_toolchain_homes` may set explicitly (e.g. `~/.rustup`
+    // on a host where it exists), so assert "not managed", not "unset".
+    let child = child_rustup_home(&fixture, &["check"], None);
+    assert_ne!(
+        child.as_deref(),
+        Some(fixture.managed_rustup.as_path()),
+        "an ordinary Cargo child must not run under Soldr's managed home"
+    );
 }
 
 #[test]
