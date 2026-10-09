@@ -6,32 +6,21 @@ set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${HERE}/.." && pwd)"
+# shellcheck source=../perf/lib/common.sh
+. "${REPO_ROOT}/perf/lib/common.sh"
 
 OUT_DIR="${REPO_ROOT}/benchmark-output"
 WORK_DIR="$(mktemp -d)"
 WORKTREES_TO_REMOVE=()
 CREATED_PROJECT=""
 COMPARISON_BUILD_TIMEOUT_SECONDS="${COMPARISON_BUILD_TIMEOUT_SECONDS:-60}"
-trap 'for wt in "${WORKTREES_TO_REMOVE[@]:-}"; do git -C "${REPO_ROOT}" worktree remove --force "$wt" >/dev/null 2>&1 || true; done; rm -rf "${WORK_DIR}"' EXIT
+trap 'for wt in "${WORKTREES_TO_REMOVE[@]:-}"; do git -C "${REPO_ROOT}" worktree remove --force "$wt" >&2 || true; done; measure::teardown_work_dir "${WORK_DIR}"' EXIT
 
 mkdir -p "${OUT_DIR}"
 
 # Keep setup-soldr's toolchain/PATH benefits, but remove wrapper and cache
 # state so each comparison cell owns its cache and target dirs.
-unset ZCCACHE_CACHE_DIR \
-      SCCACHE_DIR \
-      RUSTC_WRAPPER \
-      SOLDR_RUSTC_WRAPPER \
-      SOLDR_CACHE_DIR \
-      SOLDR_TARGET_CACHE_DIR \
-      SOLDR_TARGET_CACHE_BUNDLE_DIR \
-      SOLDR_TARGET_CACHE_MODE \
-      SOLDR_TARGET_CACHE_PROFILE \
-      SOLDR_TARGET_CACHE_BACKEND \
-      SOLDR_TARGET_CACHE_COMPRESS \
-      SOLDR_TARGET_CACHE_COMPRESS_LEVEL \
-      SOLDR_BUILD_CACHE_MODE \
-      SETUP_SOLDR_BUILD_CACHE_MODE
+measure::clear_inherited_cache_env
 
 now_ms() { date +%s%3N; }
 
@@ -182,6 +171,9 @@ run_build() {
             ;;
         soldr)
             mkdir -p "${cache_dir}"
+            # soldr#3607: the build auto-starts a daemon owning this root; the
+            # EXIT trap must stop it before deleting WORK_DIR.
+            measure::register_soldr_root "${WORK_DIR}" "${cache_dir}"
             (cd "${project}" && SOLDR_CACHE_DIR="${cache_dir}" CARGO_TARGET_DIR="${target_dir}" run_with_timeout "${COMPARISON_BUILD_TIMEOUT_SECONDS}" soldr cargo build --release)
             ;;
         *)

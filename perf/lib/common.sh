@@ -332,16 +332,88 @@ measure::append_summary_md() {
     fi
 }
 
+# measure::shutdown_cache_dir <cache-root>
+#
+# Stop the soldr-daemon that owns <cache-root> and wait for it to exit.
+# Its JSON report goes to stderr with the rest of its output, so the log
+# shows every shutdown and callers' stdout stays clean. Best-effort:
+# always returns 0 so teardown cannot fail the calling script.
+measure::shutdown_cache_dir() {
+    local cache_root="$1"
+    if command -v soldr >/dev/null 2>&1; then
+        SOLDR_CACHE_DIR="${cache_root}" soldr cache shutdown \
+            --shutdown-timeout-seconds 15 --json >&2 || true
+    fi
+    return 0
+}
+
 # measure::reset_cache_dir <cache-root>
 #
 # Wipe a soldr cache root so the next build starts cold. Stops the
 # daemon first so we do not race the file system.
 measure::reset_cache_dir() {
     local cache_root="$1"
-    if command -v soldr >/dev/null 2>&1; then
-        SOLDR_CACHE_DIR="${cache_root}" soldr cache shutdown \
-            --shutdown-timeout-seconds 15 --json >/dev/null 2>&1 || true
-    fi
+    measure::shutdown_cache_dir "${cache_root}"
     rm -rf "${cache_root}/cache" "${cache_root}/bin" 2>/dev/null || true
     mkdir -p "${cache_root}"
+}
+
+# measure::register_soldr_root <work-dir> <cache-root>
+#
+# Record a soldr cache root that a benchmark cell is about to use, so
+# `measure::teardown_work_dir` can stop its daemon before deleting the
+# work dir. Persisted in a FILE (<work-dir>/.soldr-roots), not a shell
+# array: callers run inside `$(...)` subshells where array appends are
+# lost. Duplicates are fine; they are removed on read.
+measure::register_soldr_root() {
+    local work_dir="$1" cache_root="$2"
+    mkdir -p "${work_dir}"
+    printf '%s\n' "${cache_root}" >> "${work_dir}/.soldr-roots"
+}
+
+# measure::teardown_work_dir <work-dir>
+#
+# EXIT-trap body for benchmark scripts (soldr#3607). Every soldr cell
+# auto-starts a soldr-daemon that owns its SOLDR_CACHE_DIR; deleting the
+# work dir under a live daemon raced it (`rm: cannot remove ...:
+# Directory not empty`) and leaked the daemon on the runner. Shut down
+# each registered root first, then remove the dir, retrying once. The
+# results are already produced by now, so this is best-effort and always
+# returns 0.
+measure::teardown_work_dir() {
+    local work_dir="$1" root
+    if [[ -f "${work_dir}/.soldr-roots" ]]; then
+        while IFS= read -r root; do
+            [[ -n "${root}" ]] && measure::shutdown_cache_dir "${root}"
+        done < <(sort -u "${work_dir}/.soldr-roots")
+    fi
+    if ! rm -rf "${work_dir}"; then
+        sleep 2
+        rm -rf "${work_dir}" \
+            || echo "warning: could not remove ${work_dir} (soldr#3607); leaving it behind" >&2
+    fi
+    return 0
+}
+
+# measure::clear_inherited_cache_env
+#
+# The workflow is bootstrapped by setup-soldr, which exports wrapper and
+# cache variables for the checkout build. Managed soldr invocations
+# reject those inherited values, so each benchmark script boundary
+# starts clean and then chooses its own private cache root.
+measure::clear_inherited_cache_env() {
+    unset ZCCACHE_CACHE_DIR \
+          SCCACHE_DIR \
+          RUSTC_WRAPPER \
+          SOLDR_RUSTC_WRAPPER \
+          SOLDR_CACHE_DIR \
+          SOLDR_TARGET_CACHE_DIR \
+          SOLDR_TARGET_CACHE_BUNDLE_DIR \
+          SOLDR_TARGET_CACHE_MODE \
+          SOLDR_TARGET_CACHE_PROFILE \
+          SOLDR_TARGET_CACHE_BACKEND \
+          SOLDR_TARGET_CACHE_COMPRESS \
+          SOLDR_TARGET_CACHE_COMPRESS_LEVEL \
+          SOLDR_BUILD_CACHE_MODE \
+          SETUP_SOLDR_BUILD_CACHE_MODE
 }

@@ -25,40 +25,26 @@ set -uo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${HERE}/.." && pwd)"
+# shellcheck source=../perf/lib/common.sh
+. "${REPO_ROOT}/perf/lib/common.sh"
 
 OUT_DIR="${REPO_ROOT}/benchmark-output"
 WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "${WORK_DIR}"' EXIT
+# soldr#3607: stop the soldr-daemon owning each cache root before deleting it.
+trap 'measure::teardown_work_dir "${WORK_DIR}"' EXIT
 
 mkdir -p "${OUT_DIR}"
 
 # Issue #797: soldr cargo resolves a fresh soldr workspace context by
 # default, so canaries do not maintain their own soldr/zccache env
-# allowlist.
-#
-# The workflow itself is bootstrapped by setup-soldr, which exports wrapper
-# and cache variables for the checkout build. Managed soldr invocations reject
-# those inherited values, so each benchmark script boundary starts clean and
-# then chooses its own private cache root below.
-unset ZCCACHE_CACHE_DIR \
-      SCCACHE_DIR \
-      RUSTC_WRAPPER \
-      SOLDR_RUSTC_WRAPPER \
-      SOLDR_CACHE_DIR \
-      SOLDR_TARGET_CACHE_DIR \
-      SOLDR_TARGET_CACHE_BUNDLE_DIR \
-      SOLDR_TARGET_CACHE_MODE \
-      SOLDR_TARGET_CACHE_PROFILE \
-      SOLDR_TARGET_CACHE_BACKEND \
-      SOLDR_TARGET_CACHE_COMPRESS \
-      SOLDR_TARGET_CACHE_COMPRESS_LEVEL \
-      SOLDR_BUILD_CACHE_MODE \
-      SETUP_SOLDR_BUILD_CACHE_MODE
+# allowlist; drop setup-soldr's inherited wrapper/cache env (see common.sh).
+measure::clear_inherited_cache_env
 
 # Single private cache for the whole canary sweep. Every canary writes
 # to the same daemon so warm-cache measurements are meaningful.
 export SOLDR_CACHE_DIR="${WORK_DIR}/cache"
 mkdir -p "${SOLDR_CACHE_DIR}"
+measure::register_soldr_root "${WORK_DIR}" "${SOLDR_CACHE_DIR}"
 
 # Extract the medium fixture into a primary build dir.
 FIX_A="${WORK_DIR}/medium-A"
