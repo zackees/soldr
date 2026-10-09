@@ -107,9 +107,39 @@ retired  = []
 pr       = { mode = "delta", families = ["compile"], max-per-pr = "128MB", budget = "1GB", trim = "on-close" }
 
 [cache.family]
-# zccache-unit is the single largest family measured: 2.43 GiB across 5 entries.
-compile      = { via = "setup-soldr:build-cache",     max = "2600MB", lockfile = true, per = "platform", min = "1MB", evict = "lru", promote = "ancestor" }
-toolchain    = { via = "setup-soldr:solo-toolchain", max = "200MB",  per = "none",                            evict = "lru" }
+# Sizing (#3580): from the live listing (`gh api repos/zackees/soldr/actions/
+# caches`), not from a remembered figure. Re-measure before retuning; the
+# per-family allocations that the enforcing janitor uses live in
+# ci/cache-ownership.json (see #3618 for why there are two declarations).
+#
+# `compile` was `max = "2600MB", per = "platform"`: 6 x 2600 MB = 16.36 GB of
+# ceiling for a family whose writer (setup-soldr's build cache, key
+# `setup-soldr-buildcache-v2-${runnerOs}-${runnerArch}-...`) holds two live
+# entries (linux-x64 679.8 MB, windows-x64 406.3 MB). CACHE-004's 9GB budget
+# could never pass, so it never bit. No `per` value expresses 2 writers; "os"
+# (3) is the closest honest cardinality, and `max = "800MB"` keeps ~18%
+# headroom over the largest live entry.
+#
+# Live families the pinned linter cannot declare: its `via` is a strict
+# allowlist and none of these prefixes has one (zackees/ci.yml#347; the
+# `[cache.family].prefix` escape hatch from ci.yml#350 is newer than the
+# ci-lint pin CI runs, see #3616): zccache-unit-v1- (~2.5 GB, the largest),
+# dylint-foundation-v2-, soldr-xwin-cache-, rustup-<ver>-linux-,
+# setup-soldr-dogfood-zccache-v1-, soldr-apple-sdk-, bootstrap-soldr-blessed-,
+# soldr-bin-linux-, dylint-driver-v1-, and the sub-1KB att1-* markers.
+# `cook-base-v2-` (~2.5 GB) IS declarable (`via = "setup-soldr:cook"`) but is
+# five concurrent flag shapes from one writer: no `per` value holds five
+# entries inside the budget without the ci-lint janitor evicting warm ones,
+# so it stays with ci/cache-ownership.json's `cook-layer` allocation (#3618).
+# Never list these in `[cache].retired` to silence CACHE-001: that becomes
+# CACHE-009 and tells the janitor to DELETE warm caches.
+compile      = { via = "setup-soldr:build-cache",     max = "800MB", lockfile = true, per = "os", min = "1MB", evict = "lru", promote = "ancestor" }
+# `toolchain` was `per = "none"` while TWO OS groups write it (live: a
+# linux-x64 entry of 179.9 MB and a windows-x64 entry of 162.5 MB, both
+# current) -- that under-count put the family over its 200MB footprint, so
+# `ci-lint cache janitor --dry-run` proposed evicting the warm linux entry.
+# `per = "os"` gives one slot per runner OS group, which the live shape fits.
+toolchain    = { via = "setup-soldr:solo-toolchain", max = "200MB",  per = "os",                              evict = "lru" }
 registry     = { via = "setup-soldr:cargo-registry",  max = "200MB",  lockfile = true, per = "none",          evict = "lru" }
 soldr-mini   = { via = "setup-soldr:soldr-mini",     max = "30MB",   per = "none", min = "1MB",                evict = "lru" }
 uv           = { via = "setup-uv",                   max = "100MB",  per = "platform",                        evict = "lru" }
