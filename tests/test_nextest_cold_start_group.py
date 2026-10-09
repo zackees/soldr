@@ -21,9 +21,9 @@ from __future__ import annotations
 
 import re
 import tomllib
+from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG = REPO_ROOT / ".config" / "nextest.toml"
@@ -79,10 +79,30 @@ def has_cold_start_shape(source: str) -> bool:
     return any(routes_a_cached_compile(argv) for argv in argvs)
 
 
-def declared_modules() -> dict[str, tuple[str, Path]]:
-    """`module -> (category binary, source path)` for every soldr-cli test module."""
+@dataclass(frozen=True)
+class ModuleRef:
+    """One soldr-cli test module: its name, category binary and source file."""
 
-    modules: dict[str, tuple[str, Path]] = {}
+    name: str
+    binary: str
+    path: Path
+
+
+@dataclass(frozen=True)
+class GroupOverride:
+    """One `[[profile.default.overrides]]` entry that assigns a test group."""
+
+    index: int
+    filter: str
+    group: str
+    platform_gated: bool
+    linux: bool
+
+
+def declared_modules() -> list[ModuleRef]:
+    """Every soldr-cli test module declared by a category binary's main.rs."""
+
+    modules: list[ModuleRef] = []
     for main in sorted(CLI_TESTS.glob("*/main.rs")):
         category = main.parent.name
         for name in _MOD_DECL.findall(main.read_text(encoding="utf-8")):
@@ -94,32 +114,38 @@ def declared_modules() -> dict[str, tuple[str, Path]]:
             assert path.is_file(), (
                 f"{category}/main.rs declares `mod {name};` with no source"
             )
-            modules[name] = (category, path)
+            modules.append(ModuleRef(name, category, path))
     return modules
 
 
-def cold_start_modules() -> dict[str, str]:
-    """`module -> category` for every module with the cold-start shape."""
+def cold_start_modules() -> list[ModuleRef]:
+    """Every module with the cold-start shape."""
 
-    return {
-        name: category
-        for name, (category, path) in declared_modules().items()
-        if has_cold_start_shape(path.read_text(encoding="utf-8"))
-    }
+    return [
+        module
+        for module in declared_modules()
+        if has_cold_start_shape(module.path.read_text(encoding="utf-8"))
+    ]
 
 
-def _group_overrides() -> list[dict[str, Any]]:
+def _group_overrides() -> list[GroupOverride]:
     with CONFIG.open("rb") as handle:
         config = tomllib.load(handle)
-    return [
+    overrides = [
         override
         for override in config["profile"]["default"]["overrides"]
         if "test-group" in override
     ]
-
-
-def _is_linux(override: dict[str, Any]) -> bool:
-    return override.get("platform", {}).get("target") == LINUX_PLATFORM
+    return [
+        GroupOverride(
+            index=index,
+            filter=override["filter"],
+            group=override["test-group"],
+            platform_gated="platform" in override,
+            linux=override.get("platform", {}).get("target") == LINUX_PLATFORM,
+        )
+        for index, override in enumerate(overrides)
+    ]
 
 
 def _named_modules(filter_expr: str) -> set[str]:
@@ -132,7 +158,7 @@ def _named_modules(filter_expr: str) -> set[str]:
 def test_the_shape_is_recognised_in_every_recorded_soldr_3625_failure() -> None:
     """The predicate must see the modules that actually failed, or it is blind."""
 
-    detected = cold_start_modules()
+    detected = {module.name for module in cold_start_modules()}
     for failed in (
         "daemon_restart_warmth",
         "cli_cargo_zccache_mode",
@@ -163,12 +189,12 @@ def test_every_cold_start_module_is_capped_on_every_platform() -> None:
     linux_named: set[str] = set()
     off_linux_named: set[str] = set()
     for override in overrides:
-        named = _named_modules(override["filter"])
-        if override["test-group"] == LINUX_GROUP and _is_linux(override):
+        named = _named_modules(override.filter)
+        if override.group == LINUX_GROUP and override.linux:
             linux_named |= named
-        elif override["test-group"] in OFF_LINUX_GROUPS and "platform" not in override:
+        elif override.group in OFF_LINUX_GROUPS and not override.platform_gated:
             off_linux_named |= named
-    shape = cold_start_modules()
+    shape = {module.name for module in cold_start_modules()}
     missing_linux = sorted(set(shape) - linux_named)
     missing_elsewhere = sorted(set(shape) - off_linux_named)
     assert not missing_linux and not missing_elsewhere, (
@@ -186,18 +212,16 @@ def test_cold_start_group_filters_name_only_real_modules() -> None:
 
     modules = declared_modules()
     for override in _group_overrides():
-        expression = override["filter"]
-        for name in _named_modules(expression):
-            assert name in modules, (
-                f"`{name}` in test-group `{override['test-group']}` is not a "
+        for name in _named_modules(override.filter):
+            assert any(module.name == name for module in modules), (
+                f"`{name}` in test-group `{override.group}` is not a "
                 "soldr-cli test module; nextest ignores the term and the tests "
-                f"it meant run uncapped.\nfilter = {expression}"
+                f"it meant run uncapped.\nfilter = {override.filter}"
             )
-        for binary, alternation in _FILTER_BINARY_MODULES.findall(expression):
+        for binary, alternation in _FILTER_BINARY_MODULES.findall(override.filter):
             for name in alternation.split("|"):
-                assert modules[name][0] == binary, (
-                    f"`{name}` lives in binary `{modules[name][0]}`, not `{binary}`"
-                )
+                homes = {module.binary for module in modules if module.name == name}
+                assert homes == {binary}, f"`{name}` lives in {homes}, not `{binary}`"
 
 
 def test_the_linux_group_mirrors_the_off_linux_groups() -> None:
@@ -213,27 +237,15 @@ def test_the_linux_group_mirrors_the_off_linux_groups() -> None:
     assert sorted(groups) == sorted({LINUX_GROUP, *OFF_LINUX_GROUPS}), groups
 
     overrides = _group_overrides()
-    linux = {
-        override["filter"]: index
-        for index, override in enumerate(overrides)
-        if _is_linux(override)
-    }
-    elsewhere = {
-        override["filter"]: index
-        for index, override in enumerate(overrides)
-        if "platform" not in override
-    }
-    assert all(
-        overrides[index]["test-group"] == LINUX_GROUP for index in linux.values()
-    )
-    assert all(
-        overrides[index]["test-group"] in OFF_LINUX_GROUPS
-        for index in elsewhere.values()
-    )
-    assert set(linux) == set(elsewhere), (
+    linux = [override for override in overrides if override.linux]
+    elsewhere = [override for override in overrides if not override.platform_gated]
+    assert all(override.group == LINUX_GROUP for override in linux)
+    assert all(override.group in OFF_LINUX_GROUPS for override in elsewhere)
+    assert {o.filter for o in linux} == {o.filter for o in elsewhere}, (
         "every cold-start filter needs a Linux-gated twin with identical text"
     )
-    for expression, index in linux.items():
+    for twin in linux:
         # nextest takes a setting from the FIRST matching override, so a twin
         # listed after its ungated sibling would never apply.
-        assert index < elsewhere[expression], expression
+        sibling = next(o for o in elsewhere if o.filter == twin.filter)
+        assert twin.index < sibling.index, twin.filter
