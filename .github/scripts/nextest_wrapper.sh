@@ -94,17 +94,17 @@ case "${above##*/}" in
 esac
 lock="$profile_dir/.$NAME.build-lock"
 waited=0
-until mkdir "$lock" 2>/dev/null; do
+until mkdir "$lock" 2>/dev/null; do # stdio-ok: "exists" is the expected answer while another test holds the lock
     [ -x "$wrapper" ] && exec "$wrapper" "$@"
     owner=""
     [ -f "$lock/pid" ] && read -r owner <"$lock/pid"
-    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then # stdio-ok: liveness probe; "no such process" is the signal
         rm -rf "$lock" # its builder died; take over
         continue
     fi
     waited=$((waited + 1))
     [ "$waited" -le 1800 ] || refuse "timed out waiting for another test's build ($lock)" "$@"
-    sleep 1 2>/dev/null || :
+    sleep 1
 done
 echo $$ >"$lock/pid"
 if [ ! -x "$wrapper" ]; then

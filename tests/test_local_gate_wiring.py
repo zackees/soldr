@@ -229,7 +229,15 @@ def test_no_test_binary_under_deps_refuses(tmp_path: Path) -> None:
     assert "no test binary under a deps/ directory" in run.stderr
 
 
-def _fake_cargo(tmp_path: Path, *, build: bool = True) -> tuple[Path, Path]:
+@dataclass(frozen=True)
+class FakeCargo:
+    """A fake `$CARGO` executable and the log of argv it was invoked with."""
+
+    path: Path
+    log: Path
+
+
+def _fake_cargo(tmp_path: Path, *, build: bool = True) -> FakeCargo:
     """A `$CARGO` that logs its argv and (optionally) links an echo wrapper at
     `<--target-dir>/[<--target>/]<profile dir>/soldr-nextest-wrapper`."""
     log = tmp_path / "cargo.log"
@@ -262,7 +270,7 @@ def _fake_cargo(tmp_path: Path, *, build: bool = True) -> tuple[Path, Path]:
         body += "exit 101\n"
     cargo.write_text(body, encoding="utf-8")
     cargo.chmod(0o755)
-    return cargo, log
+    return FakeCargo(path=cargo, log=log)
 
 
 @UNIX_ONLY
@@ -289,7 +297,8 @@ def test_a_scoped_run_builds_the_wrapper_once_into_the_test_profile_dir(
     # CACHEDIR.TAG, because Cargo did not create the directory).
     (target / ".rustc_info.json").write_text("{}")
     test_binary = _echo_script(target.joinpath(*layout, "deps", "t-0123"), "test")
-    cargo, log = _fake_cargo(tmp_path)
+    fake = _fake_cargo(tmp_path)
+    cargo, log = fake.path, fake.log
     runs: list[WrapperRun] = []
 
     def one() -> None:
@@ -332,7 +341,8 @@ def test_a_dashed_target_dir_name_is_not_mistaken_for_a_triple(
 ) -> None:
     target = tmp_path / "my-target-dir"
     test_binary = _echo_script(target / "debug" / "deps" / "t", "test")
-    cargo, log = _fake_cargo(tmp_path)
+    fake = _fake_cargo(tmp_path)
+    cargo, log = fake.path, fake.log
     run = _shim([str(test_binary)], None, CI="true", CARGO=str(cargo))
     assert run.returncode == 0, run.stderr
     argv = log.read_text(encoding="utf-8").split()
@@ -344,7 +354,7 @@ def test_a_dashed_target_dir_name_is_not_mistaken_for_a_triple(
 def test_a_failed_build_refuses_and_releases_its_lock(tmp_path: Path) -> None:
     profile = tmp_path / "target" / "debug"
     test_binary = _echo_script(profile / "deps" / "t", "test")
-    cargo, _ = _fake_cargo(tmp_path, build=False)
+    cargo = _fake_cargo(tmp_path, build=False).path
     run = _shim([str(test_binary)], None, CI="true", CARGO=str(cargo))
     assert run.returncode == 98
     assert "did not produce" in run.stderr
@@ -359,7 +369,8 @@ def test_a_dead_builders_lock_is_taken_over(tmp_path: Path) -> None:
     stale = profile / ".soldr-nextest-wrapper.build-lock"
     stale.mkdir()
     (stale / "pid").write_text("999999999\n")
-    cargo, log = _fake_cargo(tmp_path)
+    fake = _fake_cargo(tmp_path)
+    cargo, log = fake.path, fake.log
     run = _shim([str(test_binary)], None, CI="true", CARGO=str(cargo))
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == f"built {test_binary}"
