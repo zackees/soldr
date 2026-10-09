@@ -14,6 +14,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::linker::{target_kind, LinkerInjection, TargetKind};
 
+/// Path-valued override: presence of a path is the legitimate meaning, so this
+/// is deliberately a presence check, not a `core::flag` boolean.
+const LLVM_DIR_ENV_VAR: &str = "SOLDR_LLVM_DIR";
+
 const LINKER_SHIM_FORMAT_VERSION: &str = "v1";
 static LINKER_SHIM_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -247,7 +251,7 @@ async fn resolve_driver_clang(
         .as_ref()
         .filter(|clang| !needs_lld || lld_reachable(clang, search.as_deref()))
         .cloned();
-    if managed_complete.is_file() || std::env::var_os("SOLDR_LLVM_DIR").is_some() {
+    if managed_complete.is_file() || std::env::var_os(LLVM_DIR_ENV_VAR).is_some() {
         if let Ok(bin) = crate::fetch::ensure_llvm_toolchain(paths).await {
             if let Some(clang) = clang_in(&bin) {
                 return Ok(prefer_host_wrapper_clang(

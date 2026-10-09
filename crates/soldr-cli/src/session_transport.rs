@@ -6,6 +6,14 @@
 //! connection when handle passing is unavailable.
 
 use std::io;
+
+/// Verbose session-transport tracing (soldr#3609: read through `core::flag`).
+pub const SESSION_DEBUG_ENV_VAR: &str = "SOLDR_SESSION_DEBUG";
+
+/// Is [`SESSION_DEBUG_ENV_VAR`] on? The one reader.
+pub(crate) fn session_debug_enabled() -> bool {
+    crate::core::flag(SESSION_DEBUG_ENV_VAR)
+}
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -110,7 +118,7 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
     }
     match attempt {
         Ok(outcome) => {
-            if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
+            if session_debug_enabled() {
                 eprintln!(
                     "soldr: SESSION compile served (cache_outcome={:?})",
                     outcome.cache_outcome
@@ -344,7 +352,7 @@ async fn establish_session(
     // Setup — connect / Hello / negotiate / SessionStart send. Failures here
     // are tagged pre-output for precise diagnostics.
     let session_socket = session_socket_path().map_err(SessionError::broker_unreachable)?;
-    if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
+    if session_debug_enabled() {
         eprintln!("soldr: SESSION dialing service={service_name} socket={session_socket}");
     }
     let name = local_session_name(&session_socket).map_err(SessionError::broker_unreachable)?;
@@ -544,7 +552,7 @@ where
                     return Err(io::Error::other("broker returned invalid route progress"));
                 }
                 last_progress_elapsed_ms = progress.elapsed_ms;
-                if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
+                if session_debug_enabled() {
                     eprintln!(
                         "soldr: broker route progress stage={} attempt={} elapsed_ms={} result={}",
                         progress.stage,

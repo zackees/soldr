@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 
 use crate::broker_deadlines::BrokerDeadlines;
 
+use crate::broker_debug::broker_debug_enabled;
+
 pub(crate) const BROKER_INSTANCE_ID_ENV: &str = "SOLDR_INTERNAL_BROKER_INSTANCE_ID";
 
 pub(crate) fn broker_image_instance_id() -> io::Result<String> {
@@ -212,7 +214,7 @@ impl BrokerState {
     }
 
     fn private_control_endpoint_for_service(&self, service_name: &str) -> Option<String> {
-        let debug = std::env::var_os("SOLDR_BROKER_DEBUG").is_some();
+        let debug = broker_debug_enabled();
         let started = Instant::now();
         {
             let mut registry = self
@@ -245,7 +247,7 @@ impl BrokerState {
         {
             Ok(adopted) => adopted,
             Err(error) => {
-                if std::env::var_os("SOLDR_BROKER_DEBUG").is_some() {
+                if broker_debug_enabled() {
                     eprintln!(
                         "soldr broker: control route {service_name} could not be re-adopted: {error}"
                     );
@@ -844,7 +846,7 @@ async fn try_direct_handoff(
     }
 
     #[cfg(debug_assertions)]
-    if std::env::var_os("SOLDR_TEST_BROKER_DISABLE_HANDOFF").is_some() {
+    if crate::core::flag(crate::broker_debug::TEST_DISABLE_HANDOFF_ENV_VAR) {
         return Ok(false);
     }
     let Some(instance) = state.instance_for_route(
