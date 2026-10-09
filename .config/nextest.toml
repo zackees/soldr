@@ -76,15 +76,68 @@ slow-timeout = { period = "60s", terminate-after = 2, grace-period = "30s" }
 [test-groups.soldr-runtime]
 max-threads = 1
 
-# soldr#3138: same membership, two threads, Linux only.
+# soldr#3625: ONE Linux group for every cold broker/daemon start, two wide.
 #
-# `max-threads = 1` above is NOT an OOM crutch. Classifying all 15 documented
-# incidents (soldr#2336/#2517/#2624/#2696/#2697/#2720/#2729/#2737/#2867/#2883/
-# #2934/#2944/#3038/#3059/#3096) found none memory-related, and two concurrent
-# daemon lifecycles at the 512 MiB `daemon_rss_ceiling` target are trivial on a
-# 16 GB runner carrying 14 GB of swap. What it protects is a *threshold*: a cold
-# start slowed by contention crossing `BrokerDeadlines::route_ceiling`, a FIXED
-# 120s wall-clock deadline (`crates/soldr-cli/src/broker_deadlines.rs`).
+# Linux used to carry two separate two-thread twins (`soldr-runtime-linux`
+# for this group's membership, `soldr-cargo-cold-builds-linux` for the
+# cold-build family below), and the front-door modules with the same shape --
+# `cli_cargo_zccache_mode`, `cli_maturin`, `cli_rust_analyzer`, ... -- sat in
+# no group at all. Separate groups run concurrently, so up to four grouped
+# cold starts plus any number of ungrouped ones overlapped. Every recorded
+# soldr#3625 failure is that overlap: `broker progress-silence deadline
+# exceeded` (limit ~5-6s) on a fresh root's first SESSION compile, with four
+# cold starts in flight --
+#   * `daemon_restart_warmth::{hard_killed_daemon_loses_at_most_one_save_batch,
+#     graceful_daemon_restart_serves_the_next_build_warm}` beside two
+#     `cli_dylint_wrapper` tests;
+#   * `cli_cargo_zccache_mode::the_flag_wins_over_config_and_the_users_own_variable`
+#     beside a second `cli_cargo_zccache_mode` test and two `cli_cargo_linker`;
+#   * `cli_maturin::direct_maturin_build_routes_nested_cargo_through_zccache`
+#     beside both `daemon_restart_warmth` tests and `cli_rust_analyzer`.
+# So soldr#3138's premise below ("`progress_silence` ... untouched" by the
+# extra concurrency) holds for two overlapping cold starts and not for four.
+#
+# Why a per-group cap, given CLAUDE.md's "concurrency caps are a last resort":
+#   * It is not a global cap. CARGO_BUILD_JOBS / SOLDR_JOBS / NEXTEST_TEST_THREADS
+#     are untouched; ~3,600 other tests keep the full pool. Only tests with one
+#     specific shape are capped -- a Soldr front door handed a cacheable compile
+#     on a fresh SOLDR_CACHE_DIR (or one that drives the broker/daemon runtime
+#     directly) -- and `tests/test_nextest_cold_start_group.py` derives that
+#     shape from the test sources, so membership is enforced, not remembered.
+#   * Exclusive admission (rung 2) cannot express it: the contended work is the
+#     broker spawn, route acquisition and daemon bring-up for a fresh root,
+#     which all happen BEFORE any compile reaches the embedded service's
+#     admission gate. There is no gate yet to ask. Rung 1 -- a cheaper cold
+#     start -- is soldr#3152/#3163's work and does not exist today.
+#   * SOLDR_BROKER_PROGRESS_SILENCE_MS stays where it is. It is the stall
+#     detector; raising it would hide the real broker stalls it exists to catch.
+#
+# Why two and not one: before #3161 Linux ran this group and the cold-build
+# group at one thread each -- two overlapping cold starts -- and none of the 15
+# incidents listed below was on Linux. Replaying three 2026-10-09 gate logs
+# (8 test threads) through a list scheduler with the measured per-test times:
+# today's layout 163-287s, one group at 2 threads 280-528s, at 1 thread
+# 535-1035s. One thread would triple the tests lane for no observed benefit
+# over two. The replay uses durations measured WHILE four cold starts
+# contended, so the two-thread figure is an upper bound.
+#
+# Other platforms keep the two one-thread groups (`soldr-runtime`,
+# `soldr-cargo-cold-builds`), which is the same at-most-two invariant; the
+# windows/ARM/Rosetta history below is why they do not go wider.
+[test-groups.soldr-cold-start-linux]
+max-threads = 2
+
+# soldr#3138 (history; its two-thread Linux twin is now
+# `soldr-cold-start-linux` above): same membership, two threads, Linux only.
+#
+# `max-threads = 1` on `soldr-runtime` is NOT an OOM crutch. Classifying all
+# 15 documented incidents (soldr#2336/#2517/#2624/#2696/#2697/#2720/#2729/
+# #2737/#2867/#2883/#2934/#2944/#3038/#3059/#3096) found none memory-related,
+# and two concurrent daemon lifecycles at the 512 MiB `daemon_rss_ceiling`
+# target are trivial on a 16 GB runner carrying 14 GB of swap. What it protects
+# is a *threshold*: a cold start slowed by contention crossing
+# `BrokerDeadlines::route_ceiling`, a FIXED 120s wall-clock deadline
+# (`crates/soldr-cli/src/broker_deadlines.rs`).
 #
 # Two facts make raising it on Linux the right trade:
 #
@@ -109,8 +162,6 @@ max-threads = 1
 #
 # Deliberately 2, not more: the measurement supports one additional concurrent
 # cold start, not an uncapped group. `soldr-cargo-cold-builds` stays at 1.
-[test-groups.soldr-runtime-linux]
-max-threads = 2
 
 # soldr#3138 -- scheduling was investigated here and REJECTED. Do not retry it
 # without new evidence.
@@ -138,7 +189,7 @@ max-threads = 2
 [[profile.default.overrides]]
 filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_rss_ceiling)::/))'
 platform = { target = 'cfg(target_os = "linux")' }
-test-group = 'soldr-runtime-linux'
+test-group = 'soldr-cold-start-linux'
 
 [[profile.default.overrides]]
 filter = '(binary(cache_gc) & test(/^agent_worktree_share::/)) + (binary(daemon) & test(/^(cli_daemon_builds|cli_daemon_flush_caches|cli_daemon_lifecycle|cli_daemon_single_instance|cli_daemon_target_touch|daemon_cache_maintenance|daemon_restart_warmth|daemon_rss_ceiling)::/))'
@@ -181,7 +232,7 @@ slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
 [[profile.default.overrides]]
 filter = '(binary(broker) & test(/^(cli_broker_purge|cli_broker_resurrection|cli_broker_routes|cli_broker_single_instance|cli_broker_status|cli_broker_stop|cli_build_alias_parity|cli_build_fetch_overlap|cli_jobs_routing|cli_kill_matrix)::/)) + test(=cli_gc::gc_list_json_reports_built_project_target_dir)'
 platform = { target = 'cfg(target_os = "linux")' }
-test-group = 'soldr-runtime-linux'
+test-group = 'soldr-cold-start-linux'
 
 [[profile.default.overrides]]
 filter = '(binary(broker) & test(/^(cli_broker_purge|cli_broker_resurrection|cli_broker_routes|cli_broker_single_instance|cli_broker_status|cli_broker_stop|cli_build_alias_parity|cli_build_fetch_overlap|cli_jobs_routing|cli_kill_matrix)::/)) + test(=cli_gc::gc_list_json_reports_built_project_target_dir)'
@@ -198,7 +249,7 @@ test-group = 'soldr-runtime'
 [[profile.default.overrides]]
 filter = 'test(=cli_toolchain::toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=cli_toolchain::toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cli_toolchain::toolchain_link_emits_schema_v1_json_payload) + test(=cli_toolchain::toolchain_link_force_overwrites_user_modified_shim) + test(=cli_toolchain_home_boundary::cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
 platform = { target = 'cfg(target_os = "linux")' }
-test-group = 'soldr-runtime-linux'
+test-group = 'soldr-cold-start-linux'
 
 [[profile.default.overrides]]
 filter = 'test(=cli_toolchain::toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=cli_toolchain::toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cli_toolchain::toolchain_link_emits_schema_v1_json_payload) + test(=cli_toolchain::toolchain_link_force_overwrites_user_modified_shim) + test(=cli_toolchain_home_boundary::cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
@@ -264,7 +315,9 @@ test-group = 'soldr-runtime'
 [test-groups.soldr-cargo-cold-builds]
 max-threads = 1
 
-# soldr#3138 follow-up to #3161: same membership, two threads, Linux only.
+# soldr#3138 follow-up to #3161 (history; soldr#3625 folded this Linux twin,
+# `soldr-cargo-cold-builds-linux`, into `soldr-cold-start-linux`): same
+# membership, two threads, Linux only.
 #
 # After #3161 raised `soldr-runtime` on Linux, THIS group became the gate's
 # serial tail. Measured on run 34086777738: t+812..t+983 of a 983s stage ran
@@ -296,8 +349,6 @@ max-threads = 1
 # 19% when its group went two-wide -- the contention tax is real and partly
 # cancels the packing win. This is worth doing anyway because the tail is
 # strictly serial today, but it is not a 2x.
-[test-groups.soldr-cargo-cold-builds-linux]
-max-threads = 2
 
 [[profile.default.overrides]]
 filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + (binary(cargo_front_door) & test(/^cli_cargo_doc_routes::(cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct|bare_doc_keeps_rustc_wrapped_but_rustdoc_direct|cargo_doc_route_deadline_kills_wrapper_hold_tree|bare_doc_route_deadline_kills_rustdoc_hold_tree|cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct|rustdoc_path_shim_reenters_direct_passthrough_without_zccache)$/)) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
@@ -307,10 +358,34 @@ threads-required = "num-cpus"
 [[profile.default.overrides]]
 filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + (binary(cargo_front_door) & test(/^cli_cargo_doc_routes::(cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct|bare_doc_keeps_rustc_wrapped_but_rustdoc_direct|cargo_doc_route_deadline_kills_wrapper_hold_tree|bare_doc_route_deadline_kills_rustdoc_hold_tree|cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct|rustdoc_path_shim_reenters_direct_passthrough_without_zccache)$/)) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
 platform = { target = 'cfg(target_os = "linux")' }
-test-group = 'soldr-cargo-cold-builds-linux'
+test-group = 'soldr-cold-start-linux'
 
 [[profile.default.overrides]]
 filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + (binary(cargo_front_door) & test(/^cli_cargo_doc_routes::(cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct|bare_doc_keeps_rustc_wrapped_but_rustdoc_direct|cargo_doc_route_deadline_kills_wrapper_hold_tree|bare_doc_route_deadline_kills_rustdoc_hold_tree|cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct|rustdoc_path_shim_reenters_direct_passthrough_without_zccache)$/)) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
+test-group = 'soldr-cargo-cold-builds'
+
+# soldr#3625: front-door modules with the cold-start shape that were in no
+# group. Each hands a Soldr front door a cacheable compile (`cargo build`,
+# `cargo clippy`, `maturin build`, `wheel`, `rust-analyzer`'s spawned cargo)
+# on a fresh SOLDR_CACHE_DIR, so its first compile pays a broker spawn plus a
+# daemon bring-up. Two of them failed soldr#3625 (`cli_cargo_zccache_mode`,
+# `cli_maturin`), and `cli_rust_analyzer` was a contender in the third.
+# `tests/test_nextest_cold_start_group.py` derived this list from the sources
+# and fails when a module with the shape is missing from every cold-start
+# group, or when a name below stops being a real module.
+#
+# Kept as its own filter rather than appended to the cold-build filter above:
+# that filter is shared verbatim with the Windows full-runner reservation
+# (every CPU's worth of threads), which none of these has earned. Off Linux
+# they join the one-thread `soldr-cargo-cold-builds` group they share a shape
+# with.
+[[profile.default.overrides]]
+filter = '(binary(cargo_front_door) & test(/^(cli_cargo_clippy_fixture|cli_cargo_dylint_link|cli_cargo_native_cc|cli_cargo_zccache_mode)::/)) + (binary(daemon) & test(/^cli_debug_trace_observer::/)) + (binary(fetch_tools) & test(/^(cli_maturin|cli_rust_analyzer|cli_wheel)::/)) + (binary(toolchain_env) & test(/^cli_save::/))'
+platform = { target = 'cfg(target_os = "linux")' }
+test-group = 'soldr-cold-start-linux'
+
+[[profile.default.overrides]]
+filter = '(binary(cargo_front_door) & test(/^(cli_cargo_clippy_fixture|cli_cargo_dylint_link|cli_cargo_native_cc|cli_cargo_zccache_mode)::/)) + (binary(daemon) & test(/^cli_debug_trace_observer::/)) + (binary(fetch_tools) & test(/^(cli_maturin|cli_rust_analyzer|cli_wheel)::/)) + (binary(toolchain_env) & test(/^cli_save::/))'
 test-group = 'soldr-cargo-cold-builds'
 
 # The run-wrapper is the native `soldr-nextest-wrapper`

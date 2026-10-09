@@ -324,26 +324,31 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None: 
         assert linked in budget_overrides[0]
 
     assert "[test-groups.soldr-cargo-cold-builds]" in config
+    # soldr#3625 added a second override to this group (the ungrouped
+    # front-door modules, which deliberately stay out of the Windows
+    # full-runner reservation below), so pick the cold-build family's own.
     cold_overrides = [
         block
         for block in config.split("[[profile.default.overrides]]")[1:]
         if "test-group = 'soldr-cargo-cold-builds'" in block
+        and "cli_cargo_basic" in block
     ]
     assert len(cold_overrides) == 1
     cold_override = cold_overrides[0]
 
-    # soldr#3138: the Linux twin (`soldr-cargo-cold-builds-linux`,
-    # max-threads = 2) must carry the SAME membership as the 1-thread group it
-    # shadows, or a module added to one platform would silently escape the
+    # soldr#3138: the Linux twin (now the shared `soldr-cold-start-linux`
+    # group, soldr#3625) must carry the SAME membership as the 1-thread group
+    # it shadows, or a module added to one platform would silently escape the
     # reservation on the other -- the drift this file exists to prevent.
     linux_overrides = [
         block
         for block in config.split("[[profile.default.overrides]]")[1:]
-        if "test-group = 'soldr-cargo-cold-builds-linux'" in block
+        if "test-group = 'soldr-cold-start-linux'" in block
+        and "cli_cargo_basic" in block
     ]
     assert len(linux_overrides) == 1, "expected exactly one Linux cold-builds override"
     assert 'target_os = "linux"' in linux_overrides[0], (
-        "the two-thread cold-builds group must stay platform-gated to Linux; "
+        "the two-thread cold-start group must stay platform-gated to Linux; "
         "every documented incident it protects against was on windows-gnu/msvc, "
         "ARM/GNU or macOS-Rosetta"
     )
