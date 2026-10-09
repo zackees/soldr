@@ -316,6 +316,11 @@ result="$(
 )"
 echo "CACHEABILITY_RESULT $result"
 echo "CACHEABILITY_WARM_MISSES $(collect_warm_miss_units)"
+# soldr#3606: the first-party unit set comes from Cargo, not from a name rule.
+# Every workspace target name (lib, bin, test, bench, example) as one JSON
+# array; `null` when metadata is unavailable so the driver degrades instead of
+# the harness aborting.
+echo "CACHEABILITY_WORKSPACE_METADATA $("$SOLDR_BIN" cargo metadata --no-deps --format-version 1 --offline | jq -c '[.packages[].targets[].name]' || echo null)"
 
 # soldr#2937: no verdict here. Whether a miss is a regression depends on
 # whether the unit is a dependency or a first-party test-harness link product,
@@ -452,14 +457,11 @@ def emit_report_explanation(label: str, path: str) -> int:
 # The soldr#2931 warm-run verdict (replaces the soldr#1391 zero-miss rule)
 # --------------------------------------------------------------------------
 
-# Every crate this workspace builds is named `soldr*` (soldr-cli, soldr-core,
-# soldr-fetch, soldr-cache, soldr-daemon and the `soldr` binary), and zccache
-# reports unit names with underscores. Matching on the prefix rather than an
-# enumerated list is deliberate: a crate added to the workspace must not turn
-# this lane red on its first commit, because a first-party unit missing warm is
-# not a policy violation under soldr#2931 -- it is where the linked test
-# products live.
-FIRST_PARTY_UNIT_PREFIX = "soldr"
+# First-party units are read from `cargo metadata` (every workspace target
+# name, see `first_party_units`), never from a name rule. A `soldr*` prefix
+# silently drifted when soldr#2934 added category test targets (`broker`,
+# `daemon`, `guards`, ...) that carry no such prefix, and those first-party
+# link products were then reported as dependency misses (soldr#3606).
 
 # `build_script_build` is the unit name cargo gives EVERY crate's build script,
 # first-party and dependency alike, so the name does not identify its crate.
@@ -473,7 +475,16 @@ def normalize_unit(name: str) -> str:
     return name.strip().replace("-", "_").lower()
 
 
-def classify_warm_misses(units: "list[str]") -> "tuple[list[str], list[str]]":
+def first_party_units(target_names: "list[str]") -> "frozenset[str]":
+    """Workspace cargo target names -> the unit names zccache reports for them."""
+    return frozenset(
+        unit for unit in (normalize_unit(str(name)) for name in target_names) if unit
+    )
+
+
+def classify_warm_misses(
+    units: "list[str]", first_party: "frozenset[str]"
+) -> "tuple[list[str], list[str]]":
     """Split warm-run miss units into `(dependency, expected)`.
 
     `dependency` is the half that must not exist: an external crate that
@@ -490,7 +501,7 @@ def classify_warm_misses(units: "list[str]") -> "tuple[list[str], list[str]]":
         unit = normalize_unit(str(raw))
         if not unit:
             continue
-        if unit.startswith(FIRST_PARTY_UNIT_PREFIX) or unit in AMBIGUOUS_UNITS:
+        if unit in first_party or unit in AMBIGUOUS_UNITS:
             expected.append(unit)
         else:
             dependency.append(unit)
@@ -498,7 +509,9 @@ def classify_warm_misses(units: "list[str]") -> "tuple[list[str], list[str]]":
 
 
 def evaluate_warm_result(
-    result: dict[str, Any], warm_miss_units: "list[str] | None"
+    result: dict[str, Any],
+    warm_miss_units: "list[str] | None",
+    first_party: "frozenset[str] | None",
 ) -> "list[str]":
     """Failure lines for a warm run. Empty means the lane passes.
 
@@ -515,6 +528,10 @@ def evaluate_warm_result(
     list (a missing build log). The check then degrades to condition 1 rather
     than failing: an absent diagnostic is not evidence of a regression, and a
     guard that fails on its own missing input teaches people to ignore it.
+
+    `first_party` is `None` when workspace metadata was unavailable (soldr#3606).
+    Misses then cannot be attributed to first-party or dependency, so the check
+    degrades exactly as it does for a missing `warm_miss_units`.
     """
     failures: list[str] = []
 
@@ -526,8 +543,14 @@ def evaluate_warm_result(
 
     if warm_miss_units is None:
         return failures
+    if first_party is None:
+        print(
+            "note: per-unit miss classification skipped because workspace "
+            "metadata was unavailable (soldr#3606)"
+        )
+        return failures
 
-    dependency, expected = classify_warm_misses(warm_miss_units)
+    dependency, expected = classify_warm_misses(warm_miss_units, first_party)
     if dependency:
         failures.append(
             "dependency units recompiled on the warm run (they must hit the "
@@ -869,9 +892,22 @@ def build_image(image: str) -> int:
     ).returncode
 
 
+def _diagnostic_list(line: str, prefix: str) -> "list[str] | None":
+    """JSON list carried on a harness diagnostic line, or None.
+
+    A diagnostic that cannot be parsed must not become the failure:
+    `evaluate_warm_result` degrades on None.
+    """
+    try:
+        decoded = json.loads(line.removeprefix(prefix).strip())
+    except json.JSONDecodeError:
+        return None
+    return decoded if isinstance(decoded, list) else None
+
+
 def run_harness(  # noqa: C901
     image: str, volumes: list[str], tracker: "PhaseTracker | None" = None
-) -> "tuple[int, dict[str, Any] | None, list[str] | None]":
+) -> "tuple[int, dict[str, Any] | None, list[str] | None, frozenset[str] | None]":
     cmd = [
         "docker",
         "run",
@@ -916,6 +952,7 @@ def run_harness(  # noqa: C901
 
     result: dict[str, object] | None = None
     warm_miss_units: list[str] | None = None
+    first_party: frozenset[str] | None = None
     tail: deque[str] = deque(maxlen=80)
     for raw_line in process.stdout:
         line = raw_line.decode("utf-8", errors="replace")
@@ -929,14 +966,10 @@ def run_harness(  # noqa: C901
             payload = line.removeprefix("CACHEABILITY_RESULT ").strip()
             result = json.loads(payload)
         elif line.startswith("CACHEABILITY_WARM_MISSES "):
-            payload = line.removeprefix("CACHEABILITY_WARM_MISSES ").strip()
-            try:
-                decoded = json.loads(payload)
-            except json.JSONDecodeError:
-                # A diagnostic that cannot be parsed must not become the
-                # failure. `evaluate_warm_result` degrades on None.
-                decoded = None
-            warm_miss_units = decoded if isinstance(decoded, list) else None
+            warm_miss_units = _diagnostic_list(line, "CACHEABILITY_WARM_MISSES ")
+        elif line.startswith("CACHEABILITY_WORKSPACE_METADATA "):
+            targets = _diagnostic_list(line, "CACHEABILITY_WORKSPACE_METADATA ")
+            first_party = None if targets is None else first_party_units(targets)
 
     code = process.wait()
     if tracker is not None and code == 0:
@@ -946,7 +979,7 @@ def run_harness(  # noqa: C901
         print("\nlast harness output:", file=sys.stderr)
         for line in tail:
             print(line, end="", file=sys.stderr)
-    return code, result, warm_miss_units
+    return code, result, warm_miss_units, first_party
 
 
 def remove_volumes(volumes: list[str]) -> None:
@@ -991,13 +1024,15 @@ def main(argv: list[str]) -> int:  # noqa: C901
         tracker.record("docker build", time.monotonic() - build_started)
         if image_code != 0:
             return image_code
-        code, result, warm_miss_units = run_harness(args.image, volumes, tracker)
+        code, result, warm_miss_units, first_party = run_harness(
+            args.image, volumes, tracker
+        )
         if code != 0:
             return code
         if result is None:
             print("error: harness did not emit CACHEABILITY_RESULT", file=sys.stderr)
             return 4
-        failures = evaluate_warm_result(result, warm_miss_units)
+        failures = evaluate_warm_result(result, warm_miss_units, first_party)
         if failures:
             print("CACHEABILITY_FAILURE dependency compilation is not warm")
             for failure in failures:
