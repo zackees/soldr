@@ -25,14 +25,38 @@ GATE = load_script_module(ROOT / "ci" / "local_gate.py", "soldr_local_gate_wirin
 WRAPPER = ROOT / ".github" / "scripts" / "nextest_wrapper.sh"
 
 
+# Every copy of the ci-lint pin outside ci.toml (soldr#3616). Workflow `ref:`
+# lines must stay literal YAML, so this list is what keeps them equal.
+CI_LINT_PIN_SITES = (
+    ".github/workflows/ci.yml",
+    ".github/workflows/ci-pre.yml",
+    ".github/workflows/_build-and-test.yml",
+    "local-gate.toml",
+)
+
+
 def test_one_ci_lint_ref_everywhere() -> None:
-    ref = GATE.CI_LINT_REF
-    assert re.fullmatch(r"[0-9a-f]{40}", ref)
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert f"ref: {ref}" in workflow
-    assert ref in (ROOT / "local-gate.toml").read_text(encoding="utf-8")
-    pinned = set(re.findall(r"zackees/ci\.yml@([0-9a-f]{40})", workflow))
-    assert pinned <= {ref}
+    ref = GATE.ci_lint_ref()
+    assert ref == GATE.CI_LINT_REF
+    for site in CI_LINT_PIN_SITES:
+        text = (ROOT / site).read_text(encoding="utf-8")
+        pinned = set(re.findall(r"zackees/ci\.yml@([0-9a-f]{40})", text))
+        refs = re.findall(r"repository: zackees/ci\.yml\n\s+ref: ([0-9a-f]{40})", text)
+        assert pinned | set(refs), f"{site}: no ci-lint pin found"
+        assert pinned | set(refs) == {ref}, (
+            f"{site}: pins {pinned | set(refs)} != ci.toml {ref}"
+        )
+    # No other tracked workflow may check out zackees/ci.yml unlisted.
+    for wf in (ROOT / ".github" / "workflows").glob("*.y*ml"):
+        if "repository: zackees/ci.yml" in wf.read_text(encoding="utf-8"):
+            assert f".github/workflows/{wf.name}" in CI_LINT_PIN_SITES, wf.name
+
+
+def test_ci_lint_ref_rejects_malformed_linter(tmp_path: Path) -> None:
+    bad = tmp_path / "ci.toml"
+    bad.write_text('linter = "zackees/ci.yml@main"\n', encoding="utf-8")
+    with pytest.raises(SystemExit):
+        GATE.ci_lint_ref(bad)
 
 
 def test_lint_job_runs_only_the_lint_lane() -> None:
