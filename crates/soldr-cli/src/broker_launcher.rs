@@ -195,7 +195,7 @@ impl SoldrBackendLauncher {
         request: &BackendLaunchRequest<'_>,
     ) -> Result<BackendHandle, BackendLaunchError> {
         let started = std::time::Instant::now();
-        let debug = std::env::var_os("SOLDR_BROKER_DEBUG").is_some();
+        let debug = crate::broker_debug::broker_debug_enabled();
         if debug {
             eprintln!(
                 "soldr broker: launch begin route={}",
@@ -428,7 +428,7 @@ impl SoldrBackendLauncher {
         let expected_binary = std::fs::canonicalize(expected_binary).ok()?;
         let claimed_binary = std::fs::canonicalize(&claim.exe_path).ok();
         if claimed_binary.as_deref() != Some(expected_binary.as_path()) {
-            if std::env::var_os("SOLDR_BROKER_DEBUG").is_some() {
+            if crate::broker_debug::broker_debug_enabled() {
                 eprintln!(
                     "soldr broker: route claim identity mismatch claimed_binary={:?} expected_binary={} claim_boot={} current_boot={}",
                     claimed_binary,
@@ -456,7 +456,7 @@ impl SoldrBackendLauncher {
         ) {
             Ok(handle) => Some(handle),
             Err(error) => {
-                if std::env::var_os("SOLDR_BROKER_DEBUG").is_some() {
+                if crate::broker_debug::broker_debug_enabled() {
                     eprintln!(
                         "soldr broker: daemon route claim failed exact probe and was pruned: {error}"
                     );

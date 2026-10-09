@@ -22,6 +22,7 @@ mod linker_shared_resolver_lint;
 mod msrv_doc_matches_manifest;
 mod multicall_bin_layout;
 mod no_panicking_argv_collection;
+mod no_presence_only_soldr_flag_lint;
 mod no_standalone_spawn_lint;
 mod no_timed_test_guard;
 mod phase5_contract;

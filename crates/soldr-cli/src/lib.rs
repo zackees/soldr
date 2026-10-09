@@ -221,6 +221,7 @@ pub(crate) mod broker_daemon_disk;
 /// surface, split out of `broker_server` to keep it under the 1,000-line
 /// production-source ceiling.
 pub(crate) mod broker_deadlines;
+pub(crate) mod broker_debug;
 /// soldr#2388: container-safe broker/session socket identity (graceful fallback
 /// when the OS provides no `/etc/machine-id`).
 pub mod broker_identity;

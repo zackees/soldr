@@ -14,6 +14,8 @@ use semver::Version;
 
 /// Set by soldr on the probe/delegate child so a delegated invocation does
 /// not delegate again.
+// Internal recursion marker soldr itself sets to "1" on the child; deliberately
+// presence-checked, not a user switch (so not read through `core::flag`).
 const GLOBAL_DELEGATION_ENV_VAR: &str = "SOLDR_GLOBAL_DELEGATING";
 
 /// Opt out of the delegation probe without claiming to be a delegated child.
@@ -29,6 +31,12 @@ const GLOBAL_DELEGATION_ENV_VAR: &str = "SOLDR_GLOBAL_DELEGATING";
 /// This carries the first meaning only.
 pub const GLOBAL_DELEGATION_DISABLE_ENV_VAR: &str = "SOLDR_NO_GLOBAL_DELEGATION";
 
+/// Pure decision for [`GLOBAL_DELEGATION_DISABLE_ENV_VAR`] (soldr#3609):
+/// only a truthy spelling opts out, so `=0`/`=false` keep delegation on.
+fn delegation_opted_out(value: Option<&str>) -> bool {
+    value.is_some_and(crate::core::flag_value)
+}
+
 /// Hand this invocation to a newer globally-installed soldr when the current
 /// project opted in. Returns `Some(exit_code)` only when delegation occurred
 /// (or the exec failed); callers should continue their normal dispatch on
@@ -36,7 +44,11 @@ pub const GLOBAL_DELEGATION_DISABLE_ENV_VAR: &str = "SOLDR_NO_GLOBAL_DELEGATION"
 pub fn maybe_delegate(raw_args: &[String]) -> Option<i32> {
     if is_delegation_exempt(raw_args)
         || std::env::var_os(GLOBAL_DELEGATION_ENV_VAR).is_some()
-        || std::env::var_os(GLOBAL_DELEGATION_DISABLE_ENV_VAR).is_some()
+        || delegation_opted_out(
+            std::env::var(GLOBAL_DELEGATION_DISABLE_ENV_VAR)
+                .ok()
+                .as_deref(),
+        )
         || !crate::cargo_metadata_soldr::prefer_newer_global_from_cwd()
     {
         return None;
@@ -150,6 +162,17 @@ fn delegate(binary: &Path, args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delegation_opt_out_only_honours_truthy_values() {
+        assert!(!delegation_opted_out(None));
+        for off in ["0", "false", "no", "off", "", "maybe"] {
+            assert!(!delegation_opted_out(Some(off)), "{off:?} must not opt out");
+        }
+        for on in ["1", "true", "YES", "on"] {
+            assert!(delegation_opted_out(Some(on)), "{on:?} must opt out");
+        }
+    }
 
     #[test]
     fn parses_plain_and_v_prefixed_versions() {
