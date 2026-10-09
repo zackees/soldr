@@ -56,27 +56,61 @@ edition = "2021"
     write(
         &dir.join("src/main.rs"),
         br#"fn main() {
-    println!("{}", save_ci_real_hits());
-}
-
-fn save_ci_real_hits() -> u32 {
-    (0..32).sum()
+    println!("{}", save_ci_real_hits::value());
 }
 "#,
     );
+    write(
+        &dir.join("src/lib.rs"),
+        b"pub fn value() -> u32 { (0..32).sum() }\n",
+    );
 }
 
-fn read_json_file(path: &Path) -> Value {
-    let raw =
-        fs::read_to_string(path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-    serde_json::from_str(raw.trim())
-        .unwrap_or_else(|err| panic!("parse {}: {err}\n{raw}", path.display()))
+fn native_library_events(cache_root: &Path) -> Vec<Value> {
+    let mut paths = soldr_command(&["logs", "paths", "--json"]);
+    paths.env("SOLDR_CACHE_DIR", cache_root);
+    let output = run_command(paths, "resolve native compiler journal");
+    let inventory: Value = serde_json::from_slice(&output.stdout).expect("parse log paths");
+    let logs = inventory["paths"]
+        .as_array()
+        .expect("log path inventory")
+        .iter()
+        .find(|entry| entry["name"] == "zccache-embedded-logs")
+        .expect("canonical embedded logs entry");
+    let journal =
+        Path::new(logs["path"].as_str().expect("logs path")).join("compile_journal.jsonl");
+    println!("selected native compiler journal: {}", journal.display());
+    fs::read_to_string(&journal)
+        .unwrap_or_else(|err| panic!("read native journal {}: {err}", journal.display()))
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("native compiler event"))
+        .filter(|event| {
+            let args = event["args"].as_array().expect("compiler arguments");
+            args.windows(2)
+                .any(|pair| pair[0] == "--crate-name" && pair[1] == "save_ci_real_hits")
+                && args
+                    .windows(2)
+                    .any(|pair| pair[0] == "--crate-type" && pair[1] == "lib")
+        })
+        .collect()
 }
 
 fn u64_field(json: &Value, key: &str) -> u64 {
     json.get(key)
         .and_then(Value::as_u64)
         .unwrap_or_else(|| panic!("missing numeric {key} in {json:#?}"))
+}
+
+fn load_real_compiler_archive(archive: &Path, cache_root: &Path, workspace: &Path) -> Output {
+    let mut load = soldr_command(&["load", "--json"]);
+    load.env("SOLDR_CACHE_DIR", cache_root)
+        .arg("--archive")
+        .arg(archive)
+        .arg("--cache-dir")
+        .arg(cache_root.join("cache"))
+        .arg("--workspace")
+        .arg(workspace);
+    run_command(load, "soldr load ci archive")
 }
 
 #[test]
@@ -196,13 +230,42 @@ fn save_profile_env_selects_ci_when_flag_absent() {
     assert_eq!(json["excluded_files"], 2);
 }
 
+/// Run `soldr save --ci` over a cold compiler store and check its receipt.
+fn save_ci_archive(cold_root: &Path, cold_cache: &Path, workspace: &Path, archive: &Path) {
+    let mut save = soldr_command(&["save", "--ci", "--json", "--zstd-level", "1"]);
+    save.env("SOLDR_CACHE_DIR", cold_root)
+        .arg("--cache-dir")
+        .arg(cold_cache)
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--out")
+        .arg(archive);
+    let save_output = run_command(save, "soldr save --ci");
+    println!(
+        "save transport receipt: stdout={} stderr={}",
+        String::from_utf8_lossy(&save_output.stdout),
+        String::from_utf8_lossy(&save_output.stderr)
+    );
+    let save_json: Value = serde_json::from_slice(&save_output.stdout).expect("parse save json");
+    assert_eq!(save_json["profile"], "ci");
+    assert!(
+        u64_field(&save_json, "cache_files") > 0,
+        "ci save must include real cache payloads: {save_json:#?}"
+    );
+    assert!(
+        u64_field(&save_json, "excluded_files") > 0,
+        "ci save should report excluded runtime files: {save_json:#?}"
+    );
+}
+
 #[test]
-#[ignore = "does two real soldr cargo builds; run explicitly for #1297 acceptance"]
+#[ignore = "two real compiler builds; bosn cache-snapshot-acceptance, soldr#3604"]
 fn save_ci_load_preserves_real_warm_rustc_hits() {
     let root = common::unique_temp_dir("save-ci-real-hits");
     let workspace = root.join("workspace");
     let cold_root = root.join("cold-cache-root");
     let warm_root = root.join("warm-cache-root");
+    let target_dir = root.join("target");
     let archive = root.join("cache.tar.zst");
     let cold_cache = cold_root.join("cache");
     let warm_cache = warm_root.join("cache");
@@ -214,6 +277,7 @@ fn save_ci_load_preserves_real_warm_rustc_hits() {
     let mut cold_build = soldr_command(&["cargo", "build", "--release"]);
     cold_build
         .current_dir(&workspace)
+        .env("CARGO_TARGET_DIR", &target_dir)
         .env("SOLDR_CACHE_DIR", &cold_root);
     run_command(cold_build, "cold soldr cargo build");
 
@@ -221,68 +285,73 @@ fn save_ci_load_preserves_real_warm_rustc_hits() {
     flush.env("SOLDR_CACHE_DIR", &cold_root);
     run_command(flush, "cold cache flush");
 
-    let mut shutdown = soldr_command(&["cache", "shutdown", "--no-wait", "--json"]);
-    shutdown.env("SOLDR_CACHE_DIR", &cold_root);
-    run_command(shutdown, "cold cache shutdown");
-
     write(
         &cold_cache.join("zccache/runtime-binaries/zccache"),
         b"runtime binary must not enter ci archive",
     );
 
-    let mut save = soldr_command(&["save", "--ci", "--json", "--zstd-level", "1"]);
-    save.arg("--cache-dir")
-        .arg(&cold_cache)
-        .arg("--workspace")
-        .arg(&workspace)
-        .arg("--out")
-        .arg(&archive);
-    let save_output = run_command(save, "soldr save --ci");
-    let save_json: Value = serde_json::from_slice(&save_output.stdout).expect("parse save json");
-    assert_eq!(save_json["profile"], "ci");
+    save_ci_archive(&cold_root, &cold_cache, &workspace, &archive);
+
+    let cold_events = native_library_events(&cold_root);
+    let manifest = soldr_cli::cache_lib::save::read_manifest_from_archive(&archive)
+        .expect("read production save manifest");
+    let archived_indexes: Vec<_> = manifest
+        .cache_files
+        .iter()
+        .filter(|entry| entry.path.ends_with("/index.bin"))
+        .map(|entry| &entry.path)
+        .collect();
+    println!("archived compiler indexes: {archived_indexes:?}");
     assert!(
-        u64_field(&save_json, "cache_files") > 0,
-        "ci save must include real cache payloads: {save_json:#?}"
-    );
-    assert!(
-        u64_field(&save_json, "excluded_files") > 0,
-        "ci save should report excluded runtime files: {save_json:#?}"
+        cold_events.iter().any(|event| event["outcome"] == "miss"),
+        "cold fixture must actually compile a cacheable library: {cold_events:#?}"
     );
 
-    let mut load = soldr_command(&["load", "--json"]);
-    load.arg("--archive")
-        .arg(&archive)
-        .arg("--cache-dir")
-        .arg(&warm_cache)
-        .arg("--workspace")
-        .arg(&workspace);
-    run_command(load, "soldr load ci archive");
+    let load_output = load_real_compiler_archive(&archive, &warm_root, &workspace);
+    println!(
+        "load transport receipt: stdout={} stderr={}",
+        String::from_utf8_lossy(&load_output.stdout),
+        String::from_utf8_lossy(&load_output.stderr)
+    );
     assert!(
         !warm_cache.join("zccache/runtime-binaries/zccache").exists(),
         "ci load must not restore zccache runtime binaries"
     );
 
-    let _ = fs::remove_dir_all(workspace.join("target"));
+    fs::rename(&target_dir, root.join("target-cold-retained"))
+        .expect("retain cold products outside the warm compiler output path");
 
     let mut warm_build = soldr_command(&["cargo", "build", "--release"]);
     warm_build
         .current_dir(&workspace)
+        .env("CARGO_TARGET_DIR", &target_dir)
         .env("SOLDR_CACHE_DIR", &warm_root);
     run_command(warm_build, "warm soldr cargo build");
 
-    let stats = read_json_file(
-        &warm_cache
-            .join("zccache")
-            .join("logs")
-            .join("last-session-stats.json"),
+    let mut flush = soldr_command(&["cache", "flush", "--json"]);
+    flush.env("SOLDR_CACHE_DIR", &warm_root);
+    run_command(flush, "warm cache flush");
+    let mut shutdown = soldr_command(&["cache", "shutdown", "--json"]);
+    shutdown.env("SOLDR_CACHE_DIR", &warm_root);
+    run_command(shutdown, "warm cache shutdown before assertions");
+    let warm_events = native_library_events(&warm_root);
+    println!(
+        "native library events: {}",
+        serde_json::json!({"cold": cold_events, "warm": warm_events})
     );
     assert!(
-        u64_field(&stats, "hits") > 0,
-        "warm build should hit restored ci archive cache: {stats:#?}"
+        warm_events.iter().any(|event| event["outcome"] == "hit"),
+        "warm cacheable library must hit the relocated archive: {warm_events:#?}"
     );
-    assert_eq!(
-        u64_field(&stats, "misses"),
-        0,
-        "warm build should not miss after restoring ci archive: {stats:#?}"
+    assert!(
+        warm_events.iter().all(|event| event["outcome"] == "hit"),
+        "every warm cacheable-library invocation must hit: {warm_events:#?}"
+    );
+    // A second restore must preserve the already populated, quiescent store.
+    let repeated = load_real_compiler_archive(&archive, &warm_root, &workspace);
+    println!(
+        "same-root load receipt: stdout={} stderr={}",
+        String::from_utf8_lossy(&repeated.stdout),
+        String::from_utf8_lossy(&repeated.stderr)
     );
 }

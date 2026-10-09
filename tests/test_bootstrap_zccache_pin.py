@@ -34,8 +34,11 @@ from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "_build-and-test.yml"
-# soldr-daemon hosts the embedded zccache service whose store tree is versioned.
-DAEMON_MANIFEST = "crates/soldr-daemon/Cargo.toml"
+# The one zccache pin lives in the root `[workspace.dependencies]`; every member
+# inherits it with `workspace = true` (soldr#3604).
+WORKSPACE_MANIFEST = "Cargo.toml"
+# Releases before the workspace pin declared it in soldr-daemon.
+LEGACY_DAEMON_MANIFEST = "crates/soldr-daemon/Cargo.toml"
 DECLARATION = re.compile(r"^\s*# bootstrap-embeds-zccache: (\S+)$", re.MULTILINE)
 PENDING = re.compile(r"^\s*# bootstrap-zccache-pending: (\S+)$", re.MULTILINE)
 SETUP_VERSION = re.compile(
@@ -46,7 +49,7 @@ ZCCACHE_PIN = re.compile(r'^zccache = \{[^}]*version = "=([^"]+)"', re.MULTILINE
 
 def workspace_zccache(cargo_toml: str) -> str:
     match = ZCCACHE_PIN.search(cargo_toml)
-    assert match, f"{DAEMON_MANIFEST} has no exact zccache pin"
+    assert match, f"{WORKSPACE_MANIFEST} has no exact zccache pin"
     return match.group(1)
 
 
@@ -82,11 +85,11 @@ def bootstrap_version(workflow: str) -> str:
 
 def test_bootstrap_declares_the_workspace_zccache() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    cargo = (REPO_ROOT / DAEMON_MANIFEST).read_text(encoding="utf-8")
+    cargo = (REPO_ROOT / WORKSPACE_MANIFEST).read_text(encoding="utf-8")
     declared = declared_bootstrap_zccache(workflow)
     pending = pending_bootstrap_zccache(workflow)
     assert bootstrap_matches_workspace(declared, pending, workspace_zccache(cargo)), (
-        "soldr-daemon's zccache pin moved: bump _build-and-test.yml's setup-soldr "
+        "the workspace zccache pin moved: bump _build-and-test.yml's setup-soldr "
         "`version:` to a release embedding it, then update the declaration "
         "(a bump PR declares the lag with `# bootstrap-zccache-pending: <zccache>`; "
         "drop that marker once the bootstrap embeds it)"
@@ -101,21 +104,25 @@ def test_declaration_matches_the_pinned_release_when_its_tag_is_present() -> Non
     """
     workflow = WORKFLOW.read_text(encoding="utf-8")
     tag = f"v{bootstrap_version(workflow)}"
-    shown = run_captured(
-        ["git", "show", f"{tag}:{DAEMON_MANIFEST}"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if shown.returncode != 0:
+    shown = None
+    for manifest in (WORKSPACE_MANIFEST, LEGACY_DAEMON_MANIFEST):
+        shown = run_captured(
+            ["git", "show", f"{tag}:{manifest}"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if shown.returncode == 0 and ZCCACHE_PIN.search(shown.stdout):
+            break
+    if shown is None or shown.returncode != 0:
         pytest.skip(f"release tag {tag} is not available in this checkout")
     assert workspace_zccache(shown.stdout) == declared_bootstrap_zccache(workflow)
 
 
 def test_the_retired_pin_is_detected() -> None:
     """RED fixture: 0.9.16's zccache (1.13.22) is not the workspace's."""
-    cargo = (REPO_ROOT / DAEMON_MANIFEST).read_text(encoding="utf-8")
+    cargo = (REPO_ROOT / WORKSPACE_MANIFEST).read_text(encoding="utf-8")
     assert workspace_zccache(cargo) != "1.13.22"
 
 

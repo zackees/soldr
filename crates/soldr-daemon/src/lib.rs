@@ -33,4 +33,5 @@ pub(crate) mod resident_compile_admission;
 #[cfg(test)]
 mod test_support;
 pub mod zccache_embedded;
+pub mod zccache_embedded_snapshot;
 pub(crate) mod zccache_staging;

@@ -11,10 +11,14 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::cache_lib::save::{
-    load, read_manifest_file, read_manifest_from_archive, save, save_delta, write_manifest_file,
-    LoadOptions, SaveDeltaOptions, SaveOptions, SaveProfile, DEFAULT_ZSTD_LEVEL, SAVE_PROFILE_ENV,
+    load, read_manifest_file, read_manifest_from_archive, save_delta_with_projection,
+    save_with_projection, write_manifest_file, LoadOptions, SaveDeltaOptions, SaveOptions,
+    SaveProfile, DEFAULT_ZSTD_LEVEL, SAVE_PROFILE_ENV,
 };
 use clap::Args;
+
+#[path = "save_load_snapshot.rs"]
+mod snapshot;
 
 #[derive(Debug, Args)]
 pub struct SaveArgs {
@@ -248,6 +252,16 @@ pub fn run_save(args: SaveArgs) -> i32 {
             return 1;
         }
     }
+    let prepared_snapshot = match snapshot::prepare(args.cache_dir.as_deref()) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("soldr save: compiler snapshot export failed: {error}");
+            return 1;
+        }
+    };
+    let projection = prepared_snapshot
+        .as_ref()
+        .map(snapshot::PreparedSnapshot::projection);
     if let Some(base_manifest_path) = args.delta_from_manifest.as_deref() {
         let Some(cache_dir) = args.cache_dir.as_deref() else {
             eprintln!("soldr save: --delta-from-manifest requires --cache-dir");
@@ -273,7 +287,7 @@ pub fn run_save(args: SaveArgs) -> i32 {
             threads: args.threads,
             profile,
         };
-        let report = match save_delta(&opts) {
+        let report = match save_delta_with_projection(&opts, projection.as_ref()) {
             Ok(r) => r,
             Err(err) => {
                 eprintln!("soldr save: {err}");
@@ -318,7 +332,7 @@ pub fn run_save(args: SaveArgs) -> i32 {
         mtimes_only: args.mtimes_only,
         profile,
     };
-    let report = match save(&opts) {
+    let report = match save_with_projection(&opts, projection.as_ref()) {
         Ok(r) => r,
         Err(err) => {
             eprintln!("soldr save: {err}");
@@ -400,6 +414,10 @@ pub fn run_load(args: LoadArgs) -> i32 {
             return 1;
         }
     };
+    if let Err(error) = snapshot::restore(args.cache_dir.as_deref()) {
+        eprintln!("soldr load: compiler snapshot import failed: {error}");
+        return 1;
+    }
     if let Some(out) = args.manifest_out.as_deref() {
         let manifest = match read_manifest_from_archive(&args.archive) {
             Ok(manifest) => manifest,

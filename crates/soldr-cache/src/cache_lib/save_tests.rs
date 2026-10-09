@@ -4,6 +4,210 @@
 use super::*;
 
 #[test]
+fn projected_snapshot_uses_portable_paths_in_full_and_delta_archives() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = root.path().join("cache");
+    let snapshot = root.path().join("snapshot");
+    let restored = root.path().join("restored");
+    for dir in [&cache, &snapshot, &restored] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let live = cache.join("daemon-route");
+    std::fs::create_dir_all(&live).unwrap();
+    std::fs::write(live.join("index.bin"), b"live private store").unwrap();
+    std::fs::write(cache.join("unrelated.bin"), b"keep").unwrap();
+    std::fs::write(snapshot.join("index.bin"), b"original").unwrap();
+    let projection = CacheProjection {
+        source: &snapshot,
+        archive_prefix: Path::new("portable"),
+        exclude_prefix: Path::new("daemon-route"),
+    };
+    let archive = root.path().join("base.tar.zst");
+    let report = save_with_projection(
+        &SaveOptions {
+            workspace: None,
+            cache_dir: Some(&cache),
+            out: &archive,
+            zstd_level: 1,
+            threads: Some(1),
+            mtimes_only: false,
+            profile: SaveProfile::Ci,
+        },
+        Some(&projection),
+    )
+    .unwrap();
+    assert_eq!(report.cache_files, 2);
+    assert_eq!(report.excluded_files, 1);
+    let base = read_manifest_from_archive(&archive).unwrap();
+    let mut paths: Vec<_> = base
+        .cache_files
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
+    paths.sort();
+    assert_eq!(paths, ["portable/index.bin", "unrelated.bin"]);
+    let mut load_opts = LoadOptions {
+        archive: &archive,
+        cache_dir: Some(&restored),
+        workspace: None,
+        threads: Some(1),
+        mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
+    };
+    load(&load_opts).unwrap();
+    assert_eq!(
+        std::fs::read(restored.join("portable/index.bin")).unwrap(),
+        b"original"
+    );
+    assert!(!restored.join("daemon-route").exists());
+    // An old restored snapshot must not shadow the external producer's new one.
+    std::fs::create_dir_all(cache.join("portable")).unwrap();
+    std::fs::write(cache.join("portable/index.bin"), b"stale").unwrap();
+    std::fs::write(snapshot.join("index.bin"), b"modified").unwrap();
+    let delta = root.path().join("delta.tar.zst");
+    save_delta_with_projection(
+        &SaveDeltaOptions {
+            workspace: None,
+            cache_dir: &cache,
+            base_manifest: &base,
+            out: &delta,
+            zstd_level: 1,
+            threads: Some(1),
+            profile: SaveProfile::Ci,
+        },
+        Some(&projection),
+    )
+    .unwrap();
+    load_opts.archive = &delta;
+    load(&load_opts).unwrap();
+    assert_eq!(
+        std::fs::read(restored.join("portable/index.bin")).unwrap(),
+        b"modified"
+    );
+    assert_eq!(
+        std::fs::read(live.join("index.bin")).unwrap(),
+        b"live private store"
+    );
+}
+
+#[test]
+fn projected_snapshot_rejects_escaping_and_overlapping_source_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = root.path().join("cache");
+    let snapshot = root.path().join("snapshot");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::create_dir_all(&snapshot).unwrap();
+    let mut projection = CacheProjection {
+        source: &snapshot,
+        archive_prefix: Path::new("../escape"),
+        exclude_prefix: Path::new("daemon-route"),
+    };
+    assert!(projection.validate(&cache).is_err());
+    projection.archive_prefix = Path::new("portable");
+    projection.exclude_prefix = Path::new("/");
+    assert!(projection.validate(&cache).is_err());
+    projection.exclude_prefix = Path::new("daemon-route");
+    projection.source = &cache;
+    assert!(projection.validate(&cache).is_err());
+}
+
+#[test]
+fn projected_snapshot_preserves_opaque_output_names_under_cook_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = root.path().join("cache");
+    let snapshot = root.path().join("snapshot");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::create_dir_all(snapshot.join("artifacts/.staged-v2/key")).unwrap();
+    std::fs::write(
+        snapshot.join("artifacts/.staged-v2/key/output-0"),
+        b"library",
+    )
+    .unwrap();
+    std::fs::write(snapshot.join("index.bin"), b"producer index").unwrap();
+    let walk = walk_cache_with_projection(
+        &cache,
+        Some(1),
+        SaveProfile::Cook,
+        Some(&CacheProjection {
+            source: &snapshot,
+            archive_prefix: Path::new("portable"),
+            exclude_prefix: Path::new("private"),
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        walk.included_paths.len(),
+        2,
+        "opaque producer payload must remain complete"
+    );
+}
+
+#[test]
+fn projected_snapshot_delta_preserves_private_store_from_legacy_base() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = root.path().join("cache");
+    let snapshot = root.path().join("snapshot");
+    let restored = root.path().join("restored");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::create_dir_all(&snapshot).unwrap();
+    std::fs::create_dir_all(restored.join("private")).unwrap();
+    std::fs::write(restored.join("private/index.bin"), b"live compiler store").unwrap();
+    std::fs::write(snapshot.join("index.bin"), b"new portable index").unwrap();
+    let base = Manifest {
+        version: MANIFEST_VERSION,
+        cache_dir_name: CACHE_DIR_NAME.into(),
+        cache_files: vec![CacheFile {
+            path: "private/index.bin".into(),
+            ..CacheFile::default()
+        }],
+        cache_symlinks: vec![SymlinkEntry {
+            path: "private/current".into(),
+            target: "index.bin".into(),
+            is_dir: false,
+        }],
+        ..Manifest::default()
+    };
+    let delta = root.path().join("delta.tar.zst");
+    save_delta_with_projection(
+        &SaveDeltaOptions {
+            workspace: None,
+            cache_dir: &cache,
+            base_manifest: &base,
+            out: &delta,
+            zstd_level: 1,
+            threads: Some(1),
+            profile: SaveProfile::Ci,
+        },
+        Some(&CacheProjection {
+            source: &snapshot,
+            archive_prefix: Path::new("portable"),
+            exclude_prefix: Path::new("private"),
+        }),
+    )
+    .unwrap();
+    let manifest = read_manifest_from_archive(&delta).unwrap();
+    assert!(
+        manifest.deleted_cache_paths.is_empty(),
+        "excluded private files and links are not tombstones"
+    );
+    load(&LoadOptions {
+        archive: &delta,
+        cache_dir: Some(&restored),
+        workspace: None,
+        threads: Some(1),
+        mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
+    })
+    .unwrap();
+    assert_eq!(
+        std::fs::read(restored.join("private/index.bin")).unwrap(),
+        b"live compiler store"
+    );
+}
+
+#[test]
 fn full_profile_excludes_soldr_daemon_runtime_state() {
     let root = tempfile::tempdir().unwrap();
     let cache = root.path();
@@ -294,8 +498,11 @@ fn legacy_archive_cannot_mutate_live_daemon_runtime() {
         1,
         None,
         &manifest,
-        &archived_cache,
-        &[(archived_file, archived_meta)],
+        &[(
+            archived_file,
+            "soldr-daemon/archived.pid".into(),
+            archived_meta,
+        )],
     )
     .unwrap();
 
