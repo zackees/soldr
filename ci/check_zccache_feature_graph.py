@@ -74,12 +74,19 @@ def _run(soldr: str, *args: str) -> subprocess.CompletedProcess[str]:
 
 def _check_manifest_features() -> list[str]:
     failures: list[str] = []
+    root = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    pin = root.get("workspace", {}).get("dependencies", {}).get("zccache")
+    if not isinstance(pin, dict) or pin.get("default-features") is not False:
+        failures.append(
+            "Cargo.toml: [workspace.dependencies] zccache must set "
+            "default-features = false (a member cannot re-disable it)"
+        )
     for relative, expected_features in MANIFEST_FEATURES.items():
         manifest = tomllib.loads((REPO_ROOT / relative).read_text(encoding="utf-8"))
         dependency = manifest["dependencies"]["zccache"]
         actual_features = dependency.get("features", [])
-        if dependency.get("default-features") is not False:
-            failures.append(f"{relative}: zccache must set default-features = false")
+        if dependency.get("workspace") is not True:
+            failures.append(f"{relative}: zccache must use workspace = true")
         if actual_features != expected_features:
             failures.append(
                 f"{relative}: zccache features are {actual_features!r}; "

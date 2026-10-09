@@ -230,6 +230,34 @@ fn save_profile_env_selects_ci_when_flag_absent() {
     assert_eq!(json["excluded_files"], 2);
 }
 
+/// Run `soldr save --ci` over a cold compiler store and check its receipt.
+fn save_ci_archive(cold_root: &Path, cold_cache: &Path, workspace: &Path, archive: &Path) {
+    let mut save = soldr_command(&["save", "--ci", "--json", "--zstd-level", "1"]);
+    save.env("SOLDR_CACHE_DIR", cold_root)
+        .arg("--cache-dir")
+        .arg(cold_cache)
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--out")
+        .arg(archive);
+    let save_output = run_command(save, "soldr save --ci");
+    println!(
+        "save transport receipt: stdout={} stderr={}",
+        String::from_utf8_lossy(&save_output.stdout),
+        String::from_utf8_lossy(&save_output.stderr)
+    );
+    let save_json: Value = serde_json::from_slice(&save_output.stdout).expect("parse save json");
+    assert_eq!(save_json["profile"], "ci");
+    assert!(
+        u64_field(&save_json, "cache_files") > 0,
+        "ci save must include real cache payloads: {save_json:#?}"
+    );
+    assert!(
+        u64_field(&save_json, "excluded_files") > 0,
+        "ci save should report excluded runtime files: {save_json:#?}"
+    );
+}
+
 #[test]
 #[ignore = "two real compiler builds; bosn cache-snapshot-acceptance, soldr#3604"]
 fn save_ci_load_preserves_real_warm_rustc_hits() {
@@ -262,30 +290,7 @@ fn save_ci_load_preserves_real_warm_rustc_hits() {
         b"runtime binary must not enter ci archive",
     );
 
-    let mut save = soldr_command(&["save", "--ci", "--json", "--zstd-level", "1"]);
-    save.env("SOLDR_CACHE_DIR", &cold_root)
-        .arg("--cache-dir")
-        .arg(&cold_cache)
-        .arg("--workspace")
-        .arg(&workspace)
-        .arg("--out")
-        .arg(&archive);
-    let save_output = run_command(save, "soldr save --ci");
-    println!(
-        "save transport receipt: stdout={} stderr={}",
-        String::from_utf8_lossy(&save_output.stdout),
-        String::from_utf8_lossy(&save_output.stderr)
-    );
-    let save_json: Value = serde_json::from_slice(&save_output.stdout).expect("parse save json");
-    assert_eq!(save_json["profile"], "ci");
-    assert!(
-        u64_field(&save_json, "cache_files") > 0,
-        "ci save must include real cache payloads: {save_json:#?}"
-    );
-    assert!(
-        u64_field(&save_json, "excluded_files") > 0,
-        "ci save should report excluded runtime files: {save_json:#?}"
-    );
+    save_ci_archive(&cold_root, &cold_cache, &workspace, &archive);
 
     let cold_events = native_library_events(&cold_root);
     let manifest = soldr_cli::cache_lib::save::read_manifest_from_archive(&archive)

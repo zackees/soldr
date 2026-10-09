@@ -3685,9 +3685,9 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.15.2"
+version = "1.15.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fc39056dacc997bc3d676838a40d694f996650817a7c3b2437cf58b5b0ab73d"
+checksum = "e2add61f7c3b71bcbc60657247ee52511f402eccc2c4bb8f11cda91ff2d84204"
 dependencies = [
  "arc-swap",
  "bincode",

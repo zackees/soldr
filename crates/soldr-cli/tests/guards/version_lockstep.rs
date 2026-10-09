@@ -369,16 +369,35 @@ fn externalized_dependencies_are_exact_and_consistent() {
         .expect("read Cargo.lock")
         .replace("\r\n", "\n");
 
+    // zccache has exactly one pin: the root `[workspace.dependencies]` entry.
+    // Members inherit it with `workspace = true` and must not carry a version.
+    let workspace_manifest = root.join("Cargo.toml");
+    let workspace_line = dependency_line(&workspace_manifest, "workspace.dependencies", "zccache")
+        .expect("root [workspace.dependencies] must pin zccache");
+    assert_eq!(
+        extract_dependency_version(&workspace_line).as_deref(),
+        Some("=1.15.3"),
+        "the workspace must pin the exact released zccache version"
+    );
+    assert!(
+        !workspace_line.contains("path") && !workspace_line.contains("git"),
+        "workspace zccache must resolve from the registry: {workspace_line}"
+    );
+    for relative in [
+        "crates/soldr-cli/Cargo.toml",
+        "crates/soldr-cache/Cargo.toml",
+        "crates/soldr-daemon/Cargo.toml",
+    ] {
+        let line = dependency_line(&root.join(relative), "dependencies", "zccache")
+            .unwrap_or_else(|| panic!("{relative} must depend on zccache"));
+        assert!(
+            line.contains("workspace = true") && !line.contains("version"),
+            "{relative} must inherit the one workspace zccache pin: {line}"
+        );
+    }
+
     for (dependency, version, manifests) in [
-        (
-            "zccache",
-            "1.15.2",
-            &[
-                "crates/soldr-cli/Cargo.toml",
-                "crates/soldr-cache/Cargo.toml",
-                "crates/soldr-daemon/Cargo.toml",
-            ][..],
-        ),
+        ("zccache", "1.15.3", &[][..]),
         (
             "running-process",
             "4.10.16",
