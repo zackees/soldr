@@ -256,6 +256,9 @@ pub mod cc_cmd;
 pub(crate) mod ci_test;
 pub mod cli_args;
 pub mod cli_dispatch;
+/// The canonical stderr/stdout color rule (soldr#3437): one predicate and one
+/// `paint`/ANSI helper for every surface that colorizes output.
+pub(crate) mod color_choice;
 /// soldr#1081 — Shared compile dispatch logic used by both
 /// the soldr-as-RUSTC_WRAPPER hot path (`wrapper.rs`) and multicall
 /// `zccache-soldr` dispatch. Owns the hang-safe retry budget contract.

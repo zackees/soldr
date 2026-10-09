@@ -225,14 +225,28 @@ fn the_info_line_is_green_only_when_color_is_on() {
 #[test]
 fn no_color_and_a_non_tty_stderr_give_plain_text() {
     // The rule `maturin_invocation` feeds into `GlibcNotice::render`.
-    use crate::cargo_front_door::color_enabled;
+    // soldr#3437: the predicate moved to `crate::color_choice` and gained its
+    // third input — GitHub Actions colors a non-TTY stream — so every case
+    // below now names the stream's terminality *and* the Actions bit.
+    use crate::color_choice::enabled;
     assert!(
-        color_enabled(false, true),
+        enabled(false, false, true),
         "a terminal with no NO_COLOR is green"
     );
-    assert!(!color_enabled(true, true), "NO_COLOR wins over a terminal");
-    assert!(!color_enabled(false, false), "a redirected stderr is plain");
-    assert!(!color_enabled(true, false));
+    assert!(!enabled(true, false, true), "NO_COLOR wins over a terminal");
+    assert!(
+        !enabled(true, true, true),
+        "NO_COLOR wins over GitHub Actions too"
+    );
+    assert!(
+        enabled(false, true, false),
+        "GitHub Actions colors a captured stream (soldr#3437)"
+    );
+    assert!(
+        !enabled(false, false, false),
+        "a redirected stderr is plain"
+    );
+    assert!(!enabled(true, false, false));
 }
 
 #[test]

@@ -38,10 +38,12 @@
 //!
 //! # Color on CI (deliberate)
 //!
-//! Unlike the dim log-paths summary (which never colorizes under GitHub
-//! Actions), the HIT/MISS annotations *do* colorize on CI: a GitHub Actions log
-//! renders ANSI, and green/yellow is the whole point of the feature there. See
-//! [`use_color`]. `NO_COLOR` is still honored.
+//! Unlike the dim log-paths summary (which used to never colorize under
+//! GitHub Actions), the HIT/MISS annotations *do* colorize on CI: a GitHub
+//! Actions log renders ANSI, and green/yellow is the whole point of the
+//! feature there. That soldr#2302 carve-out became the general rule in
+//! soldr#3437 — see [`crate::color_choice`] — which is why every surface now
+//! resolves color the same way.
 //!
 //! Lives in its own file so `cargo_front_door/mod.rs` does not grow further
 //! (house style, post-#339).
@@ -54,19 +56,13 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use super::CargoCachePlan;
+use crate::color_choice::{paint, DIM, GREEN, YELLOW};
 use crate::core::SoldrPaths;
 use crate::daemon::protocol::BuildCacheSummary;
 
 /// `--no-cache-states` / `SOLDR_NO_CACHE_STATES=1` opt-out, following the
 /// `SOLDR_NO_*` convention (`SOLDR_NO_LOG_SUMMARY`, `SOLDR_NO_TRAMPOLINE`).
 pub(crate) const NO_CACHE_STATES_ENV_VAR: &str = "SOLDR_NO_CACHE_STATES";
-
-const GREEN: &str = "\x1b[32m";
-const YELLOW: &str = "\x1b[33m";
-/// Dim, for the not-cacheable tag: a passthrough is *not* a failed lookup,
-/// so it must not borrow MISS's yellow.
-const DIM: &str = "\x1b[2m";
-const RESET: &str = "\x1b[0m";
 
 /// How often the tail thread re-reads the journal for new records.
 const TAIL_POLL: Duration = Duration::from_millis(100);
@@ -80,26 +76,6 @@ const TAIL_POLL: Duration = Duration::from_millis(100);
 /// means the CI log the feature is validated on always carries the signal.
 pub(crate) fn enabled() -> bool {
     !super::env_flag_truthy(NO_CACHE_STATES_ENV_VAR)
-}
-
-/// Colorize when the sink can render ANSI and `NO_COLOR` is unset.
-///
-/// Deliberately colorizes under GitHub Actions (its log renders ANSI), unlike
-/// the dim log-paths summary's `use_color`. That is the soldr#2302 decision:
-/// the green/yellow signal must be visible in the CI log, which is exactly
-/// where the user watches for it.
-pub(crate) fn use_color() -> bool {
-    use std::io::IsTerminal;
-    std::env::var_os("NO_COLOR").is_none()
-        && (std::io::stderr().is_terminal() || super::foreign_env_flag("GITHUB_ACTIONS"))
-}
-
-fn paint(text: &str, color: &str, use_color: bool) -> String {
-    if use_color {
-        format!("{color}{text}{RESET}")
-    } else {
-        text.to_string()
-    }
 }
 
 /// The one-line automatic cache-stats summary, or `None` when nothing cacheable
@@ -263,7 +239,7 @@ pub(crate) fn emit_cache_stats(summary: Option<&BuildCacheSummary>) {
     let Some(summary) = summary else {
         return;
     };
-    if let Some(message) = cache_stats_message(summary, use_color()) {
+    if let Some(message) = cache_stats_message(summary, crate::color_choice::stderr_enabled()) {
         eprintln!("{message}");
     }
 }
@@ -504,7 +480,7 @@ impl CacheStateTail {
         if !enabled() {
             return None;
         }
-        let use_color = use_color();
+        let use_color = crate::color_choice::stderr_enabled();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
         let handle = std::thread::Builder::new()

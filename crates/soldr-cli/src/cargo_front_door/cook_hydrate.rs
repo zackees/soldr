@@ -384,22 +384,15 @@ fn emit_hydrate_line(log: HydrateLog<'_>) {
     );
 }
 
-fn green_hydrate_prefix() -> &'static str {
-    use std::io::IsTerminal;
-    if std::io::stderr().is_terminal() {
-        "\x1b[32msoldr cook: auto-hydrate activated\x1b[0m"
-    } else {
-        "soldr cook: auto-hydrate activated"
-    }
+fn green_hydrate_prefix() -> String {
+    crate::color_choice::paint_stderr(
+        "soldr cook: auto-hydrate activated",
+        crate::color_choice::GREEN,
+    )
 }
 
-fn yellow_warning_prefix() -> &'static str {
-    use std::io::IsTerminal;
-    if std::io::stderr().is_terminal() {
-        "\x1b[33msoldr cook: warning:\x1b[0m"
-    } else {
-        "soldr cook: warning:"
-    }
+fn yellow_warning_prefix() -> String {
+    crate::color_choice::paint_stderr("soldr cook: warning:", crate::color_choice::YELLOW)
 }
 
 /// Resolve auto-hydrate setting with the documented precedence.

@@ -8,10 +8,9 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::color_choice::{paint_stderr, YELLOW};
 use crate::core::{SoldrError, SoldrPaths};
 use crate::shim_materialize::materialize_executable;
-
-use super::plan::{paint_yellow, use_color};
 
 /// Resolve the install root (the PATH bin dir): `--root` or
 /// `<paths.bin>/installed`.
@@ -63,12 +62,12 @@ pub(crate) fn place_binary(
     if !on_path {
         eprintln!(
             "soldr: {}",
-            paint_yellow(
+            paint_stderr(
                 &format!(
                     "warning: {} is not on PATH; add it to run '{name}' directly",
                     install_root.display()
                 ),
-                use_color(),
+                YELLOW,
             )
         );
     }
