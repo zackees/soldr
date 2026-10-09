@@ -165,6 +165,9 @@ impl DylintToolchainPlan {
     }
 
     pub(crate) fn apply_to_command(&self, command: &mut std::process::Command) {
+        // The toolchain name only means something relative to a home: pin the
+        // one the nightly and its targets were provisioned in (soldr#3567).
+        crate::dylint_rustup_home::apply_dylint_rustup_home(command);
         command.env("RUSTUP_TOOLCHAIN", &self.channel);
         command.env(TOOLCHAIN_ENV_VAR, &self.channel);
         command.env(COMPILER_RELEASE_ENV_VAR, &self.compiler_release);
@@ -343,7 +346,7 @@ fn plan_from_environment_identity(
 fn plan_from_installed_explicit_nightly(
     channel: &str,
 ) -> Result<Option<DylintToolchainPlan>, SoldrError> {
-    let manager_home = dylint_manager_home()?;
+    let manager_home = crate::dylint_rustup_home::dylint_rustup_home()?;
     match dylint_toolchain_readiness_at(&manager_home, channel) {
         DylintToolchainReadiness::Missing => return Ok(None),
         DylintToolchainReadiness::Partial {
@@ -480,7 +483,7 @@ fn prepare_ttl() -> Duration {
 /// fall through to the full cold path rather than erroring.
 fn load_prepared_marker(version: &str) -> Option<DylintToolchainPlan> {
     let base_dir = SoldrPaths::new().ok()?.root;
-    let rustup_home = crate::toolchain::effective_rustup_home()?;
+    let rustup_home = crate::dylint_rustup_home::dylint_rustup_home().ok()?;
     load_prepared_marker_from(
         &base_dir,
         &rustup_home,
@@ -823,7 +826,7 @@ fn validate_identity(channel: &str, identity: &NightlyIdentity) -> Result<(), So
 }
 
 fn ensure_installed(plan: &DylintToolchainPlan) -> Result<(), SoldrError> {
-    let manager_home = dylint_manager_home()?;
+    let manager_home = crate::dylint_rustup_home::dylint_rustup_home()?;
     ensure_dylint_toolchain_ready_at(&manager_home, &plan.channel, || {
         crate::toolchain::rustup_toolchain_install_with_profile(&plan.channel, Some("minimal"))
     })?;
@@ -840,17 +843,6 @@ fn ensure_installed(plan: &DylintToolchainPlan) -> Result<(), SoldrError> {
         }
     }
     Ok(())
-}
-
-/// The home every Dylint readiness probe reads. It must be the home the
-/// install writes to: this used to read the caller's `RUSTUP_HOME` (else
-/// `~/.rustup`) while `rustup toolchain install` ran under soldr's managed home,
-/// so a successful install was reported as "no toolchain directory was
-/// created" and retried forever (soldr#3051).
-fn dylint_manager_home() -> Result<PathBuf, SoldrError> {
-    crate::toolchain::effective_rustup_home().ok_or_else(|| {
-        SoldrError::Other("could not resolve manager home while preparing Dylint".into())
-    })
 }
 
 fn installed_components(channel: &str) -> Result<Vec<String>, SoldrError> {

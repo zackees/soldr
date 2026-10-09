@@ -668,6 +668,8 @@ mod dylint_driver_tests;
 #[cfg(test)]
 mod dylint_link_validation_tests;
 #[cfg(test)]
+mod dylint_rustup_home_child_tests;
+#[cfg(test)]
 mod linker_project_config_tests;
 #[cfg(test)]
 mod scrub_pool_tests;

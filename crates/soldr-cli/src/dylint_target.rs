@@ -64,9 +64,8 @@ pub(crate) fn ensure_targets(channel: &str, targets: &[String]) -> Result<(), So
     if targets.is_empty() {
         return Ok(());
     }
-    let home = crate::toolchain::effective_rustup_home().ok_or_else(|| {
-        SoldrError::Other("could not resolve rustup home for Dylint targets".into())
-    })?;
+    // The Dylint child is pinned to this same home (soldr#3567).
+    let home = crate::dylint_rustup_home::dylint_rustup_home()?;
     for target in targets {
         if target == crate::pyo3_detect::host_triple() {
             continue;

@@ -300,6 +300,8 @@ pub(crate) mod dylint_driver;
 /// it instead of each deriving or hard-coding its own answer.
 pub(crate) mod dylint_libraries;
 pub(crate) mod dylint_prepare;
+/// soldr#3567/#3605 — the single Rustup home Dylint provisions and runs in.
+pub(crate) mod dylint_rustup_home;
 pub(crate) mod dylint_target;
 pub mod dylint_toolchain;
 pub(crate) mod dylint_toolchain_readiness;

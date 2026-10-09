@@ -18,6 +18,9 @@ documents is:
 So a row claiming `managed` for a binary outside the managed root is exactly
 the #1768 leak. `caller` and `repo-local` both mean the caller's own homes were
 used (they differ only in reporting), so neither is constrained here.
+`dylint` (soldr#3567) is a host binary whose Dylint scope pins `RUSTUP_HOME`
+to the home its nightly was provisioned in; it never claims `managed`, so it
+is not constrained either.
 
 Usage:
     python3 .github/scripts/check_toolchain_homes.py <log.xml|dir> --managed-root ~/.soldr
