@@ -64,15 +64,31 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-# The zackees/ci.yml commit whose ci_lint this repository uses. ci.yml's
-# `ci-mode` job checks out the same SHA; tests/test_local_gate_wiring.py
-# keeps the two in step.
-CI_LINT_REF = "877810a2178122c772d53dab8572fd19c2d1a045"
+
+
+def ci_lint_ref(ci_toml: Path = ROOT / "ci.toml") -> str:
+    """Return the zackees/ci.yml SHA named by ci.toml's `linter` (soldr#3616).
+
+    ci.toml is the ONE canonical ci-lint pin. Workflow `ref:` lines must stay
+    literal YAML, so tests/test_local_gate_wiring.py keeps every copy equal.
+    """
+    linter = tomllib.loads(ci_toml.read_text(encoding="utf-8")).get("linter", "")
+    match = re.fullmatch(r"zackees/ci\.yml@([0-9a-f]{40})", str(linter))
+    if match is None:
+        raise SystemExit(
+            f"{ci_toml}: linter must be 'zackees/ci.yml@<40-hex sha>', got {linter!r}"
+        )
+    return match.group(1)
+
+
+# The zackees/ci.yml commit whose ci_lint this repository uses.
+CI_LINT_REF = ci_lint_ref()
 # GATE-007 lanes (zackees/ci.yml#177), split along input boundaries so each
 # can be cached on its own: Python linters read only Python; guards scan the
 # whole repository; ci-lint is CI-surface and dependency policy (cheap);

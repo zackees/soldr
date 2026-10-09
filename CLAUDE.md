@@ -359,7 +359,7 @@ uvx --from git+https://github.com/zackees/ci.yml@<CI_LINT_REF> ci-lint local-gat
 git push                             # (--force-with-lease if the branch was already pushed)
 ```
 
-`<CI_LINT_REF>` is the constant in `ci/local_gate.py`. `local-gate run` runs
+`<CI_LINT_REF>` is the SHA in `ci.toml`'s `linter` -- the one canonical pin (soldr#3616); `ci/local_gate.py` derives `CI_LINT_REF` from it and workflow `ref:` lines are guarded equal. `local-gate run` runs
 `ci/local_gate.py` (lanes `lint` = the remote Lint job exactly, `rust` =
 `soldr lint rust`, `tests` = the test suite in bosn), and on success amends
 HEAD's message with the trailer. Install the pre-push hook once per clone with
