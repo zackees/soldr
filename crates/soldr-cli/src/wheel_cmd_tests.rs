@@ -13,7 +13,7 @@ const CROSS_HOST: &str = "never-equal-to-any-target";
 fn x86_64_linux() -> WheelHost {
     WheelHost {
         triple: "x86_64-unknown-linux-gnu".to_string(),
-        gnu_bundle_runnable: true,
+        gnu_bundle_fitness: crate::fetch::catalogue_linux_host::BundleHostFitness::Runnable,
         glibc_version: Some("2.39".to_string()),
     }
 }
@@ -23,7 +23,7 @@ fn x86_64_linux() -> WheelHost {
 fn aarch64_linux() -> WheelHost {
     WheelHost {
         triple: "aarch64-unknown-linux-gnu".to_string(),
-        gnu_bundle_runnable: false,
+        gnu_bundle_fitness: crate::fetch::catalogue_linux_host::BundleHostFitness::WrongArch,
         glibc_version: Some("2.39".to_string()),
     }
 }
@@ -31,7 +31,11 @@ fn aarch64_linux() -> WheelHost {
 fn host_named(triple: &str) -> WheelHost {
     WheelHost {
         triple: triple.to_string(),
-        gnu_bundle_runnable: triple == "x86_64-unknown-linux-gnu",
+        gnu_bundle_fitness: if triple == "x86_64-unknown-linux-gnu" {
+            crate::fetch::catalogue_linux_host::BundleHostFitness::Runnable
+        } else {
+            crate::fetch::catalogue_linux_host::BundleHostFitness::WrongArch
+        },
         glibc_version: None,
     }
 }
@@ -344,9 +348,28 @@ fn aarch64_host_target_release_wheel_is_refused_not_silently_degraded() {
 }
 
 #[test]
+fn a_musl_os_host_target_release_wheel_names_the_libc_reason() {
+    // soldr#3435: a `-linux-gnu` host triple on an OS whose runtime libc is
+    // musl cannot start the glibc-dynamic GNU bundle. The refusal must say
+    // so rather than blame the architecture.
+    let host = WheelHost {
+        gnu_bundle_fitness: crate::fetch::catalogue_linux_host::BundleHostFitness::WrongLibc,
+        ..x86_64_linux()
+    };
+    let err = plan_for_host(&wheel_args(None, true, false, &[]), &host)
+        .expect_err("a musl OS cannot run the GNU bundle");
+    let message = err.to_string();
+    assert!(message.contains("musl libc"), "{message}");
+    assert!(message.contains("glibc's loader"), "{message}");
+    assert!(message.contains("soldr#3435"), "{message}");
+    assert!(!message.contains("soldr#2874"), "{message}");
+    assert!(message.contains("--host-glibc"), "{message}");
+}
+
+#[test]
 fn musl_host_target_release_wheel_is_unchanged() {
-    // The musl bundle is x86_64-glibc-hosted; a musl host is not
-    // guaranteed to run it, so soldr#3432 does not extend to musl.
+    // Intended (soldr#3435): soldr#3432's host-target preparation does not
+    // extend to musl, so a host-target musl release wheel keeps `pypi`.
     let host = host_named("x86_64-unknown-linux-musl");
     let plan = plan_for_host(&wheel_args(None, true, false, &[]), &host).expect("plan");
     assert!(!plan.prepare_host_target);

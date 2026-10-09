@@ -135,9 +135,9 @@ pub struct WheelHost {
     /// The host triple (`pyo3_detect::host_triple`).
     pub triple: String,
     /// Whether the catalogue GNU/Linux bundle's compilers execute here
-    /// (`gnu_linux_toolchain::bundle_host_fitness`). The bundle's pinned
-    /// sysroot is what enforces the 2.17 floor.
-    pub gnu_bundle_runnable: bool,
+    /// (`catalogue_linux_host::bundle_host_fitness` with `GNU_BUNDLE_HOST`).
+    /// The bundle's pinned sysroot is what enforces the 2.17 floor.
+    pub gnu_bundle_fitness: crate::fetch::catalogue_linux_host::BundleHostFitness,
     /// The running glibc's version, when it can be read cheaply. Only used in
     /// the `--host-glibc` notice.
     pub glibc_version: Option<String>,
@@ -149,11 +149,9 @@ impl WheelHost {
         use crate::platform::host::facts;
         Self {
             triple: crate::pyo3_detect::host_triple().to_string(),
-            gnu_bundle_runnable: crate::fetch::gnu_linux_toolchain::bundle_host_fitness(
-                facts::os(),
-                facts::arch(),
-            )
-            .is_runnable(),
+            gnu_bundle_fitness: crate::fetch::catalogue_linux_host::current_host_fitness(
+                crate::fetch::catalogue_linux_host::GNU_BUNDLE_HOST,
+            ),
             glibc_version: facts::glibc_version(),
         }
     }
@@ -341,18 +339,25 @@ pub fn plan_for_host(args: &WheelArgs, host: &WheelHost) -> Result<WheelPlan, So
     // soldr#3432: a release linux-gnu wheel always gets the catalogue 2.17
     // sysroot, host target included, unless the caller opted out.
     let prepare_host_target = is_release && host_target && gnu && !args.host_glibc;
-    if prepare_host_target && !host.gnu_bundle_runnable {
+    if prepare_host_target && !host.gnu_bundle_fitness.is_runnable() {
+        let bundle_host = crate::fetch::catalogue_linux_host::GNU_BUNDLE_HOST.host;
+        let reason = match host.gnu_bundle_fitness {
+            crate::fetch::catalogue_linux_host::BundleHostFitness::WrongLibc => {
+                crate::fetch::catalogue_linux_host::wrong_libc_reason(&host.triple)
+            }
+            _ => format!(
+                "every catalogue GNU/Linux bundle is hosted on `{bundle_host}` (soldr#2874)"
+            ),
+        };
         return Err(SoldrError::Other(format!(
             "soldr wheel: a release wheel for `{triple}` is built against the catalogue \
              glibc {GNU_LINUX_GLIBC_BASELINE} sysroot so that its manylinux_2_17 tag is \
-             enforced, but that toolchain cannot run on this host: every catalogue \
-             GNU/Linux bundle is hosted on `{bundle_host}` (soldr#2874). soldr will not \
-             silently fall back to this host's glibc for a release wheel (soldr#3432). \
+             enforced, but that toolchain cannot run on this host: {reason}. soldr will \
+             not silently fall back to this host's glibc for a release wheel (soldr#3432). \
              Build on an `{bundle_host}` host instead — `soldr wheel --release --target \
              {triple}` cross-builds it at glibc {GNU_LINUX_GLIBC_BASELINE} — or pass \
              --host-glibc to link against this host's glibc and have the wheel tagged \
              from its bytes.",
-            bundle_host = crate::fetch::gnu_linux_toolchain::GNU_LINUX_TOOLCHAIN_HOST_TRIPLE,
         )));
     }
     // Cross builds are prepared by the maturin path's own `target != host`
