@@ -9,6 +9,12 @@ use std::time::{Duration, Instant};
 
 const ROOT_OWNER_LOCK_NAME: &str = "root-owner.lock";
 
+/// The one spelling of this route generation's root-owner lock path. The
+/// guard below locks it; diagnostics name it and look up its holders.
+pub(crate) fn root_owner_lock_path(paths: &SoldrPaths) -> std::path::PathBuf {
+    crate::daemon::generation_key::generation_state_dir(paths).join(ROOT_OWNER_LOCK_NAME)
+}
+
 /// Ownership of one broker daemon generation. Different images may serve the
 /// same product root concurrently; duplicate starts of one image still race
 /// on this lock.

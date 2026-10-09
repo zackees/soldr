@@ -154,9 +154,8 @@ impl SoldrBackendLauncher {
             // preflight can identify and retire the incumbent.
             return Ok(None);
         }
-        let claimed_binary = claimed_binary.expect("checked above");
         Ok(self
-            .adopt_route_claim(&request, &paths, &claimed_binary, false)
+            .adopt_route_claim(&request, &paths, false)
             .map(|handle| (instance, handle)))
     }
 
@@ -228,7 +227,7 @@ impl SoldrBackendLauncher {
             "image-verified",
             format!("verified daemon image {}", binary_path.display()),
         );
-        if let Some(handle) = self.adopt_route_claim(request, &paths, &binary_path, true) {
+        if let Some(handle) = self.adopt_route_claim(request, &paths, true) {
             self.report_progress(
                 request,
                 "claim-adopted",
@@ -305,6 +304,7 @@ impl SoldrBackendLauncher {
             &paths,
             &request.key.service_name,
             &request.key.service_version,
+            route_image_hash(request)?,
             &endpoint,
             DAEMON_ROUTE_READINESS_TIMEOUT,
             || child.try_wait(),
@@ -321,6 +321,12 @@ impl SoldrBackendLauncher {
                     let _ = child.kill();
                     reap_on_exit(child);
                     return Err(error);
+                }
+                // soldr#3561: the request converged on the generation's
+                // already-serving daemon, which this child cannot displace
+                // (one daemon owns a root); retire the redundant child.
+                if handle.daemon_process.pid != child.id() {
+                    let _ = child.kill();
                 }
                 reap_on_exit(child);
                 if debug {
@@ -394,12 +400,11 @@ impl SoldrBackendLauncher {
         &self,
         request: &BackendLaunchRequest<'_>,
         paths: &crate::core::SoldrPaths,
-        expected_binary: &std::path::Path,
         prune_invalid: bool,
     ) -> Option<BackendHandle> {
         crate::daemon::backend_handle_adoption::with_generation_key(
             &request.key.service_name,
-            || self.adopt_route_claim_keyed(request, paths, expected_binary, prune_invalid),
+            || self.adopt_route_claim_keyed(request, paths, prune_invalid),
         )
     }
 
@@ -407,9 +412,10 @@ impl SoldrBackendLauncher {
         &self,
         request: &BackendLaunchRequest<'_>,
         paths: &crate::core::SoldrPaths,
-        expected_binary: &std::path::Path,
         prune_invalid: bool,
     ) -> Option<BackendHandle> {
+        use crate::daemon::backend_handle_adoption::ClaimAdoptionError;
+
         let claim = match crate::daemon::backend_handle_adoption::read_broker_route_claim(paths) {
             Ok(Some(claim)) => claim,
             Ok(None) => return None,
@@ -425,37 +431,31 @@ impl SoldrBackendLauncher {
                 return None;
             }
         };
-        let expected_binary = std::fs::canonicalize(expected_binary).ok()?;
-        let claimed_binary = std::fs::canonicalize(&claim.exe_path).ok();
-        if claimed_binary.as_deref() != Some(expected_binary.as_path()) {
-            if crate::broker_debug::broker_debug_enabled() {
-                eprintln!(
-                    "soldr broker: route claim identity mismatch claimed_binary={:?} expected_binary={} claim_boot={} current_boot={}",
-                    claimed_binary,
-                    expected_binary.display(),
-                    claim.boot_id,
-                    running_process::broker::host_identity::current().boot_id,
-                );
-            }
-            // A root-scoped claim for another image route is not corrupt.
-            // Deleting it here prevents preflight from naming the process
-            // that owns the root lock during an image transition.
-            return None;
-        }
-        if claim.boot_id != running_process::broker::host_identity::current().boot_id {
-            if prune_invalid {
-                crate::daemon::backend_handle_adoption::prune_broker_route_claim(paths);
-            }
-            return None;
-        }
-        match BackendHandle::probe_with_service(
-            request.key.service_name.clone(),
-            request.key.service_version.clone(),
-            &claim.ipc_endpoint,
+        let route_image = route_image_hash(request).ok()?;
+        // soldr#3561: identity is the image digest, proven by the exact probe
+        // at the claim's own endpoint (PID, executable path and hash, boot ID,
+        // nonce) -- never the executable path the caller would have placed,
+        // which differs between placements of one image.
+        match crate::daemon::backend_handle_adoption::adopt_route_generation_claim(
+            &request.key.service_name,
+            &request.key.service_version,
             &claim,
+            route_image,
         ) {
             Ok(handle) => Some(handle),
-            Err(error) => {
+            Err(error @ ClaimAdoptionError::ForeignImage { .. }) => {
+                if crate::broker_debug::broker_debug_enabled() {
+                    eprintln!(
+                        "soldr broker: route claim identity mismatch claimed_binary={} {error}",
+                        claim.exe_path.display()
+                    );
+                }
+                // A root-scoped claim for another image route is not corrupt.
+                // Deleting it here prevents preflight from naming the process
+                // that owns the root lock during an image transition.
+                None
+            }
+            Err(error @ ClaimAdoptionError::Probe(_)) => {
                 if crate::broker_debug::broker_debug_enabled() {
                     eprintln!(
                         "soldr broker: daemon route claim failed exact probe and was pruned: {error}"
@@ -475,17 +475,7 @@ impl SoldrBackendLauncher {
         request: &BackendLaunchRequest<'_>,
         source_binary: &std::path::Path,
     ) -> Result<PathBuf, BackendLaunchError> {
-        let image_hash = request
-            .service_definition
-            .labels
-            .get(crate::daemon::backend_handle_adoption::SOLDR_DAEMON_IMAGE_HASH_LABEL)
-            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .ok_or_else(|| {
-                BackendLaunchError::Launcher(
-                    "soldr daemon service definition is missing a valid BLAKE3 image hash"
-                        .to_string(),
-                )
-            })?;
+        let image_hash = route_image_hash(request)?;
         let cache_key = format!(
             "{}\0{}\0{image_hash}",
             request.key.service_name,
@@ -654,6 +644,24 @@ pub(crate) fn routes_root() -> PathBuf {
     crate::daemon::service_definition::broker_owned_paths()
         .root
         .join("routes")
+}
+
+/// The route's daemon image digest (`soldr-image-blake3` label): the identity a
+/// placed image is verified against and a route claim is adopted by.
+fn route_image_hash<'a>(
+    request: &'a BackendLaunchRequest<'_>,
+) -> Result<&'a str, BackendLaunchError> {
+    request
+        .service_definition
+        .labels
+        .get(crate::daemon::backend_handle_adoption::SOLDR_DAEMON_IMAGE_HASH_LABEL)
+        .map(String::as_str)
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| {
+            BackendLaunchError::Launcher(
+                "soldr daemon service definition is missing a valid BLAKE3 image hash".to_string(),
+            )
+        })
 }
 
 fn route_image_paths(request: &BackendLaunchRequest<'_>) -> crate::core::SoldrPaths {
@@ -864,7 +872,7 @@ mod tests {
 
         assert!(
             SoldrBackendLauncher::new()
-                .adopt_route_claim(&request, &paths, &replacement, true)
+                .adopt_route_claim(&request, &paths, true)
                 .is_none(),
             "a foreign image claim must not be adopted"
         );

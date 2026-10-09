@@ -29,6 +29,27 @@ fn different_broker_generations_can_hold_the_same_product_root() {
     drop((global, a, b));
 }
 
+/// The guard locks, and diagnostics name, one path: the per-generation
+/// `root-owner.lock` returned by `root_owner_lock_path`.
+#[test]
+fn the_acquired_lock_is_the_one_named_by_root_owner_lock_path() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(temp.path().join("root"));
+    set_generation_override(Some("soldr-daemon-generation-lock-path".into()));
+    let lock = crate::daemon::lifecycle::root_owner_lock_path(&paths);
+    assert_eq!(
+        lock,
+        crate::daemon::generation_key::generation_state_dir(&paths).join("root-owner.lock")
+    );
+    assert!(!lock.exists());
+    let guard = RootOwnershipGuard::try_acquire(&paths)
+        .unwrap()
+        .expect("free generation lock");
+    assert!(lock.is_file(), "the guard must hold {}", lock.display());
+    set_generation_override(None);
+    drop(guard);
+}
+
 #[test]
 fn free_lock_is_acquired_without_waiting() {
     let temp = tempfile::tempdir().expect("tempdir");

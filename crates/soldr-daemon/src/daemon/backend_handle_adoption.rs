@@ -352,84 +352,11 @@ pub(crate) fn probe_soldr_daemon(paths: &SoldrPaths) -> Option<SoldrDaemonBacken
     }
 }
 
-/// Wait for a broker-placed daemon to publish its PID/image and answer on the
-/// broker-assigned SESSION endpoint.
-pub fn wait_for_broker_backend_handle(
-    paths: &SoldrPaths,
-    service_name: &str,
-    service_version: &str,
-    endpoint: &Endpoint,
-    timeout: Duration,
-) -> io::Result<BackendHandle> {
-    wait_for_broker_backend_handle_while(
-        paths,
-        service_name,
-        service_version,
-        endpoint,
-        timeout,
-        || Ok(None),
-        |_| {},
-    )
-}
-
-/// Variant used by the owning launcher. An actual child exit terminates the
-/// wait immediately; a slow but live cold start keeps its one process for the
-/// entire bounded acquisition window instead of being killed and resurrected.
-pub fn wait_for_broker_backend_handle_while(
-    paths: &SoldrPaths,
-    service_name: &str,
-    service_version: &str,
-    endpoint: &Endpoint,
-    timeout: Duration,
-    mut child_status: impl FnMut() -> io::Result<Option<i32>>,
-    mut progress: impl FnMut(&str),
-) -> io::Result<BackendHandle> {
-    let deadline = Instant::now() + timeout;
-    let mut next_progress = Instant::now() + Duration::from_secs(1);
-    let mut last_error = "daemon has not published its protobuf route claim yet".to_string();
-    loop {
-        if let Some(status) = child_status()? {
-            return Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                format!("broker-launched soldr-daemon exited before readiness ({status})"),
-            ));
-        }
-        match read_broker_route_claim(paths) {
-            Ok(Some(daemon)) if daemon.ipc_endpoint != *endpoint => {
-                last_error = format!(
-                    "daemon route claim endpoint mismatch: claimed={}, expected={}",
-                    daemon.ipc_endpoint.path, endpoint.path
-                );
-            }
-            Ok(Some(daemon)) => {
-                match BackendHandle::probe_with_service(
-                    service_name.to_string(),
-                    service_version.to_string(),
-                    endpoint,
-                    &daemon,
-                ) {
-                    Ok(handle) => return Ok(handle),
-                    Err(err) => last_error = err.to_string(),
-                }
-            }
-            Ok(None) => {}
-            Err(error) => last_error = format!("daemon route claim is unreadable: {error}"),
-        }
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "broker-launched soldr-daemon was not ready within {timeout:?}: {last_error}"
-                ),
-            ));
-        }
-        if Instant::now() >= next_progress {
-            progress(&last_error);
-            next_progress = Instant::now() + Duration::from_secs(1);
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
+// soldr#3561: route-claim adoption is identity-based (image digest + exact
+// probe at the claim's own endpoint), never executable-path-based.
+pub use super::route_claim_convergence::{
+    adopt_route_generation_claim, wait_for_broker_backend_handle_while, ClaimAdoptionError,
+};
 
 use super::generation_key::generation_state_dir;
 #[cfg(test)]
