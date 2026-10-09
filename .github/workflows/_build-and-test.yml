@@ -96,7 +96,7 @@ jobs:
       # lines. soldr#3024 now measures 4 threads after compiler-admission and
       # Cargo-orchestration OOM fixes; an OOM is a Soldr scheduling defect.
       NEXTEST_TEST_THREADS: "4"
-      # soldr#3138 -- paired with `[test-groups.soldr-runtime-linux]
+      # soldr#3138 -- paired with `[test-groups.soldr-cold-start-linux]
       # max-threads = 2` in `.config/nextest.toml`. The two must move together.
       #
       # Raising that group to two concurrent members lets two broker/daemon cold
