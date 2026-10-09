@@ -523,9 +523,15 @@ fn prepare_file_with_final_rename(
         std::io::copy(&mut source, &mut temp)?;
         temp.flush()?;
         set_private_permissions(&temp, &metadata)?;
+        // Preserve the shared output's mtime on its private copy, mtime only
+        // as `zccache::core::mtime` does (#3462). Deliberately through the
+        // open handle rather than `stamp_mtime`, which takes a path: this
+        // module resolves every entry relative to a held directory
+        // capability, and re-opening the temp by path would reintroduce the
+        // symlink race that design exists to close.
         filetime::set_file_handle_times(
             &temp,
-            Some(filetime::FileTime::from_last_access_time(&metadata)),
+            None,
             Some(filetime::FileTime::from_last_modification_time(&metadata)),
         )?;
         temp.sync_all()?;

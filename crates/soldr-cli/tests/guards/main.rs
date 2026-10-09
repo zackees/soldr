@@ -21,6 +21,7 @@ mod env_lock_lint;
 mod isolated_daemon_readiness_diagnostics;
 mod linker_shared_resolver_lint;
 mod msrv_doc_matches_manifest;
+mod mtime_owner_workspace;
 mod multicall_bin_layout;
 mod no_panicking_argv_collection;
 mod no_presence_only_soldr_flag_lint;

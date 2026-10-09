@@ -194,7 +194,7 @@ fn append_tree_with_precise_mtimes<W: std::io::Write>(
     Ok(())
 }
 
-fn pax_mtime(entry: &mut tar::Entry<'_, impl Read>) -> Option<filetime::FileTime> {
+fn pax_mtime(entry: &mut tar::Entry<'_, impl Read>) -> Option<zccache::core::mtime::FileTime> {
     let extensions = entry.pax_extensions().ok()??;
     for extension in extensions.flatten() {
         if extension.key().ok()? != "mtime" {
@@ -214,7 +214,9 @@ fn pax_mtime(entry: &mut tar::Entry<'_, impl Read>) -> Option<filetime::FileTime
         for _ in fraction.len().min(9)..9 {
             nanos = nanos.saturating_mul(10);
         }
-        return Some(filetime::FileTime::from_unix_time(seconds, nanos));
+        return Some(zccache::core::mtime::FileTime::from_unix_time(
+            seconds, nanos,
+        ));
     }
     None
 }
@@ -599,7 +601,7 @@ pub fn extract_skip_existing(
         drop(out);
         crate::platform::fs::permissions::restore_mode(&dest, mode_bits)?;
         if let Some(mtime) = precise_mtime {
-            filetime::set_file_mtime(&dest, mtime)?;
+            zccache::core::mtime::stamp_mtime(&dest, mtime)?;
         }
         report.files_written = report.files_written.saturating_add(1);
     }
