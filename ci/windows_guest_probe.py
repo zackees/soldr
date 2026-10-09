@@ -838,9 +838,16 @@ def _between(later: float | None, earlier: float | None) -> float | None:
 
 
 def _load_manifest(path: Path) -> dict[str, Any]:
+    """The ownership manifest with its `budget` composed from ci.toml (soldr#3618)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / ".github" / "scripts"))
     try:
+        # pylint: disable-next=import-outside-toplevel
+        import cache_families
+
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        if isinstance(data, dict):
+            data = cache_families.with_budget(data)
+    except (ImportError, OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 

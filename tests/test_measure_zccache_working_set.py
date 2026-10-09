@@ -83,9 +83,10 @@ def test_verdicts_refuse_unmeasurable_walks(tmp_path: Path) -> None:
 def test_the_default_cap_is_the_uncompressed_store_cap_minus_the_reserve() -> None:
     # The trim cap bounds the on-disk store, which the Actions save compresses
     # about 4x; the family's max_bytes is the compressed Actions budget.
-    manifest = json.loads(
-        (REPO_ROOT / "ci" / "cache-ownership.json").read_text(encoding="utf-8")
+    cache_families = load_script_module(
+        REPO_ROOT / ".github" / "scripts" / "cache_families.py", "cache_families"
     )
+    manifest = cache_families.load_manifest()
     family = manifest["budget"]["families"]["zccache-unit"]
     assert family["store_cap_bytes"] > family["max_bytes"]
     assert (
@@ -101,7 +102,7 @@ def test_the_store_cap_holds_the_driver_and_ci_test_working_set() -> None:
     manifest = json.loads(
         (REPO_ROOT / "ci" / "cache-ownership.json").read_text(encoding="utf-8")
     )
-    family = manifest["budget"]["families"]["zccache-unit"]
+    family = manifest["family_groups"]["zccache-unit"]
     assert family["store_cap_bytes"] >= int(2.92 * (1 << 30))
     assert family["evict"] == "newest"
     # soldr#3396: the stable-cook co-tenant is retired, so by default the

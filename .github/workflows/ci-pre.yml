@@ -12,7 +12,8 @@
 #
 # See .github/scripts/check_cache_budget.py for the sweep plan
 # (`plan_sweep`) and the event-dependent verdict (`enforcement_mode`), and
-# ci/cache-ownership.json for each family's allocation and `evict` policy.
+# ci.toml [cache.family] for each family's prefix and size, and
+# ci/cache-ownership.json `family_groups` for its janitor `evict` policy (soldr#3618).
 
 name: CI Pre
 
@@ -52,6 +53,8 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/scripts/check_cache_budget.py
+            .github/scripts/cache_families.py
+            ci.toml
             src/soldr/__init__.py
             src/soldr/_process.py
             ci/cache-ownership.json
@@ -88,6 +91,8 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/scripts/check_cache_budget.py
+            .github/scripts/cache_families.py
+            ci.toml
             src/soldr/__init__.py
             src/soldr/_process.py
             ci/cache-ownership.json
