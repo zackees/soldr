@@ -23,6 +23,7 @@ pub use readiness::{
     status_after_negotiated_route, status_after_route_ready, NegotiatedRouteError,
     START_STATUS_READY_TIMEOUT, STATUS_RETIRING_RETRY_TIMEOUT,
 };
+pub(crate) use root_ownership::root_owner_lock_path;
 pub use root_ownership::{RootAcquireOutcome, RootOwnershipGuard};
 #[cfg(test)]
 pub(crate) use shutdown_wait::latest_shutdown_phase;
@@ -163,8 +164,7 @@ pub fn describe_root_ownership_conflict(paths: &SoldrPaths) -> String {
         (false, _) => {
             // The stale claim does not identify the process holding this
             // route's private lock. Never suggest killing sibling daemons.
-            let lock = crate::daemon::generation_key::generation_state_dir(paths)
-                .join("root-owner.lock");
+            let lock = root_ownership::root_owner_lock_path(paths);
             let holders = find_file_holders(&lock);
             if holders.is_empty() {
                 format!(

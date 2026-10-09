@@ -66,6 +66,8 @@ pub mod lifecycle;
 pub mod maintenance;
 pub(crate) mod other_generations;
 pub mod protocol;
+/// soldr#3561 — converge route requests on the generation's claimed daemon.
+pub mod route_claim_convergence;
 /// soldr#3038 / soldr#3057 — optional `SOLDR_DAEMON_RSS_CEILING_BYTES`
 /// watchdog: samples this process's own resident set on a short interval
 /// (plus mimalloc's exact allocator counters), and on breach writes a

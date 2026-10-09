@@ -61,7 +61,7 @@ pub(crate) fn describe_unrecorded_owner(
     is_alive: impl Fn(u32) -> bool,
 ) -> String {
     let root = paths.root.display();
-    let lock = crate::daemon::generation_key::generation_state_dir(paths).join("root-owner.lock");
+    let lock = crate::daemon::lifecycle::root_owner_lock_path(paths);
     let remedies = format!(
         "soldr: this route's lock is {}; identify its holder before terminating a process.\n\
          soldr: run `soldr status` and `soldr logs paths` to inspect this route.\n\
