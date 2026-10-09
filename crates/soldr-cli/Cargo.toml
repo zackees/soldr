@@ -24,7 +24,7 @@ publish = false
 # exactly one mimalloc in the binary and the dependency ownership lives with
 # the embedded crate that hosts the daemon. See `crates/soldr-cli/src/lib.rs`
 # for the `#[global_allocator]` declaration.
-running-process = { version = "=4.10.14", default-features = false, features = ["client", "client-async"] }
+running-process = { version = "=4.10.16", default-features = false, features = ["client", "client-async"] }
 soldr-cache = { path = "../soldr-cache" }
 soldr-daemon = { path = "../soldr-daemon" }
 soldr-core = { path = "../soldr-core" }
@@ -70,7 +70,7 @@ zstd = { workspace = true }
 # callback, so enabling `cli` would pull in a second command dispatcher,
 # a second daemon lifecycle, clap, tracing-subscriber, reqwest, and the
 # download-client archive stack for no reachable code path.
-zccache = { version = "=1.15.1", default-features = false, features = ["formatter", "mimalloc-allocator"] }
+zccache = { version = "=1.15.2", default-features = false, features = ["formatter", "mimalloc-allocator"] }
 
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
 # and detached spawn (setsid). On Windows the equivalent

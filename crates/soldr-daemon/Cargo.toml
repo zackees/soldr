@@ -19,7 +19,7 @@ hex = { workspace = true }
 interprocess = { version = "2", features = ["tokio"] }
 prost = { workspace = true }
 
-running-process = { version = "=4.10.14", default-features = false, features = ["client", "client-async"] }
+running-process = { version = "=4.10.16", default-features = false, features = ["client", "client-async"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -36,7 +36,7 @@ console-subscriber = { workspace = true, optional = true }
 # entry point. `mimalloc-allocator` is enabled so the RSS-ceiling watchdog
 # (`daemon::rss_ceiling`) reads the allocator counters via
 # `zccache::mimalloc_pprof::prof::stats()` (soldr#3053).
-zccache = { version = "=1.15.1", default-features = false, features = ["mimalloc-allocator"] }
+zccache = { version = "=1.15.2", default-features = false, features = ["mimalloc-allocator"] }
 
 [dev-dependencies]
 filetime = { workspace = true }

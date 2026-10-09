@@ -1326,9 +1326,9 @@ dependencies = [
 
 [[package]]
 name = "kernal-api"
-version = "0.1.23"
+version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54844116729c2a5c64d5b313d79f839323c044cc01867f7e2bf0f192ac9e6903"
+checksum = "f18d3cbb9bd8f6a590cf9b5a75297c542786fcef93bb3ff7245eb8f8b1b09561"
 dependencies = [
  "blake3",
  "crash-handler",
@@ -2221,9 +2221,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.10.14"
+version = "4.10.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02f0ff903e7b61396a074648fc6301668492de90aea4b5d09cc914eee9389e9b"
+checksum = "c040ca81d60235a6027ef3115629049829464758e1011500902c8a2355727812"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2252,14 +2252,15 @@ dependencies = [
 
 [[package]]
 name = "running-process-platform-internal"
-version = "4.10.14"
+version = "4.10.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6e5db04a966dfead09ff660b704c2461a05e8477249b8f10532b41a22219348"
+checksum = "0ef39418f8c71399ea811c5daba36f2325516cc02c3b2169473400411941ed5f"
 dependencies = [
  "blake3",
  "dirs",
  "interprocess",
  "libc",
+ "miniz_oxide",
  "sysinfo",
  "thiserror",
  "tokio",
@@ -2270,9 +2271,9 @@ dependencies = [
 
 [[package]]
 name = "running-process-protocol"
-version = "4.10.14"
+version = "4.10.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c32daa00db0c79106d3181f1e306efe92a59bd1b0429440bdc5e6debf3cc4345"
+checksum = "c51894dfa970ac24213066f37b33656fd92c7053ef3e94f184b70000d8cf48f7"
 dependencies = [
  "prost",
  "prost-build",
@@ -2521,7 +2522,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cache"
-version = "0.9.30"
+version = "0.9.31"
 dependencies = [
  "filetime",
  "fs2",
@@ -2545,7 +2546,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cli"
-version = "0.9.30"
+version = "0.9.31"
 dependencies = [
  "blake3",
  "cap-fs-ext",
@@ -2590,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-core"
-version = "0.9.30"
+version = "0.9.31"
 dependencies = [
  "fs2",
  "libc",
@@ -2609,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-daemon"
-version = "0.9.30"
+version = "0.9.31"
 dependencies = [
  "console-subscriber",
  "filetime",
@@ -2638,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-fetch"
-version = "0.9.30"
+version = "0.9.31"
 dependencies = [
  "flate2",
  "fs2",
@@ -2663,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-nextest-wrapper"
-version = "0.9.30"
+version = "0.9.31"
 dependencies = [
  "fs2",
  "sha2",
@@ -2675,7 +2676,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-platform"
-version = "0.9.30"
+version = "0.9.31"
 dependencies = [
  "blake3",
  "fs2",
@@ -3684,9 +3685,9 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.15.1"
+version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cf2da87c9ba9552e6d1c59655650a7b8f0f98a3afb711e8c35edc8a150e0e71"
+checksum = "7fc39056dacc997bc3d676838a40d694f996650817a7c3b2437cf58b5b0ab73d"
 dependencies = [
  "arc-swap",
  "bincode",

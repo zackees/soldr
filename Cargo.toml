@@ -18,8 +18,8 @@ members = [
 # running-process were `_vender/` submodules with their own [workspace]
 # declarations, and each needed excluding so cargo would not fold its crates
 # into soldr's workspace and mis-version them. They are exact crates.io
-# dependencies now (`zccache = { version = "=1.15.1" }`,
-# `running-process = { version = "=4.10.14" }`), so there is no nested
+# dependencies now (`zccache = { version = "=1.15.2" }`,
+# `running-process = { version = "=4.10.16" }`), so there is no nested
 # workspace left to exclude and no `[patch]` pointing at either.
 #
 # `tests/test_externalized_dependency_sources.py` fails if a path dep, a
@@ -31,7 +31,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.9.30"
+version = "0.9.31"
 edition = "2021"
 rust-version = "1.98"
 license = "AGPL-3.0-only"
