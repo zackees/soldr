@@ -74,6 +74,101 @@ fn rustflags_declares_bare_reld(rustflags: &str) -> bool {
         || matches!(extract_flag_value(rustflags, "linker="), Some("reld"))
 }
 
+/// The `[target.*]` config files consulted for one project, highest
+/// precedence first: every declared Dylint library root (soldr#3483), then
+/// the project root, then `$CARGO_HOME`.
+///
+/// Extracted from [`resolve_project_choice_with_lint_roots`] so the
+/// soldr#3571 `dylint-link` detection below reads through the identical
+/// file list instead of re-spelling it — one list, one reader, one
+/// precedence (a second copy would drift exactly the way the soldr#2945
+/// Dylint-nightly derivation did).
+fn target_config_files(
+    project_root: &Path,
+    cargo_home: Option<&Path>,
+    lint_roots: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut config_files = Vec::with_capacity(2 + 2 * lint_roots.len() + 2);
+    // soldr#3483: a Dylint library's own `.cargo/config.toml` first —
+    // it is the config the lint build actually resolves.
+    for lint_root in lint_roots {
+        config_files.push(lint_root.join(".cargo/config.toml"));
+        config_files.push(lint_root.join(".cargo/config"));
+    }
+    config_files.push(project_root.join(".cargo/config.toml"));
+    config_files.push(project_root.join(".cargo/config"));
+    if let Some(cargo_home) = cargo_home {
+        config_files.push(cargo_home.join("config.toml"));
+        config_files.push(cargo_home.join("config"));
+    }
+    config_files
+}
+
+/// soldr#3571: whether the project's resolved `[target.<triple>]` (or the
+/// universally-matching `[target.'cfg(all())']`) `linker` / `rustflags`
+/// declaration drives rustc with a **bare** `dylint-link` — a command name
+/// Cargo resolves through the child cargo's PATH.
+///
+/// Detection only, and it goes through the very same
+/// [`target_config_value_in_files`] reader the shared linker resolver uses
+/// (no second config parser). A match means the cargo front door must put
+/// the managed `dylint-link` bin dir on the child PATH: a lint crate's
+/// standalone `soldr cargo clippy` reads its own
+/// `rustflags = ["-C", "linker=dylint-link"]` from `.cargo/config.toml`,
+/// and without the binary on PATH the compile dies with
+/// `linker dylint-link not found` before any linting runs (the soldr#3571
+/// failure).
+///
+/// * `target: None` matches only `cfg(all())` sections — there is no exact
+///   triple to compare against. `cfg(all())` is what every lint crate
+///   declares, so a target-less invocation still detects it.
+/// * An **absolute-path** linker is deliberately not a match: rustc execs
+///   it directly, PATH plays no part, and soldr must never fetch over a
+///   caller-provided path (an ordinary project with no `dylint-link`
+///   reference anywhere matches nothing and gains nothing).
+pub fn project_config_declares_dylint_link(
+    target: Option<&str>,
+    project_root: &Path,
+    cargo_home: Option<&Path>,
+    lint_roots: &[PathBuf],
+) -> bool {
+    let config_files = target_config_files(project_root, cargo_home, lint_roots);
+    // An empty triple never equals a real `[target.<triple>]` section key,
+    // so `target_config_value_in_files` falls through to its `cfg(all())`
+    // fallback — exactly the target-less semantics documented above.
+    let target = target.unwrap_or_default();
+    let linker = target_config_value_in_files(&config_files, target, "linker");
+    let rustflags = target_config_value_in_files(&config_files, target, "rustflags");
+    linker.as_deref().is_some_and(is_bare_dylint_link_command)
+        || rustflags
+            .as_deref()
+            .is_some_and(rustflags_declare_bare_dylint_link)
+}
+
+/// `dylint-link` (or `dylint-link.exe`) as a whole value: a bare command
+/// name, never a path.
+fn is_bare_dylint_link_command(value: &str) -> bool {
+    matches!(value.trim(), "dylint-link" | "dylint-link.exe")
+}
+
+/// Whether a joined `[target.*] rustflags` value hands `dylint-link` to
+/// rustc as its linker: the Cargo-config spelling
+/// `rustflags = ["-C", "linker=dylint-link"]` (the soldr#3571 fixture),
+/// plus any other whitespace-separated token that is exactly the bare
+/// command. `linker=/abs/path/dylint-link` is *not* a match — that value
+/// resolves without PATH.
+fn rustflags_declare_bare_dylint_link(rustflags: &str) -> bool {
+    if matches!(
+        extract_flag_value(rustflags, "linker="),
+        Some(value) if is_bare_dylint_link_command(value)
+    ) {
+        return true;
+    }
+    rustflags
+        .split_whitespace()
+        .any(is_bare_dylint_link_command)
+}
+
 /// Resolve the project-level linker choice from (in precedence order,
 /// highest first):
 ///
@@ -139,19 +234,7 @@ pub fn resolve_project_choice_with_lint_roots(
     }
 
     if let Some(target) = target {
-        let mut config_files = Vec::with_capacity(2 + 2 * lint_roots.len() + 2);
-        // soldr#3483: a Dylint library's own `.cargo/config.toml` first —
-        // it is the config the lint build actually resolves.
-        for lint_root in lint_roots {
-            config_files.push(lint_root.join(".cargo/config.toml"));
-            config_files.push(lint_root.join(".cargo/config"));
-        }
-        config_files.push(project_root.join(".cargo/config.toml"));
-        config_files.push(project_root.join(".cargo/config"));
-        if let Some(cargo_home) = cargo_home {
-            config_files.push(cargo_home.join("config.toml"));
-            config_files.push(cargo_home.join("config"));
-        }
+        let config_files = target_config_files(project_root, cargo_home, lint_roots);
         let linker_value = target_config_value_in_files(&config_files, target, "linker");
         let rustflags_value = target_config_value_in_files(&config_files, target, "rustflags");
 

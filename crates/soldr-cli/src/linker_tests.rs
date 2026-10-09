@@ -1111,3 +1111,176 @@ fn no_lint_roots_keeps_the_workspace_root_lookup_unchanged() {
     assert_eq!(selection.choice, LinkerChoice::Reld);
     assert_eq!(selection.source, LinkerSource::CargoConfig);
 }
+
+// --- soldr#3571: the standalone configured-lint-crate detection predicate ---
+
+/// The exact shape of the soldr#3571 failure: a lint crate declaring
+/// `rustflags = ["-C", "linker=dylint-link"]` under `[target.'cfg(all())']`.
+/// `cfg(all())` matches every target — and with no target resolved at all —
+/// so the front door must demand the managed `dylint-link` in all three
+/// cases.
+#[test]
+fn cfg_all_rustflags_bare_dylint_link_is_detected_for_every_target() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_config(
+        root.path(),
+        "[target.'cfg(all())']\nrustflags = [\"-C\", \"linker=dylint-link\"]\n",
+    );
+    for target in [Some(LINUX), Some(WIN_MSVC), Some(MAC_ARM), None] {
+        assert!(
+            project_config_declares_dylint_link(target, root.path(), None, &[]),
+            "cfg(all()) rustflags with a bare dylint-link must detect for target {target:?}"
+        );
+    }
+}
+
+/// The other real-world spelling: running-process declares the linker
+/// field itself rather than rustflags.
+#[test]
+fn cfg_all_bare_dylint_linker_field_is_detected() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_config(
+        root.path(),
+        "[target.'cfg(all())']\nlinker = \"dylint-link\"\n",
+    );
+    assert!(project_config_declares_dylint_link(
+        Some(LINUX),
+        root.path(),
+        None,
+        &[]
+    ));
+    assert!(project_config_declares_dylint_link(
+        None,
+        root.path(),
+        None,
+        &[]
+    ));
+}
+
+/// The ordinary-crate contract: nothing declares `dylint-link`, so nothing
+/// may be ensured — a plain Clippy run must never download Dylint tools.
+/// Covers both the no-section case and this repository's own root config
+/// shape (`[build] rustflags`, no `[target]` section at all).
+#[test]
+fn ordinary_project_without_dylint_link_never_detects() {
+    for body in [
+        "",
+        "[build]\nrustflags = [\"--cfg\", \"tokio_unstable\"]\n",
+        "[target.'cfg(all())']\nrustflags = [\"-C\", \"target-cpu=native\"]\n",
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"cc\"\n",
+    ] {
+        let root = tempfile::tempdir().expect("project root");
+        write_cargo_config(root.path(), body);
+        assert!(
+            !project_config_declares_dylint_link(Some(LINUX), root.path(), None, &[]),
+            "an ordinary config must not detect dylint-link: {body}"
+        );
+        assert!(
+            !project_config_declares_dylint_link(None, root.path(), None, &[]),
+            "an ordinary config must not detect dylint-link: {body}"
+        );
+    }
+}
+
+/// An absolute linker path wins by being invisible to this predicate:
+/// rustc execs it directly, PATH plays no part, and soldr must not fetch
+/// over it. Same for a `linker=` rustflags fragment.
+#[test]
+fn absolute_linker_paths_are_never_treated_as_bare_dylint_link() {
+    for body in [
+        "[target.'cfg(all())']\nlinker = \"/opt/dylint/bin/dylint-link\"\n",
+        "[target.'cfg(all())']\nlinker = \"/usr/bin/cc\"\n",
+        "[target.'cfg(all())']\nrustflags = [\"-C\", \"linker=/opt/dylint/bin/dylint-link\"]\n",
+    ] {
+        let root = tempfile::tempdir().expect("project root");
+        write_cargo_config(root.path(), body);
+        assert!(
+            !project_config_declares_dylint_link(Some(LINUX), root.path(), None, &[]),
+            "an absolute-path linker must not trigger the ensure: {body}"
+        );
+    }
+}
+
+/// An exact-triple section applies only to its own target: a Windows-only
+/// declaration must not make a Linux pass fetch, and a target-less
+/// resolution (no `--target`, no host known) matches nothing in it.
+#[test]
+fn exact_triple_dylint_link_matches_only_its_own_target() {
+    let root = tempfile::tempdir().expect("project root");
+    write_cargo_config(
+        root.path(),
+        "[target.x86_64-pc-windows-msvc]\nlinker = \"dylint-link\"\n",
+    );
+    assert!(project_config_declares_dylint_link(
+        Some(WIN_MSVC),
+        root.path(),
+        None,
+        &[]
+    ));
+    assert!(!project_config_declares_dylint_link(
+        Some(LINUX),
+        root.path(),
+        None,
+        &[]
+    ));
+    assert!(!project_config_declares_dylint_link(
+        None,
+        root.path(),
+        None,
+        &[]
+    ));
+}
+
+/// The soldr#3483 layering, reused for detection: a declared lint
+/// library's own config counts only when the caller layers its root (the
+/// front door does that only while the Dylint scope is active), so a plain
+/// workspace build never gains a fetch from a lint package it would not
+/// read itself.
+#[test]
+fn declared_lint_root_config_is_detected_only_when_layered() {
+    let root = tempfile::tempdir().expect("project root");
+    let lint = root.path().join("lints").join("fixture");
+    write_cargo_config(
+        &lint,
+        "[target.'cfg(all())']\nrustflags = [\"-C\", \"linker=dylint-link\"]\n",
+    );
+    // Without the lint root layered, the workspace itself declares nothing,
+    // so a plain build outside the Dylint scope detects nothing.
+    assert!(!project_config_declares_dylint_link(
+        Some(LINUX),
+        root.path(),
+        None,
+        &[]
+    ));
+    assert!(project_config_declares_dylint_link(
+        Some(LINUX),
+        root.path(),
+        None,
+        std::slice::from_ref(&lint),
+    ));
+}
+
+/// `$CARGO_HOME/config.toml` is the last layer of the shared file list and
+/// participates like every other reader using it.
+#[test]
+fn cargo_home_config_contributes_dylint_link_detection() {
+    let root = tempfile::tempdir().expect("project root");
+    let cargo_home = tempfile::tempdir().expect("cargo home");
+    std::fs::write(
+        cargo_home.path().join("config.toml"),
+        "[target.'cfg(all())']\nlinker = \"dylint-link\"\n",
+    )
+    .expect("write cargo-home config.toml");
+    assert!(project_config_declares_dylint_link(
+        Some(LINUX),
+        root.path(),
+        Some(cargo_home.path()),
+        &[]
+    ));
+    assert!(!project_config_declares_dylint_link(
+        Some(LINUX),
+        root.path(),
+        None,
+        &[]
+    ));
+}

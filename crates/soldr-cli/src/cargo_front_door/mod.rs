@@ -178,6 +178,10 @@ where
 /// child cargo) and any required env overrides to `extra_env`.
 ///
 /// Registered bootstraps:
+///   - `cargo dylint`, and any other subcommand whose project config
+///     declares a bare `dylint-link` → ensure the managed `dylint-link` on
+///     PATH (soldr#3571; the config-declared case also fires for plain
+///     cargo verbs via `ensure_known_subcommand_tool`).
 ///   - `cargo zigbuild` → ensure `zig` is on PATH (PR #841).
 ///   - explicit legacy `cargo zigbuild --target *-apple-darwin` → ensure
 ///     Apple SDK on disk + set `SDKROOT` env (issue #854).
@@ -193,11 +197,14 @@ async fn append_subcommand_transitive_bin_dirs(
     extra_env: &mut Vec<(String, String)>,
     extra_cargo_args: &mut Vec<String>,
 ) -> Result<(), SoldrError> {
-    if sub == "dylint"
-        && (force_managed_cargo_subcommands() || find_on_path("dylint-link").is_none())
-    {
-        extra_bin_dirs.push(dylint_link_bin_dir(paths).await?);
-    }
+    // soldr#3571: `cargo dylint` always needs the managed `dylint-link`; any
+    // OTHER subcommand needs it when the project's own cargo config drives
+    // rustc with a bare `dylint-link` (a configured lint crate's standalone
+    // compiler pass). The detection lives behind one helper so the two
+    // entry points — this transitive bootstrap and the plain-cargo-verb
+    // early return in `ensure_known_subcommand_tool`, which never reaches
+    // this function — cannot drift apart.
+    ensure_dylint_link_bin_dir(sub, args, paths, extra_bin_dirs).await?;
     if sub == "zigbuild" {
         let zig_dir = crate::fetch::ensure_zig(paths).await?;
         extra_bin_dirs.push(zig_dir.clone());
@@ -665,6 +672,8 @@ mod backtrace_policy_tests;
 mod cargo_abort_log_tests;
 #[cfg(test)]
 mod dylint_driver_tests;
+#[cfg(test)]
+mod dylint_link_ensure_tests;
 #[cfg(test)]
 mod dylint_link_validation_tests;
 #[cfg(test)]
