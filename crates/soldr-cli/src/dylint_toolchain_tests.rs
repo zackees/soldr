@@ -535,11 +535,15 @@ fn apply_to_command_never_touches_build_profile_or_injects_args() {
             "dylint scope stamping must never switch the analyzed workspace's \
                  build profile, but set: {key_str}"
         );
-        // DYLINT_DRIVER_PATH is the one soldr-owned addition beyond
-        // the identity env vars (best-effort; may be absent if
-        // SoldrPaths::new() can't resolve in this environment).
+        // DYLINT_DRIVER_PATH and RUSTUP_HOME are the soldr-owned
+        // additions beyond the identity env vars (both best-effort; absent
+        // if SoldrPaths::new() / the Dylint home can't resolve here).
+        // RUSTUP_HOME pins the home the nightly was provisioned in
+        // (soldr#3567); `dylint_rustup_home_tests` asserts its value.
         assert!(
-            expected_keys.contains(&key_str.as_ref()) || key_str == "DYLINT_DRIVER_PATH",
+            expected_keys.contains(&key_str.as_ref())
+                || key_str == "DYLINT_DRIVER_PATH"
+                || key_str == "RUSTUP_HOME",
             "unexpected env var set by DylintToolchainPlan::apply_to_command: {key_str}"
         );
     }
@@ -836,5 +840,8 @@ fn dylint_readiness_reads_the_home_the_install_writes_to() {
         .map(PathBuf::from);
 
     assert_eq!(install_home.as_deref(), Some(managed.as_path()));
-    assert_eq!(dylint_manager_home().expect("manager home"), managed);
+    assert_eq!(
+        crate::dylint_rustup_home::dylint_rustup_home().expect("Dylint home"),
+        managed
+    );
 }

@@ -440,6 +440,38 @@ fn home_origin_strings_are_stable() {
     assert_eq!(HomeOrigin::Caller.as_str(), "caller");
     assert_eq!(HomeOrigin::Managed.as_str(), "managed");
     assert_eq!(HomeOrigin::RepoLocal.as_str(), "repo-local");
+    assert_eq!(HomeOrigin::Dylint.as_str(), "dylint");
+}
+
+/// soldr#3567: the toolchain-binary cache must key on the home its
+/// `rustup which` runs under. It keyed on the caller's `~/.rustup` while the
+/// lookup ran under the managed home, so a path resolved before the managed
+/// home existed kept answering for the Dylint nightly provisioned there.
+#[test]
+fn toolchain_bin_cache_scope_keys_on_the_home_the_lookup_runs_under() {
+    let _lock = TEST_PROCESS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let root = tempfile::tempdir().expect("tempdir");
+    let managed = root.path().join("rustup");
+    std::fs::create_dir_all(&managed).expect("managed rustup home");
+    let _root = EnvVarGuard::set(crate::core::SOLDR_CACHE_DIR_ENV_VAR, root.path());
+    let _home = EnvVarGuard::remove(crate::core::RUSTUP_HOME_ENV_VAR);
+
+    let mut lookup = std::process::Command::new("rustup");
+    apply_implicit_toolchain_homes(&mut lookup);
+    let lookup_home = lookup
+        .get_envs()
+        .find_map(|(name, value)| (name == crate::core::RUSTUP_HOME_ENV_VAR).then_some(value))
+        .flatten()
+        .map(PathBuf::from)
+        .expect("the lookup runs under the managed home");
+
+    let scope = ToolchainBinCacheScope::current().expect("cache scope");
+    assert_eq!(
+        scope.rustup_home,
+        std::fs::canonicalize(&lookup_home).expect("canonical managed home")
+    );
 }
 
 // soldr#1799: repo-local is a third origin, not a flavour of caller.

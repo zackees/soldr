@@ -359,18 +359,21 @@ fn write_always_on_build_log(
     // `rustup which` subprocesses (~65 ms each), and #1843 is specifically
     // about the front door's fixed per-invocation overhead.
     cargo_bin: &Path,
+    // soldr#3567: a Dylint-scoped child runs under the Dylint Rustup home
+    // whatever its binary's location, and the log must say so.
+    dylint_scoped: bool,
     // soldr#2545: the effective wrapper identity the cache plan applied.
     wrapper: Option<crate::build_log::WrapperIdentity>,
     // cargo's `fingerprint dirty for` records, parsed from the captured
     // stderr when the front door captured one; empty otherwise.
     fingerprint_dirty: Vec<crate::build_log::FingerprintDirty>,
 ) -> Option<PathBuf> {
-    let toolchain = crate::binaries::home_origin_for_binary_opt(cargo_bin).map(|origin| {
-        crate::build_log::ToolchainHomes {
+    let toolchain = crate::dylint_rustup_home::child_home_origin(cargo_bin, dylint_scoped).map(
+        |origin| crate::build_log::ToolchainHomes {
             home_origin: origin.as_str(),
             binary: cargo_bin.to_path_buf(),
-        }
-    });
+        },
+    );
     let request = crate::build_log::BuildLogRequest {
         paths,
         session_id,

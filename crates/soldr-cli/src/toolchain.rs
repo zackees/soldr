@@ -471,8 +471,13 @@ fn canonical_requirement_list(values: Option<&[String]>) -> Vec<String> {
 /// actually runs under. Read it back from a prepared command rather than
 /// re-deriving it, so a caller probing a toolchain directory looks in the home
 /// the install wrote to (soldr#3051).
+///
+/// The probe command is never spawned and the homes applied to it do not
+/// depend on its program, so it names a placeholder rather than resolving
+/// (and possibly bootstrapping) the real rustup: the toolchain-binary cache
+/// keys on this value on every lookup (soldr#3567).
 pub(crate) fn effective_rustup_home() -> Option<PathBuf> {
-    let mut command = std::process::Command::new(rustup_binary());
+    let mut command = std::process::Command::new("rustup");
     apply_implicit_toolchain_homes(&mut command);
     command
         .get_envs()

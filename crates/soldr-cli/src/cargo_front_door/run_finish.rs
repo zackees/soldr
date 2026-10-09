@@ -116,6 +116,7 @@ impl FrontDoorBuildSession {
             exit_code,
             self.compile_journal_start_len,
             &prepared.cargo,
+            prepared.dylint_plan.is_some(),
             prepared.cache_plan.wrapper_identity(),
             fingerprint_dirty,
         )

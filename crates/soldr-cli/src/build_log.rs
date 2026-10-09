@@ -142,7 +142,8 @@ pub struct WrapperIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolchainHomes {
-    /// `caller` or `managed` -- see `binaries::HomeOrigin`.
+    /// `caller`, `managed`, `repo-local` or `dylint` -- see
+    /// `binaries::HomeOrigin`.
     pub home_origin: &'static str,
     /// The resolved cargo binary this build ran.
     pub binary: PathBuf,

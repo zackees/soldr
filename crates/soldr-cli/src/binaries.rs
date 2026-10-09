@@ -88,9 +88,14 @@ struct ToolchainBinCacheScope {
 }
 
 impl ToolchainBinCacheScope {
+    /// Keyed on the home the memoized `rustup which` actually runs under
+    /// (soldr#3567). Keying on the caller's `RUSTUP_HOME`/`~/.rustup` while
+    /// the lookup ran under Soldr's managed home let a path resolved before
+    /// that home existed answer for it forever, so a Dylint nightly
+    /// provisioned in the managed home was compiled from `~/.rustup`'s copy.
     fn current() -> Option<Self> {
         Self::from_home(
-            crate::core::resolve_rustup_home()?,
+            crate::toolchain::effective_rustup_home()?,
             TargetTriple::host().ok()?.triple().to_string(),
             &std::env::current_dir().ok()?,
         )
@@ -460,6 +465,11 @@ pub(crate) enum HomeOrigin {
     /// a first-class resolution path (`probe_direct_toolchain_binary`), so
     /// the guard would be weakest exactly where such repos build.
     RepoLocal,
+    /// A Dylint-scoped child: `RUSTUP_HOME` is pinned to the home the Dylint
+    /// nightly and its targets were provisioned in, while the resolved binary
+    /// lives outside it (soldr#3567). Never reported as `managed`, because
+    /// soldr#1799's guard rightly rejects that for a host binary.
+    Dylint,
 }
 
 impl HomeOrigin {
@@ -469,6 +479,7 @@ impl HomeOrigin {
             HomeOrigin::Caller => "caller",
             HomeOrigin::Managed => "managed",
             HomeOrigin::RepoLocal => "repo-local",
+            HomeOrigin::Dylint => "dylint",
         }
     }
 }
