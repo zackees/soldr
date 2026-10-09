@@ -66,7 +66,10 @@ def test_build_guest_script_replay_stages_are_present() -> None:
     assert "--partition hash:1/1" in script
     assert "--no-fail-fast" in script
     assert 'TMPDIR="$WORK/tmp"' in script
-    assert 'exec "$@"' in script
+    # soldr#3454: the native wrapper runs every test; no exec shim replaces it.
+    assert 'exec "$@"' not in script
+    assert "nextest_timeout_wrapper" not in script
+    assert "-name soldr-nextest-wrapper" in script
     assert "RUSTUP_TOOLCHAIN" in script
     assert "SOLDR_TEST_WORKSPACE_ROOT" in script
     assert "SOLDR_TEST_FIXTURES_DIR" in script

@@ -1,12 +1,13 @@
 //! Memory-aware admission and memory-failure isolation for one test
-//! (soldr#2885). A line-for-line counterpart of
-//! `.github/scripts/nextest_memory_guard.py`; the protocol (`paused` flag,
-//! `active/<pid>` slots, `resume.lock` spacing, `infra/<identity>` records,
-//! exit status 75) is shared with `soldr ci-test`'s controller.
+//! (soldr#2885). The protocol (`paused` flag, `active/<pid>` slots,
+//! `resume.lock` spacing, `infra/<identity>` records, exit status 75) is
+//! shared with `soldr ci-test`'s controller
+//! (`crates/soldr-cli/src/ci_test/test_pressure.rs`); renaming either side
+//! breaks the gate.
 
 use crate::memory::{
-    format_bytes, is_linux, kill_tree, observe_memory, sample_tree, CgroupCeiling, CgroupOutcome,
-    MemoryObservation, TreeSample,
+    format_bytes, is_linux, kill_tree, observe_memory, sample_interval, sample_tree, CgroupCeiling,
+    CgroupOutcome, MemoryObservation, TreeSample,
 };
 use crate::tail::OutputTail;
 use crate::write_stderr;
@@ -44,7 +45,6 @@ pub const INFRA_EXIT_CODE: i32 = 75;
 const DEFAULT_MAX_WAIT_SECS: f64 = 30.0;
 const RESUME_SPACING: Duration = Duration::from_millis(500);
 const GATE_POLL: Duration = Duration::from_millis(100);
-const LINUX_SAMPLE: Duration = Duration::from_millis(200);
 
 const MEMORY_SIGNATURES: [&str; 5] = [
     "Cannot allocate memory",
@@ -273,6 +273,7 @@ impl TreeMonitor {
         let state = Arc::new(Mutex::new(MonitorState::default()));
         let (stop, stopped) = mpsc::channel();
         let shared = Arc::clone(&state);
+        let interval = sample_interval();
         let handle = std::thread::spawn(move || loop {
             let Some(sample) = sample_tree(root) else {
                 return;
@@ -289,7 +290,7 @@ impl TreeMonitor {
                     return;
                 }
             }
-            match stopped.recv_timeout(LINUX_SAMPLE) {
+            match stopped.recv_timeout(interval) {
                 Err(RecvTimeoutError::Timeout) => {}
                 _ => return,
             }
@@ -579,6 +580,10 @@ const SIGNAL_NAMES: [&str; 31] = [
     "SIGSYS",
 ];
 
+/// Signal numbers POSIX hosts (Linux and macOS alike) share, so their
+/// `SIGNAL_NAMES` entry is right off Linux too.
+const PORTABLE_SIGNALS: [usize; 12] = [1, 2, 3, 4, 5, 6, 8, 9, 11, 13, 14, 15];
+
 /// `returncode` follows Python's convention: negative is `-signal`.
 fn describe_status(returncode: Option<i32>) -> String {
     match returncode {
@@ -586,7 +591,9 @@ fn describe_status(returncode: Option<i32>) -> String {
         Some(code) if code < 0 => {
             let signal = code.unsigned_abs() as usize;
             match SIGNAL_NAMES.get(signal.wrapping_sub(1)) {
-                Some(name) if is_linux() => format!("killed by {name}"),
+                Some(name) if is_linux() || PORTABLE_SIGNALS.contains(&signal) => {
+                    format!("killed by {name}")
+                }
                 _ => format!("killed by signal {signal}"),
             }
         }

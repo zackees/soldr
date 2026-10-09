@@ -65,14 +65,13 @@ ALLOWLIST: dict[str, tuple[int, str]] = {
     ),
     "crates/soldr-nextest-wrapper/src/main.rs": (
         1,
-        "the native Nextest wrapper's one test child (soldr#3453); it must own "
-        "the child's pipes, session and death signal, mirroring the Python "
-        "wrapper's Popen",
+        "the Nextest wrapper's one test child (soldr#3453); it must own "
+        "the child's pipes, session and death signal",
     ),
     "crates/soldr-nextest-wrapper/src/dump.rs": (
         1,
         "gdb thread dump of a timed-out test (soldr#3453), bounded by "
-        "wait-timeout like the Python wrapper's subprocess.run(timeout=12)",
+        "wait-timeout to 12 seconds",
     ),
     "crates/soldr-cli/src/dylint_driver.rs": (
         1,

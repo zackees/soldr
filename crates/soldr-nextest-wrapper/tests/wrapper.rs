@@ -1,7 +1,7 @@
-//! Black-box checks of the native Nextest wrapper (soldr#3453), run by
-//! `soldr ci-test`. The full parity suite is the Python one:
-//! `SOLDR_NEXTEST_WRAPPER_UNDER_TEST=<this binary> pytest
-//! tests/test_nextest_timeout_wrapper.py tests/test_nextest_memory_guard.py`.
+//! Black-box checks of the Nextest wrapper (soldr#3453). The fuller
+//! black-box suites are `tests/test_nextest_timeout_wrapper.py` and
+//! `tests/test_nextest_memory_guard.py`, which drive this binary through
+//! `SOLDR_NEXTEST_WRAPPER_UNDER_TEST` (soldr#3454).
 
 use soldr_platform::host::facts::{os, HostOs};
 use soldr_platform::process::test_child::{self, TestSignal};

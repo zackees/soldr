@@ -655,8 +655,8 @@ def create_command(runner: Runner, image_id: str) -> list[str]:
             "-e",
             "UV_PROJECT_ENVIRONMENT=/venv",
             # Docker Desktop commonly exposes host CPU count with a much
-            # smaller VM memory budget. Bound nextest so the timeout-wrapper
-            # Python process can always start under the full smoke suite.
+            # smaller VM memory budget. Bound nextest so every wrapped test
+            # process can always start under the full smoke suite.
             "-e",
             "NEXTEST_TEST_THREADS=2",
             # soldr#2739 removed the explicit SOLDR_REENTRANCY_GUARD=strict

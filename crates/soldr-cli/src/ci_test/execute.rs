@@ -770,7 +770,6 @@ impl StageCommandFactory {
             self.nextest_test_cargo_runner.as_deref(),
         )?;
         configure_nextest_admission(&mut command, stage, &self.nextest_admission);
-        super::native_wrapper::configure(&mut command, &stage.name);
         if stage.domain.starts_with("dylint-") {
             for (key, value) in &self.dylint_env {
                 command.env(key, value);

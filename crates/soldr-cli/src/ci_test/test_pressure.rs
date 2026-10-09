@@ -2,9 +2,9 @@
 //!
 //! Nextest fixes its concurrency for the whole run, so `ci-test` cannot lower
 //! `--test-threads` once memory tightens. What it can do is stop *starting*
-//! tests: every Unix test starts through `.github/scripts/
-//! nextest_timeout_wrapper.py`, which waits before launching its test while
-//! `<admission dir>/paused` exists and another test is still running.
+//! tests: every Unix test starts through the native Nextest wrapper
+//! (`crates/soldr-nextest-wrapper`), which waits before launching its test
+//! while `<admission dir>/paused` exists and another test is still running.
 //!
 //! This module owns that flag. A monitor thread samples available memory
 //! (the same tighter-of-cgroup-and-host reading the plan used) and drives a
@@ -34,7 +34,8 @@ use std::time::{Duration, Instant};
 pub(crate) const ADMISSION_DIR_ENV: &str = "SOLDR_NEXTEST_ADMISSION_DIR";
 pub(crate) const CEILING_ENV: &str = "SOLDR_NEXTEST_TEST_MEMORY_CEILING_BYTES";
 pub(crate) const SUMMARY_ENV: &str = "SOLDR_NEXTEST_ADMISSION_SUMMARY";
-/// Shared with `nextest_memory_guard.py`; renaming either side breaks the gate.
+/// Shared with `crates/soldr-nextest-wrapper/src/guard.rs`; renaming either
+/// side breaks the gate.
 pub(crate) const PAUSED_FLAG: &str = "paused";
 pub(crate) const ACTIVE_DIR: &str = "active";
 pub(crate) const INFRA_DIR: &str = "infra";
@@ -285,7 +286,7 @@ pub(crate) fn infra_failures(dir: &Path) -> Vec<String> {
     names
 }
 
-/// Inverse of `nextest_memory_guard.infra_record_name`.
+/// Inverse of the Nextest wrapper's `guard::infra_record_name`.
 fn percent_decode(name: &str) -> String {
     let bytes = name.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

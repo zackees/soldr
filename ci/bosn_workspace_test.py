@@ -86,10 +86,10 @@ def workspace_test_plan(*, target: Path, bootstrap: Path) -> WorkspaceTestPlan:
                 ],
                 base_env,
             ),
-            # soldr#3454: parity contract between the Python and native Nextest
-            # run wrappers. The same pytest suites run against the freshly built
-            # native binary so the two implementations cannot drift silently.
-            # This does not pick a canonical implementation. Needs no daemon.
+            # soldr#3454: the black-box suites of the Nextest run-wrapper (the
+            # only implementation is the native binary built above). The env
+            # var is always set here, so the suites really run instead of
+            # skipping for want of a binary. Needs no daemon.
             Step(
                 [
                     "uv",

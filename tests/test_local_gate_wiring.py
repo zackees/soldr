@@ -110,17 +110,20 @@ class WrapperRun:
     stdout: str
 
 
-def _wrapper(**extra: str) -> WrapperRun:
-    """Run the nextest wrapper with stderr captured through a file, not a
-    pipe (zackees/ci.yml PY-003)."""
+def _shim(args: list[str], native: str | None, **extra: str) -> WrapperRun:
+    """Run nextest_wrapper.sh with stderr captured through a file, not a pipe
+    (zackees/ci.yml PY-003). ``native`` sets SOLDR_NEXTEST_NATIVE_WRAPPER."""
     env = {
-        k: v for k, v in os.environ.items() if k not in ("CI", "SOLDR_TEST_ISOLATED")
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("CI", "SOLDR_TEST_ISOLATED", "SOLDR_NEXTEST_NATIVE_WRAPPER")
     }
     env.update(extra)
-    env["SOLDR_NEXTEST_NATIVE_WRAPPER"] = "/bin/true"
+    if native is not None:
+        env["SOLDR_NEXTEST_NATIVE_WRAPPER"] = native
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         proc = subprocess.run(
-            ["sh", str(WRAPPER), "true"],
+            ["sh", str(WRAPPER), *args],
             env=env,
             stdout=out,
             stderr=err,
@@ -135,6 +138,17 @@ def _wrapper(**extra: str) -> WrapperRun:
         )
 
 
+def _wrapper(**extra: str) -> WrapperRun:
+    return _shim(["true"], "/bin/true", **extra)
+
+
+def _echo_script(path: Path, label: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'#!/bin/sh\necho "{label} $*"\n', encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
 @pytest.mark.skipif(os.name == "nt", reason="the nextest run-wrapper is Unix-only")
 def test_isolation_guard_refuses_a_developer_host() -> None:
     refused = _wrapper()
@@ -142,6 +156,61 @@ def test_isolation_guard_refuses_a_developer_host() -> None:
     assert "bosn run --task test" in refused.stderr
     assert _wrapper(CI="true").returncode == 0
     assert _wrapper(SOLDR_TEST_ISOLATED="1").returncode == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the nextest run-wrapper is Unix-only")
+def test_isolation_guard_runs_before_any_wrapper_resolution(tmp_path: Path) -> None:
+    native = _echo_script(tmp_path / "native", "native")
+    refused = _shim(["true"], str(native))
+    assert refused.returncode == 97
+    assert "native" not in refused.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the nextest run-wrapper is Unix-only")
+def test_an_explicit_native_wrapper_is_execed_with_the_test_argv(
+    tmp_path: Path,
+) -> None:
+    """soldr#3454 resolution rule, step 1: SOLDR_NEXTEST_NATIVE_WRAPPER wins."""
+    native = _echo_script(tmp_path / "native", "native")
+    profile = tmp_path / "target" / "debug"
+    _echo_script(profile / "soldr-nextest-wrapper", "derived")
+    test_binary = _echo_script(profile / "deps" / "suite-0123", "test")
+    run = _shim([str(test_binary), "--exact", "a::b"], str(native), CI="true")
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == f"native {test_binary} --exact a::b"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the nextest run-wrapper is Unix-only")
+@pytest.mark.parametrize("runner", [[], ["/usr/bin/env"]])
+def test_the_wrapper_is_found_beside_the_test_binary_profile_dir(
+    tmp_path: Path, runner: list[str]
+) -> None:
+    """Step 2: `<profile>/deps/<test>` -> `<profile>/soldr-nextest-wrapper`.
+
+    The same relative layout holds for a workspace build, a `--target` build
+    (`<target>/<triple>/<profile>`) and an extracted Nextest archive, and the
+    test binary is found even behind a target runner.
+    """
+    profile = tmp_path / "extract" / "target" / "x86_64-apple-darwin" / "ci-nextest"
+    _echo_script(profile / "soldr-nextest-wrapper", "derived")
+    test_binary = _echo_script(profile / "deps" / "suite-0123", "test")
+    argv = [*runner, str(test_binary), "--exact", "a::b"]
+    run = _shim(argv, None, SOLDR_TEST_ISOLATED="1")
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == "derived " + " ".join(argv)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the nextest run-wrapper is Unix-only")
+def test_a_missing_wrapper_refuses_instead_of_running_the_test_unwrapped(
+    tmp_path: Path,
+) -> None:
+    """Step 3: no override, nothing beside the test binary -> loud refusal."""
+    test_binary = _echo_script(tmp_path / "target" / "debug" / "deps" / "t", "test")
+    run = _shim([str(test_binary)], None, CI="true")
+    assert run.returncode == 98
+    assert "soldr-nextest-wrapper not found" in run.stderr
+    assert "soldr cargo build -p soldr-nextest-wrapper" in run.stderr
+    assert "test" not in run.stdout, "the test must not run unwrapped"
 
 
 def test_isolated_suite_requires_a_bosn_that_does_not_reap_bursts() -> None:

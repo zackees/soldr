@@ -257,12 +257,13 @@ jobs:
             test -f /tmp/w/src/Cargo.toml || { echo "no workspace manifest"; exit 97; }
 
             # .config/nextest.toml routes EVERY test through
-            # .github/scripts/nextest_timeout_wrapper.py (a wrapper script
-            # resolved relative-to workspace-root). Recovery has no python3, so
-            # every test dies at spawn in ~0.15s -- which is exactly what the
-            # previous run showed: 204 tests listed, executed, and all failed
-            # uniformly. Replace it with a minimal config so this probe measures
-            # "do mac unit tests run", not "does soldr's CI timeout wrapper run".
+            # .github/scripts/nextest_wrapper.sh and the native
+            # soldr-nextest-wrapper (soldr#3454), which also refuses to run
+            # outside CI=true / SOLDR_TEST_ISOLATED=1. (The retired Python
+            # wrapper it replaced made every test die at spawn here, since
+            # Recovery has no python3.) Replace it with a minimal config so this
+            # probe measures "do mac unit tests run", not "does soldr's CI
+            # run-wrapper run".
             mkdir -p /tmp/w/src/.config
             printf '[profile.default]\n' > /tmp/w/src/.config/nextest.toml
 
