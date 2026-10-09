@@ -210,11 +210,12 @@ fn defender_exclusion_guard_for(cache_dir: &Path) -> DefenderExclusionGuard {
 //
 // * size is checked BEFORE hashing, so a resized file is never re-hashed;
 // * a hash mismatch, an unsafe/unsafe-shaped path, a missing/non-regular
-//   file, or a failed `set_file_times` all leave the file's CURRENT
+//   file, or a failed mtime stamp all leave the file's CURRENT
 //   (fresh) mtime untouched — never `Applied` — biasing every failure
 //   mode toward an extra rebuild rather than a wrong one;
-// * atime is stamped to the same value as mtime, matching the deleted
-//   `replay_one`'s behavior;
+// * only mtime is stamped, through `zccache::core::mtime` (#3462), the one
+//   owner of materialized-output mtime policy; nothing in soldr reads
+//   these files' atime;
 // * a source path that is a symlink (or escapes the workspace) is
 //   reported `Missing` and never stamped through, which is strictly more
 //   conservative than the deleted implementation. #1548 in-workspace
@@ -469,8 +470,8 @@ fn replay_cache_file_mtime(cache_dir: &Path, entry: &CacheFile) -> Result<()> {
         return Ok(());
     }
     let mtime = ns_to_systime(entry.mtime_ns);
-    let t = filetime::FileTime::from_system_time(mtime);
-    filetime::set_file_times(&abs, t, t).map_err(|e| io(&abs, e))
+    let t = zccache::core::mtime::FileTime::from_system_time(mtime);
+    zccache::core::mtime::stamp_mtime(&abs, t).map_err(|e| io(&abs, e))
 }
 
 // ---------- thread-pool helpers ----------

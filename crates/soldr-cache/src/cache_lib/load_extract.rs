@@ -676,16 +676,18 @@ fn extract_one(job: &ExtractJob) -> Result<()> {
             }
             let stamp = if let Some(ns) = job.mtime_ns {
                 // Manifest-driven metadata application (#1541): restore
-                // the exact nanosecond mtime here (atime = mtime, matching
-                // what the manifest replay pass used to do serially after
-                // extraction).
-                Some(filetime::FileTime::from_system_time(ns_to_systime(ns)))
+                // the exact nanosecond mtime here. mtime policy is owned by
+                // `zccache::core::mtime` (#3462); atime is left to the
+                // filesystem (nothing in soldr reads these files' atime).
+                Some(zccache::core::mtime::FileTime::from_system_time(
+                    ns_to_systime(ns),
+                ))
             } else {
                 job.mtime_secs
-                    .map(|secs| filetime::FileTime::from_unix_time(secs as i64, 0))
+                    .map(|secs| zccache::core::mtime::FileTime::from_unix_time(secs as i64, 0))
             };
             if let Some(stamp) = stamp {
-                if let Err(e) = filetime::set_file_times(&staged, stamp, stamp) {
+                if let Err(e) = zccache::core::mtime::stamp_mtime(&staged, stamp) {
                     let _ = std::fs::remove_file(&staged);
                     return Err(io(&staged, e));
                 }
