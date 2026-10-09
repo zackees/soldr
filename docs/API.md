@@ -557,10 +557,13 @@ the toolchain that enforces the floor. A host-target release wheel there is
 wheel at glibc 2.17, or pass `--host-glibc` to accept this host's glibc floor
 explicitly. Falling back silently would repeat the bug soldr#3432 fixed.
 
-**musl is unchanged.** The catalogue musl bundle is also hosted on
-`x86_64-unknown-linux-gnu`, and a host-target musl build happens only on a
-musl host, which is not guaranteed to run it. So a host-target musl release
-wheel keeps the `pypi` tag (follow-up: soldr#3435).
+**musl is unchanged.** A host-target musl release wheel keeps the `pypi`
+tag; soldr#3432's host-target preparation deliberately covers GNU only
+(soldr#3435). The catalogue musl bundle's compilers are static i386 ELFs, so
+they run on any x86_64 Linux host, musl included. The GNU bundle's compilers
+are glibc-dynamic: on a host whose OS libc is musl, anything that needs the GNU
+bundle is refused with a message naming the host libc and glibc's loader
+(soldr#3435).
 
 `.github/scripts/verify_wheel_glibc.py` checks the claim against the bytes —
 both `*.data/scripts/*` executables and `*.so` extension modules — because pip

@@ -322,7 +322,10 @@ fn both_guard_messages_keep_the_elf_compiler_root_cause() {
 // which is the point -- the bug only appears on a native ARM64 Linux runner,
 // and a `cfg!`-driven answer could only be checked by running there.
 
-use crate::platform::host::facts::{HostArch, HostOs};
+use crate::fetch::catalogue_linux_host::{
+    bundle_host_fitness, BundleHostFitness, GNU_BUNDLE_HOST, MUSL_BUNDLE_HOST,
+};
+use crate::platform::host::facts::{HostArch, HostLibc, HostOs};
 
 const X64: &str = "x86_64-unknown-linux-gnu";
 const ARM64: &str = "aarch64-unknown-linux-gnu";
@@ -334,7 +337,17 @@ fn decide(
     base: &str,
     floor: Option<&str>,
 ) -> GnuBundleDecision {
-    decide_gnu_bundle(HostOs::Linux, arch, host, target, base, floor, false)
+    let fitness = bundle_host_fitness(GNU_BUNDLE_HOST, HostOs::Linux, arch, HostLibc::Gnu);
+    decide_gnu_bundle(fitness, host, target, base, floor, false)
+}
+
+fn macos_gnu_fitness() -> BundleHostFitness {
+    bundle_host_fitness(
+        GNU_BUNDLE_HOST,
+        HostOs::MacOs,
+        HostArch::Aarch64,
+        HostLibc::None,
+    )
 }
 
 #[test]
@@ -451,43 +464,12 @@ fn custom_target_specs_keep_the_passthrough_route() {
 fn the_diagnostic_names_the_host_shape_and_the_bundle_host_shape() {
     // The defect was those two being conflated, so a message that mentions
     // only one of them would not have prevented it.
-    let message = gnu_bundle_host_message(ARM64, ARM64, None);
-    assert!(
-        message.contains(crate::fetch::gnu_linux_toolchain::GNU_LINUX_TOOLCHAIN_HOST_TRIPLE),
-        "{message}"
-    );
+    let message = gnu_bundle_host_message(BundleHostFitness::WrongArch, ARM64, ARM64, None);
+    assert!(message.contains(GNU_BUNDLE_HOST.host), "{message}");
     assert!(message.contains("Exec format error"), "{message}");
     assert!(
         message.contains("names the target shape, not the host shape"),
         "{message}"
-    );
-}
-
-#[test]
-fn a_non_linux_host_is_not_treated_as_bundle_capable() {
-    // soldr#2437's guard runs earlier and owns the Windows message, but the
-    // fitness question must still have one answer -- an `x86_64` Windows
-    // host is not a host that can execute a Linux ELF.
-    assert_eq!(
-        crate::fetch::gnu_linux_toolchain::bundle_host_fitness(HostOs::Windows, HostArch::X86_64),
-        crate::fetch::gnu_linux_toolchain::BundleHostFitness::WrongOs
-    );
-    assert_eq!(
-        crate::fetch::gnu_linux_toolchain::bundle_host_fitness(HostOs::MacOs, HostArch::Aarch64),
-        crate::fetch::gnu_linux_toolchain::BundleHostFitness::WrongOs
-    );
-}
-
-#[test]
-fn an_unknown_linux_architecture_is_not_assumed_runnable() {
-    // Defaulting an unrecognised arch to "runnable" is how the original bug
-    // read: anything that was not explicitly excluded got the x86_64 ELF.
-    assert_eq!(
-        crate::fetch::gnu_linux_toolchain::bundle_host_fitness(
-            HostOs::Linux,
-            HostArch::Unknown("riscv64")
-        ),
-        crate::fetch::gnu_linux_toolchain::BundleHostFitness::WrongArch
     );
 }
 
@@ -501,14 +483,14 @@ fn the_existing_cross_guard_seam_still_forces_the_catalogue_path() {
     // is exactly what the darwin lanes reported before this arm existed.
     const MAC: &str = "aarch64-apple-darwin";
     assert_eq!(
-        decide_gnu_bundle(HostOs::MacOs, HostArch::Aarch64, MAC, X64, X64, None, true),
+        decide_gnu_bundle(macos_gnu_fitness(), MAC, X64, X64, None, true),
         GnuBundleDecision::UseCatalogue
     );
     // And it must be the seam doing it, not the host: with the seam off, a
     // macOS host cannot execute a Linux ELF and there is no host compiler
     // targeting a Linux triple to fall back to.
     assert!(matches!(
-        decide_gnu_bundle(HostOs::MacOs, HostArch::Aarch64, MAC, X64, X64, None, false),
+        decide_gnu_bundle(macos_gnu_fitness(), MAC, X64, X64, None, false),
         GnuBundleDecision::Reject(_)
     ));
 }
@@ -519,8 +501,12 @@ fn the_existing_cross_guard_seam_still_forces_the_catalogue_path() {
 fn an_x86_64_host_can_use_the_catalogue_musl_bundle() {
     assert_eq!(
         decide_musl_bundle(
-            HostOs::Linux,
-            HostArch::X86_64,
+            bundle_host_fitness(
+                MUSL_BUNDLE_HOST,
+                HostOs::Linux,
+                HostArch::X86_64,
+                HostLibc::Gnu
+            ),
             X64,
             "aarch64-unknown-linux-musl",
             false,
@@ -532,8 +518,12 @@ fn an_x86_64_host_can_use_the_catalogue_musl_bundle() {
 #[test]
 fn an_arm64_host_refuses_the_x86_64_hosted_musl_bundle_before_download() {
     let decision = decide_musl_bundle(
-        HostOs::Linux,
-        HostArch::Aarch64,
+        bundle_host_fitness(
+            MUSL_BUNDLE_HOST,
+            HostOs::Linux,
+            HostArch::Aarch64,
+            HostLibc::Gnu,
+        ),
         ARM64,
         "aarch64-unknown-linux-musl",
         false,
@@ -551,11 +541,53 @@ fn an_arm64_host_refuses_the_x86_64_hosted_musl_bundle_before_download() {
 fn the_existing_cross_guard_seam_can_exercise_the_musl_fixture_path() {
     assert_eq!(
         decide_musl_bundle(
-            HostOs::MacOs,
-            HostArch::Aarch64,
+            bundle_host_fitness(
+                MUSL_BUNDLE_HOST,
+                HostOs::MacOs,
+                HostArch::Aarch64,
+                HostLibc::None
+            ),
             "aarch64-apple-darwin",
             "x86_64-unknown-linux-musl",
             true,
+        ),
+        MuslBundleDecision::UseCatalogue
+    );
+}
+
+// ── soldr#3435: host libc ────────────────────────────────────────────────
+
+const MUSL_HOST: &str = "x86_64-unknown-linux-musl";
+
+fn alpine(req: crate::fetch::catalogue_linux_host::BundleHostRequirement) -> BundleHostFitness {
+    bundle_host_fitness(req, HostOs::Linux, HostArch::X86_64, HostLibc::Musl)
+}
+
+#[test]
+fn a_musl_host_refuses_the_glibc_dynamic_gnu_bundle_and_says_why() {
+    for floor in [None, Some("2.17")] {
+        let decision =
+            decide_gnu_bundle(alpine(GNU_BUNDLE_HOST), MUSL_HOST, X64, X64, floor, false);
+        let GnuBundleDecision::Reject(message) = decision else {
+            panic!("expected a rejection, got {decision:?}");
+        };
+        assert!(message.contains(MUSL_HOST), "{message}");
+        assert!(message.contains("musl libc"), "{message}");
+        assert!(message.contains("glibc's loader"), "{message}");
+        assert!(message.contains(GNU_BUNDLE_HOST.host), "{message}");
+        assert!(message.contains("soldr#3435"), "{message}");
+        assert!(!message.contains("Exec format error"), "{message}");
+    }
+}
+
+#[test]
+fn a_musl_host_still_uses_the_static_musl_bundle() {
+    assert_eq!(
+        decide_musl_bundle(
+            alpine(MUSL_BUNDLE_HOST),
+            MUSL_HOST,
+            "x86_64-unknown-linux-musl",
+            false
         ),
         MuslBundleDecision::UseCatalogue
     );

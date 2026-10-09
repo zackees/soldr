@@ -80,6 +80,7 @@ pub mod bzip2_sysroot;
 /// `CMAKE` / `CMAKE_GENERATOR=Ninja` from these instead of trusting
 /// whatever cmake/make the system PATH resolves. Stub-until-ingested
 /// consumer like the *-sys sysroots below.
+pub mod catalogue_linux_host;
 pub mod cmake_tools;
 pub mod gnu_linux_toolchain;
 pub mod lzma_sysroot;

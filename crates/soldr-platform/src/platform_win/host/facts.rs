@@ -66,6 +66,11 @@ pub fn libc() -> HostLibc {
     HostLibc::None
 }
 
+/// The OS's dominant libc, probed at runtime. Not applicable here.
+pub fn os_libc() -> HostLibc {
+    HostLibc::None
+}
+
 /// The compile-time host triple (the target this binary was built for).
 pub fn triple() -> &'static str {
     if cfg!(target_arch = "aarch64") {

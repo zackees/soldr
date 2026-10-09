@@ -72,6 +72,37 @@ pub fn libc() -> HostLibc {
     }
 }
 
+/// The OS's dominant libc, probed at runtime **without** the compile-time
+/// shortcut [`detect_linux_libc`] takes.
+///
+/// soldr's default Linux download is a static musl binary (soldr#1060), so on
+/// a glibc distribution [`libc`] -- and therefore [`info`] -- report `Musl`
+/// even though glibc is present. Use this when the question is "can a
+/// glibc-dynamic executable run on this OS", not "what was soldr built for"
+/// (soldr#3435).
+pub fn os_libc() -> HostLibc {
+    classify_os_libc(
+        probe_ldd_reports_musl(),
+        probe_musl_dynamic_linker_present(),
+        probe_glibc_dynamic_linker_present(),
+    )
+}
+
+/// [`classify_linux_libc`] with the compile-time flag pinned off, so
+/// [`os_libc`] and [`detect_linux_libc`] share one classification table.
+fn classify_os_libc(
+    ldd_reports_musl: bool,
+    musl_dynamic_linker_present: bool,
+    glibc_dynamic_linker_present: bool,
+) -> HostLibc {
+    classify_linux_libc(
+        false,
+        ldd_reports_musl,
+        musl_dynamic_linker_present,
+        glibc_dynamic_linker_present,
+    )
+}
+
 /// The compile-time host triple (the target this binary was built for).
 pub fn triple() -> &'static str {
     let arch = if cfg!(target_arch = "aarch64") {
@@ -79,7 +110,11 @@ pub fn triple() -> &'static str {
     } else {
         "x86_64"
     };
-    let env = if cfg!(target_env = "musl") { "musl" } else { "gnu" };
+    let env = if cfg!(target_env = "musl") {
+        "musl"
+    } else {
+        "gnu"
+    };
     // Only the four canonical triples are in scope here.
     match (arch, env) {
         ("aarch64", "musl") => "aarch64-unknown-linux-musl",
@@ -219,11 +254,35 @@ mod tests {
 
     #[test]
     fn libc_classification_prefers_compile_time_then_probes() {
-        assert_eq!(classify_linux_libc(true, false, false, false), HostLibc::Musl);
-        assert_eq!(classify_linux_libc(false, true, false, false), HostLibc::Musl);
-        assert_eq!(classify_linux_libc(false, false, true, false), HostLibc::Musl);
+        assert_eq!(
+            classify_linux_libc(true, false, false, false),
+            HostLibc::Musl
+        );
+        assert_eq!(
+            classify_linux_libc(false, true, false, false),
+            HostLibc::Musl
+        );
+        assert_eq!(
+            classify_linux_libc(false, false, true, false),
+            HostLibc::Musl
+        );
         assert_eq!(classify_linux_libc(false, false, true, true), HostLibc::Gnu);
-        assert_eq!(classify_linux_libc(false, false, false, false), HostLibc::Gnu);
+        assert_eq!(
+            classify_linux_libc(false, false, false, false),
+            HostLibc::Gnu
+        );
+    }
+
+    #[test]
+    fn os_libc_classification_ignores_how_soldr_was_built() {
+        // A musl-static soldr on a glibc distro: no musl ldd, both loaders
+        // or only glibc's present -> the OS is glibc.
+        assert_eq!(classify_os_libc(false, false, true), HostLibc::Gnu);
+        assert_eq!(classify_os_libc(false, true, true), HostLibc::Gnu);
+        assert_eq!(classify_os_libc(false, false, false), HostLibc::Gnu);
+        // Alpine: ldd is musl's, or only the musl loader exists.
+        assert_eq!(classify_os_libc(true, true, false), HostLibc::Musl);
+        assert_eq!(classify_os_libc(false, true, false), HostLibc::Musl);
     }
 
     #[test]
