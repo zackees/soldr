@@ -60,8 +60,21 @@ bridging; service-definition generation; and root/config isolation. The
 `cli_kill_matrix` source inventory guard prevents generic multi-route and
 restart-storm cases from being silently added back beside the upstream suite.
 
-On Unix hosts, Nextest runs each test through
-`.github/scripts/nextest_timeout_wrapper.py`. When Nextest's per-test timeout
+On Unix hosts, Nextest runs each test through the native
+`soldr-nextest-wrapper` (`crates/soldr-nextest-wrapper`, the only
+implementation since soldr#3454). `.config/nextest.toml` launches it via
+`.github/scripts/nextest_wrapper.sh`, which refuses a developer host and then
+resolves the binary by one rule: `SOLDR_NEXTEST_NATIVE_WRAPPER` when set,
+otherwise `<profile dir>/soldr-nextest-wrapper` beside the test binary's
+`deps/` directory. Cargo builds it there whenever the `soldr-nextest-wrapper`
+package is selected (`--workspace` does), and `nextest archive` ships it at the
+same relative path, so archived target runs find it after extraction. A
+scoped run (`soldr cargo nextest run -p soldr-cli --test guards ...`) never
+builds the wrapper's package, so on a miss the first test builds it once into
+that same directory -- profile and triple read from the test binary's path,
+with the run's own `$CARGO`, under a lock the other tests wait on. Without
+`$CARGO` (an archive host) or when that build fails, the shim refuses (exit
+98) rather than run a test unwrapped. When Nextest's per-test timeout
 sends SIGTERM, the wrapper terminates the isolated child process group and
 drains stdout and stderr to EOF before returning. On Linux it first dumps the
 child thread stacks (or `/proc` thread state when a debugger is unavailable).

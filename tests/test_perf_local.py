@@ -159,7 +159,7 @@ def test_bosn_workspace_test_hands_off_from_bootstrap_to_source() -> None:
             "/target/debug/soldr-nextest-wrapper",
         )
     ]
-    # No daemon is needed, so the parity step precedes the source daemon start.
+    # No daemon is needed, so the wrapper black-box step precedes the daemon start.
     assert plan.steps.index(parity) < [s.argv for s in plan.steps].index(
         ["/target/debug/soldr", "daemon", "start"]
     )

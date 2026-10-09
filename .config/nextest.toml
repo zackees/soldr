@@ -313,8 +313,12 @@ test-group = 'soldr-cargo-cold-builds-linux'
 filter = '(binary(cargo_front_door) & test(/^(cli_cargo_basic|cli_cargo_linker|cli_cargo_run_trampoline|cli_cargo_wrappers|cli_dylint_wrapper)::/)) + (binary(cargo_front_door) & test(/^cli_cargo_doc_routes::(cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct|bare_doc_keeps_rustc_wrapped_but_rustdoc_direct|cargo_doc_route_deadline_kills_wrapper_hold_tree|bare_doc_route_deadline_kills_rustdoc_hold_tree|cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct|rustdoc_path_shim_reenters_direct_passthrough_without_zccache)$/)) + test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=cli_exec::exec_cargo_build_routes_through_child_shims)'
 test-group = 'soldr-cargo-cold-builds'
 
-# The same wrapper hosts soldr#2885's per-test memory controls
-# (`.github/scripts/nextest_memory_guard.py`). They are inert unless
+# The run-wrapper is the native `soldr-nextest-wrapper`
+# (crates/soldr-nextest-wrapper, soldr#3454); `nextest_wrapper.sh` refuses a
+# developer host and otherwise finds the binary beside the test binary's Cargo
+# profile directory, where a workspace build and an extracted Nextest archive
+# both put it; a scoped source run builds it there on first use. The same wrapper hosts soldr#2885's per-test memory controls
+# (`crates/soldr-nextest-wrapper/src/guard.rs`). They are inert unless
 # `soldr ci-test` hands them an admission directory and a per-test ceiling for
 # its Nextest execution stage; a plain `soldr cargo nextest run` is unchanged.
 [scripts.wrapper.timeout-diagnostics]
@@ -325,7 +329,7 @@ target-runner = "within-wrapper"
 filter = "all()"
 # Select by the executable's target, not the build host. Cross-built Windows
 # archives are assembled on Linux, and must retain their PE test executables
-# instead of recording this Unix Python wrapper as the program to launch.
+# instead of recording this Unix wrapper as the program to launch.
 platform = { target = "cfg(unix)" }
 run-wrapper = "timeout-diagnostics"
 

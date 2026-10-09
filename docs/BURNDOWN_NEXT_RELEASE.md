@@ -21,7 +21,7 @@ double-work them.
 | 7 | Isolated cook IPC tests fail `WouldBlock` under workspace load | Green-lane flake; first-attempt evidence lost to the 20 KB tail (pre-#3564) | `crates/soldr-daemon/src/daemon/client_cook.rs:115` (error carries no stage) | #3558 | #3582 Group D |
 | 8 | Broker route claim endpoint mismatch exhausts the 120 s acquisition ceiling | Local cross lanes stall 733 s+ before any lint finding | `crates/soldr-daemon/src/daemon/backend_handle_adoption.rs:400` | #3561 | #3582 Group D |
 | 9 | 5–6 conflicting stderr-color predicates | Divergent `NO_COLOR`/`GITHUB_ACTIONS`/TTY rules across surfaces | `cache_states.rs:91`, `disk.rs:61`, `log_summary.rs:175`, `install/plan.rs:64`, `ci_test/test_targets.rs:152` | #3437 | #3582 Group C |
-| 10 | Two implementations of the Nextest run-wrapper contract | Same contract in Python and Rust; drift risk | `.github/scripts/nextest_timeout_wrapper.py` (14.5 KB) vs `crates/soldr-nextest-wrapper/src/main.rs` | #3454 | #3582 Group C |
+| 10 | Two implementations of the Nextest run-wrapper contract | Same contract in Python and Rust; drift risk | retired Python wrapper vs `crates/soldr-nextest-wrapper/src/main.rs` | #3454 | resolved: Python wrapper retired (#3454) |
 
 ## Notes per row
 
@@ -115,12 +115,11 @@ that module's `paint`.
 `crates/soldr-cli/tests/guards/color_predicate_guard.rs` scans for a
 seventh.
 
-**10 — two Nextest wrappers (#3454).** Both exist on `main`: the Python
-`.github/scripts/nextest_timeout_wrapper.py` and the Rust
-`crates/soldr-nextest-wrapper` (its own workspace crate, exercised by the
-wine lane). Same contract, two implementations — a code-smell-rule convergence
-decision (retire the Python one per the issue's lean, or find the boundary
-each owns).
+**10 — two Nextest wrappers (#3454).** Resolved: the Python
+`nextest_timeout_wrapper.py` / `nextest_memory_guard.py` pair was retired and
+the Rust `crates/soldr-nextest-wrapper` (macOS sampling ported) is the only
+implementation; `.github/scripts/nextest_wrapper.sh` finds it beside the test
+binary's profile directory, including inside extracted Nextest archives.
 
 ## Rejected candidates (do not re-triage)
 

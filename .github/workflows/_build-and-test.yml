@@ -530,16 +530,13 @@ jobs:
           # through GITHUB_ENV. This lane deliberately leaves both knobs unset
           # so source Soldr's exclusive heavy-unit admission owns concurrency.
           unset CARGO_BUILD_JOBS SOLDR_JOBS
-          # soldr#3453: the native Nextest wrapper ships beside the driver;
-          # ci-test finds it there. A reused shared driver lacks it and falls
-          # back to the Python wrapper.
+          # soldr#3454: the Nextest wrapper is not shipped beside the driver;
+          # ci-test's workspace nextest-compile builds it into the test
+          # binaries' profile directory, where nextest_wrapper.sh finds it.
           soldr cargo build --profile dev -p soldr-cli --bin soldr \
-            -p soldr-nextest-wrapper --bin soldr-nextest-wrapper \
             --target ${{ inputs.target }}
           install -D "${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr" \
             "${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr"
-          install -D "${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr-nextest-wrapper" \
-            "${RUNNER_TEMP}/soldr-source-driver/${{ inputs.target }}/debug/soldr-nextest-wrapper"
 
       # soldr#2901: the manifests and the RESOLVED feature tree must both
       # agree that zccache's `cli` (and everything it expands to) is off. A

@@ -37,7 +37,6 @@
       ".github/scripts/measure_libgit2_cost.py": 9,
       ".github/scripts/measure_zccache_working_set.py": 8,
       ".github/scripts/native_release_build.py": 3,
-      ".github/scripts/nextest_memory_guard.py": 4,
       ".github/scripts/nextest_reuse_extraction.py": 1,
       ".github/scripts/no_protocol_v3.py": 2,
       ".github/scripts/pep517_daemon_smoke.py": 1,

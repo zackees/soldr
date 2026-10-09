@@ -17,7 +17,7 @@
 //! * **Run-time pressure** (`test_pressure`): hysteresis marks derived from
 //!   the same budget pause and resume new test admissions while Nextest runs.
 //! * **Per-test ceiling**: frozen here, enforced by the Nextest wrapper
-//!   (`.github/scripts/nextest_memory_guard.py`) on Unix.
+//!   (`crates/soldr-nextest-wrapper`) on Unix.
 //!
 //! An explicit `NEXTEST_TEST_THREADS` stays authoritative and is frozen
 //! verbatim. When the measurement says it cannot fit, planning warns (stderr

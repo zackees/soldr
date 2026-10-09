@@ -18,8 +18,8 @@ from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-WRAPPER = REPO_ROOT / ".github" / "scripts" / "nextest_timeout_wrapper.py"
-WRAPPER_ARGV = nextest_wrapper_argv()
+# soldr#3454: the native wrapper's source; the Python wrapper was retired.
+WRAPPER_SOURCE = REPO_ROOT / "crates" / "soldr-nextest-wrapper" / "src" / "main.rs"
 CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 
 
@@ -75,7 +75,7 @@ def _start_wrapper(child: str, env: dict[str, str]) -> subprocess.Popen[str]:
     """Return a live wrapper so the test can inject SIGTERM before waiting."""
 
     return subprocess.Popen(  # pylint: disable=consider-using-with
-        [*WRAPPER_ARGV, sys.executable, "-c", child],
+        [*nextest_wrapper_argv(), sys.executable, "-c", child],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -656,7 +656,7 @@ def test_a_trivial_child_is_reaped_well_under_the_old_fifty_millisecond_floor(
 
     started = time.monotonic()
     completed = run_captured(
-        [*WRAPPER_ARGV, sys.executable, "-c", "pass"],
+        [*nextest_wrapper_argv(), sys.executable, "-c", "pass"],
         capture_output=True,
         check=False,
     )
@@ -669,29 +669,47 @@ def test_a_trivial_child_is_reaped_well_under_the_old_fifty_millisecond_floor(
     assert elapsed < 4.0, f"wrapper took {elapsed:.3f}s, far beyond interpreter startup"
 
 
-def test_the_wait_loop_does_not_flat_poll(tmp_path) -> None:
+def test_the_wait_loop_does_not_flat_poll() -> None:
     """Guard the mechanism, not just the timing.
 
     The wall-clock test above can be satisfied on a very fast machine even with
-    a flat sleep, so pin the source shape too: a bare ``time.sleep`` inside the
-    child-wait loop is the regression.
+    a flat sleep, so pin the source shape too: the native wrapper waits for the
+    child's exit status on a channel, which returns the instant a waiter thread
+    reaps it, and never sleeps in its supervision loop.
     """
 
-    source = WRAPPER.read_text(encoding="utf-8")
-    # Inspect code, not prose: the module comment explaining this fix quotes the
-    # very pattern being banned, so a naive substring check matches its own
-    # documentation.
+    source = WRAPPER_SOURCE.read_text(encoding="utf-8")
+    # Inspect code, not prose: a comment may quote the banned pattern.
     code = "\n".join(
-        line for line in source.splitlines() if not line.lstrip().startswith("#")
+        line for line in source.splitlines() if not line.lstrip().startswith("//")
     )
 
-    assert "child.wait(timeout=wait_slice)" in code, (
-        "the child-wait loop must block in Popen.wait, which returns the instant "
-        "the child exits and backs off from 0.5 ms rather than sleeping a flat 50 ms"
+    assert "status_rx.recv_timeout(slice)" in code, (
+        "the child-wait loop must block on the exit-status channel, which returns "
+        "the instant the child exits"
     )
-    assert "while child.poll() is None:" not in code, (
-        "the flat-poll wait loop is the soldr#3144 regression"
+    assert "thread::sleep" not in code, (
+        "a sleep in the supervision loop is the soldr#3144 flat-poll regression"
     )
+
+
+def test_the_python_wrapper_stays_retired() -> None:
+    """soldr#3454: the native binary is the only Nextest run-wrapper.
+
+    Two implementations of one contract drifted silently until a parity suite
+    pinned them; retiring the Python one removed the drift. Reintroducing a
+    second implementation (or a fallback to it) needs a new decision.
+    """
+
+    scripts = REPO_ROOT / ".github" / "scripts"
+    for retired in ("nextest_timeout_wrapper.py", "nextest_memory_guard.py"):
+        assert not (scripts / retired).exists(), retired
+    shim = (scripts / "nextest_wrapper.sh").read_text(encoding="utf-8")
+    shim_code = "\n".join(
+        line for line in shim.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "python" not in shim_code.lower()
+    assert "soldr-nextest-wrapper" in shim_code
 
 
 _LINUX_ONLY = pytest.mark.skipif(
@@ -725,7 +743,7 @@ def _run_wrapper_under_tmpdir(
     env.update(extra_env or {})
     result = run_captured(
         [
-            *WRAPPER_ARGV,
+            *nextest_wrapper_argv(),
             sys.executable,
             "-c",
             _TMPDIR_CHILD,
@@ -788,7 +806,7 @@ def _wrapper_env_for(extra_env: dict[str, str]) -> list[str]:
         if key not in extra_env:
             env.pop(key, None)
     result = run_captured(
-        [*WRAPPER_ARGV, sys.executable, "-c", _ENV_CHILD],
+        [*nextest_wrapper_argv(), sys.executable, "-c", _ENV_CHILD],
         capture_output=True,
         text=True,
         env=env,
@@ -824,7 +842,7 @@ def test_every_test_process_names_its_binary_for_the_target_tripwire() -> None:
     }
     child = "import os; print(os.environ['SOLDR_TEST_FORBID_TARGET_CONTAINING'])"
     result = run_captured(
-        [*WRAPPER_ARGV, sys.executable, "-c", child],
+        [*nextest_wrapper_argv(), sys.executable, "-c", child],
         capture_output=True,
         text=True,
         env=env,

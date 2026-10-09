@@ -1,13 +1,13 @@
-//! Native Nextest run-wrapper (soldr#3453).
+//! The Nextest run-wrapper (soldr#3453, soldr#3454).
 //!
-//! `soldr ci-test` points `.config/nextest.toml`'s wrapper shim at this
-//! binary for its Linux Nextest execution stage, replacing
-//! `.github/scripts/nextest_timeout_wrapper.py` there: the Python wrapper's
-//! interpreter start and imports cost ~48 ms before every one of ~3,500
-//! tests. Behaviour mirrors the Python wrapper -- which remains the fallback
-//! for every other Nextest invocation -- exactly:
+//! `.config/nextest.toml` runs every Unix test through
+//! `.github/scripts/nextest_wrapper.sh`, which execs this binary -- the only
+//! implementation of the wrapper contract since soldr#3454 retired the
+//! Python one (whose interpreter start cost ~48 ms before each of ~3,500
+//! tests). For each test:
 //!
-//! * the test gets a private `TMPDIR`, removed afterwards (soldr#3079);
+//! * the test gets a private `TMPDIR`, removed afterwards (soldr#3079;
+//!   Linux only);
 //! * it refuses toolchain downloads and names its own binary for the
 //!   target-dir tripwire (soldr#3195, soldr#3203);
 //! * it runs in its own session, dies with the wrapper, and may be traced;
@@ -34,8 +34,8 @@ const CHILD_EXIT_GRACE_ENV: &str = "SOLDR_NEXTEST_CHILD_EXIT_GRACE_SECS";
 /// Truthy keeps a test's private TMPDIR for inspection.
 const KEEP_TMPDIR_ENV: &str = "SOLDR_NEXTEST_KEEP_TMPDIR";
 const FORBID_TARGET_CONTAINING_ENV: &str = "SOLDR_TEST_FORBID_TARGET_CONTAINING";
-/// Set by `soldr ci-test` to select this binary; never inherited by the test,
-/// so a nested Nextest inside a test uses the default wrapper.
+/// An explicit path to this binary for `nextest_wrapper.sh`; never inherited
+/// by the test, so a nested Nextest inside a test resolves its own wrapper.
 const NATIVE_WRAPPER_ENV: &str = "SOLDR_NEXTEST_NATIVE_WRAPPER";
 const POLL: Duration = Duration::from_millis(20);
 const DRAIN_SLICE: Duration = Duration::from_millis(100);
@@ -57,8 +57,14 @@ fn child_exit_grace() -> Duration {
         )
 }
 
-/// This test's private TMPDIR (Linux only; see the Python wrapper's
-/// `_private_tmpdir` for why macOS keeps its own).
+/// This test's private TMPDIR, or `None` to leave TMPDIR alone.
+///
+/// soldr#3079: about 420 integration-test call sites create a uniquely named
+/// directory under TMPDIR and never remove it; a private TMPDIR removed after
+/// the test reclaims all of them at the source. Linux only: macOS's TMPDIR is
+/// already long and its `sun_path` limit is 104 bytes, so extra depth risks
+/// the Unix-socket endpoints tests bind under TMPDIR. The name is kept short
+/// (`snt<pid hex>`) for the same reason.
 fn private_tmpdir() -> Option<PathBuf> {
     if !memory::is_linux() {
         return None;

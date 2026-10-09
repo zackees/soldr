@@ -1,7 +1,11 @@
 """soldr#2885: memory-aware admission and memory-failure isolation in the
 Nextest wrapper.
 
-Every Unix test runs through ``.github/scripts/nextest_timeout_wrapper.py``.
+Every Unix test runs through the native ``soldr-nextest-wrapper``
+(``crates/soldr-nextest-wrapper``, soldr#3454); its pure helpers -- signature
+matching, tree sampling, cgroup bookkeeping, record names -- are unit-tested
+in that crate.
+
 ``soldr ci-test`` hands the wrapper an admission directory, a per-test memory
 ceiling and a one-line admission summary. These tests drive the real wrapper
 as Nextest does -- ``wrapper <test-binary> <args>`` -- with bounded-memory
@@ -19,7 +23,7 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import load_script_module, nextest_wrapper_argv
+from conftest import nextest_wrapper_argv
 
 # Use regular-file capture without an installed Python dependency.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -28,13 +32,10 @@ from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes
     run_captured,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-WRAPPER = REPO_ROOT / ".github" / "scripts" / "nextest_timeout_wrapper.py"
-WRAPPER_ARGV = nextest_wrapper_argv()
-guard = load_script_module(WRAPPER.parent / "nextest_memory_guard.py")
-
 MIB = 1024 * 1024
 INFRA_EXIT = 75
+# soldr ci-test's admission protocol (crates/soldr-cli/src/ci_test/test_pressure.rs).
+PAUSED_FLAG = "paused"
 POSIX = pytest.mark.skipif(
     os.name != "posix", reason="the wrapper runs Unix tests only"
 )
@@ -72,7 +73,7 @@ def _run(
     args: list[str], env: dict[str, str], timeout: float = 60, **kwargs
 ) -> subprocess.CompletedProcess[str]:
     return run_captured(
-        [*WRAPPER_ARGV, sys.executable, *args],
+        [*nextest_wrapper_argv(), sys.executable, *args],
         capture_output=True,
         text=True,
         env=env,
@@ -123,9 +124,7 @@ def test_over_ceiling_test_tree_is_killed_with_a_named_memory_diagnostic(
     assert "pid pressure" in stderr
     # ci-test lists every infrastructure failure after Nextest exits.
     recorded = [path.name for path in (admission / "infra").iterdir()]
-    assert recorded == [
-        guard.infra_record_name("soldr-cli::fixture memory::fixture_test")
-    ]
+    assert recorded == ["soldr-cli::fixture memory::fixture_test"]
 
 
 @POSIX
@@ -150,6 +149,7 @@ def test_ordinary_assertion_failure_is_not_labelled_a_memory_failure(
 def test_well_behaved_neighbour_is_untouched_while_a_hog_is_killed(
     tmp_path: Path,
 ) -> None:
+    nextest_wrapper_argv()  # skip here, not inside a worker thread
     admission = _admission_dir(tmp_path)
     env = _env(
         tmp_path,
@@ -177,7 +177,7 @@ def test_well_behaved_neighbour_is_untouched_while_a_hog_is_killed(
     assert results["neighbour"].returncode == 0, results["neighbour"].stderr
     assert "nextest memory:" not in results["neighbour"].stderr
     assert [path.name for path in (admission / "infra").iterdir()] == [
-        guard.infra_record_name("soldr-cli::fixture memory::hog")
+        "soldr-cli::fixture memory::hog"
     ]
 
 
@@ -251,7 +251,7 @@ def test_paused_admission_holds_a_new_test_until_pressure_clears(
     sleeper = _live_sleeper()
     try:
         (admission / "active" / str(sleeper.pid)).touch()
-        (admission / guard.PAUSED_FLAG).touch()
+        (admission / PAUSED_FLAG).touch()
         env = _env(
             tmp_path,
             SOLDR_NEXTEST_ADMISSION_DIR=str(admission),
@@ -262,7 +262,7 @@ def test_paused_admission_holds_a_new_test_until_pressure_clears(
         def clear_later() -> None:
             time.sleep(1.5)
             cleared_at.append(time.time())
-            (admission / guard.PAUSED_FLAG).unlink()
+            (admission / PAUSED_FLAG).unlink()
 
         clearer = threading.Thread(target=clear_later)
         clearer.start()
@@ -284,7 +284,7 @@ def test_paused_admission_is_bounded_and_says_so(tmp_path: Path) -> None:
     sleeper = _live_sleeper()
     try:
         (admission / "active" / str(sleeper.pid)).touch()
-        (admission / guard.PAUSED_FLAG).touch()
+        (admission / PAUSED_FLAG).touch()
         env = _env(
             tmp_path,
             SOLDR_NEXTEST_ADMISSION_DIR=str(admission),
@@ -309,7 +309,7 @@ def test_a_paused_gate_never_holds_the_only_test(tmp_path: Path) -> None:
     admission = _admission_dir(tmp_path)
     # A stale slot from a SIGKILLed wrapper names a dead pid and must not count.
     (admission / "active" / "999999999").touch()
-    (admission / guard.PAUSED_FLAG).touch()
+    (admission / PAUSED_FLAG).touch()
     env = _env(
         tmp_path,
         SOLDR_NEXTEST_ADMISSION_DIR=str(admission),
@@ -363,143 +363,6 @@ def test_without_ci_test_controls_the_wrapper_behaves_as_before(tmp_path: Path) 
     result = _run(["-c", _HOG, "64", "0"], _env(tmp_path))
     assert result.returncode == 0, result.stderr
     assert "nextest memory:" not in result.stderr
-
-
-# ---------------------------------------------------------------------------
-# Pure helpers: signature matching, tree sampling, cgroup ceiling bookkeeping.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        b"memory allocation of 1048576 bytes failed\n",
-        b"OSError: [Errno 12] Cannot allocate memory: '/repo/.github/scripts'\n",
-        b'Error: Os { code: 12, kind: OutOfMemory, message: "Cannot allocate memory" }',
-        b"failed to spawn: Cannot allocate memory (os error 12)\n",
-        b"Traceback (most recent call last):\nMemoryError\n",
-    ],
-)
-def test_memory_exhaustion_signatures_are_recognised(text: bytes) -> None:
-    assert guard.memory_signature(text) is not None
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        b"assertion failed: left == right\n",
-        b"thread 'main' panicked at src/lib.rs:1:1\n",
-        b"",
-    ],
-)
-def test_ordinary_failures_carry_no_memory_signature(text: bytes) -> None:
-    assert guard.memory_signature(text) is None
-
-
-def test_stderr_tail_keeps_only_the_most_recent_bytes() -> None:
-    tail = guard.OutputTail(limit=8)
-    tail.feed(b"0123456789")
-    tail.feed(b"abc")
-    assert tail.bytes() == b"56789abc"
-
-
-@LINUX
-def test_linux_tree_rss_counts_descendants(tmp_path: Path) -> None:
-    child = subprocess.Popen(  # pylint: disable=consider-using-with
-        [
-            sys.executable,
-            "-c",
-            "import subprocess, sys, time\n"
-            "grand = subprocess.Popen([sys.executable, '-c', "
-            "'hog = b\"\\\\x01\" * (128 * 1024 * 1024); import time; time.sleep(30)'])\n"
-            "time.sleep(30)\n",
-        ]
-    )
-    try:
-        deadline = time.monotonic() + 20
-        observed = 0
-        while time.monotonic() < deadline:
-            sample = guard.sample_tree(child.pid)
-            observed = sample.rss_bytes if sample else 0
-            if observed >= 128 * MIB and sample.process_count >= 2:
-                break
-            time.sleep(0.1)
-        assert observed >= 128 * MIB
-    finally:
-        guard.kill_tree(child.pid)
-        child.wait()
-
-
-def test_macos_ps_table_parser_builds_the_tree() -> None:
-    table = guard.parse_ps_table(
-        "  10     1  2048\n  11    10  1024\n  12    11   512\n  13     1  4096\n"
-    )
-    sample = guard.tree_from_table(10, table)
-    assert sample.rss_bytes == (2048 + 1024 + 512) * 1024
-    assert sample.process_count == 3
-
-
-def test_cgroup_ceiling_prepares_a_leaf_and_reports_peak_and_oom(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "delegated"
-    root.mkdir()
-    (root / "cgroup.subtree_control").write_text("cpu memory pids\n")
-    ceiling = guard.CgroupCeiling.create(root, 256 * MIB, owner_pid=4242)
-    assert ceiling is not None
-    leaf = ceiling.path
-    assert leaf.parent == root
-    assert (leaf / "memory.max").read_text() == str(256 * MIB)
-    assert (leaf / "memory.oom.group").read_text() == "1"
-    # The kernel would populate these; the fixture plays the kernel.
-    (leaf / "memory.peak").write_text(f"{300 * MIB}\n")
-    (leaf / "memory.events").write_text("low 0\nhigh 0\nmax 3\noom 1\noom_kill 1\n")
-    (leaf / "cgroup.procs").write_text("")
-    outcome = ceiling.outcome()
-    assert outcome.peak_bytes == 300 * MIB
-    assert outcome.oom_kills == 1
-    ceiling.release()
-
-
-def test_cgroup_ceiling_pins_swap_to_zero_when_swap_is_accounted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Hosted runners have swap: without this the overflow pages out unpunished."""
-
-    root = tmp_path / "delegated"
-    root.mkdir()
-    (root / "cgroup.subtree_control").write_text("memory pids\n")
-    real_mkdir = Path.mkdir
-
-    def kernel_mkdir(self: Path, *args, **kwargs) -> None:
-        real_mkdir(self, *args, **kwargs)
-        if self.parent == root:
-            (self / "memory.swap.max").write_text("max\n")
-
-    monkeypatch.setattr(Path, "mkdir", kernel_mkdir)
-    ceiling = guard.CgroupCeiling.create(root, 256 * MIB, owner_pid=7)
-    assert ceiling is not None
-    assert (ceiling.path / "memory.swap.max").read_text() == "0"
-
-
-def test_cgroup_ceiling_declines_a_root_without_the_memory_controller(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "undelegated"
-    root.mkdir()
-    (root / "cgroup.subtree_control").write_text("cpu pids\n")
-    assert guard.CgroupCeiling.create(root, 256 * MIB, owner_pid=1) is None
-
-
-def test_infra_record_names_are_safe_file_names() -> None:
-    name = guard.infra_record_name("soldr-cli::guards cli/ci::test name")
-    assert "/" not in name
-    assert name == "soldr-cli::guards cli%2Fci::test name"
-    # Non-ASCII is escaped byte-by-byte, so ci-test's percent decoder
-    # (`test_pressure::percent_decode`) reassembles the exact UTF-8.
-    assert guard.infra_record_name("tests::ü%") == "tests::%C3%BC%25"
-    long_name = guard.infra_record_name("x" * 400)
-    assert len(long_name) <= 200 and "~" in long_name
 
 
 # The wrapper below runs inside a transient systemd scope that delegates the
@@ -566,7 +429,7 @@ def test_delegated_cgroup_v2_ceiling_is_enforced_by_the_kernel(tmp_path: Path) -
             "-c",
             _DELEGATED_SCOPE,
             "scope",
-            *WRAPPER_ARGV,
+            *nextest_wrapper_argv(),
             sys.executable,
             "-c",
             _HOG,

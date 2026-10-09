@@ -9,7 +9,7 @@
 //!
 //! Every soldr entry point that can install a toolchain, component or target,
 //! or bootstrap rustup itself, calls [`forbid_toolchain_install_tripwire`]
-//! first. The nextest wrapper (`.github/scripts/nextest_timeout_wrapper.py`)
+//! first. The Nextest wrapper (`crates/soldr-nextest-wrapper`)
 //! sets [`FORBID_TOOLCHAIN_INSTALL_ENV_VAR`] for every test process, so such a
 //! path now fails the test with this diagnostic instead of downloading. A test
 //! that exercises an install on purpose supplies a fake rustup through

@@ -1,10 +1,15 @@
 //! Memory observation, process-tree sampling and the kernel-enforced
-//! per-test cgroup ceiling. Mirrors `.github/scripts/nextest_memory_guard.py`
-//! on Linux; other hosts report memory as unavailable and sample nothing.
+//! per-test cgroup ceiling (soldr#2885). Linux reads procfs and cgroup v2;
+//! macOS reads `vm_stat` and samples the tree with `ps` (the sampled-ceiling
+//! fallback, which can overshoot by whatever the tree allocates between
+//! samples); other hosts report memory as unavailable.
 
+use soldr_core::core::tool_output::{capture_small_tool_with_sinks, ToolSinks};
 use soldr_platform::process::test_child::{self, TestSignal};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
 
 pub const MIB: u64 = 1024 * 1024;
 pub const GIB: u64 = 1024 * MIB;
@@ -19,6 +24,38 @@ pub fn format_bytes(value: Option<u64>) -> String {
 
 pub fn is_linux() -> bool {
     soldr_platform::host::facts::os() == soldr_platform::host::facts::HostOs::Linux
+}
+
+pub fn is_macos() -> bool {
+    soldr_platform::host::facts::os() == soldr_platform::host::facts::HostOs::MacOs
+}
+
+/// How often the sampled ceiling looks at the test's tree: procfs is cheap,
+/// a `ps` snapshot of every process is not.
+pub fn sample_interval() -> Duration {
+    if is_linux() {
+        Duration::from_millis(200)
+    } else {
+        Duration::from_secs(1)
+    }
+}
+
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Stdout of a host probe (`vm_stat`, `ps`). Its stderr is forwarded with the
+/// probe's name; the probe is sampled every second, so it is not journaled.
+fn probe_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let mut command = Command::new(program);
+    command.args(args);
+    let mut stderr = std::io::stderr();
+    let sinks = ToolSinks {
+        stderr: &mut stderr,
+        log_path: None,
+    };
+    let output = capture_small_tool_with_sinks(&mut command, program, Some(PROBE_TIMEOUT), sinks)
+        .ok()
+        .filter(|output| output.status.success())?;
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn read(path: &Path) -> Option<String> {
@@ -79,11 +116,49 @@ fn mem_available(meminfo: &str) -> Option<u64> {
         .map(|kib| kib * 1024)
 }
 
-/// The tighter of host `MemAvailable` and finite cgroup headroom.
+/// Free + inactive + speculative + purgeable pages from `vm_stat` output.
+pub fn vm_stat_available(text: &str) -> Option<u64> {
+    let mut lines = text.lines();
+    let page_size: u64 = lines
+        .next()?
+        .split("page size of ")
+        .nth(1)?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    let mut pages = 0u64;
+    for line in lines {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if matches!(
+            key.trim(),
+            "Pages free" | "Pages inactive" | "Pages speculative" | "Pages purgeable"
+        ) {
+            if let Ok(count) = value.trim().trim_end_matches('.').parse::<u64>() {
+                pages += count;
+            }
+        }
+    }
+    Some(pages * page_size)
+}
+
+/// The tighter of host `MemAvailable` and finite cgroup headroom on Linux;
+/// `vm_stat`'s reclaimable pages on macOS.
 pub fn observe_memory() -> MemoryObservation {
     if !is_linux() {
+        let available = is_macos()
+            .then(|| probe_stdout("/usr/bin/vm_stat", &[]))
+            .flatten()
+            .and_then(|text| vm_stat_available(&text));
         return MemoryObservation {
-            source: "unavailable",
+            available_bytes: available,
+            source: if available.is_some() {
+                "vm_stat"
+            } else {
+                "unavailable"
+            },
             ..MemoryObservation::default()
         };
     }
@@ -147,10 +222,47 @@ fn linux_rss(pid: u32) -> Option<u64> {
     Some(pages * test_child::page_size())
 }
 
-/// Resident bytes of `root` and every live descendant (Linux only).
+/// `ps -A -o pid=,ppid=,rss=` -> `{pid: (ppid, rss KiB)}`.
+pub fn parse_ps_table(text: &str) -> HashMap<u32, (u32, u64)> {
+    text.lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let [pid, ppid, rss] = fields.as_slice() else {
+                return None;
+            };
+            Some((pid.parse().ok()?, (ppid.parse().ok()?, rss.parse().ok()?)))
+        })
+        .collect()
+}
+
+/// `root` and its descendants in a `ps` table.
+pub fn tree_from_table(root: u32, table: &HashMap<u32, (u32, u64)>) -> Option<TreeSample> {
+    table.get(&root)?;
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (pid, (ppid, _)) in table {
+        children.entry(*ppid).or_default().push(*pid);
+    }
+    let mut sample = TreeSample::default();
+    let mut stack = vec![root];
+    let mut seen = HashSet::new();
+    while let Some(pid) = stack.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        sample.rss_bytes += table.get(&pid).map_or(0, |(_, rss)| rss * 1024);
+        sample.pids.push(pid);
+        stack.extend(children.get(&pid).into_iter().flatten());
+    }
+    sample.process_count = sample.pids.len();
+    Some(sample)
+}
+
+/// Resident bytes of `root` and every live descendant: procfs on Linux, a
+/// `ps` snapshot elsewhere.
 pub fn sample_tree(root: u32) -> Option<TreeSample> {
     if !is_linux() {
-        return None;
+        let table = probe_stdout("/bin/ps", &["-A", "-o", "pid=,ppid=,rss="])?;
+        return tree_from_table(root, &parse_ps_table(&table));
     }
     let root_rss = linux_rss(root)?;
     let mut sample = TreeSample::default();
@@ -190,6 +302,18 @@ pub struct CgroupOutcome {
     pub oom_kills: u64,
 }
 
+/// Write the ceiling into a fresh per-test leaf. With swap, `memory.max`
+/// only bounds the resident part: pin swap to zero, or fail so the caller
+/// declines the leaf and the sampled ceiling applies.
+pub fn configure_leaf(leaf: &Path, ceiling_bytes: u64) -> std::io::Result<()> {
+    std::fs::write(leaf.join("memory.max"), ceiling_bytes.to_string())?;
+    let swap_max = leaf.join("memory.swap.max");
+    if swap_max.exists() {
+        std::fs::write(swap_max, "0")?;
+    }
+    Ok(())
+}
+
 /// A kernel-enforced per-test ceiling below a delegated cgroup v2 root.
 pub struct CgroupCeiling {
     pub path: PathBuf,
@@ -213,17 +337,7 @@ impl CgroupCeiling {
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(_) => return None,
             }
-            let configured = std::fs::write(leaf.join("memory.max"), ceiling_bytes.to_string())
-                .and_then(|()| {
-                    // With swap, `memory.max` only bounds the resident part:
-                    // pin swap to zero, or decline so the sampled ceiling applies.
-                    let swap_max = leaf.join("memory.swap.max");
-                    if swap_max.exists() {
-                        std::fs::write(swap_max, "0")
-                    } else {
-                        Ok(())
-                    }
-                });
+            let configured = configure_leaf(&leaf, ceiling_bytes);
             let ceiling = Self {
                 path: leaf,
                 joined: false,
@@ -291,3 +405,7 @@ impl CgroupCeiling {
         let _ = std::fs::remove_dir(&self.path);
     }
 }
+
+#[cfg(test)]
+#[path = "memory_tests.rs"]
+mod tests;

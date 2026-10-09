@@ -819,7 +819,7 @@ it cannot fit, planning prints an actionable warning and records it in
 
 While Nextest executes, a monitor samples available memory. Below one per-test
 budget it creates a pause flag; the Nextest wrapper
-(`.github/scripts/nextest_timeout_wrapper.py`, every Unix test) then holds
+(`crates/soldr-nextest-wrapper`, every Unix test) then holds
 tests that have not started yet while other tests drain. Admissions resume
 once two budgets are available again, transitions are at least two seconds
 apart, and paused tests are released one at a time. A paused test never waits

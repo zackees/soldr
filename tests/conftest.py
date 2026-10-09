@@ -22,25 +22,39 @@ from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes
 )
 
 NEXTEST_WRAPPER_UNDER_TEST_ENV = "SOLDR_NEXTEST_WRAPPER_UNDER_TEST"
+NEXTEST_WRAPPER_NAME = "soldr-nextest-wrapper"
 
 
 def nextest_wrapper_argv() -> list[str]:
-    """The Nextest wrapper the black-box suites drive (soldr#3453).
+    """The Nextest run-wrapper the black-box suites drive (soldr#3454).
 
-    Defaults to the Python wrapper. Naming the native
-    ``soldr-nextest-wrapper`` binary in ``SOLDR_NEXTEST_WRAPPER_UNDER_TEST``
-    runs the same tests against it, which is the parity contract between the
-    two implementations.
+    The native ``soldr-nextest-wrapper`` is the only implementation. It is the
+    binary named in ``SOLDR_NEXTEST_WRAPPER_UNDER_TEST`` (the bosn plan always
+    sets it, so the suites really run there), else a debug build under
+    ``CARGO_TARGET_DIR`` (default ``<repo>/target``). With neither, the calling
+    test skips and says how to build one; a named binary that does not exist
+    is a failure, not a skip.
     """
 
-    native = os.environ.get(NEXTEST_WRAPPER_UNDER_TEST_ENV, "").strip()
-    if native:
-        return [native]
-    script = (
-        Path(__file__).resolve().parents[1]
-        / ".github/scripts/nextest_timeout_wrapper.py"
+    named = os.environ.get(NEXTEST_WRAPPER_UNDER_TEST_ENV, "").strip()
+    if named:
+        if not Path(named).is_file():
+            pytest.fail(
+                f"{NEXTEST_WRAPPER_UNDER_TEST_ENV}={named} names no file", pytrace=False
+            )
+        return [named]
+    target = os.environ.get("CARGO_TARGET_DIR", "").strip() or str(
+        Path(__file__).resolve().parents[1] / "target"
     )
-    return [sys.executable, str(script)]
+    built = Path(target) / "debug" / NEXTEST_WRAPPER_NAME
+    if built.is_file():
+        return [str(built)]
+    # pytest.skip raises; spelled as a raise so every path visibly exits.
+    raise pytest.skip.Exception(
+        f"no {NEXTEST_WRAPPER_NAME} binary at {built}: build it "
+        f"(soldr cargo build -p {NEXTEST_WRAPPER_NAME}) or name it in "
+        f"{NEXTEST_WRAPPER_UNDER_TEST_ENV}"
+    )
 
 
 def load_script_module(path: str | Path, name: str | None = None) -> ModuleType:
