@@ -95,60 +95,97 @@ mode          = "off"
 max-age-hours = 24
 
 # ── Cache ────────────────────────────────────────────────────────────────────
-# Families and sizes measured from the live listing
-# (`gh api repos/zackees/soldr/actions/caches`, 2026-10-05), not copied from the
-# example. `evict = "lru"` is CACHE-029: nothing else bounds a family's entry
-# count, and this repository's caches were measured at GitHub's 10GiB ceiling.
+# THE cache-family declaration for this repository (soldr#3618). Every live
+# Actions-cache prefix is declared here exactly once, with its size; nothing
+# else in the tree carries a per-family byte number. Two readers:
+#
+# * ci-lint (CACHE-001/004/029, `ci-lint cache janitor`) reads it as-is;
+# * .github/scripts/check_cache_budget.py -- the janitor that actually deletes
+#   (ci-pre.yml, `actions: write`) and the budget verdict -- reads it through
+#   .github/scripts/cache_families.py. Its allocation for a family is the same
+#   footprint CACHE-004 computes (`max x cardinality`, or the sum of `shapes`).
+#
+# What ci/cache-ownership.json still holds is NOT a size: `family_groups` maps
+# these families onto the ownership groups whose `entries` its guard checks,
+# and records the janitor eviction policy (`newest`, `newest-per-lineage`, or
+# none) that this schema's `evict` (only "lru") cannot spell. A group's budget
+# is the SUM of its members' footprints, so the janitor still pools, e.g., the
+# nine experiment-lane prefixes under one allocation.
+#
+# `[cache].budget` is the hard ceiling (formerly `fail_total_bytes`, 9.5 GiB;
+# sizes here are binary, "1GB" = 1 GiB, as ci-lint parses them). CACHE-004's
+# worst case is steady + [cache.pr].budget (every writer flow pre-prunes), so
+# the families below must sum to <= 8.5 GiB -- the old `total_max_bytes`.
+# They sum to 8620 MiB (8.42 GiB). Sized 2026-10-09 from the live listing
+# (`gh api 'repos/zackees/soldr/actions/caches?per_page=100' --paginate`,
+# 93 entries, 7.39 GiB); re-measure before retuning.
+#
+# Every family declares `evict = "lru"` so ci-lint's janitor bounds it at its
+# footprint (CACHE-029) rather than keeping only the newest entry per prefix,
+# which would delete warm entries of multi-shape families (cook's five flag
+# shapes, xwin's two targets). Each footprint sits at or above its live size.
+# Never list a live prefix in `[cache].retired` to silence a finding: that is
+# CACHE-009 and tells every janitor to DELETE warm caches.
 [cache]
-budget   = "9GB"
+budget   = "9.5GB"
 write-on = ["main", "nightly"]
 never    = []
 retired  = []
 pr       = { mode = "delta", families = ["compile"], max-per-pr = "128MB", budget = "1GB", trim = "on-close" }
 
 [cache.family]
-# Sizing (#3580): from the live listing (`gh api repos/zackees/soldr/actions/
-# caches`), not from a remembered figure. Re-measure before retuning; the
-# per-family allocations that the enforcing janitor uses live in
-# ci/cache-ownership.json (see #3618 for why there are two declarations).
-#
-# `compile` was `max = "2600MB", per = "platform"`: 6 x 2600 MB = 16.36 GB of
-# ceiling for a family whose writer (setup-soldr's build cache, key
-# `setup-soldr-buildcache-v2-${runnerOs}-${runnerArch}-...`) holds two live
-# entries (linux-x64 679.8 MB, windows-x64 406.3 MB). CACHE-004's 9GB budget
-# could never pass, so it never bit. No `per` value expresses 2 writers; "os"
-# (3) is the closest honest cardinality, and `max = "800MB"` keeps ~18%
-# headroom over the largest live entry.
-#
-# Live families the pinned linter cannot declare: its `via` is a strict
-# allowlist and none of these prefixes has one (zackees/ci.yml#347; the
-# `[cache.family].prefix` escape hatch from ci.yml#350 is newer than the
-# ci-lint pin CI runs, see #3616): zccache-unit-v1- (~2.5 GB, the largest),
-# dylint-foundation-v2-, soldr-xwin-cache-, rustup-<ver>-linux-,
-# setup-soldr-dogfood-zccache-v1-, soldr-apple-sdk-, bootstrap-soldr-blessed-,
-# soldr-bin-linux-, dylint-driver-v1-, and the sub-1KB att1-* markers.
-# `cook-base-v2-` (~2.5 GB) IS declarable (`via = "setup-soldr:cook"`) but is
-# five concurrent flag shapes from one writer: no `per` value holds five
-# entries inside the budget without the ci-lint janitor evicting warm ones,
-# so it stays with ci/cache-ownership.json's `cook-layer` allocation (#3618).
-# Never list these in `[cache].retired` to silence CACHE-001: that becomes
-# CACHE-009 and tells the janitor to DELETE warm caches.
-compile      = { via = "setup-soldr:build-cache",     max = "800MB", lockfile = true, per = "os", min = "1MB", evict = "lru", promote = "ancestor" }
-# `toolchain` was `per = "none"` while TWO OS groups write it (live: a
-# linux-x64 entry of 179.9 MB and a windows-x64 entry of 162.5 MB, both
-# current) -- that under-count put the family over its 200MB footprint, so
-# `ci-lint cache janitor --dry-run` proposed evicting the warm linux entry.
-# `per = "os"` gives one slot per runner OS group, which the live shape fits.
-toolchain    = { via = "setup-soldr:solo-toolchain", max = "200MB",  per = "os",                              evict = "lru" }
-registry     = { via = "setup-soldr:cargo-registry",  max = "200MB",  lockfile = true, per = "none",          evict = "lru" }
-soldr-mini   = { via = "setup-soldr:soldr-mini",     max = "30MB",   per = "none", min = "1MB",                evict = "lru" }
-uv           = { via = "setup-uv",                   max = "100MB",  per = "platform",                        evict = "lru" }
-# Dylint is a step inside this repository's `lint` job (ci.yml:263: "Rustfmt,
-# Clippy, doctests, dependency policy, and all Dylint"), not a standalone lane,
-# so `[lint.dylint]` is deliberately ABSENT -- there is no separate warm/cold
-# budget to declare. The CACHE families it writes are declared here.
-dylint       = { via = "setup-soldr:dylint",         max = "600MB",  per = "none", min = "1MB",                evict = "lru", promote = "ancestor" }
-dylint-out   = { via = "setup-soldr:dylint-output",  max = "700MB",  lockfile = true, per = "none", min = "1MB", evict = "lru", promote = "ancestor" }
+# -- group attestation-evidence: ~450 B ci-attestation markers (GATE-010).
+att1                   = { prefix = "att1-",                               max = "16MB",   evict = "lru" }
+
+# -- group pinned-immutable-download (janitor: newest-per-lineage), 1056 MiB.
+rustup                 = { prefix = "rustup-",                             max = "240MB",  evict = "lru" }
+xwin                   = { prefix = "soldr-xwin-cache-", max = "140MB", evict = "lru", shapes = { x86-64 = { max = "140MB" }, aarch64 = { max = "140MB" } } }
+apple-sdk              = { prefix = "soldr-apple-sdk-", max = "60MB", evict = "lru", shapes = { x86-64 = { max = "60MB" }, aarch64 = { max = "60MB" } } }
+# Two writers (linux-x64 171.6 MB, windows-x64 155.0 MB live). `per = "os"`
+# would count three; `shapes` states the two that exist.
+toolchain              = { via = "setup-soldr:solo-toolchain", max = "180MB", evict = "lru", shapes = { linux-x64 = { max = "180MB" }, windows-x64 = { max = "170MB" } } }
+soldr-mini             = { via = "setup-soldr:soldr-mini", max = "30MB", min = "1MB", evict = "lru", shapes = { linux-x64 = { max = "30MB" }, windows-x64 = { max = "30MB" } } }
+# setup-uv entries are ~1 KB each, one per (arch, platform, python).
+uv                     = { via = "setup-uv",                   max = "1MB",   per = "platform",          evict = "lru" }
+
+# -- group bootstrap-driver-binary (janitor: no budget eviction), 150 MiB.
+bootstrap-soldr        = { prefix = "bootstrap-soldr-blessed-", max = "50MB", evict = "lru", shapes = { cross-build = { max = "50MB" }, ci-dev = { max = "50MB" }, ci-dev-pr = { max = "50MB" } } }
+
+# -- group cook-layer (janitor: no budget eviction; cook's own lineage rules
+#    prune it), 2415 MiB. Five concurrent flag shapes from one writer (live
+#    540/506/505/422/417 MiB, 2389 MiB), so `max` is the largest shape.
+#    `cook-delta-v2-` is retired fleet-wide (check_cache_budget.py
+#    RETIRED_PREFIXES) and has no producer here.
+cook                   = { via = "setup-soldr:cook", max = "545MB", min = "1MB", evict = "lru", shapes = { flags1 = { max = "545MB" }, flags2 = { max = "510MB" }, flags3 = { max = "510MB" }, flags4 = { max = "425MB" }, flags5 = { max = "425MB" } } }
+
+# -- group dylint-foundation (janitor: no budget eviction), 608 MiB. One
+#    entry per nightly; the headroom covers a nightly bump's second generation
+#    while the superseded one ages out.
+dylint-foundation      = { prefix = "dylint-foundation-",                  max = "600MB",  evict = "lru" }
+dylint-driver          = { prefix = "dylint-driver-",                      max = "8MB",    evict = "lru" }
+
+# -- group setup-soldr-action-stores (janitor: newest), 1370 MiB.
+# `compile` is setup-soldr's build cache: two writers (linux-x64 648 MB,
+# windows-x64 388 MB live), declared as the two shapes that exist.
+compile                = { via = "setup-soldr:build-cache",   max = "680MB", lockfile = true, min = "1MB", evict = "lru", promote = "ancestor", shapes = { linux-x64 = { max = "680MB" }, windows-x64 = { max = "410MB" } } }
+registry               = { via = "setup-soldr:cargo-registry", max = "140MB", lockfile = true, per = "none", evict = "lru" }
+dogfood-zccache        = { prefix = "setup-soldr-dogfood-zccache-", max = "70MB", evict = "lru", shapes = { current = { max = "70MB" }, previous = { max = "70MB" } } }
+
+# -- group experiment-lanes (janitor: lru, pooled across the group), 496 MiB.
+#    The cache is the subject under test in these workflows.
+soldr-bin              = { prefix = "soldr-bin-", max = "43MB", evict = "lru", shapes = { g1 = { max = "43MB" }, g2 = { max = "43MB" }, g3 = { max = "42MB" } } }
+perf-build             = { prefix = "v0-rust-perf-build-soldr-",           max = "64MB",   evict = "lru" }
+cache-delta-exp        = { prefix = "v0-rust-cache-delta-exp-",            max = "64MB",   evict = "lru" }
+bootstrap-release      = { prefix = "bootstrap-soldr-linux-gnu-release-",  max = "64MB",   evict = "lru" }
+zigbuild-toolchain     = { prefix = "soldr-zigbuild-toolchain-",           max = "32MB",   evict = "lru" }
+perf-cold-warm-zccache = { prefix = "perf-cold-warm-zccache-",             max = "64MB",   evict = "lru" }
+soldr-baseline         = { prefix = "soldr-baseline-",                     max = "32MB",   evict = "lru" }
+soldr-cook             = { prefix = "soldr-cook-",                         max = "32MB",   evict = "lru" }
+soldr-delta            = { prefix = "soldr-delta-",                        max = "16MB",   evict = "lru" }
+
+# -- group zccache-unit (janitor: newest), 2509 MiB. Six ~402 MB lineage
+#    generations live (2411 MiB).
+zccache-unit           = { prefix = "zccache-unit-", max = "419MB", evict = "lru", shapes = { g1 = { max = "419MB" }, g2 = { max = "418MB" }, g3 = { max = "418MB" }, g4 = { max = "418MB" }, g5 = { max = "418MB" }, g6 = { max = "418MB" } } }
 
 # Ancestor promotion (CACHE-024, zackees/ci.yml#335). Standardizing on
 # setup-soldr's ancestor encoding -- shortest parent-edge distance from a live
@@ -157,9 +194,10 @@ dylint-out   = { via = "setup-soldr:dylint-output",  max = "700MB",  lockfile = 
 # containing it reports 4, so a cache saved at the merge looks older than one
 # saved 50 commits before it. #335 keeps the `m<n>` label for offline audit only.
 #
-# `compile`, `dylint` and `dylint-out` are at or above CACHE-031's 256MB floor
-# and opt in; `toolchain` (200MB), `registry` (200MB), `soldr-mini` (30MB) and
-# `uv` (100MB) stay below it, where unbounded entry count is noise.
+# `compile` opts in. The setup-soldr dylint layers (`setup-soldr:dylint`,
+# `setup-soldr:dylint-output`) that #3576 also opted in are not enabled by any
+# workflow here and had no live entry, so #3618 dropped their families; the
+# Dylint caches this repository writes are `dylint-foundation`/`dylint-driver`.
 #
 # DECLARATION ONLY: setup-soldr#566 is merged but unreleased, so CACHE-030 and
 # CACHE-032 report `needs_review` and the opt-in is inert until a tag lands.

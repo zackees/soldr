@@ -260,6 +260,7 @@ def test_the_budget_script_is_stdlib_only_with_a_runtime_floor() -> None:
         BUDGET_SCRIPT,
         REPO_ROOT / "src/soldr/_process.py",
         REPO_ROOT / "src/soldr/__init__.py",
+        REPO_ROOT / ".github/scripts/cache_families.py",
     ]
     # Every local import allowed below has its source scanned as well.
     local_modules = {
@@ -282,4 +283,4 @@ def test_the_budget_script_is_stdlib_only_with_a_runtime_floor() -> None:
         and name not in sys.stdlib_module_names
     }
     assert not non_stdlib, non_stdlib
-    assert "STDLIB_PYTHON_FLOOR = (3, 10)" in BUDGET_SCRIPT.read_text(encoding="utf-8")
+    assert "STDLIB_PYTHON_FLOOR = (3, 11)" in BUDGET_SCRIPT.read_text(encoding="utf-8")

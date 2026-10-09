@@ -366,51 +366,68 @@ Second, gate what remains to `main`-only saves (see [How This Repo Is
 Wired](#how-this-repo-is-wired) above) so a PR restores but never writes.
 
 What survives that sweep is budgeted, not merely trimmed, because "smaller"
-is not the same guarantee as "under the ceiling forever." `ci/cache-ownership.json`
-carries a top-level `budget` map: one entry per producer family, each with a
-`key_prefixes` list, a `max_bytes` allocation, and the family's measured
-live-on-`main` size. Every allocation is `>=` that measured size, and the
-family allocations sum to exactly `total_max_bytes` (9 GiB when this was
-written; 8.5 GiB since the `rust-cache-residual` family was retired with the
-last Swatinem producer). The gate's hard ceiling, `fail_total_bytes`, is set
-to 9.5 GiB (10,200,547,328 bytes) — headroom above the family total, so a family that is briefly
-over its own allocation does not fail the whole gate before the next prune
-sweep can catch up. GitHub does not publish which byte-multiple its
-documented "10 GB" is: 9.5 GiB sits under the binary reading (10,737,418,240)
-but 2% over the decimal one (10,000,000,000), which is why the enforced
-allocation that every family is sized against is
-`total_max_bytes` — that one is under the ceiling on either reading:
+is not the same guarantee as "under the ceiling forever."
 
-| Family | Allocation | Covers |
-|---|---|---|
-| `pinned-immutable-download` | 1.2 GiB | rustup, xwin SDK, Apple SDK, solo-toolchain, soldr-mini, setup-uv |
-| `bootstrap-driver-binary` | 0.15 GiB | the per-commit-SHA bootstrap driver |
-| `cook-layer` | 2.0 GiB | `setup-soldr/cook` archives for the cross lanes |
-| `dylint-foundation` | 0.8 GiB | the ci-test Dylint foundation + analysis trees |
-| `rust-cache-residual` | 1.4 GiB | the three `Swatinem/rust-cache` producers left after this PR (retired 2026-10-02: CACHE-025, no exceptions) |
-| `setup-soldr-action-stores` | 1.0 GiB | per-unit zccache stores + the action's own registry slice |
-| `experiment-lanes` | 0.45 GiB | workflows where the cache is the subject under test |
-| `zccache-unit` | 2.0 GiB | reserved for the Tier-2 object store soldr#3041 persists |
+**`ci.toml` is the one declaration (soldr#3618).** Every cache family — its
+key prefix (`prefix`, or a `via` producer ci-lint knows) and its size (`max`
+x `per`, or the sum of its `shapes`) — is declared once, under
+`[cache.family]` in `ci.toml`. ci-lint reads it directly (CACHE-001/004/029,
+`ci-lint cache janitor`), and the janitor that actually deletes
+(`.github/scripts/check_cache_budget.py`, run by `ci-pre.yml` with
+`actions: write`) reads the same declaration through
+`.github/scripts/cache_families.py`, which computes each family's footprint
+with CACHE-004's arithmetic. No other file carries a per-family byte number.
 
-`ci/cache-ownership.json`'s `budget` map is the single source of truth for
-this accounting: `.github/scripts/check_cache_budget.py` and
-`.github/scripts/check_cache_ownership.py` both read it rather than each
-carrying their own copy of the family list. `check_cache_budget.py` fails the
-build if a cache key does not match any registered `key_prefixes` entry — a
-new producer cannot appear without being registered in the same PR that adds
-it, and cannot be silently folded into an existing family's headroom by
-accident. Raising `total_max_bytes` is not one of the available levers; the
-only way to make room for a new producer is to retire or shrink an existing
-one.
+`ci/cache-ownership.json` keeps only what `ci.toml`'s schema cannot say. Its
+`family_groups` object assigns every `ci.toml` family to exactly one
+ownership group, and per group records the ownership `entries` that
+`check_cache_ownership.py` R7 checks and the janitor's `evict` policy
+(`lru`, `newest`, `newest-per-lineage`, or none = never evicted for budget);
+`ci.toml`'s own `evict` accepts only `"lru"`. `zccache-unit` also keeps
+`store_cap_bytes`, the uncompressed on-disk trim cap of the zccache store,
+which is a different quantity from its compressed Actions footprint. A
+group's allocation is the sum of its members' footprints, so the janitor
+still pools, for example, the nine experiment-lane prefixes under one
+allocation.
+
+The janitor's `total_max_bytes` is the sum of every family's footprint, and
+its hard ceiling `fail_total_bytes` is `ci.toml`'s `[cache].budget` (9.5 GiB;
+ci-lint sizes are binary, so `"1GB"` is 1 GiB). CACHE-004 requires the
+families plus `[cache.pr].budget` (1 GiB) to fit that ceiling, which holds the
+family total at or below the 8.5 GiB `total_max_bytes` CACHE-025 left when it
+retired the last Swatinem producer. GitHub does not publish which
+byte-multiple its documented "10 GB" is: 9.5 GiB sits under the binary
+reading (10,737,418,240) but 2% over the decimal one (10,000,000,000), which
+is why every family is sized against the family total, not the ceiling.
+
+| Group | ci.toml families |
+|---|---|
+| `attestation-evidence` | `att1` |
+| `pinned-immutable-download` | `rustup`, `xwin`, `apple-sdk`, `toolchain`, `soldr-mini`, `uv` |
+| `bootstrap-driver-binary` | `bootstrap-soldr` |
+| `cook-layer` | `cook` |
+| `dylint-foundation` | `dylint-foundation`, `dylint-driver` |
+| `setup-soldr-action-stores` | `compile`, `registry`, `dogfood-zccache` |
+| `experiment-lanes` | `soldr-bin`, `perf-build`, `cache-delta-exp`, `bootstrap-release`, `zigbuild-toolchain`, `perf-cold-warm-zccache`, `soldr-baseline`, `soldr-cook`, `soldr-delta` |
+| `zccache-unit` | `zccache-unit` |
+
+`check_cache_budget.py` fails the build if a cache key matches no declared
+family — a new producer cannot appear without being declared in `ci.toml` in
+the same PR that adds it, and cannot be silently folded into an existing
+family's headroom by accident. Composing the budget also fails if a `ci.toml`
+family belongs to no group or to two, or names a `via` that
+`cache_families.VIA_PREFIXES` cannot map to a prefix. Never list a live
+prefix in `[cache].retired` to silence ci-lint: that is CACHE-009 and tells
+every janitor to delete warm caches. Raising the family total is not one of
+the available levers; the only way to make room for a new producer is to
+retire or shrink an existing one.
 
 GitHub's own LRU eviction is not under this repo's control and does not
 consult the family allocations above, so the budget guard pairs with a
 `--prune` sweep that brings the live store back inside those allocations
 directly instead of waiting on GitHub's schedule; see the script's own
-docstring for the selection policy. See `ci/cache-ownership.json`'s
-`budget.comment` field for the exact measurement this table was derived from,
-including the one issue-scope adjustment (the pep517 rust-cache) made after
-the original soldr#3047 step-1 list was written.
+docstring for the selection policy. The sizes in `ci.toml` record the live
+listing they were measured from.
 
 ### The janitor converges; the verdict charges whoever caused it (zackees/ci.yml#6)
 
@@ -425,7 +442,7 @@ in `ci.yml` `needs:` it. It has two independent jobs:
   every entry of a PR that is no longer open (merged or closed; matched by
   `refs/pull/<N>/*` ref or `pr-<N>` key tag, one state lookup per PR, kept
   when the lookup fails); the existing safe-prune classes; then, for families
-  that declare an `evict` policy in `ci/cache-ownership.json`, whatever that
+  whose group declares an `evict` policy in `ci/cache-ownership.json`, whatever that
   policy needs to fit the family's allocation. `experiment-lanes` is `lru`;
   `pinned-immutable-download` is `newest-per-lineage` (the newest version of
   each download is never evicted). Families without `evict` are never evicted

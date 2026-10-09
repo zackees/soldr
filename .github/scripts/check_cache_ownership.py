@@ -104,13 +104,16 @@ Options:
 from __future__ import annotations
 
 import argparse
-import json
 import pathlib
 import re
 import sys
 from dataclasses import dataclass
 
 import yaml
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+# pylint: disable-next=wrong-import-position,wrong-import-order
+import cache_families  # noqa: E402 -- sibling-module bootstrap precedes this import
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
@@ -863,7 +866,8 @@ def prefix_cache_problems(workflow_dir: pathlib.Path) -> list[str]:  # noqa: C90
 
 
 def load_manifest(path: pathlib.Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    """The manifest, its `budget` composed from ci.toml [cache.family] (soldr#3618)."""
+    return cache_families.load_manifest(path)
 
 
 def _budget_families_gib(manifest: dict) -> float:
@@ -888,8 +892,8 @@ def check(manifest_path: pathlib.Path, workflow_dir: pathlib.Path) -> list[str]:
     """Every policy failure, as actionable lines. Empty means the tree is clean."""
     try:
         manifest = load_manifest(manifest_path)
-    except (OSError, json.JSONDecodeError) as error:
-        return [f"R1 cannot read {manifest_path}: {error}"]
+    except (OSError, ValueError) as error:  # JSON/TOML decode, CacheFamilyError
+        return [f"R1 cannot read {manifest_path} / ci.toml: {error}"]
     if not isinstance(manifest, dict):
         return [f"R1 {manifest_path} must contain a JSON object"]
 

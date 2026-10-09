@@ -203,12 +203,14 @@ def working_set_verdict(walk: Walk, cap_bytes: int) -> str:
 def default_cap_bytes(manifest_path: pathlib.Path, reserve_bytes: int) -> int:
     """The on-disk trim cap: the family's `store_cap_bytes` minus the reserve.
 
-    `max_bytes` is the family's Actions budget, which counts the COMPRESSED
+    The family's Actions budget (its ci.toml footprint) counts the COMPRESSED
     saved entry (the store compresses about 4x). Trimming the uncompressed
     store to it evicted the driver build's units every run (soldr#3458).
+    `store_cap_bytes` is the one per-group number ci/cache-ownership.json
+    keeps, because ci.toml has no field for an on-disk cap (soldr#3618).
     """
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    family = manifest["budget"]["families"][FAMILY]
+    family = manifest["family_groups"][FAMILY]
     return int(family["store_cap_bytes"]) - reserve_bytes
 
 

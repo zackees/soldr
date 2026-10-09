@@ -80,7 +80,7 @@ def test_captured_fixture_is_red(capsys: pytest.CaptureFixture[str]) -> None:
 def test_half_budget_synthetic_listing_from_real_manifest_passes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    manifest = guard.load_manifest(MANIFEST)
     families = manifest["budget"]["families"]
 
     entries = []
@@ -173,7 +173,7 @@ def test_families_under_but_total_over_fail_total_bytes_fails(
 
 
 def test_manifest_budget_is_self_consistent() -> None:
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    manifest = guard.load_manifest(MANIFEST)
     budget = manifest["budget"]
     families = budget["families"]
 
@@ -181,10 +181,12 @@ def test_manifest_budget_is_self_consistent() -> None:
         sum(spec["max_bytes"] for spec in families.values())
         == budget["total_max_bytes"]
     )
-    # 9 GiB until CACHE-025 dropped its exceptions (zackees/ci.yml, maintainer
-    # decision 2026-10-02): retiring the rust-cache-residual family removed its
-    # 0.50 GiB from the total instead of re-allocating it.
-    assert budget["total_max_bytes"] == 9126805504
+    # soldr#3618: the allocations are ci.toml footprints. They may not loosen
+    # past the 8.5 GiB `total_max_bytes` CACHE-025 left (zackees/ci.yml,
+    # maintainer decision 2026-10-02), and the hard ceiling is ci.toml's
+    # `[cache].budget`, the former `fail_total_bytes` of 9.5 GiB.
+    assert budget["total_max_bytes"] <= 9126805504
+    assert budget["fail_total_bytes"] == 10200547328
 
     owned_prefixes = [
         (prefix, family_id)
@@ -371,7 +373,7 @@ def test_prune_supersedes_older_dylint_foundation_generations_on_main() -> None:
 def test_the_dylint_nightly_cache_producer_stays_retired() -> None:
     # soldr#3216: the retirement is only real if nothing re-adds the producer
     # or quietly re-registers its prefix under a family.
-    families = json.loads(MANIFEST.read_text(encoding="utf-8"))["budget"]["families"]
+    families = guard.load_manifest(MANIFEST)["budget"]["families"]
     assert "dylint-nightly-" in guard.RETIRED_PREFIXES
     assert not any(
         prefix.startswith("dylint-nightly-")
@@ -482,7 +484,7 @@ def test_3347_active_generations_need_lineage_and_producer_shrink() -> None:
         entry("v0-rust-bootstrap-soldr-linux-gnu-dev-abc", 700 * mib),
     ]
     entries = guard.normalize_entries(rows)
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    manifest = guard.load_manifest(MANIFEST)
     assert guard.budget_problems(MANIFEST, manifest, entries)
     # The existing policy could only reclaim PR copies and the older unit run.
     old_candidates = [
@@ -595,7 +597,7 @@ def without(entries: list, dropped: list) -> list:
 
 def test_3347_fixture_is_red_raw() -> None:
     entries = lineage_entries()
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    manifest = guard.load_manifest(MANIFEST)
     problems = guard.budget_problems(MANIFEST, manifest, entries)
     assert any("'cook-layer'" in p for p in problems)
     assert any("'zccache-unit'" in p for p in problems)
@@ -603,7 +605,7 @@ def test_3347_fixture_is_red_raw() -> None:
 
 def test_3347_legacy_policy_still_fails_after_its_reclaim() -> None:
     entries = lineage_entries()
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    manifest = guard.load_manifest(MANIFEST)
     everything = guard.prune_candidates(entries, CURRENT_LOCK)
     new_cook = guard.cook_lineage_candidates(
         [e for e in entries if e.ref == "refs/heads/main"], CURRENT_LOCK
@@ -620,7 +622,7 @@ def test_3347_legacy_policy_still_fails_after_its_reclaim() -> None:
 
 def test_3347_lineage_policy_fits_every_family_and_total() -> None:
     entries = lineage_entries()
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    manifest = guard.load_manifest(MANIFEST)
     candidates = guard.prune_candidates(entries, CURRENT_LOCK)
     effective = without(entries, candidates)
     assert guard.budget_problems(MANIFEST, manifest, effective) == []
@@ -647,7 +649,7 @@ def test_3347_policy_is_not_green_when_a_family_truly_does_not_fit() -> None:
         )
         for e in lineage_entries()
     ]
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    manifest = guard.load_manifest(MANIFEST)
     effective = without(entries, guard.prune_candidates(entries, CURRENT_LOCK))
     problems = guard.budget_problems(MANIFEST, manifest, effective)
     assert any("'zccache-unit'" in p for p in problems)
@@ -723,14 +725,14 @@ def dogfood_entries() -> list:
 
 
 def test_3398_live_listing_is_red_raw() -> None:
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    manifest = guard.load_manifest(MANIFEST)
     problems = guard.budget_problems(MANIFEST, manifest, dogfood_entries())
     assert any("'setup-soldr-action-stores'" in p for p in problems)
 
 
 def test_3398_prune_fits_setup_soldr_action_stores() -> None:
     entries = dogfood_entries()
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    manifest = guard.load_manifest(MANIFEST)
     effective = without(entries, guard.prune_candidates(entries))
     problems = guard.budget_problems(MANIFEST, manifest, effective)
     assert not any("'setup-soldr-action-stores'" in p for p in problems)
@@ -1033,7 +1035,7 @@ def test_a_non_evictable_steady_state_that_cannot_fit_is_a_static_finding(
 
 
 def test_the_real_manifest_has_no_forecast_problems() -> None:
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    manifest = guard.load_manifest(MANIFEST)
     assert guard.forecast_problems(MANIFEST, manifest) == []
 
 
@@ -1229,7 +1231,7 @@ def test_delete_ref_rejects_anything_but_a_pr_ref() -> None:
 
 
 def test_real_manifest_declares_evict_only_for_the_safe_families() -> None:
-    families = json.loads(MANIFEST.read_text(encoding="utf-8"))["budget"]["families"]
+    families = guard.load_manifest(MANIFEST)["budget"]["families"]
     evictable = {
         name: spec["evict"] for name, spec in families.items() if "evict" in spec
     }
@@ -1313,3 +1315,104 @@ def test_3545_sweep_reclaims_the_older_toolchain_under_one_lock(kind):
     assert deferred == []
     # The current-toolchain generation is genuinely in use and stays live.
     assert key(live_toolchain) not in {e.key for e in delete}
+
+
+# --------------------------------------------------------------------------
+# soldr#3618: ci.toml is the one cache-family declaration
+# --------------------------------------------------------------------------
+
+
+def test_the_ownership_manifest_carries_no_byte_numbers() -> None:
+    """Sizes live only in ci.toml; the JSON maps families onto groups."""
+    raw = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    assert "budget" not in raw, "the budget is composed from ci.toml, not declared"
+    for group_id, group in raw["family_groups"].items():
+        assert not {"max_bytes", "key_prefixes", "total_max_bytes"} & set(group), (
+            group_id
+        )
+
+
+def test_every_ci_toml_family_belongs_to_exactly_one_group() -> None:
+    ci_toml = guard.cache_families.load_ci_toml()
+    raw = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    members = [f for g in raw["family_groups"].values() for f in g["ci_toml_families"]]
+    assert sorted(members) == sorted(ci_toml["cache"]["family"])
+
+
+def test_a_group_allocation_is_the_sum_of_its_ci_toml_footprints() -> None:
+    ci_toml = {
+        "platforms": {
+            "a": {"group": "linux"},
+            "b": {"group": "linux"},
+            "c": {"group": "win"},
+        },
+        "cache": {
+            "budget": "1GB",
+            "family": {
+                "one": {"prefix": "one-", "max": "10MB", "per": "platform"},
+                "two": {"via": "setup-uv", "max": "1MB", "per": "os"},
+                "three": {
+                    "prefix": "three-",
+                    "max": "9MB",
+                    "shapes": {"x": {"max": "4MB"}, "y": {"max": "5MB"}},
+                },
+            },
+        },
+    }
+    groups = {
+        "g": {"ci_toml_families": ["one", "two"], "evict": "lru"},
+        "h": {"ci_toml_families": ["three"]},
+    }
+    budget = guard.cache_families.compose_budget(ci_toml, groups)
+    mib = 1024**2
+    assert budget["families"]["g"]["max_bytes"] == 30 * mib + 2 * mib
+    assert budget["families"]["g"]["key_prefixes"] == [
+        "one-",
+        "setup-uv-2-",
+        "setup-uv-1-",
+    ]
+    assert budget["families"]["g"]["evict"] == "lru"
+    assert budget["families"]["h"]["max_bytes"] == 9 * mib
+    assert budget["total_max_bytes"] == 41 * mib
+    assert budget["fail_total_bytes"] == 1024**3
+
+
+@pytest.mark.parametrize(
+    "groups, message",
+    [
+        ({"g": {"ci_toml_families": ["one"]}}, "belong to no"),
+        (
+            {
+                "g": {"ci_toml_families": ["one", "two"]},
+                "h": {"ci_toml_families": ["two"]},
+            },
+            "two groups",
+        ),
+        ({"g": {"ci_toml_families": ["one", "two", "ghost"]}}, "does not declare"),
+    ],
+)
+def test_a_family_outside_exactly_one_group_is_an_error(
+    groups: dict, message: str
+) -> None:
+    ci_toml = {
+        "cache": {
+            "budget": "1GB",
+            "family": {
+                "one": {"prefix": "one-", "max": "1MB"},
+                "two": {"prefix": "two-", "max": "1MB"},
+            },
+        }
+    }
+    with pytest.raises(guard.cache_families.CacheFamilyError, match=message):
+        guard.cache_families.compose_budget(ci_toml, groups)
+
+
+def test_an_unmapped_via_is_an_error_not_a_guess() -> None:
+    ci_toml = {
+        "cache": {
+            "budget": "1GB",
+            "family": {"x": {"via": "setup-soldr:nope", "max": "1MB"}},
+        }
+    }
+    with pytest.raises(guard.cache_families.CacheFamilyError, match="VIA_PREFIXES"):
+        guard.cache_families.compose_budget(ci_toml, {"g": {"ci_toml_families": ["x"]}})

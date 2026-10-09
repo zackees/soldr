@@ -144,7 +144,7 @@ def test_real_budget_is_internally_consistent() -> None:
     passes`; this is the direct-call version so a budget-only regression
     reports as "the budget", not as an undifferentiated `check()` failure.
     """
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    manifest = guard.load_manifest(MANIFEST)
     assert guard.budget_problems(manifest) == []
     assert guard.budget_coverage_problems(manifest) == []
 

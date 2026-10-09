@@ -68,6 +68,8 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/scripts/check_cache_budget.py
+            .github/scripts/cache_families.py
+            ci.toml
             src/soldr/__init__.py
             src/soldr/_process.py
             ci/cache-ownership.json

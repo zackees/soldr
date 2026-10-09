@@ -44,9 +44,10 @@ Repository-wide, the same policy is enforced statically by
 this repo as `cook`, `zccache-unit`, `none`, or a named exception. That guard
 runs in the `Lint` job on every PR; see `test_cache_ownership.py`.
 
-The same manifest carries the repository's Actions-cache `budget` (soldr#3047):
-per-family `key_prefixes` and `max_bytes` allocations, enforced against the live
-`gh cache list` by `.github/scripts/check_cache_budget.py` in the `Cache Budget`
+The repository's Actions-cache budget (soldr#3047) is declared once, in
+`ci.toml` `[cache.family]` (soldr#3618); the manifest's `family_groups` map
+those families onto ownership groups and janitor `evict` policies. The budget
+is enforced against the live `gh cache list` by `.github/scripts/check_cache_budget.py` in the `Cache Budget`
 workflow. `test_cache_budget.py` covers it, including the RED acceptance
 fixture `tests/fixtures/actions-cache/listing-2026-09-01.json` — the real
 44.23 GiB / 143-entry snapshot that motivated the gate and must fail it.

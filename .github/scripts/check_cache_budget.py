@@ -4,12 +4,12 @@
 soldr#3047, Phase B of soldr#3039. GitHub evicts the oldest, least-recently-used
 entries once a repository's Actions cache crosses the 10 GB it documents as the
 per-repository ceiling, and it does so silently: no job goes red, the run whose
-warm cache disappeared underneath it just gets slower. The manifest's
-`budget.total_max_bytes` is 8.5 GiB -- the sum of the family allocations -- and
-`budget.fail_total_bytes` is 9.5 GiB (10,200,547,328), a GiB of headroom
-so a family briefly over its own allocation does not fail the whole gate
-before the next `--prune` sweep catches up. Both numbers live in
-`ci/cache-ownership.json`; this script reads them and hard-codes neither.
+warm cache disappeared underneath it just gets slower. `total_max_bytes` is
+the sum of the family allocations and `fail_total_bytes` is ci.toml's
+`[cache].budget` (9.5 GiB), so a family briefly over its own allocation does
+not fail the whole gate before the next `--prune` sweep catches up. Every
+number lives in `ci.toml` `[cache.family]` (soldr#3618); this script reads it
+through `cache_families.py` and hard-codes none.
 
 `zackees/soldr`'s cache had grown to 44.23 GiB across 143 entries by
 2026-09-01 (`tests/fixtures/actions-cache/listing-2026-09-01.json`, the RED
@@ -19,10 +19,12 @@ was slower builds nobody could attribute to a cause.
 
 ## What is checked
 
-`ci/cache-ownership.json` carries a `budget` object: a `total_max_bytes`
-allocation, a `fail_total_bytes` hard ceiling, and a `families` map. Each
-family declares the `key_prefixes` it owns, a `max_bytes` allocation, and a
-rationale. Every live cache entry is assigned to the family whose
+`cache_families.compose_budget` builds a `budget` object from `ci.toml`
+`[cache.family]` and `ci/cache-ownership.json` `family_groups`: a
+`total_max_bytes` allocation, a `fail_total_bytes` hard ceiling, and a
+`families` map of ownership groups. Each group owns its member families'
+`key_prefixes`, a `max_bytes` allocation (the sum of their ci.toml
+footprints), and a rationale. Every live cache entry is assigned to the group whose
 `key_prefixes` entry is the LONGEST match on that entry's key -- longest,
 so a family that owns a specific sub-namespace is not shadowed by a sibling
 family's shorter, more general prefix.
@@ -30,8 +32,8 @@ family's shorter, more general prefix.
 Three things fail the gate:
 
 * **An unregistered key.** An entry matching no family's `key_prefixes` names
-  a producer nobody declared. The manifest is authoritative, not descriptive:
-  a new cache-writing step must register its prefix in the same PR that adds
+  a producer nobody declared. ci.toml is authoritative, not descriptive:
+  a new cache-writing step must declare its family in the same PR that adds
   it, or this guard has no way to tell a reviewed addition from cache-key
   drift (a resurrected `v0-rust-cross-build-*` key, say).
 * **A family over its allocation.** Bytes used under one family's prefixes
@@ -73,7 +75,8 @@ source; `--from-json` fixtures carry no ids.
 Usage:
     python .github/scripts/check_cache_budget.py [options]
 Options:
-    --manifest PATH   budget manifest (default: ci/cache-ownership.json)
+    --manifest PATH   ownership manifest (default: ci/cache-ownership.json);
+                      its budget is composed from ci.toml [cache.family]
     --from-json PATH  read a cache listing from this file instead of `gh`
     --repo OWNER/NAME repository to query (default: zackees/soldr)
     --require-live    fail rather than skip when the live cache listing is unavailable
@@ -126,12 +129,16 @@ from soldr._process import (  # noqa: E402 -- source-relative bootstrap precedes
 # ci-pre.yml runs this with the runner image's own `python3` (no setup-python,
 # no uv), so it must stay standard-library only and say so if the image's
 # interpreter is ever too old, rather than failing on a syntax/API detail.
-STDLIB_PYTHON_FLOOR = (3, 10)
+STDLIB_PYTHON_FLOOR = (3, 11)  # tomllib, for ci.toml
 if sys.version_info < STDLIB_PYTHON_FLOOR:  # pragma: no cover - old runner image
     sys.exit(
         f"check_cache_budget.py needs Python >= "
         f"{'.'.join(map(str, STDLIB_PYTHON_FLOOR))}, got {sys.version.split()[0]}"
     )
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# pylint: disable-next=wrong-import-position,wrong-import-order
+import cache_families  # noqa: E402 -- sibling-module bootstrap precedes this import
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANIFEST = REPO_ROOT / "ci" / "cache-ownership.json"
@@ -200,6 +207,10 @@ RETIRED_PREFIXES: tuple[str, ...] = (
     "v0-rust-ws-release-",
     "v0-rust-parent-cache-bench",
     "v0-rust-perf-cold-warm-",
+    # setup-soldr's `cook-delta-v2-` layer, retired fleet-wide by
+    # setup-soldr#533; nothing here writes it (soldr#3618 dropped it from the
+    # cook family, so a leftover is reclaimed rather than budgeted).
+    "cook-delta-",
 )
 
 
@@ -374,7 +385,8 @@ def group_by_family(
 
 
 def load_manifest(path: pathlib.Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    """The ownership manifest, its `budget` composed from ci.toml (soldr#3618)."""
+    return cache_families.load_manifest(path)
 
 
 def budget_problems(  # noqa: C901
@@ -1266,8 +1278,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
 
     try:
         manifest = load_manifest(args.manifest)
-    except (OSError, json.JSONDecodeError) as error:
-        print(f"error: cannot read {args.manifest}: {error}")
+    except (OSError, ValueError) as error:  # JSONDecodeError, TOMLDecodeError
+        print(f"error: cannot read {args.manifest} / ci.toml: {error}")
         return 1
 
     problems = budget_problems(args.manifest, manifest, entries)
