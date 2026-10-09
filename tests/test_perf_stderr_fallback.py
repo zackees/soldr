@@ -118,3 +118,37 @@ def test_perf_local_gc_failure_warns_with_stderr(monkeypatch, tmp_path, capsys):
     err = capsys.readouterr().err
     assert "soldr BuildKit GC failed" in err
     assert "MARKER_GC_3386" in err
+
+
+def test_teardown_work_dir_shuts_down_each_registered_root_once(tmp_path):
+    """soldr#3607: daemons are stopped (once per root) before the dir is removed."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "calls.log"
+    tool = bin_dir / "soldr"
+    tool.write_text(
+        '#!/bin/sh\necho "$SOLDR_CACHE_DIR|$*" >> "$CALLS_LOG"\n'
+        "echo STUB_STDERR_3607 >&2\n",
+        encoding="utf-8",
+    )
+    tool.chmod(0o755)
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["CALLS_LOG"] = str(log)
+    work = tmp_path / "work"
+    script = (
+        f'W="{work}"; mkdir -p "$W/a" "$W/b"; '
+        'measure::register_soldr_root "$W" "$W/a"; '
+        'measure::register_soldr_root "$W" "$W/b"; '
+        'measure::register_soldr_root "$W" "$W/a"; '
+        'measure::teardown_work_dir "$W"; echo rc=$?'
+    )
+    result = run_bash(script, env)
+    assert "rc=0" in result.stdout
+    assert "STUB_STDERR_3607" in result.stderr  # stderr is not swallowed
+    assert not work.exists()
+    calls = sorted(log.read_text(encoding="utf-8").splitlines())
+    assert calls == [
+        f"{work}/a|cache shutdown --shutdown-timeout-seconds 15 --json",
+        f"{work}/b|cache shutdown --shutdown-timeout-seconds 15 --json",
+    ]
