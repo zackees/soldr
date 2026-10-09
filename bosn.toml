@@ -61,10 +61,8 @@ stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo fmt --all"
 
 [task.ci-test-acceptance]
-# soldr#3454: a `-p soldr-cli` run does not build the Nextest wrapper, which
-# nextest_wrapper.sh finds beside the test binaries; build it first.
 stack = "cook"
-cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo build -p soldr-nextest-wrapper --bin soldr-nextest-wrapper && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test guards -E 'test(/^cli_ci_test::/)'"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test guards -E 'test(/^cli_ci_test::/)'"
 
 [task.ci-test-archive-smoke]
 stack = "cook"
@@ -166,7 +164,7 @@ cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo
 # helper and every Rust call site, plus the ci-test plan guard.
 [task.small-tool-stderr]
 stack = "cook"
-cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-core --lib tool_output && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --lib -- hydrate_rustc_version rustc_identity_ all_section_dumps_failing dylint_link_validation_tests:: && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo build -p soldr-nextest-wrapper --bin soldr-nextest-wrapper && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test guards -E 'test(/^cli_ci_test::/)'"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-core --lib tool_output && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --lib -- hydrate_rustc_version rustc_identity_ all_section_dumps_failing dylint_link_validation_tests:: && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test guards -E 'test(/^cli_ci_test::/)'"
 
 [task.small-tool-stderr-lint]
 stack = "cook"

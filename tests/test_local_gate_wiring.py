@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -116,7 +117,8 @@ def _shim(args: list[str], native: str | None, **extra: str) -> WrapperRun:
     env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("CI", "SOLDR_TEST_ISOLATED", "SOLDR_NEXTEST_NATIVE_WRAPPER")
+        if k
+        not in ("CI", "SOLDR_TEST_ISOLATED", "SOLDR_NEXTEST_NATIVE_WRAPPER", "CARGO")
     }
     env.update(extra)
     if native is not None:
@@ -200,17 +202,168 @@ def test_the_wrapper_is_found_beside_the_test_binary_profile_dir(
     assert run.stdout.strip() == "derived " + " ".join(argv)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="the nextest run-wrapper is Unix-only")
-def test_a_missing_wrapper_refuses_instead_of_running_the_test_unwrapped(
+UNIX_ONLY = pytest.mark.skipif(
+    os.name == "nt", reason="the nextest run-wrapper is Unix-only"
+)
+
+
+@UNIX_ONLY
+def test_a_missing_wrapper_without_cargo_refuses_instead_of_running_unwrapped(
     tmp_path: Path,
 ) -> None:
-    """Step 3: no override, nothing beside the test binary -> loud refusal."""
+    """Step 4: nothing beside the test binary and no $CARGO (an archive host,
+    where a build must not be attempted) -> loud refusal."""
     test_binary = _echo_script(tmp_path / "target" / "debug" / "deps" / "t", "test")
     run = _shim([str(test_binary)], None, CI="true")
     assert run.returncode == 98
-    assert "soldr-nextest-wrapper not found" in run.stderr
+    assert "soldr-nextest-wrapper unavailable" in run.stderr
+    assert "no $CARGO to build it with" in run.stderr
     assert "soldr cargo build -p soldr-nextest-wrapper" in run.stderr
     assert "test" not in run.stdout, "the test must not run unwrapped"
+
+
+@UNIX_ONLY
+def test_no_test_binary_under_deps_refuses(tmp_path: Path) -> None:
+    run = _shim(["/bin/true"], None, CI="true", CARGO="/bin/false")
+    assert run.returncode == 98
+    assert "no test binary under a deps/ directory" in run.stderr
+
+
+def _fake_cargo(tmp_path: Path, *, build: bool = True) -> tuple[Path, Path]:
+    """A `$CARGO` that logs its argv and (optionally) links an echo wrapper at
+    `<--target-dir>/[<--target>/]<profile dir>/soldr-nextest-wrapper`."""
+    log = tmp_path / "cargo.log"
+    cargo = tmp_path / "bin" / "cargo-under-test"
+    cargo.parent.mkdir(parents=True, exist_ok=True)
+    body = (
+        "#!/bin/sh\n"
+        f'echo "$*" >> "{log}"\n'
+        "sleep 0.3\n"
+        'dir=""; triple=""; profile=""\n'
+        "while [ $# -gt 0 ]; do\n"
+        '  case "$1" in\n'
+        '  --target-dir) dir="$2"; shift ;;\n'
+        '  --target) triple="$2"; shift ;;\n'
+        '  --profile) profile="$2"; shift ;;\n'
+        "  esac\n"
+        "  shift\n"
+        "done\n"
+        '[ "$profile" = test ] && profile=debug\n'
+        '[ -n "$triple" ] && dir="$dir/$triple"\n'
+    )
+    if build:
+        body += (
+            'mkdir -p "$dir/$profile"\n'
+            'out="$dir/$profile/soldr-nextest-wrapper"\n'
+            'printf \'#!/bin/sh\\necho "built $*"\\n\' > "$out"\n'
+            'chmod +x "$out"\n'
+        )
+    else:
+        body += "exit 101\n"
+    cargo.write_text(body, encoding="utf-8")
+    cargo.chmod(0o755)
+    return cargo, log
+
+
+@UNIX_ONLY
+@pytest.mark.parametrize(
+    ("layout", "expected"),
+    [
+        (("debug",), ["--profile", "test"]),
+        (
+            ("x86_64-unknown-linux-gnu", "ci-nextest"),
+            ["--profile", "ci-nextest", "--target", "x86_64-unknown-linux-gnu"],
+        ),
+    ],
+)
+def test_a_scoped_run_builds_the_wrapper_once_into_the_test_profile_dir(
+    tmp_path: Path, layout: tuple[str, ...], expected: list[str]
+) -> None:
+    """Step 3 (soldr#3454): `nextest run -p soldr-cli` never builds the
+    wrapper's package, so the first test builds it with the run's own $CARGO,
+    for the profile and triple its own path names, and concurrent first tests
+    share that one build."""
+    target = tmp_path / "target"
+    target.mkdir()
+    # Cargo's rustc info cache marks the target root (a bosn volume has no
+    # CACHEDIR.TAG, because Cargo did not create the directory).
+    (target / ".rustc_info.json").write_text("{}")
+    test_binary = _echo_script(target.joinpath(*layout, "deps", "t-0123"), "test")
+    cargo, log = _fake_cargo(tmp_path)
+    runs: list[WrapperRun] = []
+
+    def one() -> None:
+        runs.append(
+            _shim(
+                [str(test_binary), "--exact", "a::b"], None, CI="true", CARGO=str(cargo)
+            )
+        )
+
+    threads = [threading.Thread(target=one) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    for run in runs:
+        assert run.returncode == 0, run.stderr
+        assert run.stdout.strip() == f"built {test_binary} --exact a::b"
+    builds = log.read_text(encoding="utf-8").splitlines()
+    assert len(builds) == 1, builds
+    argv = builds[0].split()
+    assert argv[:5] == [
+        "build",
+        "-p",
+        "soldr-nextest-wrapper",
+        "--bin",
+        "soldr-nextest-wrapper",
+    ]
+    for flag, value in zip(expected[::2], expected[1::2], strict=True):
+        assert argv[argv.index(flag) + 1] == value
+    assert argv[argv.index("--target-dir") + 1] == str(target)
+    assert not list(target.rglob(".soldr-nextest-wrapper.build-lock")), (
+        "lock left behind"
+    )
+
+
+@UNIX_ONLY
+def test_a_dashed_target_dir_name_is_not_mistaken_for_a_triple(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "my-target-dir"
+    test_binary = _echo_script(target / "debug" / "deps" / "t", "test")
+    cargo, log = _fake_cargo(tmp_path)
+    run = _shim([str(test_binary)], None, CI="true", CARGO=str(cargo))
+    assert run.returncode == 0, run.stderr
+    argv = log.read_text(encoding="utf-8").split()
+    assert "--target" not in argv
+    assert argv[argv.index("--target-dir") + 1] == str(target)
+
+
+@UNIX_ONLY
+def test_a_failed_build_refuses_and_releases_its_lock(tmp_path: Path) -> None:
+    profile = tmp_path / "target" / "debug"
+    test_binary = _echo_script(profile / "deps" / "t", "test")
+    cargo, _ = _fake_cargo(tmp_path, build=False)
+    run = _shim([str(test_binary)], None, CI="true", CARGO=str(cargo))
+    assert run.returncode == 98
+    assert "did not produce" in run.stderr
+    assert "test" not in run.stdout
+    assert not (profile / ".soldr-nextest-wrapper.build-lock").exists()
+
+
+@UNIX_ONLY
+def test_a_dead_builders_lock_is_taken_over(tmp_path: Path) -> None:
+    profile = tmp_path / "target" / "debug"
+    test_binary = _echo_script(profile / "deps" / "t", "test")
+    stale = profile / ".soldr-nextest-wrapper.build-lock"
+    stale.mkdir()
+    (stale / "pid").write_text("999999999\n")
+    cargo, log = _fake_cargo(tmp_path)
+    run = _shim([str(test_binary)], None, CI="true", CARGO=str(cargo))
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == f"built {test_binary}"
+    assert len(log.read_text(encoding="utf-8").splitlines()) == 1
 
 
 def test_isolated_suite_requires_a_bosn_that_does_not_reap_bursts() -> None:

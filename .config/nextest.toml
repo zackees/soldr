@@ -317,7 +317,7 @@ test-group = 'soldr-cargo-cold-builds'
 # (crates/soldr-nextest-wrapper, soldr#3454); `nextest_wrapper.sh` refuses a
 # developer host and otherwise finds the binary beside the test binary's Cargo
 # profile directory, where a workspace build and an extracted Nextest archive
-# both put it. The same wrapper hosts soldr#2885's per-test memory controls
+# both put it; a scoped source run builds it there on first use. The same wrapper hosts soldr#2885's per-test memory controls
 # (`crates/soldr-nextest-wrapper/src/guard.rs`). They are inert unless
 # `soldr ci-test` hands them an admission directory and a per-test ceiling for
 # its Nextest execution stage; a plain `soldr cargo nextest run` is unchanged.
