@@ -94,6 +94,16 @@ fn host_is_linux_gnu() -> bool {
     soldr_cli::pyo3_detect::host_triple().ends_with("-linux-gnu")
 }
 
+/// `isolated_soldr_command` with the color environment cleared. These tests
+/// assert the non-TTY, non-Actions branch of the canonical color rule
+/// (soldr#3437): a GitHub runner sets `GITHUB_ACTIONS`, which turns stderr
+/// color on by design, so the tests must not inherit it.
+fn wheel_command() -> std::process::Command {
+    let mut command = isolated_soldr_command();
+    command.env_remove("GITHUB_ACTIONS").env_remove("NO_COLOR");
+    command
+}
+
 fn stderr_of(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
@@ -116,7 +126,7 @@ fn soldr_wheel_resolves_the_alias_and_tags_the_wheel() {
         args.push("--host-glibc");
     }
 
-    let output = isolated_soldr_command()
+    let output = wheel_command()
         .args(&args)
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -182,7 +192,7 @@ fn soldr_wheel_forwards_extra_arguments_to_maturin() {
     seed_cached_fake_maturin(&cache_root, &log_path);
     let (alias, _) = host_alias_and_triple();
 
-    let output = isolated_soldr_command()
+    let output = wheel_command()
         // A dev wheel: this is about passthrough, and a host-target release
         // gnu wheel would prepare the catalogue bundle (soldr#3432).
         .args(["wheel", "--target", &alias, "--out", "dist"])
@@ -229,7 +239,7 @@ fn soldr_wheel_defaults_to_a_dev_host_wheel_with_no_floor_claim() {
     let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     seed_cached_fake_maturin(&cache_root, &log_path);
 
-    let output = isolated_soldr_command()
+    let output = wheel_command()
         .args(["wheel"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -283,7 +293,7 @@ fn soldr_wheel_rejects_an_unknown_target_with_a_suggestion() {
     let log_path = cache_root.join("tool.log");
     seed_cached_fake_maturin(&cache_root, &log_path);
 
-    let output = isolated_soldr_command()
+    let output = wheel_command()
         .args(["wheel", "--release", "--target", "linux-arm65"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("ZCCACHE_DISABLE")
@@ -317,7 +327,7 @@ fn soldr_wheel_refuses_host_glibc_with_a_cross_target() {
         "aarch64-unknown-linux-gnu"
     };
 
-    let output = isolated_soldr_command()
+    let output = wheel_command()
         .args(["wheel", "--release", "--host-glibc", "--target", cross])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("ZCCACHE_DISABLE")
@@ -398,7 +408,7 @@ fn soldr_wheel_release_prepares_the_host_target_against_glibc_2_17() {
     }
     std::fs::write(bundle.join(".complete"), "test bundle").expect("write GNU bundle stamp");
 
-    let output = isolated_soldr_command()
+    let output = wheel_command()
         .args(["wheel", "--release"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -419,7 +429,6 @@ fn soldr_wheel_release_prepares_the_host_target_against_glibc_2_17() {
         .env_remove("ZCCACHE_DISABLE")
         .env_remove("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER")
         .env_remove("SOLDR_GNU_LINUX_SYSROOT")
-        .env_remove("NO_COLOR")
         .output()
         .expect("failed to run soldr wheel");
 
