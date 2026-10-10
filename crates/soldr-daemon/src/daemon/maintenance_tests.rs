@@ -770,6 +770,17 @@ fn age_tree(root: &Path, age: Duration) {
     }
 }
 
+/// The retired store is reclaimed by soldr's legacy sweep, or -- when the host
+/// filesystem is under hard pressure -- by zccache's own pressure pass first,
+/// which leaves the legacy sweep nothing to remove. Either reclaimer counts;
+/// callers still assert the directory is gone.
+fn retired_store_reclaimed(status: &MaintenanceStatus) -> bool {
+    status.legacy_zccache.items_removed == 1
+        || status.zccache.as_ref().is_some_and(|report| {
+            report.pressure == "hard" && report.bytes_reclaimed >= b"payload".len() as u64
+        })
+}
+
 /// soldr#3251: the lease-gated pass deferred the whole pass, store included,
 /// whenever any build held the root lease, so on a busy host the store was
 /// never maintained. With a real embedded service and a build holding the
