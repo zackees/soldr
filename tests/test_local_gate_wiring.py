@@ -125,6 +125,17 @@ def test_only_the_non_compiling_lanes_are_light() -> None:
         assert lane.get("weight", "heavy") in {"light", "heavy"}, name
 
 
+# zackees/ci.yml#399: the bosn `tests` lane builds in its container's own
+# target dir, so it is its own heavy group and runs beside the host chain.
+# Every host-compiling heavy lane shares target/ and must stay in one group.
+def test_only_the_isolated_tests_lane_has_its_own_heavy_group() -> None:
+    lanes = tomllib.loads((ROOT / "local-gate.toml").read_text(encoding="utf-8"))[
+        "gate"
+    ]["lanes"]
+    groups = {name: lane["group"] for name, lane in lanes.items() if "group" in lane}
+    assert groups == {"tests": "isolated"}
+
+
 def test_the_isolated_test_run_proves_its_tree() -> None:
     """zackees/ci.yml#196: the bosn test check carries a nonce the container
     must echo from its /repo, so a container bound to another worktree
