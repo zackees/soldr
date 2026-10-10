@@ -2659,6 +2659,9 @@ inherited Soldr/zccache workspace-pinned state such as `ZCCACHE_CACHE_DIR`,
 `SOLDR_TARGET_REGISTRY_RECORDED`, and `SETUP_SOLDR_*`. The `SOLDR_TARGET_CACHE_*`
 family is still scrubbed defensively even though soldr#2996 removed the target
 cache soldr used to read them for -- a pinned setup-soldr may still export them.
+The setup-soldr action now matches this (soldr#3651): `target-cache` and
+`target-cache-mode` are deprecated no-ops, and the action no longer exports
+`SOLDR_TARGET_CACHE_*` or runs a `target/` cache step.
 Pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only
 for advanced workflows that intentionally inject those values. Custom wrapper
 modes leave caller-provided wrapper environment alone; when

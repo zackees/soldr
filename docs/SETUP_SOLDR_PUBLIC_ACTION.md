@@ -80,7 +80,7 @@ steps:
 
 `v0` should treat these inputs as the beta public contract:
 
-> **Deprecated (soldr#2996).** soldr no longer implements a target cache, so the `target-cache` / `target-cache-mode` / `target-dir` inputs and the `target-cache-hit` / `target-cache-mode` outputs are inert: nothing on the soldr side reads the environment they export. They remain listed because the pinned action still declares them; retiring the inputs themselves is an upstream change. Use `soldr cook`, which is the only durable compiler cache.
+> **Deprecated (soldr#2996).** soldr no longer implements a target cache, so the `target-cache` / `target-cache-mode` / `target-dir` inputs and the `target-cache-hit` / `target-cache-mode` outputs are deprecated no-ops (soldr#3651): the action runs no `target/` cache step, exports no `SOLDR_TARGET_CACHE_*`, and prints a warning if a caller enables them. They remain declared only for compatibility. Use `soldr cook`, which is the only durable compiler cache.
 
 | Input | Meaning |
 |---|---|
@@ -92,9 +92,9 @@ steps:
 | `toolchain-file` | Alternate toolchain file path when `toolchain` is empty. |
 | `trust-mode` | Optional `SOLDR_TRUST_MODE` value. |
 | `build-cache` | Restore and save the Soldr-owned zccache compilation artifact cache across runs. Default `"true"`; set to `"false"` to opt out. |
-| `target-cache` | Restore and save the zccache-owned Rust artifact plan cache for fast CI rebuilds. Default `"true"`; set to `"false"` to cache only zccache compilation artifacts. |
-| `target-cache-mode` | Target cache mode. Default `"thin"` asks soldr to generate a bounded dependency-artifact plan for zccache; `"full"` asks zccache to cache the whole `target-dir`; `"off"` disables target artifact caching. The old `"hot"` value is accepted as a deprecated alias for `"thin"`. |
-| `target-dir` | Cargo target directory used in target-cache key shaping. Default `"target"`. |
+| `target-cache` | Deprecated no-op (soldr#3651). Default `"false"`; enabling it only prints a warning. |
+| `target-cache-mode` | Deprecated no-op (soldr#3651). Default `"off"`; `thin`/`full` are not implemented. |
+| `target-dir` | Cargo target directory (no longer used for target-cache key shaping). Default `"target"`. |
 | `tool-shims` | Optional PATH shim mode. Set to `"cargo"` to make later `cargo ...` steps run through `soldr cargo ...`; default `"false"`. |
 
 The current in-repo action also exposes `repo` as an implementation/testing override. That input is not part of the intended public `v0` beta contract and should not be documented in the extracted public action README.
@@ -110,8 +110,8 @@ The current in-repo action also exposes `repo` as an implementation/testing over
 | `cache-dir` | Action-managed runner-local cache/state root. |
 | `cache-hit` | Whether the action restored an exact cache hit. |
 | `build-cache-hit` | Whether the Soldr-owned zccache compilation cache was restored. Empty only when `build-cache` is explicitly disabled. |
-| `target-cache-hit` | Whether the Rust artifact plan cache was restored. Empty only when `target-cache` is explicitly disabled. |
-| `target-cache-mode` | Effective target cache mode. |
+| `target-cache-hit` | Deprecated; always empty (soldr#3651). |
+| `target-cache-mode` | Deprecated; always `off` (soldr#3651). |
 | `toolchain` | Exact Rust toolchain channel configured for the action. |
 | `tool-shims-dir` | Directory containing generated tool shims when enabled. |
 
@@ -127,7 +127,7 @@ The current in-repo action also exposes `repo` as an implementation/testing over
 - export `RUSTUP_TOOLCHAIN` after toolchain installation so later `cargo`, `rustc`, and `soldr cargo ...` steps stay on the same resolved toolchain
 - when `tool-shims: cargo` is enabled, resolve the real Cargo binary before prepending the generated shim directory to `PATH`, then export `SOLDR_REAL_CARGO` so Soldr avoids recursive shim lookup
 - when `build-cache: true` (the default), restore the Soldr-owned zccache cache root at setup time and save it at end-of-job (`if: always()`) so subsequent runs rehydrate zccache compilation artifacts. Keys are `setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{github.sha}` with restore-keys that first fall back to the same `{toolchain-digest}` lineage, then any cache for the same `{os}-{arch}`. GitHub's own-branch -> PR base -> default-branch restore order seeds feature-branch runs from the latest main-branch save without user configuration. Consumers that explicitly do not want cross-run cache reuse can set `build-cache: false`.
-- when `target-cache: true` (the default), restore the zccache-owned Rust artifact plan cache root at setup time and save it at end-of-job. `soldr cargo ...` generates the versioned plan and asks zccache to restore/save `thin` or explicit `full` target artifacts from that plan.
+- no target cache: `target-cache` / `target-cache-mode` are deprecated no-ops (soldr#3651); no `target/` cache is restored or saved.
 
 ### Current Limits That Must Stay Explicit
 
