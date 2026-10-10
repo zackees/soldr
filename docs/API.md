@@ -161,7 +161,7 @@ When `soldr <verb> [args...]` is invoked and `<verb>` is not a frozen soldr buil
 
 **Routed cargo built-in verbs** (cargo's first-party commands):
 
-`build`, `test`, `check`, `run`, `bench`, `doc`, `fmt`, `clippy`, `tree`, `update`, `fix`, `add`, `remove`, `metadata`, `pkgid`, `search`, `vendor`, `yank`, `owner`, `login`, `logout`, `init`, `new`, `generate-lockfile`, `verify-project`, `locate-project`, `report`, `install`, `uninstall`, `publish`
+`build`, `test`, `check`, `run`, `bench`, `doc`, `fmt`, `clippy`, `tree`, `update`, `fix`, `add`, `remove`, `metadata`, `pkgid`, `search`, `vendor`, `yank`, `owner`, `login`, `logout`, `init`, `new`, `generate-lockfile`, `verify-project`, `locate-project`, `report`, `install`, `uninstall`, `publish`, `package`, `info`
 
 **Collision policy.** These three verbs MUST stay anchored to their soldr-native meaning and are explicitly excluded from the shorthand:
 

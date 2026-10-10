@@ -68,6 +68,10 @@ pub(crate) const CARGO_BUILTIN_VERBS: &[&str] = &[
     // `install` is NOT here: soldr#2310 promoted it to `Commands::Install`.
     "uninstall",
     "publish",
+    // soldr#3637: without these, `soldr package` / `soldr info` fell
+    // through to a crates.io tool fetch instead of `cargo <verb>`.
+    "package",
+    "info",
 ];
 
 /// Predicate form of [`CARGO_BUILTIN_VERBS`]. Lives next to the const
