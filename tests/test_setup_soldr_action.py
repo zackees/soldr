@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from conftest import COOK_CACHE_ALLOWLIST_INPUT, WORKSPACE_CRATES, load_script_module
@@ -425,9 +426,15 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
     assert f"ZCCACHE_CACHE_DIR={cache_root / 'soldr' / 'cache' / 'zccache'}" in env_text
 
 
+@dataclass(frozen=True)
+class _MainRun:
+    outputs: str
+    env_text: str
+
+
 def _run_main_without_target_cache_inputs(
     tmp_path: Path, monkeypatch, *, cache: str | None, mode: str | None
-) -> tuple[str, str]:
+) -> _MainRun:
     module = _load_module()
     workspace = tmp_path / "workspace"
     runner_temp = tmp_path / "runner-temp"
@@ -467,18 +474,19 @@ def _run_main_without_target_cache_inputs(
     monkeypatch.setattr(module, "resolve_latest_soldr_release", lambda _repo: "")
 
     module.main()
-    return (
-        github_output.read_text(encoding="utf-8"),
-        github_env.read_text(encoding="utf-8"),
+    return _MainRun(
+        outputs=github_output.read_text(encoding="utf-8"),
+        env_text=github_env.read_text(encoding="utf-8"),
     )
 
 
 def test_target_cache_defaults_off_and_writes_no_target_cache_env(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    outputs, env_text = _run_main_without_target_cache_inputs(
+    run = _run_main_without_target_cache_inputs(
         tmp_path, monkeypatch, cache=None, mode=None
     )
+    outputs, env_text = run.outputs, run.env_text
     assert "target_cache_enabled=false" in outputs
     assert "target_cache_mode=off" in outputs
     assert "SOLDR_TARGET_CACHE_" not in env_text
@@ -488,9 +496,10 @@ def test_target_cache_defaults_off_and_writes_no_target_cache_env(
 def test_target_cache_inputs_are_deprecated_noops(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    outputs, env_text = _run_main_without_target_cache_inputs(
+    run = _run_main_without_target_cache_inputs(
         tmp_path, monkeypatch, cache="true", mode="full"
     )
+    outputs, env_text = run.outputs, run.env_text
     assert "target_cache_enabled=false" in outputs
     assert "target_cache_mode=off" in outputs
     assert "SOLDR_TARGET_CACHE_" not in env_text
