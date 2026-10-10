@@ -261,9 +261,9 @@ def test_claude_md_serialization_paths_exist_and_are_checked_pairs() -> None:
             assert (ROOT / token).exists(), f"CLAUDE.md names missing path: {token}"
         else:
             candidates = pair_paths | set(full_tokens)
-            assert any(
-                c.endswith("/" + token) for c in candidates
-            ), f"CLAUDE.md bare filename matches no checked pair or named path: {token}"
+            assert any(c.endswith("/" + token) for c in candidates), (
+                f"CLAUDE.md bare filename matches no checked pair or named path: {token}"
+            )
 
     for path in sorted(pair_paths):
         assert path in bullet, f"CLAUDE.md does not name checked pair path: {path}"
