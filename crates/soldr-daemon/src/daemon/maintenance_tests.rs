@@ -790,7 +790,7 @@ fn a_build_holding_the_root_lease_no_longer_starves_the_store_pass() {
             SoldrZccacheService::start_with_max_cache_bytes(
                 &paths,
                 &store_test_daemon_identity(),
-                FORCED_HARD_PRESSURE_BUDGET_BYTES,
+                FORCED_PRESSURE_BUDGET_BYTES,
             )
             .await
             .expect("start embedded zccache service"),
@@ -1011,7 +1011,7 @@ fn deferred_full_pass_escapes_starvation_after_threshold() {
             SoldrZccacheService::start_with_max_cache_bytes(
                 &paths,
                 &store_test_daemon_identity(),
-                FORCED_HARD_PRESSURE_BUDGET_BYTES,
+                FORCED_PRESSURE_BUDGET_BYTES,
             )
             .await
             .expect("start embedded zccache service"),
@@ -1066,22 +1066,24 @@ fn deferred_full_pass_escapes_starvation_after_threshold() {
 }
 
 /// soldr#3669: an artifact budget below the 7-byte retired store, so zccache
-/// classifies the pass as hard pressure on every host. Without it the pressure
-/// came from the host disk (hard below 5% free) and the tests' outcome changed
-/// with how full the machine running them was.
-const FORCED_HARD_PRESSURE_BUDGET_BYTES: u64 = 1;
+/// never classifies the store pass as pressure-free, whatever the host disk.
+/// The label is still host-shaped (soft from the budget alone, hard when the
+/// host is also below 5% free), but in both cases the store pass reclaims the
+/// retired store itself. Without the budget the outcome flipped with how full
+/// the machine running the tests was.
+const FORCED_PRESSURE_BUDGET_BYTES: u64 = 1;
 
-/// Under the forced hard pressure, the embedded store's own pass runs first
-/// and reclaims the retired store, leaving soldr's legacy sweep nothing.
+/// Under the forced budget pressure, the embedded store's own pass runs first
+/// and reclaims the 7-byte retired store, leaving soldr's legacy sweep nothing.
 fn retired_store_reclaimed(status: &MaintenanceStatus) -> bool {
     let report = status.zccache.as_ref().expect("store pass report");
-    assert_eq!(
-        report.pressure, "hard",
-        "forced budget must give hard pressure: {status:?}"
+    assert_ne!(
+        report.pressure, "none",
+        "forced budget must give store pressure: {status:?}"
     );
     assert_eq!(
         status.legacy_zccache.items_removed, 0,
         "the store pass reclaims the retired store before the legacy sweep: {status:?}"
     );
-    report.bytes_reclaimed > 0
+    report.bytes_reclaimed >= 7
 }
