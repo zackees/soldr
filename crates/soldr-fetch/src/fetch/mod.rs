@@ -523,7 +523,7 @@ async fn fetch_repo_binary_once(
         }
     }
 
-    // Resolver order (issue #873): embed → live → api. The first two
+    // Resolver order (issue #873): embed → live → api. All three
     // hops are gated by `SOLDR_RESOLVER_ORDER` for testing + debugging.
     // The embedded blob is a zstd-compressed checked-in snapshot (see
     // build.rs + manifest_v6), so a hit short-circuits all network
@@ -581,6 +581,7 @@ async fn fetch_repo_binary_once(
         }
     }
 
+    ensure_api_hop_permitted(order, cache_name)?;
     let release = github::fetch_release(repo, version, tag_prefix)
         .await
         .map_err(|err| annotate_release_fetch_error(err, repo, version, target))?;
@@ -801,7 +802,9 @@ pub fn dylint_link_help_output_is_valid(
 /// `SOLDR_RESOLVER_ORDER=live,api` to skip the embedded blob,
 /// `SOLDR_RESOLVER_ORDER=api` to skip both manifest hops). Unset or
 /// empty → all three hops fire in the default order. Tokens not in the
-/// known-set are ignored (forward-compat).
+/// known-set are warned about and ignored; if no token is recognised the
+/// value falls back to all hops, so a typo can never disable the
+/// sha-pinned manifest hops. The `api` hop is gated too.
 ///
 /// The `api` hop is always last when listed — there is no way to
 /// re-order the hops, only to disable them. This keeps the trust
@@ -815,8 +818,7 @@ pub const RESOLVER_ORDER_ENV_VAR: &str = "SOLDR_RESOLVER_ORDER";
 pub struct ResolverOrder {
     pub try_embed: bool,
     pub try_live: bool,
-    /// Reserved — the api hop is unconditional today, but the field is
-    /// parsed so a future change can disable it for tests.
+    /// When false, the unpinned GitHub Releases API hop is skipped; a manifest miss then fails with "no resolver hop permitted".
     pub try_api: bool,
 }
 
@@ -838,8 +840,9 @@ impl ResolverOrder {
         }
     }
 
-    /// Parse a comma-separated token list. Unknown tokens are ignored.
-    /// Empty / whitespace-only input falls back to `Self::all()`.
+    /// Parse a comma-separated token list. Unknown tokens are warned about
+    /// and ignored; empty input or input with no recognised token falls
+    /// back to `Self::all()`.
     pub fn parse(raw: &str) -> Self {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -850,16 +853,50 @@ impl ResolverOrder {
             try_live: false,
             try_api: false,
         };
+        let mut recognised = false;
         for token in trimmed.split(',') {
-            match token.trim().to_ascii_lowercase().as_str() {
-                "embed" => order.try_embed = true,
-                "live" => order.try_live = true,
-                "api" => order.try_api = true,
-                _ => {} // unknown token — forward-compat
+            let tok = token.trim();
+            match tok.to_ascii_lowercase().as_str() {
+                "embed" => {
+                    recognised = true;
+                    order.try_embed = true;
+                }
+                "live" => {
+                    recognised = true;
+                    order.try_live = true;
+                }
+                "api" => {
+                    recognised = true;
+                    order.try_api = true;
+                }
+                "" => {}
+                _ => eprintln!(
+                    "soldr: warning: {RESOLVER_ORDER_ENV_VAR}: ignoring unknown resolver hop `{tok}` (known: embed, live, api)"
+                ),
             }
+        }
+        if !recognised {
+            eprintln!(
+                "soldr: warning: {RESOLVER_ORDER_ENV_VAR}={trimmed:?} names no known hop; using all hops (embed,live,api)"
+            );
+            return Self::all();
         }
         order
     }
+}
+
+/// Refuse the unpinned GitHub Releases API hop when `SOLDR_RESOLVER_ORDER`
+/// excludes `api` (issue #3640).
+pub(crate) fn ensure_api_hop_permitted(
+    order: ResolverOrder,
+    cache_name: &str,
+) -> Result<(), SoldrError> {
+    if order.try_api {
+        return Ok(());
+    }
+    Err(SoldrError::Other(format!(
+        "no resolver hop permitted for {cache_name}: the embed/live manifest hops did not resolve it and {RESOLVER_ORDER_ENV_VAR} excludes `api` (the unpinned GitHub Releases API hop)"
+    )))
 }
 
 // Attempt to resolve `(repo, tag)` for the current target via the
