@@ -18,15 +18,19 @@ You get, for free:
 
 - branch-agnostic cache keys the action produces on its own
 - automatic restore on feature branches from the latest `main` cache on a miss
-- no separate `actions/cache` step; the action already runs the setup-state cache internally and also restores and saves the Soldr-owned zccache cache root and the zccache-owned Rust artifact plan cache by default
-- `cache-hit`, `build-cache-hit`, and `target-cache-hit` outputs you can read to confirm warm vs cold runs
+- no separate `actions/cache` step; the action already runs the setup-state cache internally and also restores and saves the Soldr-owned zccache cache root by default
+- `cache-hit` and `build-cache-hit` outputs (`target-cache-hit` is a deprecated output that is always empty) you can read to confirm warm vs cold runs
 
 The rest of this document explains how and why that works.
 
 > **Deprecated (soldr#2996).** soldr no longer implements a target cache. The
 > `target-cache*` inputs and outputs described below are inert on the soldr
 > side; `soldr cook` is the only durable compiler cache. Retiring the inputs
-> themselves is an upstream change to the action.
+> themselves is an upstream change to the action. As of soldr#3651 the
+> setup-soldr action matches: `target-cache` and `target-cache-mode` are
+> deprecated no-ops (default off), no `target/` cache step runs, no
+> `SOLDR_TARGET_CACHE_*` is exported, and a warning is printed if a caller
+> enables them.
 
 ## Cache Ownership And Priority
 
@@ -85,7 +89,7 @@ The `zackees/setup-soldr@v0` action (generated from [`action.yml`](../action.yml
 - **Push-only save semantics come for free.** GitHub's cache scoping already prevents feature-branch runs from overwriting `main`'s cache. You do not need to gate `save-if` yourself the way internal Rust caching wrappers usually make you do.
 - **Rehydrated state.** On a cache hit, the action restores the soldr root, `CARGO_HOME`, and `RUSTUP_HOME` under the runner-local cache/state root. The resolved Rust toolchain and the `soldr` binary are then provisioned on top of whatever was restored.
 - **Build-artifact cache enabled by default.** The action also restores the Soldr-owned zccache cache root with a toolchain-scoped key and saves it at end-of-job, so zccache compilation artifacts survive across runs unless you opt out with `build-cache: false`.
-- **Thin Rust artifact cache enabled by default.** The action restores a zccache-owned Rust artifact plan cache when a `Cargo.lock` is present. `soldr cargo ...` generates a `thin` plan by default and asks zccache to restore/save bounded dependency artifacts. It does not use an action-owned full `target/` snapshot unless the workflow explicitly sets `target-cache-mode: full`, which is still executed by zccache from the soldr-generated plan.
+- **No target cache (soldr#3651).** `target-cache` and `target-cache-mode` (`thin`/`full`) are deprecated no-ops: the action restores and saves no `target/` or Rust artifact plan cache, and enabling them only prints a warning.
 
 Release/LTO musl validation and daemon-failure diagnostics live in
 [`docs/DATALAKE_RELEASE_MUSL.md`](DATALAKE_RELEASE_MUSL.md).
@@ -144,7 +148,7 @@ Add `pull_request` only if you explicitly need CI on the PR merge commit (for ex
 
 After two pushes to the same branch, you should be able to confirm the cache lineage is healthy.
 
-1. **Check the `cache-hit`, `build-cache-hit`, and `target-cache-hit` outputs of the setup step.** Reference them from a later step like this:
+1. **Check the `cache-hit` and `build-cache-hit` outputs (`target-cache-hit` is deprecated and always empty) of the setup step.** Reference them from a later step like this:
 
    ```yaml
    - id: soldr
@@ -166,7 +170,7 @@ After two pushes to the same branch, you should be able to confirm the cache lin
 
    For the build-artifact layer, inspect the `build-cache-restore` step. Its exact keys are `setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{github.sha}` and its restore-keys fall back first to the same toolchain lineage, then to any cache for the same OS and architecture.
 
-   For the Rust artifact plan layer, inspect the `target-cache` step. Its default thin-cache keys are `setup-soldr-targetcache-thin-v2-{os}-{arch}-{target-inputs-hash}` and use exact restore only. The target-inputs hash includes the toolchain digest, `Cargo.lock`, workspace manifest hashes, Cargo config, target-dir shape, and relevant Rust flags.
+   There is no Rust artifact plan layer: the `target-cache` step was removed (soldr#3651).
 
 3. **Compare wall-clock.** A warm feature-branch run should not rebuild the toolchain or re-download soldr. A warm build-artifact restore should also reduce downstream compile time once zccache has artifacts to reuse. If you see `rustup` installing, soldr downloading from GitHub Releases, or full recompiles on every run, one of the restore layers is not hitting and something below is wrong.
 
@@ -181,8 +185,7 @@ After two pushes to the same branch, you should be able to confirm the cache lin
    or hit counts, plus the `zccache rust-plan restore/save` JSON summaries
    emitted by `soldr cargo ...`. If `build-cache-hit=true` but zccache still
    reports zero cached compilations, the build-artifact cache restored but did
-   not produce compiler-cache reuse; check whether the target-cache layer also
-   restored and whether Cargo invalidated fingerprints before zccache could
+   not produce compiler-cache reuse; check whether Cargo invalidated fingerprints before zccache could
    hit.
 
 ## Debugging Cold Misses
@@ -195,7 +198,7 @@ If feature branches keep rebuilding from scratch, check these in order:
 - **Did you pass a `cache-key-suffix` input?** That value is appended to both cache key families (see `action.yml`). A different suffix on a feature branch produces a different key than `main` writes, and the restore will only succeed through the prefix fallback. Make sure the same suffix is used (or omitted) on every branch you want to share a lineage.
 - **Mixed runner OS/arch.** Cache keys are scoped by runner OS and architecture. A cache written on `ubuntu-24.04` will not restore on `macos-15` and vice versa. Each combination needs its own warm lineage from `main`.
 - **Did someone opt out of build caching?** If `build-cache: false` is set in the workflow, `build-cache-hit` will be empty and the Soldr-owned zccache cache root will not be restored or saved.
-- **Did someone opt out of target caching?** If `target-cache: false` is set in the workflow, `target-cache-hit` will be empty and soldr will not ask zccache to restore or save Rust target artifacts.
+- **Is `target-cache` set in the workflow?** It is a deprecated no-op; `target-cache-hit` is always empty and nothing restores or saves Rust target artifacts.
 
 ---
 
