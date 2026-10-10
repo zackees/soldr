@@ -304,3 +304,46 @@ def test_a_stale_branch_is_not_blamed_for_changes_on_main(mod, repo):
         f"touched, got: {[v.path for v in violations]}"
     )
     assert checked == 1, "only the branch's own file should be examined"
+
+
+def test_a_renamed_offender_that_grows_fails(mod, repo):
+    """soldr#3652: rename detection reported moves as R and --diff-filter=AM
+    dropped them, so a moved file could grow unchecked."""
+    _write(repo, "crates/a.rs", 150)
+    _commit(repo, "base")
+    _git(repo, "checkout", "-q", "-b", "topic")
+    _git(repo, "mv", "crates/a.rs", "crates/b.rs")
+    with open(repo / "crates/b.rs", "a", encoding="utf-8") as fh:
+        fh.write("".join(f"// extra {i}\n" for i in range(10)))
+    _commit(repo, "move and grow")
+
+    violations, checked = _evaluate(mod, repo)
+    assert len(violations) == 1
+    assert violations[0].path == "crates/b.rs"
+    assert violations[0].baseline == 150
+    assert violations[0].lines == 160
+    assert checked == 1
+
+
+def test_a_pure_rename_of_an_offender_passes(mod, repo):
+    _write(repo, "crates/a.rs", 150)
+    _commit(repo, "base")
+    _git(repo, "checkout", "-q", "-b", "topic")
+    _git(repo, "mv", "crates/a.rs", "crates/b.rs")
+    _commit(repo, "move")
+
+    violations, checked = _evaluate(mod, repo)
+    assert violations == []
+    assert checked == 1
+
+
+def test_a_renamed_offender_that_shrinks_passes(mod, repo):
+    _write(repo, "crates/a.rs", 150)
+    _commit(repo, "base")
+    _git(repo, "checkout", "-q", "-b", "topic")
+    _git(repo, "mv", "crates/a.rs", "crates/b.rs")
+    _write(repo, "crates/b.rs", 140)
+    _commit(repo, "move and shrink")
+
+    violations, _ = _evaluate(mod, repo)
+    assert violations == []
