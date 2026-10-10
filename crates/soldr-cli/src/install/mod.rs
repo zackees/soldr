@@ -214,7 +214,8 @@ async fn resolve(args: &InstallArgs, paths: &SoldrPaths) -> Result<ResolvedInsta
             ..
         } => {
             let name = repo.clone();
-            let token = crate::fetch::source_zip::github_token_from_env();
+            // soldr#3639: repo-scoped, so an Actions GITHUB_TOKEN is never sent to a foreign repo.
+            let token = crate::fetch::github::github_auth_token_for(owner, repo);
 
             // Explicit ref flag wins over everything.
             let flag_ref = if args.head {

@@ -381,6 +381,17 @@ fn github_auth_token_for_repo(repo: &RepoInfo) -> Option<String> {
     )
 }
 
+/// Repo-scoped GitHub credential for `owner/repo` (soldr#3639). In GitHub
+/// Actions, `GH_TOKEN`/`GITHUB_TOKEN` are only sent to the workflow's own
+/// repository (`GITHUB_REPOSITORY`); `SOLDR_GITHUB_TOKEN` is always honoured.
+/// This is the single resolver for both the release API and codeload source zips.
+pub fn github_auth_token_for(owner: &str, repo: &str) -> Option<String> {
+    github_auth_token_for_repo(&RepoInfo {
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+    })
+}
+
 fn github_auth_token_for_repo_env(
     repo: &RepoInfo,
     soldr_token: Option<String>,
@@ -565,6 +576,29 @@ mod tests {
             Some("true".to_string()),
         );
         assert_eq!(token.as_deref(), Some("gh-actions"));
+    }
+
+    #[test]
+    fn source_zip_token_skips_actions_token_for_foreign_repo() {
+        // soldr#3639: GITHUB_ACTIONS=true, GITHUB_REPOSITORY=a/b, GITHUB_TOKEN=x -> no token for c/d.
+        let token = github_auth_token_for_repo_env(
+            &repo("c", "d"),
+            None,
+            None,
+            Some("x".to_string()),
+            Some("a/b".to_string()),
+            Some("true".to_string()),
+        );
+        assert!(token.is_none());
+        let own = github_auth_token_for_repo_env(
+            &repo("a", "b"),
+            None,
+            None,
+            Some("x".to_string()),
+            Some("a/b".to_string()),
+            Some("true".to_string()),
+        );
+        assert_eq!(own.as_deref(), Some("x"));
     }
 
     #[test]
