@@ -236,4 +236,65 @@ mod journal_hygiene_tests {
         assert!(identity.requester_exe.is_some());
         assert_eq!(identity.requester_pid, Some(std::process::id()));
     }
+
+    /// soldr#3643: rotation must not lose lines appended while it runs.
+    /// Rotation reads the journal, then rewrites it; an event appended
+    /// between the read and the rewrite is silently dropped. 2000 race
+    /// events fit inside the 5000 kept lines and are the newest, so
+    /// retention can never explain a missing one.
+    #[test]
+    fn rotation_preserves_lines_appended_concurrently() {
+        for round in 0..10 {
+            let (_tmp, paths) = temp_paths();
+            let path = journal_path(&paths);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let content: String = (0..20_000).map(|i| format!("{{\"n\":{i}}}\n")).collect();
+            std::fs::write(&path, content).unwrap();
+
+            let appender_paths = paths.clone();
+            let appender = std::thread::spawn(move || {
+                for i in 0..2000 {
+                    append_lifecycle_event_with(
+                        &appender_paths,
+                        &format!("race-{i}"),
+                        LifecycleDetails::default(),
+                    );
+                }
+            });
+            rotate_lifecycle_journal(&paths);
+            appender.join().expect("appender thread");
+
+            let raw = std::fs::read_to_string(&path).unwrap_or_default();
+            let missing: Vec<usize> = (0..2000)
+                .filter(|i| !raw.contains(&format!("\"event\":\"race-{i}\"")))
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "round {round}: rotation lost {} concurrently appended lines, first: {:?}",
+                missing.len(),
+                &missing[..missing.len().min(5)]
+            );
+        }
+    }
+
+    /// soldr#3643: rotation must not leave a `<journal>*.tmp` file behind.
+    #[test]
+    fn rotation_leaves_no_temp_files() {
+        let (_tmp, paths) = temp_paths();
+        let path = journal_path(&paths);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let content: String = (0..10_001).map(|i| format!("{{\"n\":{i}}}\n")).collect();
+        std::fs::write(&path, content).unwrap();
+
+        rotate_lifecycle_journal(&paths);
+
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let leftovers: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(&name) && n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+    }
 }
