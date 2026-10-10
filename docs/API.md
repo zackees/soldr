@@ -2546,6 +2546,7 @@ Commands:
 |---|---|---|
 | `RUSTC_WRAPPER` | Internal build hook used by `soldr cargo ...` | unset |
 | `SOLDR_CACHE_ENABLED` | Internal toggle propagated from `soldr cargo ...` into wrapper mode | `1` |
+| `SOLDR_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` | Credentials for GitHub release lookups and `soldr install` codeload source-zip downloads. `SOLDR_GITHUB_TOKEN` is always sent. Inside GitHub Actions (`GITHUB_ACTIONS=true`), `GH_TOKEN`/`GITHUB_TOKEN` are sent only for the workflow's own repository (`GITHUB_REPOSITORY`); requests to other repositories go unauthenticated unless `SOLDR_GITHUB_TOKEN` is set (soldr#3639). | unset |
 | `SOLDR_RUSTC_WRAPPER` | Replace Soldr's normal embedded-zccache route with another wrapper binary, or disable rustc wrapper injection with `none` / empty while leaving other Soldr front-door behavior intact | unset |
 | `SOLDR_REAL_<TOOL>` (one per toolchain binary) | Internal real-tool path overrides used by setup-soldr PATH shims to avoid recursive tool lookup | unset |
 | `SOLDR_ZCCACHE_BIN` | Legacy compatibility variable; it does not replace the embedded service on the normal `soldr cargo ...` path. Use `SOLDR_RUSTC_WRAPPER=/path/to/zccache` for an intentional external-wrapper experiment. | unset |

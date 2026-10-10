@@ -34,21 +34,12 @@ pub struct ExtractedSource {
     pub bytes: u64,
 }
 
-/// Read a GitHub token from the standard env vars, preferring the
-/// soldr-specific spelling. Empty values are treated as absent.
-pub fn github_token_from_env() -> Option<String> {
-    for key in ["SOLDR_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] {
-        if let Ok(value) = std::env::var(key) {
-            if !value.trim().is_empty() {
-                return Some(value);
-            }
-        }
-    }
-    None
-}
-
 /// Stream a codeload zip at `url` and extract its whole tree into
 /// `dest_dir`, returning the repository root directory inside it.
+///
+/// Callers should obtain `token` from
+/// `crate::fetch::github::github_auth_token_for(owner, repo)` so Actions
+/// tokens are never sent to foreign repos.
 ///
 /// `token`, when present, is attached as a bearer credential so private
 /// repositories resolve. A 404/403 with no token is surfaced with a

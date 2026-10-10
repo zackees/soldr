@@ -110,7 +110,13 @@ async fn acquire_codeload_zip(
     }
     cache::mark_partial(&cache_dir)?;
 
-    let token = crate::fetch::source_zip::github_token_from_env();
+    // soldr#3639: repo-scoped token, never the workflow token for a foreign repo.
+    let token = match &resolved.target {
+        InstallTarget::GitHub { owner, repo, .. } => {
+            crate::fetch::github::github_auth_token_for(owner, repo)
+        }
+        _ => None,
+    };
     let extracted =
         crate::fetch::source_zip::stream_and_extract_source_zip(url, &cache_dir, token.as_deref())
             .await?;
