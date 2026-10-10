@@ -2183,6 +2183,8 @@ Stages, in order:
    `--max-src-age=7days --max-crate-age=14days --max-git-co-age=7days`,
    each clamped to `auto_gc.min_age_secs`.
 
+**Target registration (soldr#3645).** The rustc wrapper resolves the workspace target directory for build-lifecycle records and GC registration from `CARGO_TARGET_DIR` (absolute, or relative resolved against the invocation's current directory, matching Cargo). Otherwise it walks up from rustc's `--out-dir` to the nearest ancestor named `target`, or failing that the nearest ancestor carrying Cargo's target-root markers (`CACHEDIR.TAG` / `.rustc_info.json`), so non-`target`-named directories such as `build/` or `out/` are registered. If nothing resolves, the wrapper silently skips registration.
+
 ### `soldr gc target` (issue #574)
 
 Cross-repo `target/` reclamation: walks a configurable root, finds every
