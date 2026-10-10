@@ -66,17 +66,11 @@ pub(crate) fn epoch_anchor_line(now_unix_ms: i64) -> String {
 /// redrawing progress bar is noise. The env var overrides both ways so
 /// neither default is a trap.
 pub(crate) fn should_timestamp(env_value: Option<&str>, is_terminal: bool) -> bool {
-    if let Some(v) = env_value.map(str::trim) {
-        if v.eq_ignore_ascii_case("1")
-            || v.eq_ignore_ascii_case("true")
-            || v.eq_ignore_ascii_case("on")
-        {
+    if let Some(v) = env_value {
+        if crate::core::flag_value(v) {
             return true;
         }
-        if v.eq_ignore_ascii_case("0")
-            || v.eq_ignore_ascii_case("false")
-            || v.eq_ignore_ascii_case("off")
-        {
+        if crate::core::is_off_value(v) {
             return false;
         }
     }
@@ -252,10 +246,10 @@ mod tests {
 
     #[test]
     fn env_override_wins_in_both_directions() {
-        for on in ["1", "true", "on", "ON", " true "] {
+        for on in ["1", "true", "on", "ON", " true ", "yes", "YES"] {
             assert!(should_timestamp(Some(on), true), "{on:?} must force on");
         }
-        for off in ["0", "false", "off", "OFF"] {
+        for off in ["0", "false", "off", "OFF", "no", "NO", " no "] {
             assert!(
                 !should_timestamp(Some(off), false),
                 "{off:?} must force off"

@@ -103,15 +103,7 @@ const SUBCOMMAND_TO_COMPONENT: &[ComponentForSubcommand] = &[
 ];
 
 fn opt_out_enabled() -> bool {
-    matches!(
-        std::env::var(SOLDR_NO_AUTO_COMPONENT_ENV)
-            .ok()
-            .as_deref()
-            .map(str::trim)
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("1") | Some("true") | Some("yes") | Some("on")
-    )
+    crate::core::flag(SOLDR_NO_AUTO_COMPONENT_ENV)
 }
 
 fn lookup_component(sub: &str) -> Option<&'static ComponentForSubcommand> {
@@ -301,6 +293,12 @@ mod tests {
         assert!(!is_nightly_channel(Some("beta")));
         assert!(!is_nightly_channel(Some("1.94.1")));
         assert!(!is_nightly_channel(None));
+    }
+
+    #[test]
+    fn opt_out_shares_canonical_flag_parser() {
+        // This switch uses the shared parser, not a hand-rolled match.
+        assert!(crate::core::flag_value(" ON "));
     }
 
     #[test]
