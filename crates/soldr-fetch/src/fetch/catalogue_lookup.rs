@@ -331,20 +331,18 @@ pub async fn cached_catalogue_config_count() -> usize {
     catalogue_cache().lock().await.len()
 }
 
-/// True when [`MANIFEST_DISABLE_ENV_VAR`] is set to a truthy value.
-/// `1`, `true`, `yes` (case-insensitive) all count; empty / unset /
-/// `0` / `false` / `no` count as enabled.
+/// True when [`MANIFEST_DISABLE_ENV_VAR`] is set to a recognised soldr "on"
+/// spelling (the canonical `crate::core::flag` contract, soldr#2740/#3638).
+/// Absent, empty, `0`/`false`/`no`/`off`, and any unrecognised value keep the
+/// sha-pinned manifest enabled -- a typo must never route fetches to the
+/// unpinned GitHub API path.
 fn disabled_via_env() -> bool {
-    match std::env::var(MANIFEST_DISABLE_ENV_VAR) {
-        Ok(value) => {
-            let normalized = value.trim().to_ascii_lowercase();
-            !normalized.is_empty()
-                && normalized != "0"
-                && normalized != "false"
-                && normalized != "no"
-        }
-        Err(_) => false,
-    }
+    disabled_from_value(std::env::var(MANIFEST_DISABLE_ENV_VAR).ok().as_deref())
+}
+
+/// Pure counterpart of [`disabled_via_env`] for tests.
+fn disabled_from_value(value: Option<&str>) -> bool {
+    value.is_some_and(crate::core::flag_value)
 }
 
 /// soldr#988 Phase 2 — resolve the catalogue origin, honoring
@@ -745,5 +743,28 @@ mod lru_tests {
             .expect("the promoted entry must survive the next eviction");
         assert!(Arc::ptr_eq(&promoted, &indexes[0]));
         assert_eq!(entries.len(), MAX_CACHED_CONFIGS);
+    }
+
+    #[test]
+    fn manifest_disable_uses_canonical_flag_parser_soldr_3638() {
+        for off in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("false"),
+            Some("no"),
+            Some("off"),
+            Some("OFF"),
+            Some(" off "),
+            Some("nope"),
+        ] {
+            assert!(
+                !disabled_from_value(off),
+                "{off:?} must keep the pinned manifest enabled"
+            );
+        }
+        for on in [Some("1"), Some("true"), Some("YES")] {
+            assert!(disabled_from_value(on), "{on:?} must disable the manifest");
+        }
     }
 }
