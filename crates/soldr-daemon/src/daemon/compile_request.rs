@@ -66,7 +66,8 @@ fn build_compile_lifecycle_from(
         soldr_cache::cache_lib::target_registry::resolve_workspace_target_dir_with_env(
             rustc_args,
             cargo_target_dir,
-        )?;
+        )
+        .or_else(|| target_dir_from_cachedir_tag(rustc_args))?;
     Some(CompileLifecycle {
         session_id,
         crate_name: parse_crate_name(rustc_args)
@@ -75,6 +76,30 @@ fn build_compile_lifecycle_from(
         target_dir: target_dir.display().to_string(),
         started_at_ms: current_unix_ms(),
     })
+}
+
+/// Fallback for a relocated target dir not named `target` (e.g. a custom
+/// `CARGO_TARGET_DIR` the client did not forward): walk up from `--out-dir`
+/// to the nearest ancestor holding cargo's `CACHEDIR.TAG`.
+fn target_dir_from_cachedir_tag(args: &[String]) -> Option<std::path::PathBuf> {
+    let mut iter = args.iter();
+    let mut out_dir = None;
+    while let Some(arg) = iter.next() {
+        if arg == "--out-dir" {
+            out_dir = iter.next().cloned();
+            break;
+        }
+        if let Some(rest) = arg.strip_prefix("--out-dir=") {
+            out_dir = Some(rest.to_string());
+            break;
+        }
+    }
+    let out_dir = std::path::PathBuf::from(out_dir?);
+    let found = out_dir
+        .ancestors()
+        .find(|dir| dir.join("CACHEDIR.TAG").is_file())?
+        .to_path_buf();
+    Some(std::fs::canonicalize(&found).unwrap_or(found))
 }
 
 fn parse_crate_name(args: &[String]) -> Option<&str> {
