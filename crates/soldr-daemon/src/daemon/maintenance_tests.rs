@@ -787,9 +787,13 @@ fn a_build_holding_the_root_lease_no_longer_starves_the_store_pass() {
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
         std::fs::create_dir_all(&paths.root).expect("root");
         let service = Arc::new(
-            SoldrZccacheService::start(&paths, &store_test_daemon_identity())
-                .await
-                .expect("start embedded zccache service"),
+            SoldrZccacheService::start_with_max_cache_bytes(
+                &paths,
+                &store_test_daemon_identity(),
+                FORCED_PRESSURE_BUDGET_BYTES,
+            )
+            .await
+            .expect("start embedded zccache service"),
         );
         let retired = crate::zccache_embedded::embedded_cache_root(&paths).join("v0.0.1");
         std::fs::create_dir_all(&retired).expect("retired store");
@@ -1004,9 +1008,13 @@ fn deferred_full_pass_escapes_starvation_after_threshold() {
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
         std::fs::create_dir_all(&paths.root).expect("root");
         let service = Arc::new(
-            SoldrZccacheService::start(&paths, &store_test_daemon_identity())
-                .await
-                .expect("start embedded zccache service"),
+            SoldrZccacheService::start_with_max_cache_bytes(
+                &paths,
+                &store_test_daemon_identity(),
+                FORCED_PRESSURE_BUDGET_BYTES,
+            )
+            .await
+            .expect("start embedded zccache service"),
         );
         let context = MaintenanceContext {
             paths: paths.clone(),
@@ -1057,14 +1065,25 @@ fn deferred_full_pass_escapes_starvation_after_threshold() {
     });
 }
 
-/// The retired store is reclaimed by soldr's legacy sweep, or -- when the host
-/// filesystem is under hard pressure (<5% free, as on a full dev disk) -- by
-/// the embedded store's own pressure pass, which runs first and leaves the
-/// legacy sweep nothing to remove. Either way it was reclaimed under the lease.
+/// soldr#3669: an artifact budget below the 7-byte retired store, so zccache
+/// never classifies the store pass as pressure-free, whatever the host disk.
+/// The label is still host-shaped (soft from the budget alone, hard when the
+/// host is also below 5% free), but in both cases the store pass reclaims the
+/// retired store itself. Without the budget the outcome flipped with how full
+/// the machine running the tests was.
+const FORCED_PRESSURE_BUDGET_BYTES: u64 = 1;
+
+/// Under the forced budget pressure, the embedded store's own pass runs first
+/// and reclaims the 7-byte retired store, leaving soldr's legacy sweep nothing.
 fn retired_store_reclaimed(status: &MaintenanceStatus) -> bool {
-    status.legacy_zccache.items_removed == 1
-        || status
-            .zccache
-            .as_ref()
-            .is_some_and(|report| report.pressure == "hard" && report.bytes_reclaimed > 0)
+    let report = status.zccache.as_ref().expect("store pass report");
+    assert_ne!(
+        report.pressure, "none",
+        "forced budget must give store pressure: {status:?}"
+    );
+    assert_eq!(
+        status.legacy_zccache.items_removed, 0,
+        "the store pass reclaims the retired store before the legacy sweep: {status:?}"
+    );
+    report.bytes_reclaimed >= 7
 }
