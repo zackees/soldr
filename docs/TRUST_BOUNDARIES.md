@@ -123,6 +123,7 @@ As of the `0.6.x` line, `soldr` enforces integrity on every third-party fetch:
 - users can pin per-asset SHA-256 values in a TOML file at the path named by `SOLDR_CHECKSUMS_FILE`; any pin mismatch is a hard error regardless of mode
 - `SOLDR_TRUST_MODE=strict` refuses to install any tool that does not have a matching pin
 - `SOLDR_TRUST_MODE=permissive` (the default) installs and emits a `trust: unverified` warning when no pin is available; this preserves the convenience/bootstrap path while making the trust state legible
+- Any unrecognised `SOLDR_TRUST_MODE` value (for example a typo such as `strcit`, or `1`) fails closed to `strict` with a warning (soldr#3681); only `permissive`, an empty value, or unset select permissive mode
 - zccache is not fetched by the runtime tool resolver; Cargo verifies and builds the exact dependency recorded in `Cargo.lock`, and release archives contain only the embedded implementation
 - `reld` (the polylinker) is fetched only when a project or `SOLDR_LINKER` selects it (`reld` or the `fast` default); the fetch is pinned to v0.1.0 (the static musl asset on Linux x64 hosts) and verified against built-in SHA-256 pins sourced from reld's own `SHA256SUMS`, going through the same trust verification as every other runtime fetch — `SOLDR_CHECKSUMS_FILE` and `SOLDR_TRUST_MODE=strict` both apply
 

@@ -6,7 +6,7 @@
 //!
 //! - `sha256_of(bytes)` — compute the canonical integrity hash of an archive.
 //! - `TrustMode` — `permissive` (default) or `strict`, read from
-//!   `SOLDR_TRUST_MODE`.
+//!   `SOLDR_TRUST_MODE`. Unrecognised values fail closed to `strict`.
 //! - `PinnedChecksumStore` — loaded from a TOML file referenced by
 //!   `SOLDR_CHECKSUMS_FILE`, or returned empty if the env var is unset.
 //! - `verify_download(asset, tool, version, sha256, store, mode)` — returns a
@@ -38,20 +38,22 @@ pub enum TrustMode {
 
 impl TrustMode {
     pub fn from_env() -> Self {
-        match std::env::var(TRUST_MODE_ENV_VAR)
-            .ok()
-            .as_deref()
-            .map(str::trim)
-            .map(str::to_ascii_lowercase)
-            .as_deref()
-        {
+        Self::parse(std::env::var(TRUST_MODE_ENV_VAR).ok().as_deref())
+    }
+
+    /// Parse a raw `SOLDR_TRUST_MODE` value. Pure so it is testable without
+    /// mutating the process environment.
+    pub fn parse(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
             Some("strict") => Self::Strict,
             Some("permissive") | Some("") | None => Self::Permissive,
             Some(other) => {
                 eprintln!(
-                    "soldr: ignoring unknown {TRUST_MODE_ENV_VAR}={other:?}; expected \"permissive\" or \"strict\""
+                    "soldr: unknown {TRUST_MODE_ENV_VAR}={other:?}; expected \"permissive\" or \"strict\"; failing closed to \"strict\""
                 );
-                Self::Permissive
+                // soldr#3681: fail closed. A typo in a hardening switch must
+                // never silently disable it.
+                Self::Strict
             }
         }
     }
@@ -206,14 +208,25 @@ mod tests {
 
     #[test]
     fn trust_mode_defaults_to_permissive() {
-        // Not touching the process env to avoid races; validate the parser.
-        let parse = |v: Option<&str>| match v.map(str::to_ascii_lowercase).as_deref() {
-            Some("strict") => TrustMode::Strict,
-            _ => TrustMode::Permissive,
-        };
-        assert_eq!(parse(None), TrustMode::Permissive);
-        assert_eq!(parse(Some("strict")), TrustMode::Strict);
-        assert_eq!(parse(Some("permissive")), TrustMode::Permissive);
+        assert_eq!(TrustMode::parse(None), TrustMode::Permissive);
+        assert_eq!(TrustMode::parse(Some("")), TrustMode::Permissive);
+        assert_eq!(TrustMode::parse(Some("  ")), TrustMode::Permissive);
+        assert_eq!(TrustMode::parse(Some("permissive")), TrustMode::Permissive);
+        assert_eq!(TrustMode::parse(Some("Permissive")), TrustMode::Permissive);
+        assert_eq!(TrustMode::parse(Some("strict")), TrustMode::Strict);
+        assert_eq!(TrustMode::parse(Some(" STRICT ")), TrustMode::Strict);
+    }
+
+    #[test]
+    fn trust_mode_unknown_value_fails_closed() {
+        // soldr#3681: a typo in a hardening switch must not disable it.
+        for typo in ["strcit", "1", "true", "on", "yes"] {
+            assert_eq!(
+                TrustMode::parse(Some(typo)),
+                TrustMode::Strict,
+                "SOLDR_TRUST_MODE={typo:?} must fail closed"
+            );
+        }
     }
 
     #[test]
