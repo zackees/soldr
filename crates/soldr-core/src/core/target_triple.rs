@@ -84,32 +84,32 @@ impl TargetTriple {
         Self::from_triple(&compile_time_fallback_triple()?)
     }
 
+    /// Parse a Rust target triple. Accepts only the exact supported triples
+    /// and rejects ABI variants such as `-gnullvm` / `-gnux32` instead of
+    /// collapsing them onto `-gnu` (soldr#3641).
     pub fn from_triple(triple: &str) -> Result<Self, SoldrError> {
         let triple = triple.trim();
-        let arch = if triple.starts_with("x86_64-") {
-            Arch::X86_64
-        } else if triple.starts_with("aarch64-") {
-            Arch::Aarch64
+        let (arch, rest) = if let Some(rest) = triple.strip_prefix("x86_64-") {
+            (Arch::X86_64, rest)
+        } else if let Some(rest) = triple.strip_prefix("aarch64-") {
+            (Arch::Aarch64, rest)
         } else {
             return Err(SoldrError::UnsupportedPlatform(format!(
                 "unsupported target arch in triple: {triple}"
             )));
         };
 
-        let (os, env) = if triple.contains("-pc-windows-msvc") {
-            (Os::Windows, Env::Msvc)
-        } else if triple.contains("-pc-windows-gnu") {
-            (Os::Windows, Env::Gnu)
-        } else if triple.contains("-unknown-linux-musl") {
-            (Os::Linux, Env::Musl)
-        } else if triple.contains("-unknown-linux-gnu") {
-            (Os::Linux, Env::Gnu)
-        } else if triple.contains("-apple-darwin") {
-            (Os::MacOs, Env::None)
-        } else {
-            return Err(SoldrError::UnsupportedPlatform(format!(
-                "unsupported target triple: {triple}"
-            )));
+        let (os, env) = match rest {
+            "pc-windows-msvc" => (Os::Windows, Env::Msvc),
+            "pc-windows-gnu" => (Os::Windows, Env::Gnu),
+            "unknown-linux-musl" => (Os::Linux, Env::Musl),
+            "unknown-linux-gnu" => (Os::Linux, Env::Gnu),
+            "apple-darwin" => (Os::MacOs, Env::None),
+            _ => {
+                return Err(SoldrError::UnsupportedPlatform(format!(
+                    "unsupported target triple: {triple}"
+                )))
+            }
         };
 
         Ok(Self { arch, os, env })
@@ -399,5 +399,39 @@ mod tests {
             "expected *-unknown-linux-musl, got {}",
             target.triple(),
         );
+    }
+
+    #[test]
+    fn from_triple_rejects_abi_variants_soldr_3641() {
+        for t in [
+            "x86_64-pc-windows-gnullvm",
+            "aarch64-pc-windows-gnullvm",
+            "x86_64-unknown-linux-gnux32",
+            "x86_64-unknown-linux-gnueabihf",
+            "x86_64-pc-windows-msvc-extra",
+            "x86_64-apple-darwin-foo",
+        ] {
+            assert!(
+                TargetTriple::from_triple(t).is_err(),
+                "{t} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn from_triple_round_trips_supported_triples() {
+        for arch in ["x86_64", "aarch64"] {
+            for rest in [
+                "pc-windows-msvc",
+                "pc-windows-gnu",
+                "unknown-linux-gnu",
+                "unknown-linux-musl",
+                "apple-darwin",
+            ] {
+                let t = format!("{arch}-{rest}");
+                assert_eq!(TargetTriple::from_triple(&t).unwrap().triple(), t);
+            }
+        }
+        assert!(TargetTriple::from_triple("  x86_64-unknown-linux-gnu\n").is_ok());
     }
 }
