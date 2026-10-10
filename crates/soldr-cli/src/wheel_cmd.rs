@@ -272,11 +272,7 @@ fn release_requested_in(args: &[String]) -> bool {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--release" | "-r" | "--profile=release" => return true,
-            "--profile" => {
-                if iter.next().is_some_and(|value| value == "release") {
-                    return true;
-                }
-            }
+            "--profile" if iter.next().is_some_and(|value| value == "release") => return true,
             _ => {}
         }
     }
