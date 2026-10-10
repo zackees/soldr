@@ -521,7 +521,10 @@ mod tests {
     #[test]
     fn detects_single_element_array_target_from_cargo_config() {
         let dir = tempdir().unwrap();
-        write_cargo_config(dir.path(), "[build]\ntarget = [\"x86_64-unknown-linux-musl\"]\n");
+        write_cargo_config(
+            dir.path(),
+            "[build]\ntarget = [\"x86_64-unknown-linux-musl\"]\n",
+        );
 
         assert_eq!(
             read_explicit_target_override(Some(dir.path())),
