@@ -477,6 +477,7 @@ soldr wheel --release --target mac-arm64 --out dist # later arguments reach matu
 
 `--release` is **opt-in**, matching `cargo` and `soldr build`: a bare
 `soldr wheel` builds the dev profile, which is what you want while iterating.
+A release profile forwarded to maturin -- `-r`, `--release`, `--profile release`, or `--profile=release` -- gets exactly the same release policy as `soldr wheel --release` (glibc 2.17 sysroot and `manylinux_2_17` tag on `*-linux-gnu`, release-profile bundled bins), and combining one with `--debug` is refused (soldr#3636).
 `--target` is optional and defaults to the host triple. `--target`,
 `--release` and `--host-glibc` must come before any forwarded maturin
 arguments.
