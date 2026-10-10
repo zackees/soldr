@@ -818,8 +818,8 @@ fn a_build_holding_the_root_lease_no_longer_starves_the_store_pass() {
             status.zccache.is_some() && status.zccache_measured_at_ms.is_some(),
             "the store pass must run while a build holds the lease: {status:?}"
         );
-        assert_eq!(
-            status.legacy_zccache.items_removed, 1,
+        assert!(
+            retired_store_reclaimed(&status),
             "the retired store must be reclaimed while a build holds the lease: {status:?}"
         );
         assert!(!retired.exists());
@@ -1043,7 +1043,7 @@ fn deferred_full_pass_escapes_starvation_after_threshold() {
         );
         assert_eq!(status.successful_at_ms, None, "collectors stay deferred");
         assert!(status.zccache_measured_at_ms.is_some(), "{status:?}");
-        assert_eq!(status.legacy_zccache.items_removed, 1, "{status:?}");
+        assert!(retired_store_reclaimed(&status), "{status:?}");
         assert!(!retired.exists());
 
         drop(build);
@@ -1055,4 +1055,16 @@ fn deferred_full_pass_escapes_starvation_after_threshold() {
                 .expect("shutdown");
         }
     });
+}
+
+/// The retired store is reclaimed by soldr's legacy sweep, or -- when the host
+/// filesystem is under hard pressure (<5% free, as on a full dev disk) -- by
+/// the embedded store's own pressure pass, which runs first and leaves the
+/// legacy sweep nothing to remove. Either way it was reclaimed under the lease.
+fn retired_store_reclaimed(status: &MaintenanceStatus) -> bool {
+    status.legacy_zccache.items_removed == 1
+        || status
+            .zccache
+            .as_ref()
+            .is_some_and(|report| report.pressure == "hard" && report.bytes_reclaimed > 0)
 }
