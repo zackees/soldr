@@ -63,9 +63,12 @@ fn build_compile_lifecycle_from(
         .find(|(k, _)| k == "CARGO_TARGET_DIR")
         .map(|(_, v)| std::ffi::OsStr::new(v.as_str()));
     let target_dir =
-        soldr_cache::cache_lib::target_registry::resolve_workspace_target_dir_with_env(
+        // The client's CARGO_TARGET_DIR, never the daemon's own (soldr#3644);
+        // no cwd: a relative value falls through to the out-dir walk.
+        soldr_cache::cache_lib::target_registry::resolve_workspace_target_dir_with(
             rustc_args,
             cargo_target_dir,
+            None,
         )
         .or_else(|| target_dir_from_cachedir_tag(rustc_args))?;
     Some(CompileLifecycle {
@@ -171,6 +174,23 @@ pub fn is_compile_env_var(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soldr_cache::cache_lib::target_registry::resolve_workspace_target_dir_with;
+
+    #[test]
+    fn supplied_cargo_target_dir_is_used_not_process_env() {
+        let b = tempfile::tempdir().expect("tempdir");
+        let got = resolve_workspace_target_dir_with(&[], Some(b.path().as_os_str()), None);
+        assert_eq!(got, Some(std::fs::canonicalize(b.path()).unwrap()));
+    }
+
+    #[test]
+    fn relative_cargo_target_dir_without_cwd_resolves_nothing() {
+        let rel = std::ffi::OsStr::new("relative/target");
+        assert_eq!(
+            resolve_workspace_target_dir_with(&[], Some(rel), None),
+            None
+        );
+    }
 
     fn session_env() -> (String, String) {
         (

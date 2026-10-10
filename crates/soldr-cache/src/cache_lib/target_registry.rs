@@ -297,17 +297,6 @@ pub fn resolve_workspace_target_dir(rustc_args: &[String]) -> Option<PathBuf> {
     )
 }
 
-/// Same as [`resolve_workspace_target_dir`] but with the client's
-/// `CARGO_TARGET_DIR` supplied explicitly and no cwd. Callers resolving on
-/// behalf of another process (the daemon) must pass that process's
-/// `CARGO_TARGET_DIR`, not their own (soldr#3644).
-pub fn resolve_workspace_target_dir_with_env(
-    rustc_args: &[String],
-    cargo_target_dir: Option<&std::ffi::OsStr>,
-) -> Option<PathBuf> {
-    resolve_workspace_target_dir_with(rustc_args, cargo_target_dir, None)
-}
-
 /// Env-free core of [`resolve_workspace_target_dir`].
 pub fn resolve_workspace_target_dir_with(
     rustc_args: &[String],
@@ -530,19 +519,6 @@ mod tests {
     use super::*;
     use fs2::FileExt;
     use tempfile::tempdir;
-
-    #[test]
-    fn with_env_uses_supplied_cargo_target_dir_not_process_env() {
-        let b = tempdir().expect("tempdir");
-        let got = resolve_workspace_target_dir_with_env(&[], Some(b.path().as_os_str()));
-        assert_eq!(got, Some(std::fs::canonicalize(b.path()).unwrap()));
-    }
-
-    #[test]
-    fn with_env_relative_cargo_target_dir_falls_back_to_out_dir() {
-        let rel = std::ffi::OsStr::new("relative/target");
-        assert_eq!(resolve_workspace_target_dir_with_env(&[], Some(rel)), None);
-    }
 
     fn fixed_now() -> i64 {
         1_700_000_000
