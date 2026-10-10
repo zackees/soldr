@@ -658,3 +658,47 @@ fn rustup_passthrough_download_verbs_are_recognised() {
         );
     }
 }
+
+fn pin_args(words: &[&str]) -> Vec<String> {
+    words.iter().map(|w| (*w).to_string()).collect()
+}
+
+#[test]
+fn scope_rustup_args_to_pin_walks_ancestors_for_pin() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("rust-toolchain.toml"),
+        "[toolchain]\nchannel = \"1.98.1\"\n",
+    )
+    .unwrap();
+    let sub = root.path().join("a/b");
+    std::fs::create_dir_all(&sub).unwrap();
+    let got = scope_rustup_args_to_pin_in(&pin_args(&["target", "add", "x"]), &sub).unwrap();
+    assert_eq!(
+        got,
+        pin_args(&["target", "add", "--toolchain", "1.98.1", "x"])
+    );
+}
+
+#[test]
+fn scope_rustup_args_to_pin_keeps_explicit_toolchain() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("rust-toolchain.toml"),
+        "[toolchain]\nchannel = \"1.98.1\"\n",
+    )
+    .unwrap();
+    let input = pin_args(&["target", "add", "--toolchain", "nightly", "x"]);
+    let got = scope_rustup_args_to_pin_in(&input, root.path()).unwrap();
+    assert_eq!(got, input);
+}
+
+#[test]
+fn scope_rustup_args_to_pin_unchanged_without_manifest() {
+    let root = tempfile::tempdir().unwrap();
+    let sub = root.path().join("a");
+    std::fs::create_dir_all(&sub).unwrap();
+    let input = pin_args(&["target", "add", "x"]);
+    let got = scope_rustup_args_to_pin_in(&input, &sub).unwrap();
+    assert_eq!(got, input);
+}

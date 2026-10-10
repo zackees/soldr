@@ -82,7 +82,8 @@ pub(crate) async fn run_toolchain_ensure(json: bool) -> Result<i32, SoldrError> 
     // 2. Read the manifest. Missing manifest is not an error — emit the
     //    schema-v1 empty payload so consumers can still parse it.
     let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
+    // soldr#3633: nearest pin in cwd or ancestors, like cargo/rustup.
+    let manifest = crate::core::read_rust_toolchain_manifest_from_ancestors(&workspace_root)?;
 
     // 3. Run the prepare pipeline if a channel is declared. Otherwise
     //    skip it entirely (matching `prepare`'s no-channel behavior).
