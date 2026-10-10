@@ -58,10 +58,16 @@ platforms = ["linux-x64"]
 suites    = ["unit", "smoke"]
 budget    = { critical-path = "8m" }
 
+# `pre-prune` is deliberately ABSENT from both writer flows (`main`, `nightly`).
+# It was declared but never honoured: nothing here runs `ci-lint cache preprune`,
+# and CACHE-004 waived the lockfile-change peak purely on that declaration
+# (zackees/ci.yml#352, rule CACHE-034; soldr#3583). `ci-pre.yml` cannot host a
+# real pre-prune: it holds `actions: write` but nothing in `ci.yml` `needs:` it
+# (deliberately -- a janitor never delays a build), so its deletions are not
+# ordered ahead of this repository's cache saves (zackees/ci.yml#354).
 [flow.main]
 extends   = "pr"
 cache     = "write"
-pre-prune = true
 
 [flow.release]
 platforms = "all"
@@ -75,7 +81,6 @@ schedule  = "daily"
 cache     = "write"
 janitor   = true
 publish   = "none"
-pre-prune = true
 
 # ── Tags ─────────────────────────────────────────────────────────────────────
 [tags]
@@ -114,8 +119,9 @@ max-age-hours = 24
 #
 # `[cache].budget` is the hard ceiling (formerly `fail_total_bytes`, 9.5 GiB;
 # sizes here are binary, "1GB" = 1 GiB, as ci-lint parses them). CACHE-004's
-# worst case is steady + [cache.pr].budget (every writer flow pre-prunes), so
-# the families below must sum to <= 8.5 GiB -- the old `total_max_bytes`.
+# worst case is steady + the lockfile-change peak (no writer flow pre-prunes;
+# see [flow.main]) + [cache.pr].budget. The janitor's own target is
+# steady <= 8.5 GiB -- the old `total_max_bytes`.
 # They sum to 8620 MiB (8.42 GiB). Sized 2026-10-09 from the live listing
 # (`gh api 'repos/zackees/soldr/actions/caches?per_page=100' --paginate`,
 # 93 entries, 7.39 GiB); re-measure before retuning.
