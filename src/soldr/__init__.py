@@ -120,12 +120,26 @@ def _project_root() -> Path:
     return current
 
 
+def _strip_toml_comment(line: str) -> str:
+    quote = None
+    for index, char in enumerate(line):
+        if quote:
+            if char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char == "#":
+            return line[:index]
+    return line
+
+
 def _toml_section_values(path: Path, section: str) -> "dict[str, str]":  # noqa: C901
     """Read the small TOML subset needed before Python 3.11's tomllib.
 
     The backend must remain dependency-free in an isolated build environment.
     Use tomllib when available and a deliberately narrow fallback parser on
-    Python 3.10. A malformed or unreadable optional config is ignored here;
+    Python 3.10. Any present key is recorded, with bare values (integers and
+    the like) kept verbatim. A malformed or unreadable optional config is ignored here;
     maturin/Cargo remains responsible for reporting the authoritative TOML
     error during the build.
     """
@@ -157,7 +171,7 @@ def _toml_section_values(path: Path, section: str) -> "dict[str, str]":  # noqa:
     except OSError:
         return values
     for line in lines:
-        stripped = line.split("#", 1)[0].strip()
+        stripped = _strip_toml_comment(line).strip()
         if stripped.startswith("[") and stripped.endswith("]"):
             active = stripped[1:-1].strip() == section
             continue
@@ -170,6 +184,8 @@ def _toml_section_values(path: Path, section: str) -> "dict[str, str]":  # noqa:
         if match:
             values[key] = match.group(1)
         elif raw in {"true", "false"}:
+            values[key] = raw
+        elif raw:
             values[key] = raw
     return values
 
