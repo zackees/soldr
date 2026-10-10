@@ -108,6 +108,23 @@ def test_ci_attestations_cover_every_skip_job() -> None:
     assert pre.count("steps.att.outputs.stem_") == 16
 
 
+# soldr#3703: the scan/Python lanes never compile into the shared target
+# dir, so ci-lint runs them concurrently beside the heavy (compiling) chain.
+# Every compiling lane must stay heavy: two cargo builds at once would contend
+# for the target dir and every core.
+LIGHT_LANES = {"py-static", "guards", "ci-lint"}
+
+
+def test_only_the_non_compiling_lanes_are_light() -> None:
+    lanes = tomllib.loads((ROOT / "local-gate.toml").read_text(encoding="utf-8"))[
+        "gate"
+    ]["lanes"]
+    light = {name for name, lane in lanes.items() if lane.get("weight") == "light"}
+    assert light == LIGHT_LANES
+    for name, lane in lanes.items():
+        assert lane.get("weight", "heavy") in {"light", "heavy"}, name
+
+
 def test_the_isolated_test_run_proves_its_tree() -> None:
     """zackees/ci.yml#196: the bosn test check carries a nonce the container
     must echo from its /repo, so a container bound to another worktree

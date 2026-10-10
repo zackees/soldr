@@ -42,9 +42,14 @@ proves-tree = true
 # src/soldr/_bundle_bins.py, crates/*/benchmarks/*.md and tests/fixtures/**,
 # so `**/*.py`, `**/*.md` and `tests/**` are NOT safe Rust exclusions.
 
+# soldr#3703: py-static, guards and ci-lint never compile into the shared
+# target dir, so they are `weight = "light"`: ci-lint runs them concurrently
+# beside the heavy chain (rust, cross, wine, winvm, tests, one at a time).
+
 # Python linters: only Python sources and their configs.
 [gate.lanes.py-static]
 run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "py-static"]
+weight = "light"
 tools = ["uv"]
 exclude = [
   "crates/**", "dylints/**", "_vender/**", "Cargo.toml", "Cargo.lock", "docs/**", "*.md", "*.png", "contracts/**",
@@ -56,11 +61,13 @@ exclude = [
 # Repository-scanning guards and the Python tests: they read everything.
 [gate.lanes.guards]
 run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "guards"]
+weight = "light"
 tools = ["uv", "node"]
 
 # soldr lint ci + dependency policy: seconds; reads CI surfaces and lockfiles.
 [gate.lanes.ci-lint]
 run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "ci-lint"]
+weight = "light"
 tools = ["soldr"]
 
 # rustfmt, Clippy, Dylint: the Rust world.
