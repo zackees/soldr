@@ -107,6 +107,22 @@ async fn download_and_extract_with_pin_inner(
     binary_names: &[&str],
     manifest_pin: Option<(&str, &str)>,
 ) -> Result<PathBuf, SoldrError> {
+    // soldr#3683: serialize download, extract and promote per tool+version
+    // so concurrent fetches sharing one bin directory cannot race the
+    // staged-directory promotion. A waiter re-checks the install after
+    // acquiring and reuses the winner's complete tree.
+    let tool_dir = paths.bin.join(format!("{cache_name}-{version}"));
+    let desired_binaries = desired_binary_names(binary_names, target);
+    let _install_lock =
+        super::syslib_common::acquire_install_lock(&paths.bin, &format!("{cache_name}-{version}"))?;
+    if let Some(main_binary) = desired_binaries.first() {
+        if desired_binaries
+            .iter()
+            .all(|binary| tool_dir.join(binary).is_file())
+        {
+            return Ok(tool_dir.join(main_binary));
+        }
+    }
     let (source_name, downloaded) = match source {
         ArchiveSource::VerifiedFile { asset_name, path } => {
             let mut file = tempfile::NamedTempFile::new_in(soldr_core::core::ensure_temp_root())?;
@@ -174,8 +190,6 @@ async fn download_and_extract_with_pin_inner(
         }
     }
 
-    let tool_dir = paths.bin.join(format!("{cache_name}-{version}"));
-    let desired_binaries = desired_binary_names(binary_names, target);
     std::fs::create_dir_all(&paths.bin)?;
     let staging = tempfile::Builder::new()
         .prefix(&format!(".{cache_name}-{version}.staging-"))
@@ -237,8 +251,8 @@ async fn download_and_extract_with_pin_inner(
 }
 
 /// Promote a completely verified sibling directory while preserving an
-/// existing installation if the final rename fails. Callers hold the normal
-/// per-tool install lock; no partial extraction ever uses the canonical name.
+/// existing installation if the final rename fails. Callers hold the
+/// per-tool install lock (`download_and_extract_with_pin_inner`, soldr#3683); no partial extraction ever uses the canonical name.
 pub(super) fn promote_staged_tool_dir(
     staging: &Path,
     destination: &Path,
@@ -509,5 +523,57 @@ mod tests {
 
         assert!(promote_staged_tool_dir(&absent_staging, &destination).is_err());
         assert_eq!(std::fs::read(destination.join("tool")).unwrap(), b"old");
+    }
+
+    /// soldr#3683: two concurrent fetches of the same tool into one bin
+    /// directory must both succeed; the loser must not see ENOTEMPTY or
+    /// a transiently missing install tree.
+    #[test]
+    fn concurrent_fetches_of_same_tool_both_succeed() {
+        let fixture_dir = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture_dir.path().join("fixture-tool");
+        std::fs::write(&fixture, b"fixture tool payload").unwrap();
+        // Pin the fixture so the test never reads the process-global
+        // SOLDR_TRUST_MODE / SOLDR_CHECKSUMS_FILE that other tests mutate.
+        let fixture_sha = hex::encode(sha2::Sha256::digest(b"fixture tool payload"));
+        let target = TargetTriple::host().expect("host triple");
+        for round in 0..40 {
+            let root = tempfile::tempdir().expect("tempdir");
+            let paths = SoldrPaths::with_root(root.path().to_path_buf());
+            let barrier = std::sync::Barrier::new(4);
+            let results: Vec<Result<PathBuf, String>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..4)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            let runtime = tokio::runtime::Builder::new_current_thread()
+                                .build()
+                                .expect("runtime");
+                            barrier.wait();
+                            runtime
+                                .block_on(download_and_extract_with_pin_inner(
+                                    &paths,
+                                    "fixture-tool",
+                                    "1.0.0",
+                                    ArchiveSource::VerifiedFile {
+                                        asset_name: "fixture-tool",
+                                        path: &fixture,
+                                    },
+                                    &target,
+                                    &["fixture-tool"],
+                                    Some(("fixture-tool", fixture_sha.as_str())),
+                                ))
+                                .map_err(|error| error.to_string())
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            for result in results {
+                let binary = result.unwrap_or_else(|error| {
+                    panic!("round {round}: concurrent fetch failed: {error}")
+                });
+                assert_eq!(std::fs::read(&binary).unwrap(), b"fixture tool payload");
+            }
+        }
     }
 }
