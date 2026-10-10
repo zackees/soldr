@@ -640,3 +640,55 @@ fn bundled_bins_follow_the_extensions_target_preparation_and_profile() {
         Some("aarch64-unknown-linux-gnu")
     );
 }
+
+#[test]
+fn forwarded_short_release_flag_gets_release_policy() {
+    // soldr#3636: `-r` / `--profile release` are maturin's release spellings.
+    let cases: [&[&str]; 3] = [&["-r"], &["--profile", "release"], &["--profile=release"]];
+    for rest in cases {
+        let plan = plan_for_host(&wheel_args(None, false, false, rest), &x86_64_linux())
+            .expect("forwarded release profile must plan");
+        assert!(plan.prepare_host_target, "{rest:?}: {plan:?}");
+        assert_eq!(
+            flag_value(&plan.argv, "--compatibility"),
+            Some("manylinux_2_17"),
+            "{rest:?}: {plan:?}"
+        );
+        assert_eq!(
+            plan.bundle.profile_args,
+            vec!["--release".to_string()],
+            "{rest:?}: {plan:?}"
+        );
+        // soldr must not add its own `--release`; the caller's spelling is
+        // forwarded once.
+        assert_eq!(
+            plan.argv.iter().filter(|a| *a == "--release").count(),
+            0,
+            "{rest:?}: {plan:?}"
+        );
+        assert_eq!(
+            plan.argv.iter().filter(|a| *a == rest[0]).count(),
+            1,
+            "{rest:?}: {plan:?}"
+        );
+    }
+}
+
+#[test]
+fn forwarded_short_release_with_debug_is_refused() {
+    assert!(plan_for_host(
+        &wheel_args(None, false, false, &["-r", "--debug"]),
+        &x86_64_linux()
+    )
+    .is_err());
+}
+
+#[test]
+fn profile_dev_is_not_release() {
+    let plan = plan_for_host(
+        &wheel_args(None, false, false, &["--profile", "dev"]),
+        &x86_64_linux(),
+    )
+    .expect("dev profile must plan");
+    assert!(!plan.prepare_host_target, "{plan:?}");
+}

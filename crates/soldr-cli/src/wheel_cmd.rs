@@ -265,6 +265,20 @@ fn has_flag(args: &[String], flag: &str) -> bool {
         .any(|arg| arg == flag || arg.starts_with(&prefix))
 }
 
+/// soldr#3636: every forwarded spelling of maturin's release profile -- `--release`,
+/// `-r`, `--profile release`, `--profile=release` -- before any `--`.
+fn release_requested_in(args: &[String]) -> bool {
+    let mut iter = args.iter().take_while(|arg| arg.as_str() != "--");
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--release" | "-r" | "--profile=release" => return true,
+            "--profile" if iter.next().is_some_and(|value| value == "release") => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Pure planner: `(args, host) -> WheelPlan`.
 ///
 /// No I/O and no env reads — the host is injected — so this is the piece worth
@@ -325,12 +339,19 @@ pub fn plan_for_host(args: &WheelArgs, host: &WheelHost) -> Result<WheelPlan, So
     // `--debug` is maturin's spelling for "not --release". A caller who wrote
     // both is asking for two different profiles; say so rather than picking
     // one and building something they did not ask for.
-    let release_in_rest = has_flag(rest, "--release");
+    let release_in_rest = release_requested_in(rest) || has_flag(rest, "--release");
     let debug_in_rest = has_flag(rest, "--debug");
     if args.release && debug_in_rest {
         return Err(SoldrError::Other(
             "soldr wheel: `--release` and a forwarded `--debug` ask for different profiles. \
              Drop one — `soldr wheel` alone already builds the dev profile."
+                .to_string(),
+        ));
+    }
+    if release_in_rest && debug_in_rest {
+        return Err(SoldrError::Other(
+            "soldr wheel: a forwarded release profile (`-r`/`--release`/`--profile release`) \
+             and `--debug` ask for different profiles. Drop one."
                 .to_string(),
         ));
     }
