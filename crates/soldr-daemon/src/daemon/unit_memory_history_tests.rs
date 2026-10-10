@@ -146,3 +146,49 @@ async fn a_spawn_instant_reading_never_overwrites_a_real_peak() {
     assert_eq!(unit.tree_peak_rss_bytes, 500 * MIB);
     assert_eq!(unit.samples, 1);
 }
+
+fn insert_garbage(db: &Connection, key: &str) {
+    db.execute(
+        "INSERT INTO unit_memory_history(key, value) VALUES(?1, ?2)",
+        rusqlite::params![key, vec![0xFFu8, 0x00, 0x13]],
+    )
+    .expect("insert garbage");
+}
+
+#[tokio::test]
+async fn a_garbage_row_does_not_discard_the_valid_history() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("state.sqlite3");
+    {
+        let db = crate::cache_lib::state_store::open_state_db(&path).expect("open");
+        record_in(&db, "good/0001", 100 * MIB, 2_000 * MIB, 1_000).expect("record");
+        insert_garbage(&db, "bad/0002");
+    }
+    let history = UnitMemoryHistory::start(path);
+    history.ready().await.unwrap();
+    let unit = history.lookup("good/0001").expect("valid row survives");
+    assert_eq!(unit.peak_rss_bytes, 100 * MIB);
+    assert!(history.lookup("bad/0002").is_none());
+}
+
+#[test]
+fn load_all_skips_an_undecodable_row() {
+    let db = open_state_db_in_memory().expect("in-memory state db");
+    record_in(&db, "good/0001", 1, 2, 10).expect("good");
+    insert_garbage(&db, "bad/0002");
+    let all = load_all_in(&db).expect("load all");
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].0, "good/0001");
+}
+
+#[test]
+fn record_overwrites_an_undecodable_row() {
+    let db = open_state_db_in_memory().expect("in-memory state db");
+    insert_garbage(&db, "bad/0002");
+    record_in(&db, "bad/0002", 10 * MIB, 20 * MIB, 5).expect("record over garbage");
+    let unit = lookup_in(&db, "bad/0002")
+        .expect("lookup")
+        .expect("present");
+    assert_eq!(unit.samples, 1);
+    assert_eq!(unit.peak_rss_bytes, 10 * MIB);
+}
