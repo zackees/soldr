@@ -28,7 +28,16 @@ struct CargoConfigFile {
 
 #[derive(Debug, Deserialize)]
 struct CargoBuildSection {
-    target: Option<String>,
+    target: Option<CargoBuildTarget>,
+}
+
+/// Cargo accepts `build.target` as either a string or an array of strings
+/// (soldr#3642).
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CargoBuildTarget {
+    One(String),
+    Many(Vec<String>),
 }
 
 pub(super) fn read_explicit_target_override(start_dir: Option<&Path>) -> Option<String> {
@@ -43,9 +52,25 @@ pub(super) fn read_explicit_target_override(start_dir: Option<&Path>) -> Option<
 }
 
 fn read_cargo_config_target(path: PathBuf) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let config: CargoConfigFile = toml::from_str(&text).ok()?;
-    config.build?.target
+    let text = std::fs::read_to_string(&path).ok()?;
+    let config: CargoConfigFile = match toml::from_str(&text) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!(
+                "soldr: warning: ignoring unparseable Cargo config {}: {err}",
+                path.display()
+            );
+            return None;
+        }
+    };
+    match config.build?.target? {
+        CargoBuildTarget::One(target) => Some(target),
+        CargoBuildTarget::Many(list) => choose_target_override(
+            list.into_iter()
+                .filter(|target| TargetTriple::from_triple(target).is_ok())
+                .collect(),
+        ),
+    }
 }
 
 fn read_toolchain_target(path: PathBuf) -> Option<String> {
@@ -485,6 +510,52 @@ mod tests {
 
         let target = TargetTriple::detect_in_dir(dir.path()).unwrap();
         assert_eq!(target.triple(), "x86_64-unknown-linux-musl");
+    }
+
+    fn write_cargo_config(dir: &Path, text: &str) {
+        let cargo_dir = dir.join(".cargo");
+        std::fs::create_dir_all(&cargo_dir).unwrap();
+        std::fs::write(cargo_dir.join("config.toml"), text).unwrap();
+    }
+
+    #[test]
+    fn detects_single_element_array_target_from_cargo_config() {
+        let dir = tempdir().unwrap();
+        write_cargo_config(
+            dir.path(),
+            "[build]\ntarget = [\"x86_64-unknown-linux-musl\"]\n",
+        );
+
+        assert_eq!(
+            read_explicit_target_override(Some(dir.path())),
+            Some("x86_64-unknown-linux-musl".to_string())
+        );
+        let target = TargetTriple::detect_in_dir(dir.path()).unwrap();
+        assert_eq!(target.triple(), "x86_64-unknown-linux-musl");
+    }
+
+    #[test]
+    fn ambiguous_array_target_in_cargo_config_yields_no_override() {
+        let dir = tempdir().unwrap();
+        write_cargo_config(dir.path(), "[build]\ntarget = []\n");
+
+        assert_eq!(read_explicit_target_override(Some(dir.path())), None);
+    }
+
+    #[test]
+    fn malformed_cargo_config_falls_through_to_toolchain_target() {
+        let dir = tempdir().unwrap();
+        write_cargo_config(dir.path(), "[build\ntarget=");
+        std::fs::write(
+            dir.path().join("rust-toolchain.toml"),
+            "[toolchain]\ntargets = [\"x86_64-unknown-linux-musl\"]\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_explicit_target_override(Some(dir.path())),
+            Some("x86_64-unknown-linux-musl".to_string())
+        );
     }
 
     #[test]
