@@ -538,6 +538,20 @@ fn bare_shorthand_does_not_capture_unrelated_verbs() {
     }
 }
 
+/// soldr#3637: `package` and `info` are cargo built-ins and must route to cargo.
+#[test]
+fn cargo_builtin_package_and_info_route_to_cargo() {
+    for verb in ["package", "info"] {
+        assert!(
+            is_cargo_builtin_verb(verb),
+            "{verb:?} must be a cargo built-in verb"
+        );
+        let (crate_name, version) = parse_tool_spec(verb);
+        assert_eq!(crate_name, verb);
+        assert!(matches!(version, VersionSpec::Latest));
+    }
+}
+
 /// Issue #685 (parent #682, phase 2): bare cargo-built-in
 /// shorthand. `soldr build` / `soldr test` / `soldr clippy` etc.
 /// must resolve as `soldr cargo <verb>` via the External arm,
@@ -586,6 +600,9 @@ fn cargo_builtin_shorthand_covers_every_verb_in_the_const() {
         // captured before the External arm runs.
         "uninstall",
         "publish",
+        // soldr#3637: cargo built-ins previously missing; without them they fell through to a crates.io tool fetch.
+        "package",
+        "info",
     ];
     for verb in expected {
         let (crate_name, version) = parse_tool_spec(verb);
