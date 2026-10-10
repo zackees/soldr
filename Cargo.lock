@@ -2522,7 +2522,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cache"
-version = "0.9.31"
+version = "0.9.32"
 dependencies = [
  "filetime",
  "fs2",
@@ -2546,7 +2546,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cli"
-version = "0.9.31"
+version = "0.9.32"
 dependencies = [
  "blake3",
  "cap-fs-ext",
@@ -2591,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-core"
-version = "0.9.31"
+version = "0.9.32"
 dependencies = [
  "fs2",
  "libc",
@@ -2610,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-daemon"
-version = "0.9.31"
+version = "0.9.32"
 dependencies = [
  "console-subscriber",
  "filetime",
@@ -2639,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-fetch"
-version = "0.9.31"
+version = "0.9.32"
 dependencies = [
  "flate2",
  "fs2",
@@ -2664,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-nextest-wrapper"
-version = "0.9.31"
+version = "0.9.32"
 dependencies = [
  "fs2",
  "sha2",
@@ -2676,7 +2676,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-platform"
-version = "0.9.31"
+version = "0.9.32"
 dependencies = [
  "blake3",
  "fs2",
@@ -3685,9 +3685,9 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.15.3"
+version = "1.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2add61f7c3b71bcbc60657247ee52511f402eccc2c4bb8f11cda91ff2d84204"
+checksum = "29584eda5767b5a7dc6db237881f31f77b006a214453c5298fdc76d1172d6a1b"
 dependencies = [
  "arc-swap",
  "bincode",
