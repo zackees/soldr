@@ -9,6 +9,7 @@ place. So most of these feed it known-bad input and assert it complains.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -53,8 +54,7 @@ def test_every_configured_pair_exists() -> None:
 
 
 def test_oneof_members_share_the_parent_tag_space() -> None:
-    proto = drift.parse_proto(
-        """
+    proto = drift.parse_proto("""
         message Req {
           oneof kind {
             Unit status = 1;
@@ -62,21 +62,18 @@ def test_oneof_members_share_the_parent_tag_space() -> None:
           }
           string trailing = 3;
         }
-        """
-    )
+        """)
     assert proto["Req"].fields == {"status": 1, "shutdown": 2, "trailing": 3}
 
 
 def test_map_fields_are_parsed() -> None:
     """`map<k, v>` has angle brackets a naive field regex skips."""
-    proto = drift.parse_proto(
-        """
+    proto = drift.parse_proto("""
         message Profile {
           map<string, uint64> counters = 1;
           map<string, uint64> timings_ns = 2;
         }
-        """
-    )
+        """)
     assert proto["Profile"].fields == {"counters": 1, "timings_ns": 2}
 
 
@@ -90,8 +87,7 @@ def test_enum_references_are_not_undefined_messages() -> None:
 
 
 def test_rust_oneof_is_resolved_through_its_enum() -> None:
-    rust = drift.parse_rust(
-        """
+    rust = drift.parse_rust("""
         #[derive(Clone, PartialEq, Message)]
         pub struct Req {
             #[prost(oneof = "ReqKind", tags = "1,2")]
@@ -105,20 +101,17 @@ def test_rust_oneof_is_resolved_through_its_enum() -> None:
             #[prost(message, tag = "2")]
             Status(Unit),
         }
-        """
-    )
+        """)
     assert rust["Req"].fields == {"record_target_touch": 1, "status": 2}
 
 
 def test_comments_do_not_create_fields() -> None:
-    proto = drift.parse_proto(
-        """
+    proto = drift.parse_proto("""
         message M {
           // string ghost = 9;
           string real = 1;
         }
-        """
-    )
+        """)
     assert proto["M"].fields == {"real": 1}
 
 
@@ -137,8 +130,7 @@ def test_detects_undefined_message_reference() -> None:
 def test_detects_field_serialized_by_rust_but_absent_from_schema() -> None:
     """soldr#2753 drift 2 -- understated tag space, as in soldr#1838."""
     proto = drift.parse_proto("message Plan { string a = 1; }")
-    rust = drift.parse_rust(
-        """
+    rust = drift.parse_rust("""
         #[derive(Clone, PartialEq, Message)]
         pub struct Plan {
             #[prost(string, tag = "1")]
@@ -146,8 +138,7 @@ def test_detects_field_serialized_by_rust_but_absent_from_schema() -> None:
             #[prost(bool, tag = "16")]
             pub cargo_artifacts_complete: bool,
         }
-        """
-    )
+        """)
     problems = drift.compare(proto, rust)
     assert any("cargo_artifacts_complete" in p and "tag 16" in p for p in problems)
     assert any("understates its used tag space" in p for p in problems)
@@ -155,23 +146,20 @@ def test_detects_field_serialized_by_rust_but_absent_from_schema() -> None:
 
 def test_detects_tag_mismatch() -> None:
     proto = drift.parse_proto("message M { string a = 1; }")
-    rust = drift.parse_rust(
-        """
+    rust = drift.parse_rust("""
         #[derive(Clone, PartialEq, Message)]
         pub struct M {
             #[prost(string, tag = "2")]
             pub a: String,
         }
-        """
-    )
+        """)
     problems = drift.compare(proto, rust)
     assert any("tag mismatch" in p for p in problems)
 
 
 def test_detects_message_missing_from_schema() -> None:
     proto = drift.parse_proto("message Kept { string a = 1; }")
-    rust = drift.parse_rust(
-        """
+    rust = drift.parse_rust("""
         #[derive(Clone, PartialEq, Message)]
         pub struct Kept {
             #[prost(string, tag = "1")]
@@ -183,8 +171,7 @@ def test_detects_message_missing_from_schema() -> None:
             #[prost(bool, tag = "1")]
             pub emit: bool,
         }
-        """
-    )
+        """)
     problems = drift.compare(proto, rust)
     assert any(
         "Undocumented" in p and "not defined in the schema" in p for p in problems
@@ -199,8 +186,7 @@ def test_detects_schema_message_with_no_rust_type() -> None:
 
 def test_agreeing_pair_reports_nothing() -> None:
     proto = drift.parse_proto("message M { string a = 1; bool b = 2; }")
-    rust = drift.parse_rust(
-        """
+    rust = drift.parse_rust("""
         #[derive(Clone, PartialEq, Message)]
         pub struct M {
             #[prost(string, tag = "1")]
@@ -208,8 +194,7 @@ def test_agreeing_pair_reports_nothing() -> None:
             #[prost(bool, tag = "2")]
             pub b: bool,
         }
-        """
-    )
+        """)
     assert drift.compare(proto, rust) == []
 
 
@@ -234,3 +219,55 @@ def test_cross_repo_entries_name_where_the_type_lives() -> None:
 def test_ci_runs_the_drift_check() -> None:
     workflow = lint_lane_text()
     assert "check_proto_drift.py" in workflow
+
+
+# --------------------------------------------------------------------------
+# CLAUDE.md must name the real schema/type pairs (soldr#3649).
+# --------------------------------------------------------------------------
+
+
+def test_claude_md_serialization_paths_exist_and_are_checked_pairs() -> None:
+    lines = (ROOT / "CLAUDE.md").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("## Serialization"))
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")),
+        len(lines),
+    )
+    section = lines[start:end]
+    bullet_start = next(
+        i
+        for i, ln in enumerate(section)
+        if ln.startswith(
+            "- **Binary transports and persisted-state metadata MUST use Protocol Buffers**"
+        )
+    )
+    bullet_end = next(
+        (
+            i
+            for i in range(bullet_start + 1, len(section))
+            if section[i].startswith("- **")
+        ),
+        len(section),
+    )
+    bullet = "\n".join(section[bullet_start:bullet_end])
+
+    tokens = [
+        t for t in re.findall(r"`([^`\s]+\.(?:rs|proto))`", bullet) if "{" not in t
+    ]
+    pair_paths = {p for pair in drift.PAIRS for p in pair}
+    full_tokens = [t for t in tokens if "/" in t]
+    for token in tokens:
+        if "/" in token:
+            assert (ROOT / token).exists(), f"CLAUDE.md names missing path: {token}"
+        else:
+            candidates = pair_paths | set(full_tokens)
+            assert any(
+                c.endswith("/" + token) for c in candidates
+            ), f"CLAUDE.md bare filename matches no checked pair or named path: {token}"
+
+    for path in sorted(pair_paths):
+        assert path in bullet, f"CLAUDE.md does not name checked pair path: {path}"
+    pair_protos = {proto for proto, _ in drift.PAIRS}
+    for token in full_tokens:
+        if token.endswith(".proto"):
+            assert token in pair_protos, f"CLAUDE.md names .proto not in PAIRS: {token}"
