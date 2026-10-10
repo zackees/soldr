@@ -456,14 +456,7 @@ impl SoldrBackendLauncher {
                 None
             }
             Err(error @ ClaimAdoptionError::Probe(_)) => {
-                if crate::broker_debug::broker_debug_enabled() {
-                    eprintln!(
-                        "soldr broker: daemon route claim failed exact probe and was pruned: {error}"
-                    );
-                }
-                if prune_invalid {
-                    crate::daemon::backend_handle_adoption::prune_broker_route_claim(paths);
-                }
+                prune_route_claim_after_probe_failure(paths, &error, prune_invalid);
                 None
             }
         }
@@ -748,6 +741,37 @@ fn configure_backend_command(
     }
 }
 
+/// soldr#3684: the broker prunes a route claim only when the exact probe gave
+/// a definitive "no". A probe that never got an answer (timeout, transient IO)
+/// says nothing about a loaded daemon, so its claim must survive -- the same
+/// rule `probe_error_is_transient` (soldr#1893) applies on the daemon side.
+/// Returns whether the claim was pruned.
+fn prune_route_claim_after_probe_failure(
+    paths: &crate::core::SoldrPaths,
+    error: &crate::daemon::backend_handle_adoption::ClaimAdoptionError,
+    prune_invalid: bool,
+) -> bool {
+    use crate::daemon::backend_handle_adoption::{probe_error_is_transient, ClaimAdoptionError};
+    let ClaimAdoptionError::Probe(probe) = error else {
+        return false;
+    };
+    let debug = crate::broker_debug::broker_debug_enabled();
+    if probe_error_is_transient(probe) {
+        if debug {
+            eprintln!("soldr broker: daemon route claim probe inconclusive, claim kept: {error}");
+        }
+        return false;
+    }
+    if debug {
+        eprintln!("soldr broker: daemon route claim failed exact probe and was pruned: {error}");
+    }
+    if prune_invalid {
+        crate::daemon::backend_handle_adoption::prune_broker_route_claim(paths);
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,6 +811,58 @@ mod tests {
         );
         let key = BackendKey::new(BrokerInstanceKey::Shared, "soldr-daemon-test", "1.0.0", "");
         (definition, key, TraceContext::default())
+    }
+
+    // soldr#3684: a probe timeout is inconclusive and must not prune a live
+    // daemon's route claim; a definitive failure still prunes it.
+    fn claim_probe_error(
+        inner: running_process::broker::backend_lifecycle::probe::EndpointProbeError,
+    ) -> crate::daemon::backend_handle_adoption::ClaimAdoptionError {
+        crate::daemon::backend_handle_adoption::ClaimAdoptionError::Probe(
+            running_process::broker::backend_handle::BackendHandleError::Probe(
+                running_process::broker::backend_lifecycle::probe::ProbeError::EndpointResponse(
+                    inner,
+                ),
+            ),
+        )
+    }
+
+    fn seeded_claim(temp: &tempfile::TempDir) -> (crate::core::SoldrPaths, PathBuf) {
+        let paths = crate::core::SoldrPaths::with_root(temp.path().join("root"));
+        let claim = crate::daemon::backend_handle_adoption::broker_route_claim_path(&paths);
+        std::fs::create_dir_all(claim.parent().expect("claim parent")).expect("claim dir");
+        std::fs::write(&claim, b"claim").expect("write claim");
+        (paths, claim)
+    }
+
+    #[test]
+    fn probe_timeout_keeps_route_claim() {
+        use running_process::broker::backend_lifecycle::probe::EndpointProbeError;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (paths, claim) = seeded_claim(&temp);
+        let pruned = prune_route_claim_after_probe_failure(
+            &paths,
+            &claim_probe_error(EndpointProbeError::Timeout),
+            true,
+        );
+        assert!(!pruned);
+        assert!(claim.exists(), "a probe timeout must not prune the claim");
+    }
+
+    #[test]
+    fn definitive_probe_failure_prunes_route_claim() {
+        use running_process::broker::backend_lifecycle::probe::EndpointProbeError;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (paths, claim) = seeded_claim(&temp);
+        let refused = EndpointProbeError::Connect(std::io::Error::from(
+            std::io::ErrorKind::ConnectionRefused,
+        ));
+        assert!(prune_route_claim_after_probe_failure(
+            &paths,
+            &claim_probe_error(refused),
+            true
+        ));
+        assert!(!claim.exists(), "a definitive failure must prune the claim");
     }
 
     #[test]
