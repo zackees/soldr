@@ -444,6 +444,29 @@ mod pin_requirement_tests {
     }
 
     #[test]
+    fn unrecognised_allow_unpinned_value_does_not_opt_out() {
+        let _lock = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var_os(ALLOW_UNPINNED_ENV_VAR);
+        for value in ["disabled", "2", "nope", "", "0", "off"] {
+            std::env::set_var(ALLOW_UNPINNED_ENV_VAR, value);
+            assert!(
+                !unpinned_allowed(),
+                "{value:?} must not opt out of the pin guard"
+            );
+        }
+        for value in ["1", "true", "YES", "on"] {
+            std::env::set_var(ALLOW_UNPINNED_ENV_VAR, value);
+            assert!(unpinned_allowed(), "{value:?} must opt out");
+        }
+        match previous {
+            Some(value) => std::env::set_var(ALLOW_UNPINNED_ENV_VAR, value),
+            None => std::env::remove_var(ALLOW_UNPINNED_ENV_VAR),
+        }
+    }
+
+    #[test]
     fn unpinned_workspace_is_refused() {
         let temp = tempfile::tempdir().expect("tempdir");
         let err = without_opt_out(|| require_toolchain_pin(temp.path()).unwrap_err());

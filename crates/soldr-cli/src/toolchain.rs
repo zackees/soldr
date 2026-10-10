@@ -697,20 +697,11 @@ fn write_cargo_prepare_memo(paths: &SoldrPaths, key: CargoPrepareMemoKey, toolch
 /// True when the user has explicitly accepted an unpinned build, via
 /// `SOLDR_ALLOW_UNPINNED` or the `--allow-unpinned` flag (which sets it).
 ///
-/// Any non-empty value other than an explicit disable counts, matching how
-/// the other `SOLDR_*` switches in this crate are read.
+/// Parsed with the canonical owned-switch reader [`crate::core::flag`]: only
+/// `1`/`true`/`yes`/`on` enable it, so an unrecognised value such as
+/// `disabled` never weakens the soldr#1766 pin guard (soldr#3634).
 pub fn unpinned_allowed() -> bool {
-    match std::env::var(ALLOW_UNPINNED_ENV_VAR) {
-        Ok(value) => {
-            let value = value.trim();
-            !(value.is_empty()
-                || value == "0"
-                || value.eq_ignore_ascii_case("false")
-                || value.eq_ignore_ascii_case("no")
-                || value.eq_ignore_ascii_case("off"))
-        }
-        Err(_) => false,
-    }
+    crate::core::flag(ALLOW_UNPINNED_ENV_VAR)
 }
 
 /// True when `RUSTUP_TOOLCHAIN` names an explicit toolchain.
