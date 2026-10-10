@@ -198,6 +198,29 @@ impl SoldrZccacheService {
         paths: &SoldrPaths,
         daemon_identity: &DaemonProcess,
     ) -> Result<Self, EmbeddedServiceError> {
+        Self::start_with_disk_limits(paths, daemon_identity, disk_cache_limits_from_env()?).await
+    }
+
+    /// Test seam (soldr#3669): start with an explicit artifact budget instead
+    /// of the process env, so a test decides the store's disk pressure.
+    /// zccache measures the host filesystem for its low-free-space check, so
+    /// a budget below the test's own usage is the one way to make the
+    /// pressure classification independent of how full the host disk is.
+    #[cfg(test)]
+    pub(crate) async fn start_with_max_cache_bytes(
+        paths: &SoldrPaths,
+        daemon_identity: &DaemonProcess,
+        max_cache_bytes: u64,
+    ) -> Result<Self, EmbeddedServiceError> {
+        let limits = disk_cache_limits_from_values(Some(&max_cache_bytes.to_string()), None)?;
+        Self::start_with_disk_limits(paths, daemon_identity, limits).await
+    }
+
+    async fn start_with_disk_limits(
+        paths: &SoldrPaths,
+        daemon_identity: &DaemonProcess,
+        (disk_limits, disk_policy): (DiskCacheLimits, EmbeddedDiskPolicy),
+    ) -> Result<Self, EmbeddedServiceError> {
         let identity = derive_identity();
         // Broker generations may share one Soldr root. The route-scoped host
         // identity isolates their mutable zccache snapshots and writer locks.
@@ -250,7 +273,6 @@ impl SoldrZccacheService {
             cancellation: None,
         };
 
-        let (disk_limits, disk_policy) = disk_cache_limits_from_env()?;
         // soldr#2932 / zccache#1539: zccache owns the one canonical compiler
         // capacity semaphore and fair shared/exclusive gate. It invokes this
         // Soldr-specific classifier only after cache-hit classification, then
