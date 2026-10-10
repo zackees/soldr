@@ -22,7 +22,10 @@ const LIFECYCLE_ROTATE_KEEP: usize = 5_000;
 /// The lock is released when the file handle drops.
 pub(super) fn with_lifecycle_journal_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
     use fs2::FileExt;
-    let mut lock_name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    let mut lock_name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
     lock_name.push(".lock");
     let lock_path = path.with_file_name(lock_name);
     if let Some(parent) = lock_path.parent() {
@@ -55,7 +58,10 @@ pub fn rotate_lifecycle_journal(paths: &SoldrPaths) {
         let keep = &lines[lines.len() - LIFECYCLE_ROTATE_KEEP..];
         let mut rotated = keep.join("\n");
         rotated.push('\n');
-        let mut tmp_name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+        let mut tmp_name = path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_default();
         tmp_name.push(".tmp");
         let tmp = path.with_file_name(tmp_name);
         if let Err(err) = fs::write(&tmp, rotated).and_then(|()| fs::rename(&tmp, &path)) {

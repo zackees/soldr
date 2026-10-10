@@ -295,6 +295,9 @@ mod journal_hygiene_tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.starts_with(&name) && n.ends_with(".tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
     }
 }
