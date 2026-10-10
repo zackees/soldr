@@ -113,24 +113,36 @@ def _merge_base(base_ref: str) -> str:
         raise NoMergeBase(base_ref) from exc
 
 
-def changed_files(base: str, roots: tuple[str, ...]) -> list[str]:
-    """Paths added or modified relative to the merge base.
+def changed_files(base: str, roots: tuple[str, ...]) -> list[tuple[str, str]]:
+    """(path, baseline_path) pairs added, modified or renamed since the merge base.
 
-    Deletions and renames-away are excluded: a path that no longer exists
-    cannot violate a size ceiling, and reporting it would block the very
-    splits this check exists to encourage.
+    Deletions are excluded: a path that no longer exists cannot violate a size
+    ceiling, and reporting it would block the very splits this check exists to
+    encourage. Renames are included and baselined against their pre-rename
+    path, so a move cannot reset the ratchet (soldr#3652).
     """
-    raw = _run(["git", "diff", "--name-only", "--diff-filter=AM", base, "HEAD"])
+    raw = _run(
+        ["git", "diff", "--name-status", "-M", "--diff-filter=AMR", base, "HEAD"]
+    )
     out = []
     for line in raw.splitlines():
-        path = line.strip()
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) < 2 or not fields[0]:
+            continue
+        status = fields[0][0]
+        if status == "R" and len(fields) >= 3:
+            baseline_path, path = fields[1], fields[2]
+        elif status in ("A", "M"):
+            path = baseline_path = fields[1]
+        else:
+            continue
         if not path.endswith(SUFFIX):
             continue
         if path.rsplit("/", 1)[-1] in EXEMPT_NAMES:
             continue
         if not any(path == r or path.startswith(f"{r}/") for r in roots):
             continue
-        out.append(path)
+        out.append((path, baseline_path))
     return sorted(out)
 
 
@@ -166,7 +178,7 @@ def evaluate(
     base = resolve_base(base_ref, base_sha)
     violations: list[Violation] = []
     checked = 0
-    for path in changed_files(base, roots):
+    for path, baseline_path in changed_files(base, roots):
         try:
             lines = line_count_worktree(path)
         except OSError:
@@ -175,7 +187,7 @@ def evaluate(
         checked += 1
         if lines <= ceiling:
             continue
-        baseline = line_count_at(base, path)
+        baseline = line_count_at(base, baseline_path)
         if baseline is None or lines > baseline:
             violations.append(Violation(path=path, lines=lines, baseline=baseline))
     return violations, checked
