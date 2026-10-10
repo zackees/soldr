@@ -171,7 +171,10 @@ mod tests {
         let lifecycle = build_compile_lifecycle_from(&argv, &env).unwrap();
         assert_eq!(
             lifecycle.target_dir,
-            std::fs::canonicalize(b.path()).unwrap().display().to_string()
+            std::fs::canonicalize(b.path())
+                .unwrap()
+                .display()
+                .to_string()
         );
     }
 
@@ -196,7 +199,10 @@ mod tests {
         let lifecycle = build_compile_lifecycle_from(&argv, &env).unwrap();
         assert_eq!(
             lifecycle.target_dir,
-            std::fs::canonicalize(a.path()).unwrap().display().to_string()
+            std::fs::canonicalize(a.path())
+                .unwrap()
+                .display()
+                .to_string()
         );
     }
 }
