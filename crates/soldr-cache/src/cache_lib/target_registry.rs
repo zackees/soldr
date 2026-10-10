@@ -283,27 +283,65 @@ pub fn looks_like_cargo_target(dir: &Path) -> bool {
     CARGO_TARGET_MARKERS.iter().any(|m| dir.join(m).exists())
 }
 
-/// Resolve the canonical workspace `target/` directory from a
+/// Resolve the canonical workspace target directory from a
 /// rustc-wrapper argv slice. Returns `None` if the path can't be
-/// derived cheaply — callers MUST silently skip in that case rather
+/// derived cheaply -- callers MUST silently skip in that case rather
 /// than fail the build.
 ///
-/// Strategy:
-/// 1. Honor `CARGO_TARGET_DIR` if set and absolute.
-/// 2. Otherwise look at the rustc `--out-dir <DIR>` argument and walk
-///    up to find the enclosing `target/` boundary.
+/// Strategy (see [`resolve_workspace_target_dir_with`]):
+/// 1. Honor `CARGO_TARGET_DIR` if set; a relative value is resolved
+///    against the current directory (soldr#3645).
+/// 2. Otherwise walk up from rustc's `--out-dir`: nearest ancestor named
+///    `target`, else the nearest ancestor carrying cargo's root-only
+///    markers (`CACHEDIR.TAG` / `.rustc_info.json`), else the nearest
+///    ancestor that merely looks like a cargo target.
 pub fn resolve_workspace_target_dir(rustc_args: &[String]) -> Option<PathBuf> {
-    if let Some(env_dir) = std::env::var_os("CARGO_TARGET_DIR") {
+    let cwd = std::env::current_dir().ok();
+    resolve_workspace_target_dir_with(
+        rustc_args,
+        std::env::var_os("CARGO_TARGET_DIR").as_deref(),
+        cwd.as_deref(),
+    )
+}
+
+/// Env-free core of [`resolve_workspace_target_dir`].
+pub fn resolve_workspace_target_dir_with(
+    rustc_args: &[String],
+    env_target_dir: Option<&std::ffi::OsStr>,
+    cwd: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(env_dir) = env_target_dir.filter(|d| !d.is_empty()) {
         let path = PathBuf::from(env_dir);
         if path.is_absolute() {
             return Some(canonicalize_or_self(&path));
         }
+        if let Some(cwd) = cwd {
+            return Some(canonicalize_or_self(&cwd.join(path)));
+        }
     }
 
     let out_dir = extract_flag_value(rustc_args, "--out-dir")?;
-    let out_path = PathBuf::from(out_dir);
-    let target = resolve_target_dir_from_descendant(&out_path)?;
-    Some(canonicalize_or_self(&target))
+    let mut out_path = PathBuf::from(out_dir);
+    if out_path.is_relative() {
+        if let Some(cwd) = cwd {
+            out_path = cwd.join(out_path);
+        }
+    }
+    if let Some(target) = resolve_target_dir_from_descendant(&out_path) {
+        return Some(canonicalize_or_self(&target));
+    }
+    let root_marked = out_path
+        .ancestors()
+        .skip(1)
+        .find(|a| a.join("CACHEDIR.TAG").exists() || a.join(".rustc_info.json").exists());
+    if let Some(a) = root_marked {
+        return Some(canonicalize_or_self(a));
+    }
+    let a = out_path
+        .ancestors()
+        .skip(1)
+        .find(|a| looks_like_cargo_target(a))?;
+    Some(canonicalize_or_self(a))
 }
 
 fn extract_flag_value(args: &[String], flag: &str) -> Option<String> {
@@ -699,6 +737,66 @@ mod tests {
         let path = PathBuf::from("/t/target/a/target/b/target/debug/deps/x");
         let target = resolve_target_dir_from_descendant(&path).unwrap();
         assert_eq!(target, PathBuf::from("/t/target/a/target/b/target"));
+    }
+
+    #[test]
+    fn with_relative_env_resolves_against_cwd() {
+        let tmp = tempdir().unwrap();
+        let deps = tmp.path().join("out/debug/deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        std::fs::write(tmp.path().join("out/CACHEDIR.TAG"), "x").unwrap();
+        let want = std::fs::canonicalize(tmp.path().join("out")).unwrap();
+        let args = vec!["--out-dir".to_string(), deps.to_string_lossy().to_string()];
+        let got = resolve_workspace_target_dir_with(
+            &args,
+            Some(std::ffi::OsStr::new("out")),
+            Some(tmp.path()),
+        );
+        assert_eq!(got, Some(want.clone()));
+        let rel = vec!["--out-dir".to_string(), "out/debug/deps".to_string()];
+        let got = resolve_workspace_target_dir_with(&rel, None, Some(tmp.path()));
+        assert_eq!(got, Some(want));
+    }
+
+    #[test]
+    fn with_no_env_finds_marked_non_target_name() {
+        let tmp = tempdir().unwrap();
+        let deps = tmp.path().join("build/debug/deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        std::fs::write(tmp.path().join("build/CACHEDIR.TAG"), "x").unwrap();
+        let want = std::fs::canonicalize(tmp.path().join("build")).unwrap();
+        let args = vec!["--out-dir".to_string(), deps.to_string_lossy().to_string()];
+        assert_eq!(
+            resolve_workspace_target_dir_with(&args, None, None),
+            Some(want)
+        );
+    }
+
+    #[test]
+    fn with_no_markers_and_no_target_is_none() {
+        let tmp = tempdir().unwrap();
+        let d = tmp.path().join("a/b/c");
+        std::fs::create_dir_all(&d).unwrap();
+        let args = vec!["--out-dir".to_string(), d.to_string_lossy().to_string()];
+        assert_eq!(resolve_workspace_target_dir_with(&args, None, None), None);
+    }
+
+    #[test]
+    fn with_target_named_dir_and_absolute_env() {
+        let tmp = tempdir().unwrap();
+        let deps = tmp.path().join("target/debug/deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let args = vec!["--out-dir".to_string(), deps.to_string_lossy().to_string()];
+        let want = std::fs::canonicalize(tmp.path().join("target")).unwrap();
+        assert_eq!(
+            resolve_workspace_target_dir_with(&args, None, None),
+            Some(want)
+        );
+        let abs = tmp.path().join("target");
+        let env = abs.as_os_str();
+        let other = tempdir().unwrap();
+        let got = resolve_workspace_target_dir_with(&args, Some(env), Some(other.path()));
+        assert_eq!(got, Some(std::fs::canonicalize(&abs).unwrap()));
     }
 
     #[test]
