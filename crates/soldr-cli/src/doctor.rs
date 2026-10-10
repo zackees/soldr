@@ -163,9 +163,12 @@ pub(crate) fn run_doctor(
         return Ok(0);
     }
     let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    let manifest_path = workspace_root.join("rust-toolchain.toml");
-    let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
-    let manifest_present = manifest_path.exists();
+    // Walk ancestors like rustup/cargo (soldr#3633).
+    let found_manifest = crate::core::find_rust_toolchain_manifest(&workspace_root);
+    let manifest_present = found_manifest.is_some();
+    let manifest_path =
+        found_manifest.unwrap_or_else(|| workspace_root.join("rust-toolchain.toml"));
+    let manifest = crate::core::read_rust_toolchain_manifest_from_ancestors(&workspace_root)?;
     crate::startup_trace::phase(crate::startup_trace::phase::DOCTOR_MANIFEST);
     // soldr#2571: `doctor` emits its first byte only at the closing
     // `print_json`, so every collector below runs inside the silent window

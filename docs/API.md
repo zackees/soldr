@@ -1395,7 +1395,9 @@ soldr version --json
 
 Project-aware orchestrators around `rustup` and `cargo install` that
 read `rust-toolchain.toml` so users (and CI) don't have to thread the
-pinned channel through every command.
+pinned channel through every command. Like rustup and Cargo, they use
+the nearest `rust-toolchain.toml` in the current directory or any
+ancestor, so they work from a subdirectory of a pinned repo (soldr#3633).
 
 ```bash
 soldr toolchain install   # rustup toolchain install <channel> --profile minimal --no-self-update
@@ -1695,7 +1697,8 @@ currently installed for the declared channel. Read-only — `doctor`
 never invokes `rustup toolchain install`, `rustup component add`, or
 `rustup target add`. Exits `1` when drift is detected, `0` otherwise.
 When no `rust-toolchain.toml` exists in the current working directory
-the command exits `0` and reports that no manifest was found.
+or any of its ancestors (the same nearest-pin search rustup and Cargo
+use, soldr#3633) the command exits `0` and reports that no manifest was found.
 
 ```bash
 soldr doctor

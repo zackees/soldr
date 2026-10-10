@@ -174,7 +174,8 @@ fn effective_rustup_home() -> Result<PathBuf, SoldrError> {
 
 fn pinned_channel() -> Result<Option<String>, SoldrError> {
     let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    Ok(crate::core::read_rust_toolchain_manifest(&workspace_root)?.channel)
+    // soldr#3633: nearest pin in cwd or ancestors, like cargo/rustup.
+    Ok(crate::core::read_rust_toolchain_manifest_from_ancestors(&workspace_root)?.channel)
 }
 
 /// Ensure the pinned toolchain (from `rust-toolchain.toml`) is fully

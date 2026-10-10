@@ -369,6 +369,14 @@ fn dylint_scoped_channel() -> Option<String> {
 }
 
 fn scope_rustup_args_to_pin(args: &[String]) -> Result<Vec<String>, SoldrError> {
+    let start_dir = std::env::current_dir().map_err(SoldrError::from)?;
+    scope_rustup_args_to_pin_in(args, &start_dir)
+}
+
+fn scope_rustup_args_to_pin_in(
+    args: &[String],
+    start_dir: &std::path::Path,
+) -> Result<Vec<String>, SoldrError> {
     // Find the first non-flag positional. Anything before it (e.g.
     // `--verbose`) is preserved in place.
     let mut first_positional: Option<usize> = None;
@@ -392,8 +400,8 @@ fn scope_rustup_args_to_pin(args: &[String]) -> Result<Vec<String>, SoldrError> 
         return Ok(args.to_vec());
     }
 
-    let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
+    // Walk ancestors like rustup/cargo (soldr#3633).
+    let manifest = crate::core::read_rust_toolchain_manifest_from_ancestors(start_dir)?;
     let Some(channel) = manifest.channel else {
         return Ok(args.to_vec());
     };
@@ -426,7 +434,8 @@ fn rustup_args_specify_toolchain(args: &[String]) -> bool {
 /// Implementation of `soldr toolchain install`.
 pub(crate) fn run_toolchain_install() -> Result<i32, SoldrError> {
     let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
+    // Walk ancestors like rustup/cargo (soldr#3633).
+    let manifest = crate::core::read_rust_toolchain_manifest_from_ancestors(&workspace_root)?;
     let Some(channel) = manifest.channel.as_deref() else {
         eprintln!(
             "soldr: no rust-toolchain.toml channel found; nothing to install. \
@@ -441,7 +450,8 @@ pub(crate) fn run_toolchain_install() -> Result<i32, SoldrError> {
 /// Implementation of `soldr toolchain prepare`.
 pub(crate) fn run_toolchain_prepare() -> Result<i32, SoldrError> {
     let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
+    // Walk ancestors like rustup/cargo (soldr#3633).
+    let manifest = crate::core::read_rust_toolchain_manifest_from_ancestors(&workspace_root)?;
     let Some(channel) = manifest.channel.as_deref() else {
         eprintln!(
             "soldr: no rust-toolchain.toml channel found; nothing to prepare. \
