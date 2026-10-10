@@ -412,3 +412,16 @@ fn rustc_identity_success_forwards_and_logs_stderr() {
     assert!(forwarded.contains("rustc -vV: MARKER_VV_OK"), "{forwarded}");
     assert!(logged.contains("MARKER_VV_OK"), "{logged}");
 }
+
+#[test]
+fn trampoline_env_flags_use_shared_parser() {
+    for v in ["ON", " true ", "TRUE", "on", "Yes", "1"] {
+        assert!(crate::core::flag_value(v), "{v:?}");
+        assert!(trampoline_flag_value(Some(v)), "{v:?}");
+    }
+    for v in ["0", "false", "off", "", "nope"] {
+        assert!(!crate::core::flag_value(v), "{v:?}");
+        assert!(!trampoline_flag_value(Some(v)), "{v:?}");
+    }
+    assert!(!trampoline_flag_value(None));
+}

@@ -870,18 +870,18 @@ pub(crate) fn compute_file_hash(path: &Path) -> std::io::Result<String> {
     zccache::hash::hash_file(path).map(|hash| format!("{HASH_PREFIX}{}", hash.to_hex()))
 }
 
+/// Pure form of the trampoline env-flag check: delegates to the shared
+/// parser (`crate::core::flag_value`) so spellings match every other flag.
+pub(crate) fn trampoline_flag_value(value: Option<&str>) -> bool {
+    value.is_some_and(crate::core::flag_value)
+}
+
 pub(crate) fn trampoline_env_disabled() -> bool {
-    matches!(
-        std::env::var(NO_TRAMPOLINE_ENV_VAR).ok().as_deref(),
-        Some("1") | Some("true") | Some("yes")
-    )
+    trampoline_flag_value(std::env::var(NO_TRAMPOLINE_ENV_VAR).ok().as_deref())
 }
 
 pub(crate) fn trampoline_log_enabled() -> bool {
-    matches!(
-        std::env::var(TRAMPOLINE_LOG_ENV_VAR).ok().as_deref(),
-        Some("1") | Some("true") | Some("yes")
-    )
+    trampoline_flag_value(std::env::var(TRAMPOLINE_LOG_ENV_VAR).ok().as_deref())
 }
 
 pub(crate) fn log_fall_through(reason: &str) {
