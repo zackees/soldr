@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from conftest import load_script_module
 
 ROOT = Path(__file__).parents[1]
@@ -278,3 +279,19 @@ def test_cli_rerun_uses_live_labels_instead_of_original_event(tmp_path, monkeypa
         "current PR requires full CI; cached mode is minimal"
         in json.loads(report_path.read_text())["failures"]
     )
+
+
+def test_merge_summary_runs_even_when_selector_or_required_cells_fail() -> None:
+    """The summary is the stable merge context, so it must survive upstream failure.
+
+    A skipped `Full coverage` job is not a merge summary: without an
+    `always()` gate the context this change installs would simply not be
+    reported on the runs where a decision is most needed.
+    """
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    summary = jobs.get("ci-summary")
+    assert summary, "a skipped Full coverage job is not a merge summary"
+    assert summary["name"] == "CI summary"
+    assert summary["if"] == "${{ always() }}"
+    assert set(jobs["full-coverage"]["needs"]) <= set(summary["needs"])
+    assert {"lint-docs", "path-selection", "full-coverage"} <= set(summary["needs"])

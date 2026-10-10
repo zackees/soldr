@@ -52,8 +52,7 @@ pub mod llvm;
 pub mod llvm_tools_bundle;
 pub mod manifest_lookup;
 pub mod manifest_v6;
-/// soldr#997 Phase A — Node.js node.lib bundle for Windows MSVC
-/// cross-compile (closes #944).
+/// soldr#997 Phase A — Node.js node.lib bundle for Windows MSVC cross (#944).
 pub mod nodelib;
 /// soldr#3246 — managed static, source-built OpenSSL sysroot for every
 /// syslib shape, exposed to `openssl-sys` by `blessed_build::prepare`.
@@ -64,8 +63,7 @@ pub mod openssl_sysroot;
 pub mod python_sysroot;
 mod toolchain_packaged;
 pub use toolchain_packaged::ensure_dylint_driver;
-/// soldr#1012 PR 5 — xwin-cache catalogue materialization for the
-/// blessed `*-pc-windows-msvc` cross-compile path.
+/// soldr#1012 PR 5 — xwin-cache catalogue for blessed `*-pc-windows-msvc` cross.
 pub mod xwin_cache;
 pub mod xwin_case_overlay;
 mod xwin_header_names;
@@ -108,8 +106,7 @@ pub mod tar_extract;
 /// when the prebuilt maturin binary fetch misses). Hand-rolled on
 /// purpose; see module doc for why not the `uv-iso-env` package.
 pub mod uv_env;
-/// soldr#1264 follow-on — managed `uv` bundle from the soldr-toolchain
-/// archive. First consumer: [`uv_env`].
+/// soldr#1264 follow-on — managed `uv` bundle; first consumer: [`uv_env`].
 pub mod uv_tool;
 pub mod zig;
 pub mod zlib_ng_sysroot;
@@ -160,8 +157,7 @@ pub struct FetchResult {
     pub cached: bool,
 }
 
-/// Back-compat re-export: the const lives in `core` so that `core`
-/// has no upward edge into `fetch` (#1490 Phase 0, edge E1).
+/// Back-compat re-export: the const lives in `core` (no `core`->`fetch` edge, #1490).
 pub use crate::core::MANAGED_SHIM_VERSION;
 /// Pinned crgx version that soldr's release pipeline source-builds and
 /// bundles into the combined `.tar.zst` archive (see PR follow-up to

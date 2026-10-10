@@ -18,12 +18,10 @@ use thiserror::Error;
 /// Default file name for the soldr state database under `~/.soldr/`.
 pub const DATA_DB_FILE: &str = super::state_db::STATE_DB_FILE;
 
-/// Default staleness threshold (10 days) used by `soldr gc` and the
-/// startup warning.
+/// Default staleness threshold (10 days) for `soldr gc` and the startup warning.
 pub const DEFAULT_STALE_AGE_SECONDS: u64 = 10 * 24 * 60 * 60;
 
-/// Default size threshold (256 MiB) used by `soldr gc` and the
-/// startup warning.
+/// Default size threshold (256 MiB) for `soldr gc` and the startup warning.
 pub const DEFAULT_STALE_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Error)]
@@ -47,8 +45,7 @@ pub struct TargetRow {
     pub last_used: i64,
 }
 
-/// SQLite registry backed by `~/.soldr/state.sqlite3` (or a
-/// caller-provided path).
+/// SQLite registry backed by `~/.soldr/state.sqlite3` (or a caller path).
 pub struct TargetRegistry {
     db: StateDbHandle,
 }
@@ -78,16 +75,14 @@ impl TargetRegistry {
         })
     }
 
-    /// Open an in-memory database. Useful for tests and for callers
-    /// that want a registry without touching disk.
+    /// Open an in-memory database (tests, or callers that avoid disk).
     pub fn open_in_memory() -> Result<Self, RegistryError> {
         Ok(Self {
             db: crate::cache_lib::state_store::open_state_db_in_memory()?,
         })
     }
 
-    /// Insert or update the row for `path` with the supplied unix
-    /// timestamp.
+    /// Insert or update the row for `path` with the supplied unix timestamp.
     pub fn upsert_with_time(&self, path: &Path, unix_seconds: i64) -> Result<(), RegistryError> {
         let path_str = path_to_string(path);
         self.db.execute(
@@ -146,9 +141,8 @@ impl TargetRegistry {
         Ok(removed > 0)
     }
 
-    /// Remove rows for every path in `paths` in a single transaction.
-    /// Missing rows are skipped. Returns the number of rows that were
-    /// actually removed.
+    /// Remove rows for every path in `paths` in a single transaction,
+    /// skipping missing rows. Returns the number actually removed.
     pub fn remove_many(&self, paths: &[PathBuf]) -> Result<usize, RegistryError> {
         if paths.is_empty() {
             return Ok(0);
@@ -226,8 +220,7 @@ pub fn directory_size(path: &Path) -> u64 {
     crate::cache_lib::dir_footprint::measure(path).0
 }
 
-/// [`directory_size`] plus the file count from the same walk, as
-/// `(total_bytes, file_count)`.
+/// [`directory_size`] plus the walk's file count, as `(total_bytes, file_count)`.
 pub fn directory_size_and_files(path: &Path) -> (u64, u64) {
     crate::cache_lib::dir_footprint::measure(path)
 }

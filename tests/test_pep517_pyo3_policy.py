@@ -160,9 +160,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with mock.patch.dict(sys.modules, {"tomllib": None}):
-                values = self.backend._toml_section_values(
-                    path, "package.metadata.x"
-                )
+                values = self.backend._toml_section_values(path, "package.metadata.x")
         self.assertEqual(values.get("name"), "a#b")
 
     def test_fallback_integer_opt_level_suppresses_env_default(self) -> None:

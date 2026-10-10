@@ -101,6 +101,7 @@ def test_minimal_jobs_and_full_jobs_have_explicit_dependencies() -> None:
         "build-linux-x64",
         "e2e-linux-x64",
         "full-coverage",
+        "ci-summary",
         "cancel-on-bootstrap-failure",
         "cancel-on-e2e-linux-x64-failure",
         # Path- or event-scoped side jobs from the consolidated PR entry

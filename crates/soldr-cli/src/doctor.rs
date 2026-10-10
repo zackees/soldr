@@ -45,11 +45,9 @@ struct DoctorOutput {
     drift: bool,
     missing_components: Vec<String>,
     missing_targets: Vec<String>,
-    /// Effective value and provenance of every timeout with an env
-    /// override (soldr#1838 Phase 3).
+    /// Effective value and provenance of every timeout with an env override (soldr#1838 Phase 3).
     timeouts: Vec<crate::timeout_registry::DoctorTimeout>,
-    /// Stable-broker route acquisition deadlines and their environment
-    /// provenance (soldr#2476).
+    /// Stable-broker route acquisition deadlines and their environment provenance (soldr#2476).
     broker_deadlines: Vec<crate::broker_deadlines::DoctorBrokerDeadline>,
     /// Authoritative broker installation identity and physical bind endpoint.
     broker_endpoint: crate::broker_identity::DoctorBrokerEndpoint,
