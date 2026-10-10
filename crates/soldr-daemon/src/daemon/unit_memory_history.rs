@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -81,9 +82,19 @@ pub fn record_in(
     tree_peak_rss_bytes: u64,
     now_ms: i64,
 ) -> Result<(), RegistryError> {
-    let samples = lookup_in(db, unit_key)
-        .ok()
-        .flatten()
+    // SQLite errors propagate. An undecodable existing row counts as "no prior
+    // samples" so a fresh valid row overwrites it (soldr#3646).
+    let existing: Option<Vec<u8>> = db
+        .query_row(
+            "SELECT value FROM unit_memory_history WHERE key = ?1",
+            params![unit_key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let samples = existing
+        .as_deref()
+        .map(decode)
+        .and_then(Result::ok)
         .map_or(0, |unit| unit.samples)
         .saturating_add(1);
     let bytes = prost_tagged_bytes(&WireUnitMemory {
@@ -109,7 +120,12 @@ pub fn load_all_in(db: &Connection) -> Result<Vec<(String, UnitMemory)>, Registr
     let mut units = Vec::new();
     for row in rows {
         let (key, bytes) = row?;
-        units.push((key, decode(&bytes)?));
+        match decode(&bytes) {
+            Ok(unit) => units.push((key, unit)),
+            Err(error) => eprintln!(
+                "soldr-daemon: unit memory history: skipping undecodable row {key:?}: {error}"
+            ),
+        }
     }
     Ok(units)
 }
@@ -156,6 +172,7 @@ pub struct UnitMemoryHistory {
     units: Arc<Mutex<HashMap<String, UnitMemory>>>,
     tx: mpsc::Sender<Command>,
     loaded: watch::Receiver<bool>,
+    dropped: Arc<AtomicU64>,
 }
 
 impl UnitMemoryHistory {
@@ -165,7 +182,12 @@ impl UnitMemoryHistory {
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
         let (loaded_tx, loaded) = watch::channel(false);
         tokio::spawn(drain(db_path, Arc::clone(&units), rx, loaded_tx));
-        Self { units, tx, loaded }
+        Self {
+            units,
+            tx,
+            loaded,
+            dropped: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     /// The unit's last measured peak, if this daemon has one.
@@ -202,12 +224,23 @@ impl UnitMemoryHistory {
                 },
             );
         }
-        let _ = self.tx.try_send(Command::Record {
+        let sent = self.tx.try_send(Command::Record {
             unit_key: unit_key.to_string(),
             peak_rss_bytes,
             tree_peak_rss_bytes,
             now_ms,
         });
+        if sent.is_err() && self.dropped.fetch_add(1, Ordering::Relaxed) == 0 {
+            eprintln!(
+                "soldr-daemon: unit memory history: write queue full or closed; \
+                 dropping persisted measurements (first dropped: {unit_key})"
+            );
+        }
+    }
+
+    /// How many measurements were not queued for persistence.
+    pub fn dropped_writes(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     /// Resolve once the warm load from the table has finished.
@@ -240,12 +273,26 @@ async fn drain(
 ) {
     let load_path = db_path.clone();
     let stored = tokio::task::spawn_blocking(move || {
-        let db = crate::cache_lib::state_store::open_state_db(&load_path).ok()?;
-        load_all_in(&db).ok()
+        let db = match crate::cache_lib::state_store::open_state_db(&load_path) {
+            Ok(db) => db,
+            Err(error) => {
+                eprintln!("soldr-daemon: unit memory history: open failed: {error}");
+                return None;
+            }
+        };
+        match load_all_in(&db) {
+            Ok(units) => Some(units),
+            Err(error) => {
+                eprintln!("soldr-daemon: unit memory history: warm load failed: {error}");
+                None
+            }
+        }
     })
     .await
-    .ok()
-    .flatten()
+    .unwrap_or_else(|error| {
+        eprintln!("soldr-daemon: unit memory history: warm load task failed: {error}");
+        None
+    })
     .unwrap_or_default();
     if let Ok(mut map) = units.lock() {
         for (key, unit) in stored {
@@ -274,6 +321,9 @@ async fn drain(
             }
         }
         let result = write_batch(db_path.clone(), std::mem::take(&mut pending)).await;
+        if let Err(error) = &result {
+            eprintln!("soldr-daemon: unit memory history: write failed: {error}");
+        }
         for reply in flushes {
             let _ = reply.send(result.clone());
         }
