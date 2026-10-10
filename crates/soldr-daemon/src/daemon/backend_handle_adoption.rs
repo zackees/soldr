@@ -268,13 +268,21 @@ pub fn probe_error_is_transient(err: &BackendHandleError) -> bool {
 }
 
 fn probe_soldr_daemon_once(paths: &SoldrPaths) -> ProbeOutcome {
-    let expected = match read_broker_route_claim(paths) {
-        Ok(Some(claim)) => claim,
+    let expected = match read_broker_route_claim_snapshot(paths) {
+        Ok(Some(RouteClaimSnapshot {
+            claim: Ok(claim), ..
+        })) => claim,
         Ok(None) => return ProbeOutcome::NotLive,
-        Err(_) => {
-            prune_broker_route_claim(paths);
+        Ok(Some(RouteClaimSnapshot {
+            bytes,
+            claim: Err(_),
+        })) => {
+            // soldr#3685: corrupt bytes -- prune exactly those bytes.
+            let _ = prune_broker_route_claim_if_unchanged(paths, &bytes);
             return ProbeOutcome::NotLive;
         }
+        // An IO error is inconclusive; never prune on it.
+        Err(_) => return ProbeOutcome::NotLive,
     };
     let handle = match BackendHandle::probe_with_service(
         SOLDR_DAEMON_SERVICE_NAME,
@@ -438,18 +446,16 @@ fn replace_route_claim(source: &Path, target: &Path) -> io::Result<()> {
     crate::platform::fs::replace::atomic_replace(source, target)
 }
 
+pub use super::route_claim_prune::{
+    prune_broker_route_claim_if_unchanged, read_broker_route_claim_snapshot,
+    read_route_claim_pruning_corrupt, RouteClaimSnapshot,
+};
+
 pub fn read_broker_route_claim(paths: &SoldrPaths) -> io::Result<Option<DaemonProcess>> {
-    use prost::Message as _;
-    let bytes = match std::fs::read(broker_route_claim_path(paths)) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let claim = running_process::broker::protocol::DaemonProcess::decode(bytes.as_slice())
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    DaemonProcess::try_from(claim)
-        .map(Some)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    match read_broker_route_claim_snapshot(paths)? {
+        Some(snapshot) => snapshot.claim.map(Some),
+        None => Ok(None),
+    }
 }
 
 /// Read only the PID and executable path from a route claim for ownership
@@ -738,6 +744,29 @@ mod tests {
             read_broker_route_claim_owner_identity(&paths).expect("read owner"),
             Some((daemon.pid, daemon.exe_path)),
             "ownership recovery still needs to identify a live older daemon"
+        );
+    }
+
+    #[test]
+    fn unreadable_route_claim_is_inconclusive_and_kept() {
+        // A directory at the claim path makes the read fail with an IO error
+        // (not NotFound, not InvalidData) on every platform.
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let claim_path = broker_route_claim_path(&paths);
+        std::fs::create_dir_all(claim_path.join("child")).expect("claim dir");
+
+        let error = read_broker_route_claim_snapshot(&paths)
+            .err()
+            .expect("an unreadable claim is an IO error");
+        assert_ne!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(matches!(
+            probe_soldr_daemon_once(&paths),
+            ProbeOutcome::NotLive
+        ));
+        assert!(
+            claim_path.join("child").exists(),
+            "an IO error must not prune"
         );
     }
 

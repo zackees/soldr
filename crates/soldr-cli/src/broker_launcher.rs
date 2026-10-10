@@ -416,21 +416,13 @@ impl SoldrBackendLauncher {
     ) -> Option<BackendHandle> {
         use crate::daemon::backend_handle_adoption::ClaimAdoptionError;
 
-        let claim = match crate::daemon::backend_handle_adoption::read_broker_route_claim(paths) {
-            Ok(Some(claim)) => claim,
-            Ok(None) => return None,
-            Err(error) => {
-                eprintln!(
-                    "soldr broker: pruning unreadable daemon route claim {}: {error}",
-                    crate::daemon::backend_handle_adoption::broker_route_claim_path(paths)
-                        .display()
-                );
-                if prune_invalid {
-                    crate::daemon::backend_handle_adoption::prune_broker_route_claim(paths);
-                }
-                return None;
-            }
-        };
+        // soldr#3685: corrupt claims are pruned by compare-and-delete; an IO
+        // error is inconclusive and keeps the claim.
+        let (claim, claim_bytes) =
+            crate::daemon::backend_handle_adoption::read_route_claim_pruning_corrupt(
+                paths,
+                prune_invalid,
+            )?;
         let route_image = route_image_hash(request).ok()?;
         // soldr#3561: identity is the image digest, proven by the exact probe
         // at the claim's own endpoint (PID, executable path and hash, boot ID,
@@ -456,7 +448,7 @@ impl SoldrBackendLauncher {
                 None
             }
             Err(error @ ClaimAdoptionError::Probe(_)) => {
-                prune_route_claim_after_probe_failure(paths, &error, prune_invalid);
+                prune_route_claim_after_probe_failure(paths, &claim_bytes, &error, prune_invalid);
                 None
             }
         }
@@ -748,6 +740,7 @@ fn configure_backend_command(
 /// Returns whether the claim was pruned.
 fn prune_route_claim_after_probe_failure(
     paths: &crate::core::SoldrPaths,
+    claim_bytes: &[u8],
     error: &crate::daemon::backend_handle_adoption::ClaimAdoptionError,
     prune_invalid: bool,
 ) -> bool {
@@ -766,8 +759,11 @@ fn prune_route_claim_after_probe_failure(
         eprintln!("soldr broker: daemon route claim failed exact probe and was pruned: {error}");
     }
     if prune_invalid {
-        crate::daemon::backend_handle_adoption::prune_broker_route_claim(paths);
-        return true;
+        return crate::daemon::backend_handle_adoption::prune_broker_route_claim_if_unchanged(
+            paths,
+            claim_bytes,
+        )
+        .unwrap_or(false);
     }
     false
 }
@@ -842,6 +838,7 @@ mod tests {
         let (paths, claim) = seeded_claim(&temp);
         let pruned = prune_route_claim_after_probe_failure(
             &paths,
+            b"claim",
             &claim_probe_error(EndpointProbeError::Timeout),
             true,
         );
@@ -859,6 +856,7 @@ mod tests {
         ));
         assert!(prune_route_claim_after_probe_failure(
             &paths,
+            b"claim",
             &claim_probe_error(refused),
             true
         ));
