@@ -688,7 +688,8 @@ fn fast_exit_on_signal(paths: &SoldrPaths, signal_name: &str) -> ! {
     std::process::exit(1);
 }
 
-/// Env override for [`SHUTDOWN_WATCHDOG_GRACE`], in seconds. `0` disables.
+/// Env override for [`SHUTDOWN_WATCHDOG_GRACE`], in seconds. Zero, empty, or malformed values use the default;
+/// the backstop cannot be disabled (soldr#3648).
 pub const SHUTDOWN_WATCHDOG_ENV_VAR: &str = "SOLDR_SHUTDOWN_WATCHDOG_SECS";
 
 /// How long teardown may run before the process exits regardless.
@@ -715,15 +716,15 @@ pub(crate) fn shutdown_watchdog_grace() -> Option<Duration> {
     parse_watchdog_grace(std::env::var(SHUTDOWN_WATCHDOG_ENV_VAR).ok().as_deref())
 }
 
-/// `None` means "no backstop". Only an explicit `0` may produce it — a
-/// malformed override falls back to the default rather than silently
-/// disabling the one thing guaranteeing the process exits.
+/// Always returns `Some`. Zero, empty, or malformed overrides fall back to the
+/// 240 s default so no override can remove the one thing guaranteeing the
+/// process exits (soldr#3648; see docs/DAEMON_TIMEOUTS.md).
 pub(crate) fn parse_watchdog_grace(raw: Option<&str>) -> Option<Duration> {
     let Some(raw) = raw else {
         return Some(SHUTDOWN_WATCHDOG_GRACE);
     };
     match raw.trim().parse::<u64>() {
-        Ok(0) => None,
+        Ok(0) => Some(SHUTDOWN_WATCHDOG_GRACE),
         Ok(secs) => Some(Duration::from_secs(secs)),
         Err(_) => Some(SHUTDOWN_WATCHDOG_GRACE),
     }
