@@ -232,7 +232,7 @@ enum ProbeOutcome {
 /// [`EndpointProbeError::Connect`] variant, so the inner [`io::ErrorKind`] is
 /// what separates them — `TimedOut` is transient, `NotFound` /
 /// `ConnectionRefused` are definitive.
-fn probe_error_is_transient(err: &BackendHandleError) -> bool {
+pub fn probe_error_is_transient(err: &BackendHandleError) -> bool {
     fn io_kind_is_transient(err: &io::Error) -> bool {
         matches!(
             err.kind(),
