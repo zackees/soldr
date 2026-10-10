@@ -414,6 +414,9 @@ fn cache_lifecycle_rejects_unknown_values() {
 fn command_lifetime_shutdown_timeout_parser_defaults_and_validates() {
     assert_eq!(parse_shutdown_timeout_seconds("").unwrap(), 300);
     assert_eq!(parse_shutdown_timeout_seconds(" 5 ").unwrap(), 5);
-    assert!(parse_shutdown_timeout_seconds("0").is_err());
-    assert!(parse_shutdown_timeout_seconds("abc").is_err());
+    // #3647: malformed/zero overrides fall back to the 300 s default (docs/DAEMON_TIMEOUTS.md), matching SOLDR_COMPILE_REPLY_TIMEOUT_SECS.
+    assert_eq!(parse_shutdown_timeout_seconds("0").unwrap(), 300);
+    assert_eq!(parse_shutdown_timeout_seconds("abc").unwrap(), 300);
+    assert_eq!(parse_shutdown_timeout_seconds("5m").unwrap(), 300);
+    assert_eq!(parse_shutdown_timeout_seconds("-1").unwrap(), 300);
 }

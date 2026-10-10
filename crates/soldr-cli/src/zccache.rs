@@ -74,32 +74,37 @@ pub(crate) fn command_lifetime_shutdown_timeout() -> Result<std::time::Duration,
     ))
 }
 
+const DEFAULT_CACHE_SHUTDOWN_TIMEOUT_SECS: u64 = 300;
+
 fn command_lifetime_shutdown_timeout_seconds() -> Result<u64, SoldrError> {
     match std::env::var(SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR) {
         Ok(raw) => parse_shutdown_timeout_seconds(&raw),
-        Err(std::env::VarError::NotPresent) => Ok(300),
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_CACHE_SHUTDOWN_TIMEOUT_SECS),
         Err(err) => Err(SoldrError::Other(format!(
             "{SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR} is not valid Unicode: {err}"
         ))),
     }
 }
 
+/// Parse `SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS`.
+///
+/// Per #3647 and docs/DAEMON_TIMEOUTS.md, empty, malformed, or zero values
+/// fall back to the documented default; malformed and zero values also warn
+/// on stderr so the misconfiguration is visible.
 pub(crate) fn parse_shutdown_timeout_seconds(raw: &str) -> Result<u64, SoldrError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Ok(300);
+        return Ok(DEFAULT_CACHE_SHUTDOWN_TIMEOUT_SECS);
     }
-    let seconds = trimmed.parse::<u64>().map_err(|err| {
-        SoldrError::Other(format!(
-            "{SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR} must be a positive integer number of seconds (got {raw:?}: {err})"
-        ))
-    })?;
-    if seconds == 0 {
-        return Err(SoldrError::Other(format!(
-            "{SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR} must be greater than zero"
-        )));
+    match trimmed.parse::<u64>() {
+        Ok(seconds) if seconds > 0 => Ok(seconds),
+        _ => {
+            eprintln!(
+                "soldr: warning: {SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR}={raw:?} is not a positive integer number of seconds; using the default {DEFAULT_CACHE_SHUTDOWN_TIMEOUT_SECS} s"
+            );
+            Ok(DEFAULT_CACHE_SHUTDOWN_TIMEOUT_SECS)
+        }
     }
-    Ok(seconds)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
