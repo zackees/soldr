@@ -44,9 +44,9 @@ pub fn build_compile_request_from(
     }
 }
 
-/// Derive the build-history lifecycle from the (already-filtered) env — the
-/// build-session id survives the env filter, so this reads it from `env` rather
-/// than `std::env`, keeping the daemon path honest to the SessionStart.
+/// Derive the build-history lifecycle from the (already-filtered) env. Both the
+/// build-session id and `CARGO_TARGET_DIR` come from the request `env`, never
+/// `std::env`, keeping the daemon path honest to the SessionStart (soldr#3644).
 fn build_compile_lifecycle_from(
     rustc_argv: &[String],
     env: &[(String, String)],
@@ -58,8 +58,19 @@ fn build_compile_lifecycle_from(
         .parse::<u64>()
         .ok()?;
     let rustc_args = rustc_argv.get(1..).unwrap_or_default();
+    let cargo_target_dir = env
+        .iter()
+        .find(|(k, _)| k == "CARGO_TARGET_DIR")
+        .map(|(_, v)| std::ffi::OsStr::new(v.as_str()));
     let target_dir =
-        soldr_cache::cache_lib::target_registry::resolve_workspace_target_dir(rustc_args)?;
+        // The client's CARGO_TARGET_DIR, never the daemon's own (soldr#3644);
+        // no cwd: a relative value falls through to the out-dir walk.
+        soldr_cache::cache_lib::target_registry::resolve_workspace_target_dir_with(
+            rustc_args,
+            cargo_target_dir,
+            None,
+        )
+        .or_else(|| target_dir_from_cachedir_tag(rustc_args))?;
     Some(CompileLifecycle {
         session_id,
         crate_name: parse_crate_name(rustc_args)
@@ -68,6 +79,30 @@ fn build_compile_lifecycle_from(
         target_dir: target_dir.display().to_string(),
         started_at_ms: current_unix_ms(),
     })
+}
+
+/// Fallback for a relocated target dir not named `target` (e.g. a custom
+/// `CARGO_TARGET_DIR` the client did not forward): walk up from `--out-dir`
+/// to the nearest ancestor holding cargo's `CACHEDIR.TAG`.
+fn target_dir_from_cachedir_tag(args: &[String]) -> Option<std::path::PathBuf> {
+    let mut iter = args.iter();
+    let mut out_dir = None;
+    while let Some(arg) = iter.next() {
+        if arg == "--out-dir" {
+            out_dir = iter.next().cloned();
+            break;
+        }
+        if let Some(rest) = arg.strip_prefix("--out-dir=") {
+            out_dir = Some(rest.to_string());
+            break;
+        }
+    }
+    let out_dir = std::path::PathBuf::from(out_dir?);
+    let found = out_dir
+        .ancestors()
+        .find(|dir| dir.join("CACHEDIR.TAG").is_file())?
+        .to_path_buf();
+    Some(std::fs::canonicalize(&found).unwrap_or(found))
 }
 
 fn parse_crate_name(args: &[String]) -> Option<&str> {
@@ -134,4 +169,85 @@ pub fn is_compile_env_var(name: &str) -> bool {
             | "COLORTERM"
             | "VTE_VERSION"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soldr_cache::cache_lib::target_registry::resolve_workspace_target_dir_with;
+
+    #[test]
+    fn supplied_cargo_target_dir_is_used_not_process_env() {
+        let b = tempfile::tempdir().expect("tempdir");
+        let got = resolve_workspace_target_dir_with(&[], Some(b.path().as_os_str()), None);
+        assert_eq!(got, Some(std::fs::canonicalize(b.path()).unwrap()));
+    }
+
+    #[test]
+    fn relative_cargo_target_dir_without_cwd_resolves_nothing() {
+        let rel = std::ffi::OsStr::new("relative/target");
+        assert_eq!(
+            resolve_workspace_target_dir_with(&[], Some(rel), None),
+            None
+        );
+    }
+
+    fn session_env() -> (String, String) {
+        (
+            soldr_cache::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR.to_string(),
+            "7".to_string(),
+        )
+    }
+
+    #[test]
+    fn lifecycle_target_dir_comes_from_request_env() {
+        let b = tempfile::TempDir::new().unwrap();
+        let env = vec![
+            session_env(),
+            (
+                "CARGO_TARGET_DIR".to_string(),
+                b.path().display().to_string(),
+            ),
+        ];
+        let argv: Vec<String> = ["rustc", "--crate-name", "foo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let lifecycle = build_compile_lifecycle_from(&argv, &env).unwrap();
+        assert_eq!(
+            lifecycle.target_dir,
+            std::fs::canonicalize(b.path())
+                .unwrap()
+                .display()
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn lifecycle_target_dir_falls_back_to_out_dir_cachedir_tag() {
+        let a = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            a.path().join("CACHEDIR.TAG"),
+            b"Signature: 8a477f597d28d172789f06886806bc55",
+        )
+        .unwrap();
+        let deps = a.path().join("debug").join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let env = vec![session_env()];
+        let argv: Vec<String> = vec![
+            "rustc".into(),
+            "--crate-name".into(),
+            "foo".into(),
+            "--out-dir".into(),
+            deps.display().to_string(),
+        ];
+        let lifecycle = build_compile_lifecycle_from(&argv, &env).unwrap();
+        assert_eq!(
+            lifecycle.target_dir,
+            std::fs::canonicalize(a.path())
+                .unwrap()
+                .display()
+                .to_string()
+        );
+    }
 }
