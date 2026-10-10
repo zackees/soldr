@@ -972,9 +972,11 @@ pub fn append_lifecycle_event_with(paths: &SoldrPaths, event: &str, details: Lif
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "{line}");
-    }
+    journal_hygiene::with_lifecycle_journal_lock(&path, || {
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "{line}");
+        }
+    });
 }
 
 pub(crate) fn pid_is_alive(pid: u32) -> bool {
