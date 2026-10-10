@@ -136,6 +136,54 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         # Fields the project does not set still get theirs.
         self.assertEqual(env["CARGO_PROFILE_DEV_LTO"], "false")
 
+    _INT_DEV = (
+        "[profile.dev]\nopt-level = 1\ndebug = 2\n"
+        'incremental = false\nsplit-debuginfo = "unpacked"\n'
+    )
+
+    def test_fallback_records_integer_dev_profile_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Cargo.toml"
+            path.write_text(self._INT_DEV, encoding="utf-8")
+            with mock.patch.dict(sys.modules, {"tomllib": None}):
+                values = self.backend._toml_section_values(path, "profile.dev")
+        self.assertEqual(values.get("opt-level"), "1")
+        self.assertEqual(values.get("debug"), "2")
+        self.assertEqual(values.get("incremental"), "false")
+        self.assertEqual(values.get("split-debuginfo"), "unpacked")
+
+    def test_fallback_keeps_hash_inside_quoted_string(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Cargo.toml"
+            path.write_text(
+                '[package.metadata.x]\nname = "a#b" # trailing comment\n',
+                encoding="utf-8",
+            )
+            with mock.patch.dict(sys.modules, {"tomllib": None}):
+                values = self.backend._toml_section_values(
+                    path, "package.metadata.x"
+                )
+        self.assertEqual(values.get("name"), "a#b")
+
+    def test_fallback_integer_opt_level_suppresses_env_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "Cargo.toml").write_text(self._INT_DEV, encoding="utf-8")
+            with mock.patch.dict(sys.modules, {"tomllib": None}):
+                with mock.patch.object(
+                    self.backend, "_project_root", return_value=Path(tmp)
+                ):
+                    options = self.backend._project_dev_profile_options()
+                    self.assertIn("opt-level", options)
+                    environ = {
+                        k: v
+                        for k, v in os.environ.items()
+                        if k != "CARGO_PROFILE_DEV_OPT_LEVEL"
+                    }
+                    environ["SOLDR_PEP517_STABLE_TARGET_DIR"] = "0"
+                    with mock.patch.dict(os.environ, environ, clear=True):
+                        env = self.backend._prep_env()
+        self.assertNotIn("CARGO_PROFILE_DEV_OPT_LEVEL", env)
+
     def test_caller_profile_and_environment_values_win(self) -> None:
         with mock.patch.dict(
             os.environ,
