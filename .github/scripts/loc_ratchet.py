@@ -113,7 +113,13 @@ def _merge_base(base_ref: str) -> str:
         raise NoMergeBase(base_ref) from exc
 
 
-def changed_files(base: str, roots: tuple[str, ...]) -> list[tuple[str, str]]:
+@dataclass(frozen=True, order=True)
+class ChangedFile:
+    path: str
+    baseline_path: str
+
+
+def changed_files(base: str, roots: tuple[str, ...]) -> list[ChangedFile]:
     """(path, baseline_path) pairs added, modified or renamed since the merge base.
 
     Deletions are excluded: a path that no longer exists cannot violate a size
@@ -124,7 +130,7 @@ def changed_files(base: str, roots: tuple[str, ...]) -> list[tuple[str, str]]:
     raw = _run(
         ["git", "diff", "--name-status", "-M", "--diff-filter=AMR", base, "HEAD"]
     )
-    out = []
+    out: list[ChangedFile] = []
     for line in raw.splitlines():
         fields = line.rstrip("\n").split("\t")
         if len(fields) < 2 or not fields[0]:
@@ -142,7 +148,7 @@ def changed_files(base: str, roots: tuple[str, ...]) -> list[tuple[str, str]]:
             continue
         if not any(path == r or path.startswith(f"{r}/") for r in roots):
             continue
-        out.append((path, baseline_path))
+        out.append(ChangedFile(path=path, baseline_path=baseline_path))
     return sorted(out)
 
 
@@ -178,7 +184,8 @@ def evaluate(
     base = resolve_base(base_ref, base_sha)
     violations: list[Violation] = []
     checked = 0
-    for path, baseline_path in changed_files(base, roots):
+    for changed in changed_files(base, roots):
+        path, baseline_path = changed.path, changed.baseline_path
         try:
             lines = line_count_worktree(path)
         except OSError:
