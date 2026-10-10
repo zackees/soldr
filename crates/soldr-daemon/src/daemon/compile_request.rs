@@ -44,9 +44,9 @@ pub fn build_compile_request_from(
     }
 }
 
-/// Derive the build-history lifecycle from the (already-filtered) env — the
-/// build-session id survives the env filter, so this reads it from `env` rather
-/// than `std::env`, keeping the daemon path honest to the SessionStart.
+/// Derive the build-history lifecycle from the (already-filtered) env. Both the
+/// build-session id and `CARGO_TARGET_DIR` come from the request `env`, never
+/// `std::env`, keeping the daemon path honest to the SessionStart (soldr#3644).
 fn build_compile_lifecycle_from(
     rustc_argv: &[String],
     env: &[(String, String)],
@@ -58,8 +58,15 @@ fn build_compile_lifecycle_from(
         .parse::<u64>()
         .ok()?;
     let rustc_args = rustc_argv.get(1..).unwrap_or_default();
+    let cargo_target_dir = env
+        .iter()
+        .find(|(k, _)| k == "CARGO_TARGET_DIR")
+        .map(|(_, v)| std::ffi::OsStr::new(v.as_str()));
     let target_dir =
-        soldr_cache::cache_lib::target_registry::resolve_workspace_target_dir(rustc_args)?;
+        soldr_cache::cache_lib::target_registry::resolve_workspace_target_dir_with_env(
+            rustc_args,
+            cargo_target_dir,
+        )?;
     Some(CompileLifecycle {
         session_id,
         crate_name: parse_crate_name(rustc_args)
@@ -134,4 +141,62 @@ pub fn is_compile_env_var(name: &str) -> bool {
             | "COLORTERM"
             | "VTE_VERSION"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session_env() -> (String, String) {
+        (
+            soldr_cache::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR.to_string(),
+            "7".to_string(),
+        )
+    }
+
+    #[test]
+    fn lifecycle_target_dir_comes_from_request_env() {
+        let b = tempfile::TempDir::new().unwrap();
+        let env = vec![
+            session_env(),
+            (
+                "CARGO_TARGET_DIR".to_string(),
+                b.path().display().to_string(),
+            ),
+        ];
+        let argv: Vec<String> = ["rustc", "--crate-name", "foo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let lifecycle = build_compile_lifecycle_from(&argv, &env).unwrap();
+        assert_eq!(
+            lifecycle.target_dir,
+            std::fs::canonicalize(b.path()).unwrap().display().to_string()
+        );
+    }
+
+    #[test]
+    fn lifecycle_target_dir_falls_back_to_out_dir_cachedir_tag() {
+        let a = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            a.path().join("CACHEDIR.TAG"),
+            b"Signature: 8a477f597d28d172789f06886806bc55",
+        )
+        .unwrap();
+        let deps = a.path().join("debug").join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let env = vec![session_env()];
+        let argv: Vec<String> = vec![
+            "rustc".into(),
+            "--crate-name".into(),
+            "foo".into(),
+            "--out-dir".into(),
+            deps.display().to_string(),
+        ];
+        let lifecycle = build_compile_lifecycle_from(&argv, &env).unwrap();
+        assert_eq!(
+            lifecycle.target_dir,
+            std::fs::canonicalize(a.path()).unwrap().display().to_string()
+        );
+    }
 }
