@@ -76,7 +76,7 @@ pub async fn ensure_zig(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
     let digest = downloaded.sha256();
     let store = trust::PinnedChecksumStore::from_env()?;
     let mode = trust::TrustMode::from_env();
-    match trust::verify_download("zig", MANAGED_ZIG_VERSION, &asset, digest, &store, mode)? {
+    match verify_zig_download(&asset, digest, &store, mode)? {
         trust::VerifyOutcome::Verified { sha256 } => {
             eprintln!("soldr: trust: verified zig v{MANAGED_ZIG_VERSION} {asset} sha256={sha256}");
         }
@@ -89,18 +89,105 @@ pub async fn ensure_zig(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
         }
     }
 
-    if install_dir.exists() {
-        std::fs::remove_dir_all(&install_dir)?;
-    }
-    std::fs::create_dir_all(&install_dir)?;
+    let bin_dir = install_dir
+        .parent()
+        .ok_or_else(|| SoldrError::Other("zig install dir has no parent".into()))?;
+    let dir = install_zig_archive(bin_dir, downloaded.path(), &asset)?;
+    eprintln!("soldr: downloaded zig v{MANAGED_ZIG_VERSION}");
+    Ok(dir)
+}
 
-    if asset.ends_with(".zip") {
-        extract_zip_tree(std::fs::File::open(downloaded.path())?, &install_dir)?;
+/// Verify a Zig download: a user pin (`SOLDR_CHECKSUMS_FILE`) wins, then the
+/// built-in pin, then the trust mode decides.
+fn verify_zig_download(
+    asset: &str,
+    digest: &str,
+    store: &trust::PinnedChecksumStore,
+    mode: trust::TrustMode,
+) -> Result<trust::VerifyOutcome, SoldrError> {
+    if store.lookup("zig", MANAGED_ZIG_VERSION, asset).is_some() {
+        return trust::verify_download("zig", MANAGED_ZIG_VERSION, asset, digest, store, mode);
+    }
+    let Some(expected) = builtin_zig_sha256(MANAGED_ZIG_VERSION, asset) else {
+        return trust::verify_download("zig", MANAGED_ZIG_VERSION, asset, digest, store, mode);
+    };
+    let actual = digest.to_ascii_lowercase();
+    if actual == expected {
+        Ok(trust::VerifyOutcome::Verified { sha256: actual })
     } else {
-        extract_tar_xz_tree(std::fs::File::open(downloaded.path())?, &install_dir)?;
+        Err(SoldrError::Other(format!(
+            "trust: built-in sha256 mismatch for zig v{MANAGED_ZIG_VERSION} asset {asset}\n  expected: {expected}\n  actual:   {actual}"
+        )))
+    }
+}
+
+/// Built-in pins for every `MANAGED_ZIG_VERSION` asset, from
+/// `https://ziglang.org/download/index.json` (`shasum`), cross-checked by
+/// hashing the downloaded archives. Bump with `MANAGED_ZIG_VERSION`.
+const BUILTIN_ZIG_PINS: &[(&str, &str, &str)] = &[
+    (
+        "0.14.1",
+        "zig-x86_64-linux-0.14.1.tar.xz",
+        "24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c",
+    ),
+    (
+        "0.14.1",
+        "zig-aarch64-linux-0.14.1.tar.xz",
+        "f7a654acc967864f7a050ddacfaa778c7504a0eca8d2b678839c21eea47c992b",
+    ),
+    (
+        "0.14.1",
+        "zig-x86_64-macos-0.14.1.tar.xz",
+        "b0f8bdfb9035783db58dd6c19d7dea89892acc3814421853e5752fe4573e5f43",
+    ),
+    (
+        "0.14.1",
+        "zig-aarch64-macos-0.14.1.tar.xz",
+        "39f3dc5e79c22088ce878edc821dedb4ca5a1cd9f5ef915e9b3cc3053e8faefa",
+    ),
+    (
+        "0.14.1",
+        "zig-x86_64-windows-0.14.1.zip",
+        "554f5378228923ffd558eac35e21af020c73789d87afeabf4bfd16f2e6feed2c",
+    ),
+    (
+        "0.14.1",
+        "zig-aarch64-windows-0.14.1.zip",
+        "b5aac0ccc40dd91e8311b1f257717d8e3903b5fefb8f659de6d65a840ad1d0e7",
+    ),
+];
+
+/// Built-in SHA-256 pin for a managed Zig asset (soldr#3682).
+fn builtin_zig_sha256(version: &str, asset: &str) -> Option<&'static str> {
+    BUILTIN_ZIG_PINS
+        .iter()
+        .find(|(v, a, _)| *v == version && *a == asset)
+        .map(|(_, _, sha)| *sha)
+}
+
+/// Extract `archive` into `<bin_dir>/zig-<MANAGED_ZIG_VERSION>` and return
+/// the directory holding the zig binary.
+fn install_zig_archive(bin_dir: &Path, archive: &Path, asset: &str) -> Result<PathBuf, SoldrError> {
+    let dir_name = format!("zig-{MANAGED_ZIG_VERSION}");
+    let install_dir = bin_dir.join(&dir_name);
+    // Serialize installers; a waiter usually finds the winner finished.
+    let _lock = super::syslib_common::acquire_install_lock(bin_dir, &dir_name)?;
+    if let Some(dir) = completed_zig_dir(&install_dir) {
+        return Ok(dir);
     }
 
-    let resolved = managed_zig_binary_path(&install_dir);
+    // Extract into a sibling staging dir and promote it whole, so no
+    // partial tree ever sits under the canonical name.
+    let staging = tempfile::Builder::new()
+        .prefix(&format!(".{dir_name}-staging-"))
+        .tempdir_in(bin_dir)?;
+    if asset.ends_with(".zip") {
+        extract_zip_tree(std::fs::File::open(archive)?, staging.path())?;
+    } else {
+        extract_tar_xz_tree(std::fs::File::open(archive)?, staging.path())?;
+    }
+
+    let resolved = managed_zig_binary_path(staging.path());
     if !resolved.is_file() {
         return Err(SoldrError::Archive(format!(
             "zig binary not found after extract at {}",
@@ -112,14 +199,28 @@ pub async fn ensure_zig(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
     // Windows, where Unix mode bits are meaningless).
     let source = std::fs::metadata(&resolved)?.permissions();
     crate::platform::fs::permissions::make_executable_from(&resolved, &source)?;
+    std::fs::write(staging.path().join(".complete"), MANAGED_ZIG_VERSION)?;
 
-    std::fs::write(&stamp, MANAGED_ZIG_VERSION)?;
-    eprintln!("soldr: downloaded zig v{MANAGED_ZIG_VERSION}");
+    let staging_path = staging.keep();
+    if let Err(error) = super::archive::promote_staged_tool_dir(&staging_path, &install_dir) {
+        let _ = std::fs::remove_dir_all(&staging_path);
+        return Err(error);
+    }
+    completed_zig_dir(&install_dir).ok_or_else(|| {
+        SoldrError::Archive(format!(
+            "zig install incomplete at {}",
+            install_dir.display()
+        ))
+    })
+}
 
-    resolved
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| SoldrError::Other("zig binary has no parent directory".into()))
+fn completed_zig_dir(install_dir: &Path) -> Option<PathBuf> {
+    let bin = managed_zig_binary_path(install_dir);
+    if install_dir.join(".complete").is_file() && bin.is_file() {
+        bin.parent().map(Path::to_path_buf)
+    } else {
+        None
+    }
 }
 
 async fn download_zig_asset(url: &str) -> Result<DownloadedAsset, SoldrError> {
@@ -388,5 +489,113 @@ mod tests {
             None => std::env::remove_var(ZIG_ENV_VAR),
         }
         assert_eq!(resolved.as_deref(), exe.parent());
+    }
+
+    #[test]
+    fn builtin_pin_exists_for_every_managed_zig_asset() {
+        for (os, arch) in [
+            ("linux", "x86_64"),
+            ("linux", "aarch64"),
+            ("macos", "x86_64"),
+            ("macos", "aarch64"),
+            ("windows", "x86_64"),
+            ("windows", "aarch64"),
+        ] {
+            let ext = if os == "windows" { "zip" } else { "tar.xz" };
+            let asset = format!("zig-{arch}-{os}-{MANAGED_ZIG_VERSION}.{ext}");
+            let pin = builtin_zig_sha256(MANAGED_ZIG_VERSION, &asset)
+                .unwrap_or_else(|| panic!("no built-in sha256 pin for {asset}"));
+            assert_eq!(pin.len(), 64, "{asset}: {pin}");
+            assert!(pin
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        }
+    }
+
+    #[test]
+    fn builtin_pin_verifies_under_strict_without_user_pin_file() {
+        let (asset, _) = zig_download_url(MANAGED_ZIG_VERSION).unwrap();
+        let pin = builtin_zig_sha256(MANAGED_ZIG_VERSION, &asset).expect("host asset pinned");
+        let outcome = verify_zig_download(
+            &asset,
+            pin,
+            &trust::PinnedChecksumStore::empty(),
+            trust::TrustMode::Strict,
+        )
+        .expect("built-in pin satisfies strict mode");
+        assert!(matches!(outcome, trust::VerifyOutcome::Verified { .. }));
+        let bad = "0".repeat(64);
+        assert!(verify_zig_download(
+            &asset,
+            &bad,
+            &trust::PinnedChecksumStore::empty(),
+            trust::TrustMode::Permissive,
+        )
+        .is_err());
+    }
+
+    fn fixture_zig_tar_xz(dir: &Path) -> PathBuf {
+        // Large-ish payload so concurrent extractions overlap in time.
+        let root = managed_zig_archive_root();
+        let archive = dir.join("zig-fixture.tar.xz");
+        let file = std::fs::File::create(&archive).unwrap();
+        let xz = xz2::write::XzEncoder::new(file, 0);
+        let mut builder = tar::Builder::new(xz);
+        let mut add = |name: String, data: &[u8]| {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder.append_data(&mut header, name, data).unwrap();
+        };
+        add(
+            format!("{root}/{}", zig_binary_filename()),
+            b"#!/bin/sh\necho zig\n",
+        );
+        let blob = vec![7u8; 256 * 1024];
+        for i in 0..200 {
+            add(format!("{root}/lib/file{i}.zig"), &blob);
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+        archive
+    }
+
+    #[test]
+    fn concurrent_installs_do_not_corrupt_the_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = fixture_zig_tar_xz(tmp.path());
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        // Four installers released together: unlocked in-place extraction
+        // deletes a peer's half-extracted tree (soldr#3682).
+        let barrier = std::sync::Barrier::new(4);
+        let results: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        install_zig_archive(&bin_dir, &archive, "zig-fixture.tar.xz")
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for result in &results {
+            let dir = result.as_ref().expect("install succeeds");
+            assert!(dir.join(zig_binary_filename()).is_file());
+        }
+        let install_dir = bin_dir.join(format!("zig-{MANAGED_ZIG_VERSION}"));
+        assert!(install_dir.join(".complete").is_file());
+        let lib = install_dir.join(managed_zig_archive_root()).join("lib");
+        assert_eq!(std::fs::read_dir(&lib).unwrap().count(), 200, "tree intact");
+        // No staging/backup debris left beside the install.
+        let leftovers: Vec<_> = std::fs::read_dir(&bin_dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.starts_with(".zig-") || !n.ends_with(".lock"))
+            .filter(|n| n != &format!("zig-{MANAGED_ZIG_VERSION}"))
+            .collect();
+        assert!(leftovers.is_empty(), "debris: {leftovers:?}");
     }
 }
