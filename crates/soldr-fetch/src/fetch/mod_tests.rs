@@ -204,6 +204,25 @@ fn resolver_order_parses_default_and_subsets() {
 }
 
 #[test]
+fn resolver_order_all_unknown_tokens_fall_back_to_all() {
+    assert_eq!(ResolverOrder::parse("bogus"), ResolverOrder::all());
+    assert_eq!(ResolverOrder::parse("embd, lvie"), ResolverOrder::all());
+    assert_eq!(ResolverOrder::parse(",,"), ResolverOrder::all());
+}
+
+#[test]
+fn api_hop_refused_when_try_api_false() {
+    let order = ResolverOrder::parse("embed,live");
+    let err = ensure_api_hop_permitted(order, "cargo-nextest").unwrap_err();
+    assert!(
+        err.to_string().contains("no resolver hop permitted"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("SOLDR_RESOLVER_ORDER"));
+    assert!(ensure_api_hop_permitted(ResolverOrder::all(), "x").is_ok());
+}
+
+#[test]
 fn resolver_order_env_var_skips_embed_when_unset() {
     // Defensive: ensure the canonical "all on" form keeps embed on.
     // The actual env-var override is exercised in the integration
