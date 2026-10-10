@@ -5,6 +5,7 @@
 //! daemon settings such as `SOLDR_SHUTDOWN_WATCHDOG_SECS` never ship
 //! undocumented.
 
+use crate::common;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -67,7 +68,7 @@ fn scan(text: &str, names: &mut BTreeSet<String>) {
 
 #[test]
 fn every_daemon_soldr_env_const_is_documented() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = common::workspace_root();
     let mut sources = Vec::new();
     collect_files(&root.join("crates/soldr-daemon/src"), "rs", &mut sources);
     let mut names = BTreeSet::new();
