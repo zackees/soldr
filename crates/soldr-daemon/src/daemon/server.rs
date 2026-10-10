@@ -116,7 +116,7 @@ mod shutdown_backstop_tests {
     use super::*;
 
     #[test]
-    fn watchdog_grace_defaults_and_is_only_disabled_explicitly() {
+    fn watchdog_grace_defaults_and_is_never_disabled() {
         assert_eq!(parse_watchdog_grace(None), Some(SHUTDOWN_WATCHDOG_GRACE));
         assert_eq!(
             parse_watchdog_grace(Some("90")),
@@ -127,8 +127,15 @@ mod shutdown_backstop_tests {
             Some(Duration::from_secs(90))
         );
 
-        // Only a literal 0 removes the backstop.
-        assert_eq!(parse_watchdog_grace(Some("0")), None);
+        // soldr#3648: zero must not remove the only exit backstop; it uses
+        // the default like any other unusable override.
+        for zero in ["0", " 0 "] {
+            assert_eq!(
+                parse_watchdog_grace(Some(zero)),
+                Some(SHUTDOWN_WATCHDOG_GRACE),
+                "zero override {zero:?} must fall back to the default"
+            );
+        }
 
         // A typo must NOT silently disable the only thing guaranteeing the
         // process exits — fall back to the default instead.

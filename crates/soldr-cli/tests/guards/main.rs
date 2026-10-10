@@ -16,6 +16,7 @@ mod cli_lint;
 mod cli_startup_smoke;
 mod color_predicate_guard;
 mod daemon_console_policy_guard;
+mod daemon_env_docs_guard;
 mod daemon_state_db_ownership_guard;
 mod env_lock_lint;
 mod isolated_daemon_readiness_diagnostics;

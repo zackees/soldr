@@ -53,6 +53,8 @@ suspect it whenever a "hang" reproduces only under nesting.
 | Cache flush reply | 5 min | — | Large index/LTO flushes may be slow |
 | Compile reply | 30 min | `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` | Shorten for diagnostic fail-fast behavior |
 | Graceful shutdown wait | 5 min | — | Allows in-flight work and persistent state to drain |
+| Daemon shutdown watchdog | 240 s | `SOLDR_SHUTDOWN_WATCHDOG_SECS` | Process exits regardless once graceful teardown (idle timeout, owner death, `soldr daemon stop`, SIGINT) runs this long; SIGTERM takes a fast-exit path and bypasses it. Sized under the 5 min graceful shutdown wait. Zero cannot disable it (soldr#3648) |
+| Displacement drain | 120 s | `SOLDR_DISPLACEMENT_DRAIN_TIMEOUT_SECS` | Wall-clock budget for an acknowledged stale-daemon displacement drain before the kill fallback engages |
 | Cache shutdown | 5 min | `SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS` | End-of-command embedded-cache drain |
 
 Malformed, empty, or zero timeout overrides use the documented default; they
