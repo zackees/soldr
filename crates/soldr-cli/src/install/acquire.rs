@@ -38,11 +38,16 @@ pub(crate) fn plan_acquisition(resolved: &ResolvedInstall) -> AcquisitionPlan {
                 }
             } else {
                 AcquisitionPlan::ShallowClone {
-                    clone_url: format!("https://{host}/{owner}/{repo}.git"),
+                    clone_url: clone_url(host, owner, repo),
                 }
             }
         }
     }
+}
+
+/// The https clone URL for a remote target.
+pub(crate) fn clone_url(host: &str, owner: &str, repo: &str) -> String {
+    format!("https://{host}/{owner}/{repo}.git")
 }
 
 /// Acquire the source tree for `plan`, returning the directory that holds
@@ -119,7 +124,7 @@ async fn acquire_codeload_zip(
     single_crate_root(&published)
 }
 
-fn acquire_shallow_clone(
+pub(super) fn acquire_shallow_clone(
     paths: &SoldrPaths,
     resolved: &ResolvedInstall,
     clone_url: &str,
@@ -133,41 +138,35 @@ fn acquire_shallow_clone(
     };
 
     let checkout = slot.staging().join("checkout");
-    // soldr#3690: `git clone --branch` accepts only branches and tags, so a
-    // commit (`Ref::Rev`) is fetched by sha into a fresh repo instead.
-    let steps: Vec<Vec<std::ffi::OsString>> = match &resolved.git_ref {
-        Ref::Rev(sha) => vec![
-            vec!["init".into(), "-q".into(), checkout.clone().into()],
-            vec![
-                "-C".into(),
-                checkout.clone().into(),
-                "fetch".into(),
-                "--depth".into(),
-                "1".into(),
-                clone_url.into(),
-                sha.into(),
-            ],
-            vec![
-                "-C".into(),
-                checkout.clone().into(),
-                "checkout".into(),
-                "-q".into(),
-                "--detach".into(),
-                "FETCH_HEAD".into(),
-            ],
-        ],
-        other => {
-            let mut args: Vec<std::ffi::OsString> =
-                vec!["clone".into(), "--depth".into(), "1".into()];
-            if let Some(git_ref) = other.as_api_ref() {
-                args.push("--branch".into());
-                args.push(git_ref.into());
-            }
-            args.push(clone_url.into());
-            args.push(checkout.clone().into());
-            vec![args]
-        }
+    // soldr#3690/#3691: fetch the resolved commit by sha into a fresh repo.
+    // `git clone --branch` accepts only branches and tags, and the cache key
+    // is that sha, so the checkout must be exactly it (not whatever the ref
+    // names by the time the clone runs).
+    let sha = match &resolved.git_ref {
+        _ if !resolved.sha.is_empty() => resolved.sha.as_str(),
+        Ref::Rev(rev) => rev.as_str(),
+        _ => "HEAD",
     };
+    let steps: Vec<Vec<std::ffi::OsString>> = vec![
+        vec!["init".into(), "-q".into(), checkout.clone().into()],
+        vec![
+            "-C".into(),
+            checkout.clone().into(),
+            "fetch".into(),
+            "--depth".into(),
+            "1".into(),
+            clone_url.into(),
+            sha.into(),
+        ],
+        vec![
+            "-C".into(),
+            checkout.clone().into(),
+            "checkout".into(),
+            "-q".into(),
+            "--detach".into(),
+            "FETCH_HEAD".into(),
+        ],
+    ];
     for args in steps {
         let mut command = std::process::Command::new("git");
         command.args(&args);
