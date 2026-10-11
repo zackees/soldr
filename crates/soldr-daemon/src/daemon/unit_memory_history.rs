@@ -18,8 +18,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -172,7 +172,36 @@ pub struct UnitMemoryHistory {
     units: Arc<Mutex<HashMap<String, UnitMemory>>>,
     tx: mpsc::Sender<Command>,
     loaded: watch::Receiver<bool>,
+    /// Set by the blocking load itself, so a synchronous waiter never depends
+    /// on the async owner task being scheduled (soldr#3686).
+    load_done: Arc<(Mutex<bool>, Condvar)>,
     dropped: Arc<AtomicU64>,
+}
+
+/// How long admission waits for the warm load before answering from what is
+/// already in memory (soldr#3686). Bounded so a stalled disk delays a compile
+/// by at most this much, once, right after a daemon start.
+pub const ADMISSION_LOAD_WAIT: Duration = Duration::from_secs(2);
+
+/// Fold the warm-loaded rows into the live map (soldr#3686). A unit recorded
+/// while the load ran keeps its newer timestamp, adds the stored sample count
+/// (that record is a further sample of the same unit, and the persisted row
+/// will count it the same way) and keeps the larger of each peak, so a
+/// measurement taken during the load cannot erase a trusted history.
+pub(crate) fn merge_loaded(
+    map: &mut HashMap<String, UnitMemory>,
+    stored: Vec<(String, UnitMemory)>,
+) {
+    for (key, unit) in stored {
+        map.entry(key)
+            .and_modify(|live| {
+                live.samples = live.samples.saturating_add(unit.samples);
+                live.peak_rss_bytes = live.peak_rss_bytes.max(unit.peak_rss_bytes);
+                live.tree_peak_rss_bytes = live.tree_peak_rss_bytes.max(unit.tree_peak_rss_bytes);
+                live.updated_ms = live.updated_ms.max(unit.updated_ms);
+            })
+            .or_insert(unit);
+    }
 }
 
 impl UnitMemoryHistory {
@@ -181,11 +210,19 @@ impl UnitMemoryHistory {
         let units = Arc::new(Mutex::new(HashMap::new()));
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
         let (loaded_tx, loaded) = watch::channel(false);
-        tokio::spawn(drain(db_path, Arc::clone(&units), rx, loaded_tx));
+        let load_done = Arc::new((Mutex::new(false), Condvar::new()));
+        tokio::spawn(drain(
+            db_path,
+            Arc::clone(&units),
+            rx,
+            loaded_tx,
+            Arc::clone(&load_done),
+        ));
         Self {
             units,
             tx,
             loaded,
+            load_done,
             dropped: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -196,6 +233,16 @@ impl UnitMemoryHistory {
             .lock()
             .ok()
             .and_then(|units| units.get(unit_key).copied())
+    }
+
+    /// [`Self::lookup`] after waiting at most `timeout` for the warm load, so
+    /// admission right after a restart sees the trusted history (soldr#3686).
+    pub fn lookup_after_load(&self, unit_key: &str, timeout: Duration) -> Option<UnitMemory> {
+        let (lock, cvar) = &*self.load_done;
+        if let Ok(done) = lock.lock() {
+            let _ = cvar.wait_timeout_while(done, timeout, |done| !*done);
+        }
+        self.lookup(unit_key)
     }
 
     /// Record a compile's measured memory. A measurement whose larger peak is
@@ -270,35 +317,21 @@ async fn drain(
     units: Arc<Mutex<HashMap<String, UnitMemory>>>,
     mut rx: mpsc::Receiver<Command>,
     loaded: watch::Sender<bool>,
+    load_done: Arc<(Mutex<bool>, Condvar)>,
 ) {
     let load_path = db_path.clone();
-    let stored = tokio::task::spawn_blocking(move || {
-        let db = match crate::cache_lib::state_store::open_state_db(&load_path) {
-            Ok(db) => db,
-            Err(error) => {
-                eprintln!("soldr-daemon: unit memory history: open failed: {error}");
-                return None;
-            }
-        };
-        match load_all_in(&db) {
-            Ok(units) => Some(units),
-            Err(error) => {
-                eprintln!("soldr-daemon: unit memory history: warm load failed: {error}");
-                None
-            }
+    let signal = Arc::clone(&load_done);
+    let load = tokio::task::spawn_blocking(move || {
+        let stored = load_stored(&load_path);
+        if let Ok(mut map) = units.lock() {
+            merge_loaded(&mut map, stored);
         }
+        signal_done(&signal);
     })
-    .await
-    .unwrap_or_else(|error| {
+    .await;
+    if let Err(error) = load {
         eprintln!("soldr-daemon: unit memory history: warm load task failed: {error}");
-        None
-    })
-    .unwrap_or_default();
-    if let Ok(mut map) = units.lock() {
-        for (key, unit) in stored {
-            // A measurement recorded while the load ran is newer; keep it.
-            map.entry(key).or_insert(unit);
-        }
+        signal_done(&load_done);
     }
     let _ = loaded.send(true);
 
@@ -326,6 +359,30 @@ async fn drain(
         }
         for reply in flushes {
             let _ = reply.send(result.clone());
+        }
+    }
+}
+
+fn signal_done(signal: &(Mutex<bool>, Condvar)) {
+    if let Ok(mut done) = signal.0.lock() {
+        *done = true;
+    }
+    signal.1.notify_all();
+}
+
+fn load_stored(load_path: &std::path::Path) -> Vec<(String, UnitMemory)> {
+    let db = match crate::cache_lib::state_store::open_state_db(load_path) {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!("soldr-daemon: unit memory history: open failed: {error}");
+            return Vec::new();
+        }
+    };
+    match load_all_in(&db) {
+        Ok(units) => units,
+        Err(error) => {
+            eprintln!("soldr-daemon: unit memory history: warm load failed: {error}");
+            Vec::new()
         }
     }
 }

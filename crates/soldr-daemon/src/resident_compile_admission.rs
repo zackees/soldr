@@ -95,7 +95,12 @@ impl ResidentCompileAdmission {
         let Some(unit_key) = crate::memory_estimate::unit_key(request.args()) else {
             return false;
         };
-        let remembered = history.lookup(&unit_key);
+        // soldr#3686: right after a restart, wait (bounded) for the warm load so
+        // the trusted history is not answered from an empty map.
+        let remembered = history.lookup_after_load(
+            &unit_key,
+            crate::daemon::unit_memory_history::ADMISSION_LOAD_WAIT,
+        );
         if !crate::history_admission::worth_probing(remembered) {
             return false;
         }
