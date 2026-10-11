@@ -47,6 +47,7 @@
       "thiserror",
       "tokio",
       "toml",
+      "toml_edit",
       "tracing",
       "wait-timeout",
       "widestring",

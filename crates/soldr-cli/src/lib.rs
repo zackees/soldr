@@ -259,12 +259,13 @@ pub mod cli_dispatch;
 /// The canonical stderr/stdout color rule (soldr#3437): one predicate and one
 /// `paint`/ANSI helper for every surface that colorizes output.
 pub(crate) mod color_choice;
-/// soldr#1081 — Shared compile dispatch logic used by both
-/// the soldr-as-RUSTC_WRAPPER hot path (`wrapper.rs`) and multicall
-/// `zccache-soldr` dispatch. Owns the hang-safe retry budget contract.
 pub mod compile_diagnostics;
 pub mod compile_dispatch;
 pub mod compile_fallback_rollup;
+/// soldr#1081 — Shared compile dispatch logic used by both
+/// the soldr-as-RUSTC_WRAPPER hot path (`wrapper.rs`) and multicall
+/// `zccache-soldr` dispatch. Owns the hang-safe retry budget contract.
+pub mod config_cmd;
 pub mod cook;
 /// soldr#3117 -- keeps the daemon route alive for the whole of `soldr cook`.
 pub(crate) mod cook_route_hold;

@@ -120,6 +120,7 @@ tar = "0.4"
 # PyPI artifacts.
 xz2 = { version = "0.1", features = ["static"] }
 toml = "0.8"
+toml_edit = "0.22"
 rayon = "1"
 prost = "0.14"
 # soldr#1356 A2 — walkdir workspace dep removed; jwalk is the sole
