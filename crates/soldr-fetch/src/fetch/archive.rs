@@ -66,6 +66,33 @@ pub(super) async fn download_and_extract_with_pin(
         target,
         binary_names,
         manifest_pin,
+        None,
+    )
+    .await
+}
+
+/// Download + extract an asset that has no publisher-side checksum,
+/// enforcing the caller-supplied pin store and trust mode instead of the
+/// process environment (soldr#3700: QuickInstall). A pin mismatch is
+/// always fatal and strict mode refuses an unpinned asset.
+pub(super) async fn download_and_extract_with_policy(
+    paths: &SoldrPaths,
+    cache_name: &str,
+    version: &str,
+    url: &str,
+    target: &TargetTriple,
+    binary_names: &[&str],
+    policy: (&trust::PinnedChecksumStore, trust::TrustMode),
+) -> Result<PathBuf, SoldrError> {
+    download_and_extract_with_pin_inner(
+        paths,
+        cache_name,
+        version,
+        ArchiveSource::Url(url),
+        target,
+        binary_names,
+        None,
+        Some(policy),
     )
     .await
 }
@@ -93,11 +120,16 @@ pub(super) async fn extract_catalogue_asset_with_pin(
         target,
         binary_names,
         Some((&entry.asset, &entry.sha256)),
+        None,
     )
     .await
 }
 
 #[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "manifest pin and explicit trust policy are distinct trust inputs"
+)]
 async fn download_and_extract_with_pin_inner(
     paths: &SoldrPaths,
     cache_name: &str,
@@ -106,6 +138,7 @@ async fn download_and_extract_with_pin_inner(
     target: &TargetTriple,
     binary_names: &[&str],
     manifest_pin: Option<(&str, &str)>,
+    policy: Option<(&trust::PinnedChecksumStore, trust::TrustMode)>,
 ) -> Result<PathBuf, SoldrError> {
     // soldr#3683: serialize download, extract and promote per tool+version
     // so concurrent fetches sharing one bin directory cannot race the
@@ -172,9 +205,15 @@ async fn download_and_extract_with_pin_inner(
             "soldr: trust: manifest-verified {cache_name} v{version} {pinned_asset} sha256={actual}"
         );
     } else {
-        let store = trust::PinnedChecksumStore::from_env()?;
-        let mode = trust::TrustMode::from_env();
-        match trust::verify_download(cache_name, version, asset_name, digest, &store, mode)? {
+        let env_store;
+        let (store, mode) = match policy {
+            Some(explicit) => explicit,
+            None => {
+                env_store = trust::PinnedChecksumStore::from_env()?;
+                (&env_store, trust::TrustMode::from_env())
+            }
+        };
+        match trust::verify_download(cache_name, version, asset_name, digest, store, mode)? {
             trust::VerifyOutcome::Verified { sha256 } => {
                 eprintln!(
                     "soldr: trust: verified {cache_name} v{version} {asset_name} sha256={sha256}"
@@ -561,6 +600,7 @@ mod tests {
                                     &target,
                                     &["fixture-tool"],
                                     Some(("fixture-tool", fixture_sha.as_str())),
+                                    None,
                                 ))
                                 .map_err(|error| error.to_string())
                         })
