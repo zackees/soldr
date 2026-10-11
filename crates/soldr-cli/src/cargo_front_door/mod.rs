@@ -213,7 +213,7 @@ async fn append_subcommand_transitive_bin_dirs(
         // mach-O linker can resolve `-framework IOKit` / etc.
         // Without this, every Rust dep with an Apple-framework
         // dependency (ring, sysinfo, dirs, …) fails to link.
-        if let Some(triple) = extract_target_arg(args) {
+        if let Some(triple) = subcommand::cargo_args_target(args) {
             append_zigbuild_env_overrides(paths, triple, extra_env)?;
             if triple.ends_with("-apple-darwin") {
                 let sdk_dir = crate::fetch::ensure_apple_sdk(paths, Some(triple)).await?;
@@ -264,7 +264,7 @@ async fn append_subcommand_transitive_bin_dirs(
         append_zigbuild_env_overrides(paths, triple, extra_env)?;
     }
     if sub == "xwin" {
-        if let Some(triple) = extract_target_arg(args) {
+        if let Some(triple) = subcommand::cargo_args_target(args) {
             if triple.ends_with("-pc-windows-msvc") {
                 match crate::fetch::ensure_llvm_toolchain(paths).await {
                     Ok(llvm_bin_dir) => {
@@ -352,7 +352,7 @@ fn nextest_archive_blessed_target(args: &[String]) -> Option<&str> {
     if first_nextest_verb(args, sub_idx) != Some("archive") {
         return None;
     }
-    let triple = extract_target_arg(args)?;
+    let triple = subcommand::cargo_args_target(args)?;
     (triple.ends_with("-apple-darwin") || triple.ends_with("-pc-windows-msvc")).then_some(triple)
 }
 
@@ -361,7 +361,7 @@ fn nextest_archive_zig_target(args: &[String]) -> Option<&str> {
     if args[sub_idx] != "nextest" || first_nextest_verb(args, sub_idx) != Some("archive") {
         return None;
     }
-    extract_target_arg(args).filter(|triple| is_zig_linux_cross_target(triple))
+    subcommand::cargo_args_target(args).filter(|triple| is_zig_linux_cross_target(triple))
 }
 
 fn is_zig_linux_cross_target(triple: &str) -> bool {
@@ -374,7 +374,7 @@ fn zig_cross_target(args: &[String]) -> Option<&str> {
     }
     let sub_idx = first_cargo_subcommand_index(args)?;
     (args[sub_idx] == "zigbuild")
-        .then(|| extract_target_arg(args))
+        .then(|| subcommand::cargo_args_target(args))
         .flatten()
         .filter(|target| is_zig_linux_cross_target(target))
 }
@@ -635,7 +635,7 @@ fn compute_subcommand_env_overrides(args: &[String]) -> Vec<(String, String)> {
     if !needs_cc {
         return Vec::new();
     }
-    let Some(triple) = extract_target_arg(args) else {
+    let Some(triple) = subcommand::cargo_args_target(args) else {
         return Vec::new();
     };
     if !triple.ends_with("-pc-windows-msvc") {
@@ -647,23 +647,6 @@ fn compute_subcommand_env_overrides(args: &[String]) -> Vec<(String, String)> {
         (format!("CXX_{suffix}"), "clang-cl".to_string()),
         (format!("AR_{suffix}"), "llvm-lib".to_string()),
     ]
-}
-
-/// Find the value of `--target <triple>` or `--target=<triple>` in a
-/// cargo arg vector. Returns `None` if the arg isn't present. Used by
-/// `compute_subcommand_env_overrides` to decide whether to inject
-/// MSVC-target cc-rs env vars.
-fn extract_target_arg(args: &[String]) -> Option<&str> {
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        if a == "--target" {
-            return it.next().map(String::as_str);
-        }
-        if let Some(rest) = a.strip_prefix("--target=") {
-            return Some(rest);
-        }
-    }
-    None
 }
 
 #[cfg(test)]

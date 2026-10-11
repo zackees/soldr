@@ -417,7 +417,7 @@ pub fn auto_hydrate_enabled(manifest_dir: &Path, global: &CookConfig) -> bool {
 }
 
 fn resolve_target_triple(manifest_dir: &Path, args: &[String]) -> Option<String> {
-    if let Some(value) = extract_arg_value(args, "--target") {
+    if let Some(value) = super::subcommand::cargo_args_target_value(args) {
         return Some(value);
     }
     TargetTriple::detect_in_dir(manifest_dir)
@@ -511,7 +511,7 @@ fn target_already_cooked(target_dir: &Path, profile_dir: &str) -> bool {
 }
 
 fn explicit_target_scope(args: &[String]) -> Option<String> {
-    if let Some(triple) = extract_arg_value(args, "--target") {
+    if let Some(triple) = super::subcommand::cargo_args_target_value(args) {
         return Some(triple);
     }
     std::env::var(SOLDR_COOK_HYDRATE_TARGET_ENV)
@@ -552,6 +552,10 @@ fn extract_arg_value(args: &[String], flag: &str) -> Option<String> {
     let prefix = format!("{flag}=");
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
+        // Program/test-harness args after `--` are not cargo's (soldr#3694).
+        if arg == "--" {
+            break;
+        }
         if arg == flag {
             return iter.next().cloned();
         }
@@ -575,6 +579,23 @@ mod tests {
     // Env-mutating tests are serialized — `auto_hydrate_enabled`
     // reads `SOLDR_COOK_AUTO_HYDRATE` from the process environment.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// soldr#3694: `soldr cargo run -- --target foo` passes `--target foo`
+    /// to the program; cook hydrate must not scope itself to target `foo`.
+    #[test]
+    fn target_after_double_dash_is_not_a_cargo_target() {
+        let args: Vec<String> = ["run", "--", "--target", "foo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let temp = TempDir::new().unwrap();
+        assert_ne!(
+            resolve_target_triple(temp.path(), &args).as_deref(),
+            Some("foo")
+        );
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        assert_ne!(explicit_target_scope(&args).as_deref(), Some("foo"));
+    }
 
     /// soldr#3381: a failing `rustc -V` must not silently turn a cook hit
     /// into a miss — the warning carries the fake rustc's stderr.

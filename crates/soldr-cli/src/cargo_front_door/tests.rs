@@ -1766,31 +1766,6 @@ fn known_cargo_build_target_prefers_defaulted_target_then_env() {
 }
 
 #[test]
-fn extract_target_arg_handles_space_separated_form() {
-    assert_eq!(
-        extract_target_arg(&argvec(
-            "xwin build --release --target aarch64-pc-windows-msvc"
-        )),
-        Some("aarch64-pc-windows-msvc"),
-    );
-}
-
-#[test]
-fn extract_target_arg_handles_equals_form() {
-    assert_eq!(
-        extract_target_arg(&argvec(
-            "xwin build --release --target=x86_64-pc-windows-msvc"
-        )),
-        Some("x86_64-pc-windows-msvc"),
-    );
-}
-
-#[test]
-fn extract_target_arg_returns_none_when_absent() {
-    assert_eq!(extract_target_arg(&argvec("xwin build --release")), None);
-}
-
-#[test]
 fn xwin_arm64_msvc_target_injects_cc_clang_cl_env() {
     let env = compute_subcommand_env_overrides(&argvec(
         "xwin build --release --target aarch64-pc-windows-msvc",

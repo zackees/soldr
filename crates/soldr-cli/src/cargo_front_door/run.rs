@@ -182,7 +182,7 @@ fn maybe_hint_foreign_target_passthrough(args: &[String]) {
     if !compiles {
         return;
     }
-    let Some(triple) = extract_target_arg(args) else {
+    let Some(triple) = subcommand::cargo_args_target(args) else {
         return;
     };
     if !foreign_target_passthrough_needs_hint(triple, crate::pyo3_detect::host_triple(), |key| {
