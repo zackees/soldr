@@ -47,12 +47,13 @@ pub(crate) enum AcquisitionPlan {
     },
     /// `git clone --depth 1` into the source cache → build.
     ShallowClone { clone_url: String },
-    /// Phase 2: prebuilt release asset (skips the compiler).
-    #[allow(dead_code)]
+    /// Prebuilt release asset (skips the compiler, soldr#3697).
     ReleaseAsset {
         url: String,
         asset_name: String,
         bytes: u64,
+        /// GitHub's published asset digest, enforced as a hard pin.
+        sha256: Option<String>,
     },
 }
 

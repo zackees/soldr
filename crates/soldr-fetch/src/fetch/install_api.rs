@@ -141,3 +141,6 @@ fn tag_name(release: &serde_json::Value) -> Option<String> {
         .and_then(|v| v.as_str())
         .map(str::to_string)
 }
+
+/// soldr#3697: prebuilt release-asset lane.
+pub mod release;

@@ -175,6 +175,21 @@ The borderline case `install`: bare `soldr install <crate>` routes to
 `cargo install <crate>`. The former standalone `soldr install-zccache`
 surface was removed when zccache became a compiled-in service.
 
+**Prebuilt release assets (soldr#3697).** When `soldr install <github-url>`
+selects a GitHub release (bare `--release`, `--release <tag|~N>`, a release
+URL, or the smart default "latest release"), soldr looks up that release's
+assets and picks the one matching the target triple with the same matcher the
+tool fetcher uses. A match is downloaded, sha256-verified, extracted into the
+locked tool cache (`~/.soldr/bin/install-<name>-<tag>/`), and placed on PATH
+with no compile. Integrity: GitHub's published asset `digest` is a hard pin (a
+mismatch refuses the install in every mode); without one,
+`SOLDR_CHECKSUMS_FILE` / `SOLDR_TRUST_MODE` apply as for any fetch, so
+`SOLDR_TRUST_MODE=strict` refuses an unpinned asset. When no asset matches, or
+the lookup fails, the default form falls back to a source build; `--prebuilt`
+turns both into an error and `--build` skips the lookup entirely. A
+verification or download failure of a chosen asset is never silently replaced
+by a source build.
+
 **Version pinning skips the shorthand.** Cargo built-in verbs and registered cargo subcommands cannot be version-pinned via the bare `@<version>` form — the cargo front door has no per-invocation version knob. `soldr build@1.0` keeps the existing External fetch path (and errors with "no crate named build"), and so do the registered subcommands (`soldr nextest@0.9.x` falls through to External). For pinned cargo-subcommand versions, use the soldr registry (`KNOWN_TOOLS::pinned_version` in source); for pinned tool fetches, use the External path for crates that actually exist.
 
 ```bash
