@@ -96,7 +96,9 @@ exclude = [
 keep = ["tests/fixtures/**", "src/soldr/_bundle_bins.py"]
 
 # zackees/ci.yml#202 phase 3: Windows-MSVC unit tests under Wine, in a
-# container. Rust inputs plus the lane script and its image.
+# container. Rust inputs plus the lane script and its image. soldr#3704: the
+# lane itself logs a SKIPPED pass when the diff touches only crates outside
+# its dependency closure (ci/wine_lane.py skip_reason).
 [gate.lanes.wine]
 run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "wine"]
 tools = ["soldr", "docker"]
