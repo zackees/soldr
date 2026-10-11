@@ -366,6 +366,13 @@ git push                             # (--force-with-lease if the branch was alr
 HEAD's message with the trailer. Install the pre-push hook once per clone with
 `... ci-lint local-gate install-hook`.
 
+- **The `wine` lane may attest by proof (soldr#3704).** When every changed path
+  (vs `merge-base origin/main`) lies in a workspace crate outside the path-dependency
+  closure of `ci/wine_lane.py` `CRATES`, the lane prints `wine lane: SKIPPED (soldr#3704)`
+  and passes: the Wine-tested binaries are unchanged from the base. Any root file,
+  lockfile, toolchain, script, unknown path or unreadable diff runs it in full. `cross`
+  is not skipped this way: a cfg-free edit can still call a cfg-gated API.
+
 - **Add Lint checks to `ci/local_gate.py`, never as a step in ci.yml's Lint
   job.** The Lint job runs `ci/local_gate.py --lane lint` and nothing else;
   `ci-lint local-gate lint` (a check in that lane) fails anything else.

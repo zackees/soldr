@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,99 @@ TARGET = "x86_64-pc-windows-msvc"
 CRATES = ("soldr-platform", "soldr-fetch", "soldr-nextest-wrapper")
 IMAGE_DIR = ROOT / "docker" / "wine-test"
 TEST_THREADS = "4"
+
+
+# soldr#3704: skip only on proof. The lane's binaries are built from CRATES
+# and their workspace path-dependency closure (normal, dev and build deps,
+# every target table). A change set made only of files inside workspace
+# crates OUTSIDE that closure cannot change them; any other path -- the root
+# manifests, Cargo.lock, toolchain, this script, the image, an unknown crate,
+# or an undeterminable diff -- runs the lane.
+def _path_deps(manifest: dict) -> set[str]:
+    tables = [manifest]
+    tables += [t for t in manifest.get("target", {}).values() if isinstance(t, dict)]
+    names: set[str] = set()
+    for table in tables:
+        for key in ("dependencies", "dev-dependencies", "build-dependencies"):
+            for name, spec in table.get(key, {}).items():
+                if isinstance(spec, dict) and ("path" in spec or spec.get("workspace")):
+                    names.add(spec.get("package", name))
+    return names
+
+
+@dataclass(frozen=True)
+class Crate:
+    name: str
+    deps: frozenset[str]
+
+
+def workspace_crates(root: Path) -> list[Crate]:
+    """Each crates/<dir> package and the names it depends on."""
+    crates: list[Crate] = []
+    for manifest in sorted((root / "crates").glob("*/Cargo.toml")):
+        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        name = data.get("package", {}).get("name")
+        if name != manifest.parent.name:
+            raise ValueError(f"{manifest}: package name {name!r} != directory")
+        crates.append(Crate(name, frozenset(_path_deps(data))))
+    return crates
+
+
+def dependency_closure(root: Path, seeds: tuple[str, ...]) -> set[str]:
+    crates = {c.name: c.deps for c in workspace_crates(root)}
+    closure: set[str] = set()
+    todo = list(seeds)
+    while todo:
+        name = todo.pop()
+        if name in closure:
+            continue
+        closure.add(name)
+        todo += [d for d in crates.get(name, ()) if d in crates]
+    return closure
+
+
+def skip_reason(root: Path, changed: list[str] | None) -> str | None:
+    """A logged reason to skip, or None to run (the default)."""
+    if not changed:
+        return None
+    try:
+        crates = {c.name for c in workspace_crates(root)}
+        closure = dependency_closure(root, CRATES)
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        return None
+    touched: set[str] = set()
+    for path in changed:
+        parts = path.split("/")
+        if len(parts) < 3 or parts[0] != "crates" or parts[1] not in crates:
+            return None
+        if parts[1] in closure:
+            return None
+        touched.add(parts[1])
+    return (
+        f"wine lane: SKIPPED (soldr#3704) -- changes touch only {sorted(touched)}, "
+        f"outside the dependency closure {sorted(closure)} of the tested crates"
+    )
+
+
+def _git(root: Path, *args: str) -> str:
+    """git stdout via a temporary file (PY-003: no pipe capture)."""
+    with tempfile.TemporaryFile() as out:
+        subprocess.run(["git", *args], cwd=root, stdout=out, check=True)
+        out.seek(0)
+        return out.read().decode("utf-8")
+
+
+def changed_paths(root: Path) -> list[str] | None:
+    """Paths changed between merge-base(origin/main, HEAD) and HEAD, or None."""
+    try:
+        base = _git(root, "merge-base", "origin/main", "HEAD").strip()
+        out = _git(root, "diff", "--name-only", "--no-renames", base, "HEAD")
+        dirty = _git(root, "status", "--porcelain")
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    if dirty.strip():
+        return None
+    return [ln for ln in out.splitlines() if ln]
 
 
 @dataclass(frozen=True)
@@ -140,6 +234,15 @@ def run_exe(tag: str, exe: TestExe, out_dir: Path) -> ExeResult:
 
 
 def main() -> int:
+    changed = changed_paths(ROOT)
+    reason = skip_reason(ROOT, changed)
+    if reason is not None:
+        print(reason, flush=True)
+        return 0
+    print(
+        f"wine lane: running ({'change set unknown' if changed is None else str(len(changed)) + ' changed path(s) reach the tested crates or root inputs'})",
+        flush=True,
+    )
     with tempfile.TemporaryDirectory(prefix="soldr-wine-lane-") as tmp:
         out_dir = Path(tmp)
         exes = build(out_dir)

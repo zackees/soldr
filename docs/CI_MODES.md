@@ -149,3 +149,13 @@ This protects policy execution within the reviewed workflow. A stable status
 name alone does not prove trusted execution when the workflow itself is PR
 controlled. Trusted workflow enforcement and live external-author security
 proof remain required before claiming protected merge enforcement.
+
+## Local gate: proven lane skips
+
+**The `wine` lane may attest by proof (soldr#3704).** When every changed path
+  (vs `merge-base origin/main`) lies in a workspace crate outside the path-dependency
+  closure of `ci/wine_lane.py` `CRATES`, the lane prints `wine lane: SKIPPED (soldr#3704)`
+  and passes: the Wine-tested binaries are unchanged from the base. Any root file,
+  lockfile, toolchain, script, unknown path or unreadable diff runs it in full. `cross`
+  is not skipped this way: a cfg-free edit can still call a cfg-gated API.
+
