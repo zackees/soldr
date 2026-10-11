@@ -56,6 +56,15 @@ pub fn mode(path: &Path) -> Option<u32> {
     std::fs::metadata(path).ok().map(|m| m.permissions().mode())
 }
 
+/// The permissions a plain `File::create` requests (0o666, masked by the
+/// umask at open time). Hand this to a file-creating builder whose own
+/// default is private (e.g. `tempfile`'s 0o600) to get ordinary create
+/// semantics (soldr#3712). `None` on hosts without mode semantics.
+pub fn default_create_permissions() -> Option<std::fs::Permissions> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(std::fs::Permissions::from_mode(0o666))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
