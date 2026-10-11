@@ -66,6 +66,8 @@ fn rustup_passthrough_injects_toolchain_for_target_add() {
         .args(["rustup", "target", "add", "x86_64-unknown-linux-musl"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        // soldr#3692: an inherited RUSTUP_TOOLCHAIN suppresses injection.
+        .env_remove("RUSTUP_TOOLCHAIN")
         .output()
         .expect("failed to run soldr rustup target add");
 
@@ -469,6 +471,8 @@ fn rustup_passthrough_injects_toolchain_for_component_add() {
         .args(["rustup", "component", "add", "clippy"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        // soldr#3692: an inherited RUSTUP_TOOLCHAIN suppresses injection.
+        .env_remove("RUSTUP_TOOLCHAIN")
         .output()
         .expect("failed to run soldr rustup component add");
 
