@@ -20,7 +20,7 @@
 
 use crate::core::{SoldrError, SoldrPaths, TargetTriple};
 
-use super::stream_download::{asset_http_client, send_control_request};
+use super::stream_download::{asset_http_client, head_request, send_control_request};
 use super::{archive, trust, FetchResult, ResolverOrder, VersionSpec};
 
 /// Overrides the QuickInstall release-download base URL.
@@ -69,7 +69,7 @@ pub async fn try_resolve(
     paths.ensure_dirs()?;
     let url = asset_url(base_url, crate_name, version, target);
     let client = asset_http_client("quickinstall probe")?;
-    let probe = send_control_request(client.head(&url), &url).await?;
+    let probe = send_control_request(head_request(&client, &url), &url).await?;
     let status = probe.status();
     if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
         return Ok(None);

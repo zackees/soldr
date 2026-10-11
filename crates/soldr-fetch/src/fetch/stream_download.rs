@@ -364,6 +364,11 @@ pub async fn pypi_has_version(pkg: &str, version: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Build a HEAD request through the fetch boundary.
+pub(crate) fn head_request(client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
+    client.head(url)
+}
+
 /// Build a POST request through the fetch boundary.
 pub(crate) fn post_request(client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
     client.post(url)
