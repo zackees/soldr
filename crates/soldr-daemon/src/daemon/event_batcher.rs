@@ -1,4 +1,4 @@
-//! L4 (issue soldr#980): coalesce per-compile redb transactions into a
+//! L4 (issue soldr#980): coalesce per-compile state-DB transactions into a
 //! background flusher.
 //!
 //! ## Problem
@@ -16,11 +16,11 @@
 //! ## Design
 //!
 //! [`EventBatcher::start`] spawns one background tokio task that owns the
-//! redb writer. The hot path ([`EventBatcher::record`]) just pushes a
+//! SQLite writer. The hot path ([`EventBatcher::record`]) just pushes a
 //! [`crate::daemon::db::Event`] onto a bounded mpsc channel — a few
 //! microseconds at most. The drain task batches up to
 //! [`MAX_BATCH_ROWS`] rows OR up to [`MAX_BATCH_LATENCY`] of wall time
-//! before opening a single redb write txn that allocates a contiguous
+//! before opening a single SQLite write txn that allocates a contiguous
 //! range of event IDs and inserts every staged row in one fsync.
 //!
 //! On `BuildSessionEnd` and on daemon shutdown the server sends an
@@ -39,23 +39,31 @@
 //!
 //! ## Race window
 //!
-//! A reader querying redb between two flushes (e.g. a `soldr daemon
+//! A reader querying the state DB between two flushes (e.g. a `soldr daemon
 //! status` racing with an in-progress build) sees a snapshot that does
 //! NOT include rows still buffered in memory. This is acceptable for the
 //! per-compile diagnostic path — at worst the operator sees one or two
 //! fewer events than the daemon will eventually persist; the next
-//! interval tick / batch-fullness trip will flush the rest. No data is
-//! lost: shutdown and `BuildSessionEnd` both force a flush before they
-//! complete, and the `Drop` semantics of the mpsc receiver mean even an
-//! aborted task drains the channel one more time before exiting.
+//! interval tick / batch-fullness trip will flush the rest. Shutdown and
+//! `BuildSessionEnd` both force a flush before they complete.
+//!
+//! ## Unwritable state DB (soldr#3688)
+//!
+//! A failed write keeps its rows for retry, but at most
+//! [`MAX_RETAINED_ROWS`]; beyond that the oldest rows are dropped and
+//! counted ([`EventBatcher::dropped_events`], logged at `warn`).
+//! Opportunistic flushes (batch-full / heartbeat) back off exponentially
+//! from [`INITIAL_RETRY_BACKOFF`] to [`MAX_RETRY_BACKOFF`] after a failure;
+//! explicit `Flush` / `Shutdown` always try.
 
 use crate::cache_lib::state_store::open_state_db;
 use crate::daemon::db::{Event, EventKind};
 use crate::daemon::wire::{self, prost_tagged_bytes};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 /// Mirrors [`crate::daemon::db`]'s meta key. Kept private here so the
@@ -84,8 +92,30 @@ const CHANNEL_CAPACITY: usize = 4096;
 /// cap only exists so sessions that never receive a `BuildSessionEnd`
 /// (wrapper killed mid-build) cannot grow the map without bound. On
 /// overflow the entry with the oldest last-observed timestamp is
-/// evicted; its finalization then falls back to the redb scan.
+/// evicted; its finalization then falls back to the state-DB scan.
 const MAX_TRACKED_SESSIONS: usize = 128;
+
+/// Upper bound on rows retained in memory while the state DB refuses
+/// writes (soldr#3688). Past this the oldest rows are dropped and counted
+/// in [`EventBatcher::dropped_events`]; without it the daemon grew for as
+/// long as the store stayed unwritable.
+const MAX_RETAINED_ROWS: usize = 16 * MAX_BATCH_ROWS;
+
+/// First retry delay after a failed opportunistic flush; doubles on each
+/// further failure up to [`MAX_RETRY_BACKOFF`]. Explicit `Flush` /
+/// `Shutdown` commands always attempt a write regardless of backoff.
+const INITIAL_RETRY_BACKOFF: Duration = Duration::from_millis(250);
+const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Counters shared between the drain task and every handle (soldr#3688).
+#[derive(Debug, Default)]
+struct BatcherStats {
+    /// Rows currently staged in the drain task's buffer.
+    retained: AtomicUsize,
+    /// Rows discarded because the retained buffer hit its cap (or a flush
+    /// task panicked) since the batcher started.
+    dropped: AtomicU64,
+}
 
 /// Daemon-owned per-session rollup (soldr#1536). Mirrors the semantics
 /// of [`crate::daemon::db::aggregate_session`] — crate count is the
@@ -105,7 +135,7 @@ pub struct SessionAggregate {
     /// `SessionStart` event. A session first seen via a compile event
     /// was started before this daemon process existed (daemon restart /
     /// late auto-start mid-build), so earlier events may already sit in
-    /// redb — the aggregate is incomplete and finalization must fall
+    /// the state DB — the aggregate is incomplete and finalization must fall
     /// back to the historical scan.
     complete: bool,
     /// Timestamp of the most recent observed event; used only for
@@ -182,6 +212,7 @@ pub struct EventBatcher {
     /// entry via [`take_session_aggregate`](Self::take_session_aggregate)
     /// instead of scanning the whole `daemon_events` table.
     aggregates: SessionAggregates,
+    stats: Arc<BatcherStats>,
 }
 
 impl EventBatcher {
@@ -200,11 +231,24 @@ impl EventBatcher {
     /// prove that the same staged batch is retained for a later retry.
     fn start_with_batch_writer(db_path: PathBuf, writer: BatchWriter) -> Self {
         let (tx, rx) = mpsc::channel::<BatcherCmd>(CHANNEL_CAPACITY);
-        tokio::spawn(drain_loop(db_path, rx, writer));
+        let stats = Arc::new(BatcherStats::default());
+        tokio::spawn(drain_loop(db_path, rx, writer, Arc::clone(&stats)));
         Self {
             tx,
             aggregates: Arc::new(Mutex::new(HashMap::new())),
+            stats,
         }
+    }
+
+    /// Total rows dropped since start because the state DB stayed
+    /// unwritable long enough to overflow [`MAX_RETAINED_ROWS`].
+    pub fn dropped_events(&self) -> u64 {
+        self.stats.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Rows currently staged in memory awaiting a successful write.
+    pub fn retained_events(&self) -> usize {
+        self.stats.retained.load(Ordering::Relaxed)
     }
 
     /// Hot path. Non-blocking on the common case (channel has free
@@ -242,7 +286,7 @@ impl EventBatcher {
             EventKind::CompileStart | EventKind::CompileEnd => {
                 // First sight mid-session (daemon auto-started or
                 // restarted mid-build): track it, but leave `complete`
-                // false so finalization falls back to the redb scan.
+                // false so finalization falls back to the state-DB scan.
                 map.entry(session_id).or_default().observe(event);
             }
             // The terminator is recorded by the finalizer AFTER the
@@ -300,7 +344,7 @@ impl EventBatcher {
     }
 
     /// Final flush + drain task exit. Called from the daemon shutdown
-    /// path before the redb file lock is released.
+    /// path before the state DB is released.
     pub async fn shutdown(&self) -> Result<(), EventBatcherError> {
         let (ack_tx, ack_rx) = oneshot::channel();
         if self.tx.send(BatcherCmd::Shutdown(ack_tx)).await.is_err() {
@@ -315,10 +359,61 @@ impl EventBatcher {
     }
 }
 
+/// Retry pacing for opportunistic flushes after a failure (soldr#3688).
+struct RetryBackoff {
+    delay: Duration,
+    next_attempt: Option<Instant>,
+}
+
+impl RetryBackoff {
+    fn new() -> Self {
+        Self {
+            delay: INITIAL_RETRY_BACKOFF,
+            next_attempt: None,
+        }
+    }
+
+    fn ready(&self) -> bool {
+        self.next_attempt.is_none_or(|at| Instant::now() >= at)
+    }
+
+    fn record(&mut self, result: &Result<(), String>) {
+        if result.is_ok() {
+            *self = Self::new();
+        } else {
+            self.next_attempt = Some(Instant::now() + self.delay);
+            self.delay = (self.delay * 2).min(MAX_RETRY_BACKOFF);
+        }
+    }
+}
+
+/// Drop the oldest staged rows beyond [`MAX_RETAINED_ROWS`], counting them.
+fn enforce_retention_cap(buf: &mut Vec<Event>, stats: &BatcherStats) {
+    if buf.len() <= MAX_RETAINED_ROWS {
+        return;
+    }
+    let excess = buf.len() - MAX_RETAINED_ROWS;
+    buf.drain(..excess);
+    let total = stats.dropped.fetch_add(excess as u64, Ordering::Relaxed) + excess as u64;
+    // Log once per batch-sized chunk of drops, not per row.
+    if total.is_multiple_of(MAX_BATCH_ROWS as u64) || excess > 1 {
+        tracing::warn!(
+            "event_batcher: state DB unwritable; dropped {total} event rows so far \
+             (retaining newest {MAX_RETAINED_ROWS})"
+        );
+    }
+}
+
 /// Drain-loop entry point. Owns the in-memory staging buffer and the
 /// 100 ms heartbeat that flushes a partial batch.
-async fn drain_loop(db_path: PathBuf, mut rx: mpsc::Receiver<BatcherCmd>, writer: BatchWriter) {
+async fn drain_loop(
+    db_path: PathBuf,
+    mut rx: mpsc::Receiver<BatcherCmd>,
+    writer: BatchWriter,
+    stats: Arc<BatcherStats>,
+) {
     let mut buf: Vec<Event> = Vec::with_capacity(MAX_BATCH_ROWS);
+    let mut backoff = RetryBackoff::new();
     let mut interval = tokio::time::interval(MAX_BATCH_LATENCY);
     // Skip the first tick — `interval` fires immediately on the first
     // poll otherwise, which would flush an empty buffer for no reason.
@@ -329,45 +424,53 @@ async fn drain_loop(db_path: PathBuf, mut rx: mpsc::Receiver<BatcherCmd>, writer
             cmd = rx.recv() => match cmd {
                 Some(BatcherCmd::Insert(event)) => {
                     buf.push(event);
-                    if buf.len() >= MAX_BATCH_ROWS {
-                        let _ = flush_batch(&db_path, &mut buf, &writer).await;
+                    enforce_retention_cap(&mut buf, &stats);
+                    if buf.len() >= MAX_BATCH_ROWS && backoff.ready() {
+                        let result = flush_batch(&db_path, &mut buf, &writer, &stats).await;
+                        backoff.record(&result);
                     }
                 }
                 Some(BatcherCmd::Flush(ack)) => {
-                    let result = flush_batch(&db_path, &mut buf, &writer).await;
+                    let result = flush_batch(&db_path, &mut buf, &writer, &stats).await;
+                    backoff.record(&result);
+                    stats.retained.store(buf.len(), Ordering::Relaxed);
                     let _ = ack.send(result);
                 }
                 Some(BatcherCmd::Shutdown(ack)) => {
-                    let result = flush_batch(&db_path, &mut buf, &writer).await;
+                    let result = flush_batch(&db_path, &mut buf, &writer, &stats).await;
                     let done = result.is_ok();
+                    backoff.record(&result);
                     let _ = ack.send(result);
                     if done { return; }
                 }
                 None => {
                     // Last sender dropped. Drain whatever is left and
                     // exit — no one is around to receive an ack.
-                    let _ = flush_batch(&db_path, &mut buf, &writer).await;
+                    let _ = flush_batch(&db_path, &mut buf, &writer, &stats).await;
                     return;
                 }
             },
             _ = interval.tick() => {
-                if !buf.is_empty() {
-                    let _ = flush_batch(&db_path, &mut buf, &writer).await;
+                if !buf.is_empty() && backoff.ready() {
+                    let result = flush_batch(&db_path, &mut buf, &writer, &stats).await;
+                    backoff.record(&result);
                 }
             }
         }
+        stats.retained.store(buf.len(), Ordering::Relaxed);
     }
 }
 
-/// One redb write txn that allocates a contiguous range of event IDs
-/// and inserts every staged row. Empty buffer is a no-op. Errors are
-/// logged at `debug` and swallowed: the diagnostic events are
-/// best-effort and we never want a failed flush to take down the
-/// daemon.
+/// One SQLite write txn that allocates a contiguous range of event IDs
+/// and inserts every staged row. Empty buffer is a no-op. On a write
+/// error the rows are put back for a later retry and the error is logged
+/// at `error` and returned; the caller paces retries and
+/// [`enforce_retention_cap`] bounds what is kept (soldr#3688).
 async fn flush_batch(
     db_path: &Path,
     buf: &mut Vec<Event>,
     writer: &BatchWriter,
+    stats: &BatcherStats,
 ) -> Result<(), String> {
     if buf.is_empty() {
         return Ok(());
@@ -376,7 +479,7 @@ async fn flush_batch(
     tracing::debug!("event_batcher: flushing {count} pending event rows");
 
     // The write is synchronous and genuinely slow: `open_state_db` takes a
-    // process-wide mutex and can enter redb's open-retry loop, then the txn
+    // process-wide mutex and can wait on SQLite's busy timeout, then the txn
     // ends in a `commit()` fsync. Running that inline on the runtime blocked
     // a Tokio worker for its whole duration, delaying compile IPC,
     // cancellation and shutdown on that thread (#1669).
@@ -410,6 +513,7 @@ async fn flush_batch(
             // A panic in the blocking task loses that batch — these are
             // best-effort diagnostic rows, and a panic in `write_batch`
             // would be a bug worth surfacing rather than silently retrying.
+            stats.dropped.fetch_add(count as u64, Ordering::Relaxed);
             tracing::error!("event_batcher: flush task failed; dropped {count} rows: {join}");
             Err(format!("event flush task failed: {join}"))
         }
@@ -510,7 +614,9 @@ mod tests {
                 sample_event(9, "two", Some(1_000)),
             ];
             let writer: BatchWriter = Arc::new(write_batch);
-            flush_batch(&path, &mut buf, &writer).await.expect("flush");
+            flush_batch(&path, &mut buf, &writer, &BatcherStats::default())
+                .await
+                .expect("flush");
 
             // Persistence itself is covered by
             // `batcher_persists_rows_after_flush`; what matters here is that
@@ -603,13 +709,13 @@ mod tests {
             crate::daemon::db::ensure_initialized(&path).expect("init");
             let batcher = EventBatcher::start(path.clone());
             // Daemon (re)started mid-build: compiles arrive without a
-            // SessionStart. Earlier events may already be in redb, so
+            // SessionStart. Earlier events may already be in the state DB, so
             // the incremental rollup must NOT claim authority.
             batcher.record(sample_event(33, "late", Some(9))).await;
             batcher.flush().await;
             assert!(
                 batcher.take_session_aggregate(33).is_none(),
-                "mid-session aggregates must force the redb-scan fallback"
+                "mid-session aggregates must force the state-DB-scan fallback"
             );
             batcher.shutdown().await;
         });
@@ -705,6 +811,49 @@ mod tests {
                 "the deterministic first-write seam must have been consumed"
             );
             batcher.shutdown().await.expect("shutdown");
+        });
+    }
+
+    // soldr#3688: a permanently unwritable state DB must neither grow the
+    // buffer without bound nor retry the write on every insert.
+    #[test]
+    fn unwritable_state_db_keeps_buffer_bounded_and_backs_off() {
+        let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let dir = TempDir::new().expect("tempdir");
+            let path = dir.path().join("state.sqlite3");
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let writer: BatchWriter = {
+                let calls = Arc::clone(&calls);
+                Arc::new(move |_path, _batch| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Err(std::io::Error::other("state DB unwritable"))
+                })
+            };
+            let batcher = EventBatcher::start_with_batch_writer(path, writer);
+            const PUSHED: usize = 10_000;
+            for i in 0..PUSHED {
+                batcher
+                    .record(sample_event(5, "c", Some(i as u64)))
+                    .await
+                    .expect("queue event");
+            }
+            assert!(batcher.flush().await.is_err(), "writes keep failing");
+            let retained = batcher.retained_events();
+            assert!(
+                retained <= MAX_RETAINED_ROWS,
+                "retained {retained} rows, cap is {MAX_RETAINED_ROWS}"
+            );
+            assert_eq!(
+                batcher.dropped_events() as usize + retained,
+                PUSHED,
+                "every row is either retained or counted as dropped"
+            );
+            let attempts = calls.load(Ordering::SeqCst);
+            assert!(
+                attempts < 20,
+                "{attempts} write attempts for {PUSHED} inserts: retries must back off"
+            );
         });
     }
 }
