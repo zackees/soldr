@@ -1528,6 +1528,13 @@ Notes on the schema:
   are missing from the resolved toolchain even though rustup's `components`
   manifest may still claim them. It is always present and empty when all files
   exist. Only a `rustc` inside a real `lib/rustlib` layout is judged.
+- `error` (additive, soldr#3693; `schema_version` stays `1`) is `null` on a
+  normal run. When an early step fails before a result exists -- rustup
+  bootstrap, reading `rust-toolchain.toml`, a `prepare` spawn failure (for
+  example a plugin `cargo install` that cannot start), or the smoke-verify
+  spawn -- `--json` still prints the schema-v1 payload with whatever fields
+  were known, `error` set to the message, and `smoke_verify.ok = false`, and
+  the process exits `1`. Previously stdout was empty in that case.
 
 #### `soldr toolchain link`
 

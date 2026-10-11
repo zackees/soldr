@@ -8,10 +8,12 @@
 //! requires a coordinated version bump in the consumer.
 
 use serde::Serialize;
+use std::io::Write;
 use std::time::Instant;
 
 use crate::core::{
-    command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
+    command_output_with_timeout, suppress_windows_console_window, RustToolchainManifest,
+    SoldrError, SoldrPaths,
 };
 use crate::{
     resolve_toolchain_binary,
@@ -34,6 +36,28 @@ pub(crate) struct ToolchainEnsureOutput {
     pub linker: Option<LinkerSummary>,
     pub smoke_verify: SmokeVerify,
     pub elapsed_ms: u128,
+    /// Additive (soldr#3693): set when an early step (bootstrap, manifest
+    /// read, prepare, smoke verify) errored; `null` otherwise. The payload is
+    /// still emitted, with `smoke_verify.ok = false` and a non-zero exit.
+    /// Does not bump `schema_version`.
+    pub error: Option<String>,
+}
+
+impl ToolchainEnsureOutput {
+    fn empty() -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            channel: None,
+            rustup_bootstrapped: false,
+            components_added: Vec::new(),
+            targets_added: Vec::new(),
+            plugins_installed: Vec::new(),
+            linker: None,
+            smoke_verify: SmokeVerify::default(),
+            elapsed_ms: 0,
+            error: None,
+        }
+    }
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -75,39 +99,90 @@ pub(crate) async fn run_toolchain_ensure(json: bool) -> Result<i32, SoldrError> 
     // 1. Bootstrap rustup if missing. Auto-bootstrap respects
     //    SOLDR_NO_BOOTSTRAP=1 by silently leaving the host unchanged —
     //    `prepare` will then surface the usual "rustup not found"
-    //    diagnostic via the spawn-failure path. We deliberately don't
-    //    re-implement the no-bootstrap diagnostic here.
-    let rustup_bootstrapped = bootstrap_rustup_if_missing().await?;
+    //    diagnostic via the spawn-failure path.
+    let bootstrap = bootstrap_rustup_if_missing().await;
+
+    let steps = EnsureSteps {
+        load_manifest: &|| {
+            let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
+            // soldr#3633: nearest pin in cwd or ancestors, like cargo/rustup.
+            crate::core::read_rust_toolchain_manifest_from_ancestors(&workspace_root)
+        },
+        prepare: &run_prepare_inner,
+        smoke: &run_smoke_verify,
+    };
+    run_ensure_pipeline(json, started, bootstrap, &steps, &mut std::io::stdout())
+}
+
+type PrepareFn<'a> =
+    dyn Fn(&str, &RustToolchainManifest) -> Result<(i32, PrepareSummary), SoldrError> + 'a;
+
+/// Fallible steps of `ensure`, injectable so the error-to-payload contract
+/// (soldr#3693) is testable without rustup or a real manifest.
+pub(crate) struct EnsureSteps<'a> {
+    pub load_manifest: &'a dyn Fn() -> Result<RustToolchainManifest, SoldrError>,
+    pub prepare: &'a PrepareFn<'a>,
+    pub smoke: &'a dyn Fn(&[String]) -> Result<SmokeVerify, SoldrError>,
+}
+
+/// Runs the ensure pipeline after bootstrap. In `--json` mode an early error
+/// is never propagated bare (soldr#3693): it becomes a schema-v1 payload with
+/// `error` set and `smoke_verify.ok = false`, and the exit code is 1.
+pub(crate) fn run_ensure_pipeline(
+    json: bool,
+    started: Instant,
+    bootstrap: Result<bool, SoldrError>,
+    steps: &EnsureSteps<'_>,
+    out: &mut dyn Write,
+) -> Result<i32, SoldrError> {
+    let mut partial = ToolchainEnsureOutput::empty();
+    match ensure_steps(json, started, bootstrap, steps, &mut partial, out) {
+        Ok(code) => Ok(code),
+        Err(err) if json => {
+            eprintln!("soldr toolchain ensure: {err}");
+            partial.error = Some(err.to_string());
+            partial.smoke_verify.ok = false;
+            partial.elapsed_ms = started.elapsed().as_millis();
+            emit_json(out, &partial)?;
+            Ok(1)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn ensure_steps(
+    json: bool,
+    started: Instant,
+    bootstrap: Result<bool, SoldrError>,
+    steps: &EnsureSteps<'_>,
+    partial: &mut ToolchainEnsureOutput,
+    out: &mut dyn Write,
+) -> Result<i32, SoldrError> {
+    partial.rustup_bootstrapped = bootstrap?;
 
     // 2. Read the manifest. Missing manifest is not an error — emit the
     //    schema-v1 empty payload so consumers can still parse it.
-    let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    // soldr#3633: nearest pin in cwd or ancestors, like cargo/rustup.
-    let manifest = crate::core::read_rust_toolchain_manifest_from_ancestors(&workspace_root)?;
+    let manifest = (steps.load_manifest)()?;
+    partial.channel = manifest.channel.clone();
 
     // 3. Run the prepare pipeline if a channel is declared. Otherwise
     //    skip it entirely (matching `prepare`'s no-channel behavior).
     let (prepare_code, prepare_summary) = if let Some(channel) = manifest.channel.as_deref() {
-        run_prepare_inner(channel, &manifest)?
+        (steps.prepare)(channel, &manifest)?
     } else {
         (0, PrepareSummary::default())
     };
+    partial.components_added = prepare_summary.components_added;
+    partial.targets_added = prepare_summary.targets_added;
+    partial.plugins_installed = prepare_summary.plugins_installed;
+    partial.linker = prepare_summary.linker;
 
     // 4. If prepare reported a non-zero exit, surface it without running
     //    smoke verify (the toolchain is already broken).
     if prepare_code != 0 {
         if json {
-            emit_json(ToolchainEnsureOutput {
-                schema_version: SCHEMA_VERSION,
-                channel: manifest.channel.clone(),
-                rustup_bootstrapped,
-                components_added: prepare_summary.components_added,
-                targets_added: prepare_summary.targets_added,
-                plugins_installed: prepare_summary.plugins_installed,
-                linker: prepare_summary.linker,
-                smoke_verify: SmokeVerify::default(),
-                elapsed_ms: started.elapsed().as_millis(),
-            })?;
+            partial.elapsed_ms = started.elapsed().as_millis();
+            emit_json(out, partial)?;
         } else {
             eprintln!("soldr toolchain ensure: prepare exited with status {prepare_code}");
         }
@@ -116,8 +191,8 @@ pub(crate) async fn run_toolchain_ensure(json: bool) -> Result<i32, SoldrError> 
 
     // 5. Smoke verify only when a channel exists. Without a manifest
     //    there's no toolchain to validate against.
-    let smoke = if manifest.channel.is_some() {
-        run_smoke_verify(manifest.targets.as_deref().unwrap_or(&[]))?
+    partial.smoke_verify = if manifest.channel.is_some() {
+        (steps.smoke)(manifest.targets.as_deref().unwrap_or(&[]))?
     } else {
         SmokeVerify {
             cargo_version: None,
@@ -128,24 +203,12 @@ pub(crate) async fn run_toolchain_ensure(json: bool) -> Result<i32, SoldrError> 
             ok: true,
         }
     };
-
-    let smoke_ok = smoke.ok;
-    let output = ToolchainEnsureOutput {
-        schema_version: SCHEMA_VERSION,
-        channel: manifest.channel.clone(),
-        rustup_bootstrapped,
-        components_added: prepare_summary.components_added,
-        targets_added: prepare_summary.targets_added,
-        plugins_installed: prepare_summary.plugins_installed,
-        linker: prepare_summary.linker,
-        smoke_verify: smoke,
-        elapsed_ms: started.elapsed().as_millis(),
-    };
+    partial.elapsed_ms = started.elapsed().as_millis();
 
     if json {
-        emit_json(output)?;
+        emit_json(out, partial)?;
     } else {
-        emit_human(&output);
+        emit_human(partial);
     }
 
     // soldr#1059 — flag a shadowing standalone `cargo` on PATH. JSON
@@ -160,13 +223,9 @@ pub(crate) async fn run_toolchain_ensure(json: bool) -> Result<i32, SoldrError> 
         }
     }
 
-    if smoke_ok {
-        Ok(0)
-    } else {
-        // Non-zero exit so shell-pipeline consumers (setup-soldr#133)
-        // can detect the failure without parsing JSON.
-        Ok(1)
-    }
+    // Non-zero exit so shell-pipeline consumers (setup-soldr#133)
+    // can detect the failure without parsing JSON.
+    Ok(if partial.smoke_verify.ok { 0 } else { 1 })
 }
 
 async fn bootstrap_rustup_if_missing() -> Result<bool, SoldrError> {
@@ -250,11 +309,11 @@ fn probe_version(tool: &str) -> Option<String> {
     }
 }
 
-fn emit_json(output: ToolchainEnsureOutput) -> Result<(), SoldrError> {
-    let payload = serde_json::to_string_pretty(&output)
+fn emit_json(out: &mut dyn Write, output: &ToolchainEnsureOutput) -> Result<(), SoldrError> {
+    let payload = serde_json::to_string_pretty(output)
         .map_err(|e| SoldrError::Other(format!("ensure: failed to serialize JSON: {e}")))?;
-    println!("{payload}");
-    Ok(())
+    writeln!(out, "{payload}").map_err(SoldrError::from)?;
+    out.flush().map_err(SoldrError::from)
 }
 
 fn emit_human(output: &ToolchainEnsureOutput) {
@@ -329,6 +388,7 @@ mod tests {
                 ok: true,
             },
             elapsed_ms: 42,
+            error: None,
         };
         let json = serde_json::to_string(&output).expect("serialise");
         let parsed: Value = serde_json::from_str(&json).expect("parse");
@@ -363,6 +423,7 @@ mod tests {
                 ok: true,
             },
             elapsed_ms: 7,
+            error: None,
         };
         let json = serde_json::to_string(&with_linker).expect("serialise");
         let parsed: Value = serde_json::from_str(&json).expect("parse");
@@ -380,6 +441,62 @@ mod tests {
         assert!(json.contains("\"linker\":null"));
     }
 
+    /// soldr#3693: an early `prepare` error (e.g. a plugin spawn failure)
+    /// must still yield a schema-v1 payload on stdout with an `error` field,
+    /// `smoke_verify.ok = false`, and a non-zero exit.
+    #[test]
+    fn json_payload_emitted_when_prepare_errors() {
+        let manifest = crate::core::RustToolchainManifest {
+            channel: Some("1.94.1".to_string()),
+            ..Default::default()
+        };
+        let steps = EnsureSteps {
+            load_manifest: &|| Ok(manifest.clone()),
+            prepare: &|_, _| {
+                Err(SoldrError::Other(
+                    "failed to spawn cargo install cargo-nextest".to_string(),
+                ))
+            },
+            smoke: &|_| panic!("smoke verify must not run after prepare error"),
+        };
+        let mut out = Vec::new();
+        let code = run_ensure_pipeline(true, Instant::now(), Ok(false), &steps, &mut out)
+            .expect("json mode converts errors into a payload");
+        assert_ne!(code, 0);
+        let parsed: Value = serde_json::from_slice(&out).expect("stdout is JSON");
+        assert_eq!(parsed["schema_version"], Value::from(1));
+        assert_eq!(parsed["channel"], Value::from("1.94.1"));
+        assert_eq!(parsed["smoke_verify"]["ok"], Value::from(false));
+        assert!(parsed["error"]
+            .as_str()
+            .expect("error string")
+            .contains("cargo-nextest"));
+    }
+
+    /// soldr#3693: a bootstrap failure is reported the same way.
+    #[test]
+    fn json_payload_emitted_when_bootstrap_errors() {
+        let steps = EnsureSteps {
+            load_manifest: &|| panic!("manifest must not be read after bootstrap error"),
+            prepare: &|_, _| panic!("prepare must not run"),
+            smoke: &|_| panic!("smoke must not run"),
+        };
+        let mut out = Vec::new();
+        let code = run_ensure_pipeline(
+            true,
+            Instant::now(),
+            Err(SoldrError::Other("rustup-init download failed".to_string())),
+            &steps,
+            &mut out,
+        )
+        .expect("payload");
+        assert_ne!(code, 0);
+        let parsed: Value = serde_json::from_slice(&out).expect("stdout is JSON");
+        assert_eq!(parsed["schema_version"], Value::from(1));
+        assert!(parsed["channel"].is_null());
+        assert!(parsed["error"].as_str().unwrap().contains("rustup-init"));
+    }
+
     fn without_linker_defaults() -> ToolchainEnsureOutput {
         ToolchainEnsureOutput {
             schema_version: SCHEMA_VERSION,
@@ -391,6 +508,7 @@ mod tests {
             linker: None,
             smoke_verify: SmokeVerify::default(),
             elapsed_ms: 0,
+            error: None,
         }
     }
 }
