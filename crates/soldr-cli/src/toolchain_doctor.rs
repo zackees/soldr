@@ -36,7 +36,9 @@ pub(crate) fn run_toolchain_doctor(json: bool) -> Result<i32, SoldrError> {
 
     let probes = vec![
         probe_musl_cc(&host),
-        probe_shared_target_warning(&workspace),
+        probe_shared_target_warning_for(
+            &crate::core::cargo_target_dir::CargoTargetDirInputs::from_process(&workspace, &[]),
+        ),
         probe_cargo_on_path_shadowing(),
         probe_rustlib_integrity(),
     ];
@@ -166,7 +168,20 @@ pub(crate) fn probe_musl_cc(host: &HostInfo) -> ProbeResult {
 /// Mirrors the `.fingerprint/`-based detector in `rust_plan.rs` (added
 /// in PR #508) and `detect-shared-target-warning.ts`.
 pub(crate) fn probe_shared_target_warning(workspace: &Path) -> ProbeResult {
-    let target_dir = workspace.join("target");
+    probe_target_dir(workspace.join("target"))
+}
+
+/// Resolve the target dir the way Cargo would from `inputs` (soldr#3695):
+/// `CARGO_TARGET_DIR`, cargo config, then the workspace root.
+pub(crate) fn probe_shared_target_warning_for(
+    inputs: &crate::core::cargo_target_dir::CargoTargetDirInputs,
+) -> ProbeResult {
+    let target_dir = crate::core::cargo_target_dir::resolve_cargo_target_dir(inputs)
+        .unwrap_or_else(|| inputs.cwd.join("target"));
+    probe_target_dir(target_dir)
+}
+
+fn probe_target_dir(target_dir: PathBuf) -> ProbeResult {
     if !target_dir.is_dir() {
         return ProbeResult {
             name: PROBE_SHARED_TARGET_WARNING.to_string(),
@@ -553,6 +568,10 @@ fn walk_for_fingerprint_dirs(dir: &std::path::Path, remaining_depth: usize, coun
         }
     }
 }
+
+#[cfg(test)]
+#[path = "toolchain_doctor_target_tests.rs"]
+mod target_tests;
 
 #[cfg(test)]
 mod tests {
