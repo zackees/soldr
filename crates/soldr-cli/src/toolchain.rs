@@ -370,13 +370,19 @@ fn dylint_scoped_channel() -> Option<String> {
 
 fn scope_rustup_args_to_pin(args: &[String]) -> Result<Vec<String>, SoldrError> {
     let start_dir = std::env::current_dir().map_err(SoldrError::from)?;
-    scope_rustup_args_to_pin_in(args, &start_dir)
+    let rustup_toolchain = std::env::var_os(RUSTUP_TOOLCHAIN_ENV_VAR);
+    scope_rustup_args_to_pin_in(args, &start_dir, rustup_toolchain.as_deref())
 }
 
 fn scope_rustup_args_to_pin_in(
     args: &[String],
     start_dir: &std::path::Path,
+    rustup_toolchain_env: Option<&std::ffi::OsStr>,
 ) -> Result<Vec<String>, SoldrError> {
+    // soldr#3692: RUSTUP_TOOLCHAIN beats rust-toolchain.toml in rustup.
+    if rustup_toolchain_value_set(rustup_toolchain_env) {
+        return Ok(args.to_vec());
+    }
     // Find the first non-flag positional. Anything before it (e.g.
     // `--verbose`) is preserved in place.
     let mut first_positional: Option<usize> = None;
@@ -727,9 +733,12 @@ pub fn unpinned_allowed() -> bool {
 /// opposite of that. Note `probe_direct_toolchain_binary` already defers to
 /// rustup when this is set, so the resolution path agrees.
 fn rustup_toolchain_pinned() -> bool {
-    std::env::var_os(RUSTUP_TOOLCHAIN_ENV_VAR)
-        .map(|value| !value.to_string_lossy().trim().is_empty())
-        .unwrap_or(false)
+    rustup_toolchain_value_set(std::env::var_os(RUSTUP_TOOLCHAIN_ENV_VAR).as_deref())
+}
+
+/// Pure predicate behind [`rustup_toolchain_pinned`]: set and non-blank.
+fn rustup_toolchain_value_set(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| !value.to_string_lossy().trim().is_empty())
 }
 
 /// soldr#1766: refuse to build when no `rust-toolchain.toml` exists at or

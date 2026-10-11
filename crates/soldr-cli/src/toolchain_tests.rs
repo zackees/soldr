@@ -673,7 +673,7 @@ fn scope_rustup_args_to_pin_walks_ancestors_for_pin() {
     .unwrap();
     let sub = root.path().join("a/b");
     std::fs::create_dir_all(&sub).unwrap();
-    let got = scope_rustup_args_to_pin_in(&pin_args(&["target", "add", "x"]), &sub).unwrap();
+    let got = scope_rustup_args_to_pin_in(&pin_args(&["target", "add", "x"]), &sub, None).unwrap();
     assert_eq!(
         got,
         pin_args(&["target", "add", "--toolchain", "1.98.1", "x"])
@@ -689,7 +689,7 @@ fn scope_rustup_args_to_pin_keeps_explicit_toolchain() {
     )
     .unwrap();
     let input = pin_args(&["target", "add", "--toolchain", "nightly", "x"]);
-    let got = scope_rustup_args_to_pin_in(&input, root.path()).unwrap();
+    let got = scope_rustup_args_to_pin_in(&input, root.path(), None).unwrap();
     assert_eq!(got, input);
 }
 
@@ -699,6 +699,35 @@ fn scope_rustup_args_to_pin_unchanged_without_manifest() {
     let sub = root.path().join("a");
     std::fs::create_dir_all(&sub).unwrap();
     let input = pin_args(&["target", "add", "x"]);
-    let got = scope_rustup_args_to_pin_in(&input, &sub).unwrap();
+    let got = scope_rustup_args_to_pin_in(&input, &sub, None).unwrap();
     assert_eq!(got, input);
+}
+
+#[test]
+fn scope_rustup_args_to_pin_defers_to_rustup_toolchain_env() {
+    // soldr#3692: RUSTUP_TOOLCHAIN overrides rust-toolchain.toml in rustup's
+    // precedence, so soldr must not inject the manifest pin over it.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("rust-toolchain.toml"),
+        "[toolchain]\nchannel = \"1.98.1\"\n",
+    )
+    .unwrap();
+    let input = pin_args(&["target", "add", "wasm32-unknown-unknown"]);
+    let env = std::ffi::OsString::from("nightly");
+    let got = scope_rustup_args_to_pin_in(&input, root.path(), Some(&env)).unwrap();
+    assert_eq!(got, input);
+    // Empty / whitespace values are treated as unset: the pin still applies.
+    let blank = std::ffi::OsString::from("  ");
+    let got = scope_rustup_args_to_pin_in(&input, root.path(), Some(&blank)).unwrap();
+    assert_eq!(
+        got,
+        pin_args(&[
+            "target",
+            "add",
+            "--toolchain",
+            "1.98.1",
+            "wasm32-unknown-unknown"
+        ])
+    );
 }
