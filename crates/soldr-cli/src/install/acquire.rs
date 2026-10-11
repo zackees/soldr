@@ -16,15 +16,41 @@ use super::cache;
 use super::fill;
 use super::place::binary_ext_for_triple;
 use super::plan::{AcquisitionPlan, ResolvedInstall};
-use super::refs::{codeload_zip_url_for_sha, Ref};
+use super::refs::{codeload_zip_url_for_sha, Form, Ref};
 use super::target::InstallTarget;
+use crate::fetch::install_api::release::ReleaseAsset;
 
 pub(crate) const INSTALL_TIMEOUT_ENV_VAR: &str = "SOLDR_INSTALL_BUILD_TIMEOUT_SECS";
 
-/// Choose the acquisition lane. Pure — the sha/release resolution has
-/// already happened in [`super::resolve`].
-pub(crate) fn plan_acquisition(resolved: &ResolvedInstall) -> AcquisitionPlan {
-    match &resolved.target {
+/// Choose the acquisition lane. Pure — the sha/release and prebuilt-asset
+/// lookups have already happened in [`super::resolve`] /
+/// [`super::lookup_prebuilt`].
+///
+/// A matching release asset wins unless `--build` forced source
+/// (soldr#3697); `--prebuilt` with no matching asset is an error.
+pub(crate) fn plan_acquisition(
+    resolved: &ResolvedInstall,
+    prebuilt: Option<&ReleaseAsset>,
+) -> Result<AcquisitionPlan, SoldrError> {
+    match (resolved.form, prebuilt) {
+        (Form::Build, _) => {}
+        (_, Some(asset)) => {
+            return Ok(AcquisitionPlan::ReleaseAsset {
+                url: asset.url.clone(),
+                asset_name: asset.name.clone(),
+                bytes: asset.bytes,
+                sha256: asset.sha256.clone(),
+            })
+        }
+        (Form::Prebuilt, None) => {
+            return Err(SoldrError::Other(format!(
+                "install: --prebuilt: no release asset of {} matches {}",
+                resolved.name, resolved.triple
+            )))
+        }
+        (Form::Auto, None) => {}
+    }
+    Ok(match &resolved.target {
         InstallTarget::Local(path) => AcquisitionPlan::LocalPath(path.clone()),
         InstallTarget::GitHub {
             host, owner, repo, ..
@@ -42,6 +68,15 @@ pub(crate) fn plan_acquisition(resolved: &ResolvedInstall) -> AcquisitionPlan {
                 }
             }
         }
+    })
+}
+
+/// Binary names a prebuilt archive must contain: `--bin`, else the tool name.
+pub(crate) fn prebuilt_binary_names(resolved: &ResolvedInstall) -> Vec<String> {
+    if resolved.bins.is_empty() {
+        vec![resolved.name.clone()]
+    } else {
+        resolved.bins.clone()
     }
 }
 
@@ -50,8 +85,10 @@ pub(crate) fn clone_url(host: &str, owner: &str, repo: &str) -> String {
     format!("https://{host}/{owner}/{repo}.git")
 }
 
-/// Acquire the source tree for `plan`, returning the directory that holds
-/// the crate's `Cargo.toml` (ready for `cargo install --path`).
+/// Acquire `plan`. For source lanes this returns the directory that holds
+/// the crate's `Cargo.toml` (ready for `cargo install --path`); for
+/// [`AcquisitionPlan::ReleaseAsset`] it returns the downloaded, verified,
+/// extracted binary itself (no build).
 pub(crate) async fn acquire_source(
     paths: &SoldrPaths,
     resolved: &ResolvedInstall,
@@ -73,10 +110,35 @@ pub(crate) async fn acquire_source(
         AcquisitionPlan::ShallowClone { clone_url } => {
             acquire_shallow_clone(paths, resolved, clone_url)
         }
-        AcquisitionPlan::ReleaseAsset { .. } => Err(SoldrError::Other(
-            "install: prebuilt release-asset acquisition is Phase 2 (not yet implemented)"
-                .to_string(),
-        )),
+        AcquisitionPlan::ReleaseAsset {
+            url,
+            asset_name,
+            bytes,
+            sha256,
+        } => {
+            let asset = ReleaseAsset {
+                name: asset_name.clone(),
+                url: url.clone(),
+                bytes: *bytes,
+                sha256: sha256.clone(),
+            };
+            let names = prebuilt_binary_names(resolved);
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            let version = resolved
+                .git_ref
+                .as_api_ref()
+                .unwrap_or(resolved.sha.as_str())
+                .replace(['/', '\\'], "_");
+            crate::fetch::install_api::release::install_release_asset(
+                paths,
+                &format!("install-{}", resolved.name),
+                &version,
+                &asset,
+                &resolved.triple,
+                &names,
+            )
+            .await
+        }
     }
 }
 
@@ -311,7 +373,6 @@ pub(crate) fn cargo_install_from_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::install::refs::Form;
 
     fn resolved_local(path: &str) -> ResolvedInstall {
         ResolvedInstall {
@@ -335,7 +396,7 @@ mod tests {
     fn plan_local_path_is_local_lane() {
         let r = resolved_local(".");
         assert!(matches!(
-            plan_acquisition(&r),
+            plan_acquisition(&r, None).unwrap(),
             AcquisitionPlan::LocalPath(_)
         ));
     }
@@ -352,7 +413,7 @@ mod tests {
             run_id: None,
         };
         r.sha = "9f2c1ab3".into();
-        match plan_acquisition(&r) {
+        match plan_acquisition(&r, None).unwrap() {
             AcquisitionPlan::CodeloadZip { url, .. } => {
                 assert!(
                     url.contains("codeload.github.com/zackees/clud/zip/9f2c1ab3"),
@@ -376,7 +437,7 @@ mod tests {
         };
         r.sha = "abc".into();
         assert!(matches!(
-            plan_acquisition(&r),
+            plan_acquisition(&r, None).unwrap(),
             AcquisitionPlan::ShallowClone { .. }
         ));
     }

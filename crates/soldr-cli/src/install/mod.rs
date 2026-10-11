@@ -120,7 +120,8 @@ pub(crate) async fn run_with_paths(
     paths.ensure_dirs()?;
 
     let resolved = resolve(&args, paths).await?;
-    let acquisition = acquire::plan_acquisition(&resolved);
+    let prebuilt = lookup_prebuilt(&resolved).await?;
+    let acquisition = acquire::plan_acquisition(&resolved, prebuilt.as_ref())?;
 
     // The resolution line is the entire output of `--dry-run`.
     render_resolution_line(&resolved, &acquisition);
@@ -133,20 +134,29 @@ pub(crate) async fn run_with_paths(
         let _ = cache::sweep_with_config(paths, config.install.source_ttl_days);
     }
 
-    let source_dir = acquire::acquire_source(paths, &resolved, &acquisition).await?;
-
-    let staging = tempfile::tempdir_in(&paths.cache).map_err(|e| {
-        SoldrError::Other(format!("install: failed to create build staging dir: {e}"))
-    })?;
-    let built = acquire::cargo_install_from_path(&source_dir, &resolved, staging.path())?;
-    let placement = place::place_binary(
-        &resolved.name,
-        &built,
-        &resolved.install_root,
-        &resolved.triple,
-        args.force,
-    )?;
-    drop(staging);
+    let acquired = acquire::acquire_source(paths, &resolved, &acquisition).await?;
+    let placement = if matches!(acquisition, plan::AcquisitionPlan::ReleaseAsset { .. }) {
+        // soldr#3697: the verified prebuilt binary is placed directly.
+        place::place_binary(
+            &resolved.name,
+            &acquired,
+            &resolved.install_root,
+            &resolved.triple,
+            args.force,
+        )?
+    } else {
+        let staging = tempfile::tempdir_in(&paths.cache).map_err(|e| {
+            SoldrError::Other(format!("install: failed to create build staging dir: {e}"))
+        })?;
+        let built = acquire::cargo_install_from_path(&acquired, &resolved, staging.path())?;
+        place::place_binary(
+            &resolved.name,
+            &built,
+            &resolved.install_root,
+            &resolved.triple,
+            args.force,
+        )?
+    };
 
     let pin = if resolved.sha.is_empty() {
         "local".to_string()
@@ -159,6 +169,48 @@ pub(crate) async fn run_with_paths(
         placement.binary.display()
     );
     Ok(())
+}
+
+/// Look up a prebuilt release asset for the resolved release (soldr#3697).
+///
+/// Only consulted when a release was selected on github.com and `--build`
+/// was not given. Under the default form a lookup failure falls back to a
+/// source build with a note; under `--prebuilt` it is an error.
+async fn lookup_prebuilt(
+    resolved: &ResolvedInstall,
+) -> Result<Option<crate::fetch::install_api::release::ReleaseAsset>, SoldrError> {
+    if resolved.form == Form::Build || resolved.release.is_none() {
+        return Ok(None);
+    }
+    let (owner, repo) = match &resolved.target {
+        InstallTarget::GitHub {
+            host, owner, repo, ..
+        } if host.eq_ignore_ascii_case("github.com") => (owner, repo),
+        _ => return Ok(None),
+    };
+    let Ref::Tag(tag) = &resolved.git_ref else {
+        return Ok(None);
+    };
+    let names = acquire::prebuilt_binary_names(resolved);
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let token = crate::fetch::github::github_auth_token_for(owner, repo);
+    match crate::fetch::install_api::release::find_release_asset(
+        owner,
+        repo,
+        tag,
+        &resolved.triple,
+        &names,
+        token.as_deref(),
+    )
+    .await
+    {
+        Ok(found) => Ok(found),
+        Err(e) if resolved.form == Form::Auto => {
+            eprintln!("soldr: install: prebuilt lookup failed ({e}); building from source");
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Resolve args (consulting the network for GitHub sha/release) into a
@@ -330,5 +382,7 @@ fn local_crate_name(path: &std::path::Path) -> Option<String> {
         .map(str::to_string)
 }
 
+#[cfg(test)]
+mod prebuilt_tests;
 #[cfg(test)]
 mod tests;
