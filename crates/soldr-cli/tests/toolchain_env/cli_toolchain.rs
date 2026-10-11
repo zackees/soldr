@@ -247,6 +247,10 @@ fn toolchain_prepare_installs_channel_components_and_targets() {
     );
 }
 
+// Plugin tests below use crate names absent from `known_tools` on purpose:
+// registered names now take the prebuilt fetch first (soldr#3699, covered by
+// the hermetic `toolchain_plugins` unit tests), while these tests pin the
+// `cargo install` fallback's argv/env plumbing without touching the network.
 #[test]
 fn toolchain_prepare_installs_plugins_with_version() {
     let workspace = unique_temp_dir("toolchain-prepare-plugin-version");
@@ -256,7 +260,7 @@ fn toolchain_prepare_installs_plugins_with_version() {
          channel = \"1.94.1\"\n\
          \n\
          [soldr.plugins]\n\
-         cargo-nextest = \"0.9\"\n",
+         cargo-fixture-plugin = \"0.9\"\n",
     );
     let rustup_log = workspace.join("rustup.log");
     let cargo_log = workspace.join("cargo.log");
@@ -286,7 +290,10 @@ fn toolchain_prepare_installs_plugins_with_version() {
     );
     let invocation = &cargo_invocations[0];
     assert_eq!(invocation.first().map(String::as_str), Some("install"));
-    assert_eq!(invocation.get(1).map(String::as_str), Some("cargo-nextest"));
+    assert_eq!(
+        invocation.get(1).map(String::as_str),
+        Some("cargo-fixture-plugin")
+    );
     let version_idx = invocation
         .iter()
         .position(|arg| arg == "--version")
@@ -306,7 +313,7 @@ fn toolchain_prepare_host_cargo_keeps_managed_install_home_without_managed_rustu
          channel = \"1.94.1\"\n\
          \n\
          [soldr.plugins]\n\
-         cargo-nextest = \"0.9\"\n",
+         cargo-fixture-plugin = \"0.9\"\n",
     );
     let cache_root = unique_temp_dir("toolchain-prepare-plugin-managed-home");
     let managed_cargo_home = cache_root.join("cargo");
@@ -372,7 +379,7 @@ fn toolchain_prepare_plugin_install_clears_inherited_rustc_wrappers() {
          channel = \"1.94.1\"\n\
          \n\
          [soldr.plugins]\n\
-         cargo-nextest = \"0.9\"\n",
+         cargo-fixture-plugin = \"0.9\"\n",
     );
     let rustup_log = workspace.join("rustup.log");
     let cargo_log = workspace.join("cargo.log");
@@ -398,7 +405,9 @@ fn toolchain_prepare_plugin_install_clears_inherited_rustc_wrappers() {
 
     let log = fs::read_to_string(&cargo_log).expect("read fake cargo log");
     assert!(
-        log.contains("cargo wrapper= workspace_wrapper= args=install cargo-nextest --version 0.9"),
+        log.contains(
+            "cargo wrapper= workspace_wrapper= args=install cargo-fixture-plugin --version 0.9"
+        ),
         "toolchain prepare plugin install should scrub rustc wrapper env: {log}"
     );
 }
@@ -412,7 +421,7 @@ fn toolchain_prepare_installs_plugin_with_locked_flag() {
          channel = \"1.94.1\"\n\
          \n\
          [soldr.plugins]\n\
-         cargo-zigbuild = { version = \"0.18\", locked = true }\n",
+         cargo-fixture-locked = { version = \"0.18\", locked = true }\n",
     );
     let rustup_log = workspace.join("rustup.log");
     let cargo_log = workspace.join("cargo.log");
@@ -444,7 +453,7 @@ fn toolchain_prepare_installs_plugin_with_locked_flag() {
     assert_eq!(invocation.first().map(String::as_str), Some("install"));
     assert_eq!(
         invocation.get(1).map(String::as_str),
-        Some("cargo-zigbuild")
+        Some("cargo-fixture-locked")
     );
     let version_idx = invocation
         .iter()
@@ -594,7 +603,7 @@ fn toolchain_prepare_plugin_without_version_uses_no_version_flag() {
          channel = \"1.94.1\"\n\
          \n\
          [soldr.plugins]\n\
-         cargo-deny = \"*\"\n",
+         cargo-fixture-any = \"*\"\n",
     );
     let rustup_log = workspace.join("rustup.log");
     let cargo_log = workspace.join("cargo.log");
@@ -625,7 +634,7 @@ fn toolchain_prepare_plugin_without_version_uses_no_version_flag() {
     let invocation = &cargo_invocations[0];
     assert_eq!(
         invocation,
-        &vec!["install".to_string(), "cargo-deny".to_string()],
+        &vec!["install".to_string(), "cargo-fixture-any".to_string()],
         "expected bare install argv (no --version for \"*\"): {invocation:?}"
     );
     assert!(
@@ -654,7 +663,7 @@ fn toolchain_ensure_runs_prepare_then_smoke_verify_in_json_mode() {
          targets = [\"x86_64-unknown-linux-musl\"]\n\
          \n\
          [soldr.plugins]\n\
-         cargo-nextest = \"0.9\"\n",
+         cargo-fixture-plugin = \"0.9\"\n",
     );
     let rustup_log = workspace.join("rustup.log");
     let cargo_log = workspace.join("cargo.log");
@@ -716,7 +725,7 @@ fn toolchain_ensure_runs_prepare_then_smoke_verify_in_json_mode() {
         .iter()
         .map(|v| v.as_str().expect("plugin not string"))
         .collect();
-    assert_eq!(plugin_strs, vec!["cargo-nextest@0.9"]);
+    assert_eq!(plugin_strs, vec!["cargo-fixture-plugin@0.9"]);
 
     let smoke = &parsed["smoke_verify"];
     assert_eq!(smoke["ok"], Value::from(true));
@@ -760,7 +769,7 @@ fn toolchain_ensure_runs_prepare_then_smoke_verify_in_json_mode() {
     );
     assert_eq!(
         install_invocations[0].get(1).map(String::as_str),
-        Some("cargo-nextest")
+        Some("cargo-fixture-plugin")
     );
 }
 

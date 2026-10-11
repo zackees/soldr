@@ -394,6 +394,7 @@ pub(crate) mod toolchain_dir_name;
 pub mod toolchain_doctor;
 pub mod toolchain_ensure;
 pub mod toolchain_link;
+pub(crate) mod toolchain_plugins;
 pub(crate) mod toolchain_prepare;
 pub mod toolchain_readiness;
 pub(crate) mod toolchain_std_libs;
