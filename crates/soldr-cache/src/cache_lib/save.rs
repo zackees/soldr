@@ -313,3 +313,6 @@ mod load_extract_tests;
 #[cfg(test)]
 #[path = "load_replay_tests.rs"]
 mod load_replay_tests;
+#[cfg(test)]
+#[path = "save_archive_mode_tests.rs"]
+mod save_archive_mode_tests;

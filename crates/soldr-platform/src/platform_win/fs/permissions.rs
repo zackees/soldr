@@ -45,3 +45,9 @@ pub fn make_private(_path: &Path) -> std::io::Result<()> {
 pub fn mode(_path: &Path) -> Option<u32> {
     None
 }
+
+/// Windows has no Unix mode bits: there are no create permissions to
+/// request, so callers keep the builder's default.
+pub fn default_create_permissions() -> Option<std::fs::Permissions> {
+    None
+}

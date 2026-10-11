@@ -631,14 +631,23 @@ fn write_archive_file<T>(out: &Path, write: impl FnOnce(File) -> Result<T>) -> R
         _ => Path::new("."),
     };
     std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
-    let tmp = tempfile::Builder::new()
-        .prefix(".soldr-save-")
-        .suffix(".tmp")
-        .tempfile_in(parent)
-        .map_err(|e| io(parent, e))?;
+    // tempfile creates 0o600; request what a plain `File::create` would
+    // (0o666 under the umask) so the renamed archive stays readable by
+    // other users, e.g. a cache step running as another UID (soldr#3712).
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".soldr-save-").suffix(".tmp");
+    if let Some(perms) = soldr_platform::fs::permissions::default_create_permissions() {
+        builder.permissions(perms);
+    }
+    let tmp = builder.tempfile_in(parent).map_err(|e| io(parent, e))?;
     let handle = tmp.reopen().map_err(|e| io(tmp.path(), e))?;
     write(handle)?;
     tmp.as_file().sync_all().map_err(|e| io(tmp.path(), e))?;
+    // Replacing an existing archive keeps that archive's mode.
+    if let Some(existing) = soldr_platform::fs::permissions::mode(out) {
+        soldr_platform::fs::permissions::restore_mode(tmp.path(), Some(existing & 0o7777))
+            .map_err(|e| io(tmp.path(), e))?;
+    }
     tmp.persist(out).map_err(|e| io(out, e.error))?;
     Ok(())
 }
