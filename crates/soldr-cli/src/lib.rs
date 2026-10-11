@@ -339,6 +339,8 @@ pub mod lint_ci;
 /// soldr#1721 - cache-aware unified validation command.
 pub mod lint_cmd;
 pub mod logs_cmd;
+/// soldr#3698 — `soldr logs view` / `soldr logs prune`.
+pub mod logs_retention;
 /// soldr#1079 — Windows MSVC host-toolchain auto-discovery. Probes
 /// vswhere + the Windows SDK and synthesizes LIB/INCLUDE/PATH/LIBPATH
 /// onto the current process so `soldr cargo build` / `soldr cargo test`

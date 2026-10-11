@@ -717,4 +717,22 @@ pub(crate) enum LogsSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// Stream a launch's archived JSONL journal(s) to stdout.
+    View {
+        /// Launch id from `soldr logs list` (exact or unique decimal prefix).
+        launch_id: String,
+    },
+    /// Bounded retention: keep the newest N archived launches under the
+    /// build-history directory reported by `soldr logs paths`.
+    Prune {
+        /// Number of most recent launches to keep.
+        #[arg(long)]
+        keep: usize,
+        /// Report what would be removed without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the stable machine-facing JSON form (`schema_version: 1`).
+        #[arg(long)]
+        json: bool,
+    },
 }

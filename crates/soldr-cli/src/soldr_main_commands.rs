@@ -172,7 +172,7 @@ fn run_version_command(json: bool) -> Result<(), SoldrError> {
 
 fn run_logs_command(command: Option<LogsSubcommand>) -> Result<(), SoldrError> {
     match command {
-        // soldr#820: `list`/`show`/`paths` are implemented; `view`/`prune` are follow-ups.
+        // soldr#820 / soldr#3698: list, show, paths, view, prune.
         Some(LogsSubcommand::List { limit, json }) => {
             exit_with(logs_cmd::run_logs_list(limit, json))
         }
@@ -180,6 +180,14 @@ fn run_logs_command(command: Option<LogsSubcommand>) -> Result<(), SoldrError> {
             exit_with(logs_cmd::run_logs_show(&launch_id, json))
         }
         Some(LogsSubcommand::Paths { json }) => exit_with(logs_cmd::run_logs_paths(json)),
+        Some(LogsSubcommand::View { launch_id }) => {
+            exit_with(crate::logs_retention::run_logs_view(&launch_id))
+        }
+        Some(LogsSubcommand::Prune {
+            keep,
+            dry_run,
+            json,
+        }) => exit_with(crate::logs_retention::run_logs_prune(keep, dry_run, json)),
         None => {
             // Bare `soldr logs` with no subcommand: print the help-shaped
             // overview from the issue's design plus follow-up hints.
@@ -191,10 +199,8 @@ fn run_logs_command(command: Option<LogsSubcommand>) -> Result<(), SoldrError> {
             eprintln!(
                 "  soldr logs paths               Print every directory soldr writes logs into"
             );
-            eprintln!();
-            eprintln!("Planned follow-up verbs (not implemented yet):");
             eprintln!("  soldr logs view <launch-id>    Stream a launch's JSONL journal");
-            eprintln!("  soldr logs prune --keep N      Bounded retention sweep");
+            eprintln!("  soldr logs prune --keep N      Keep the newest N archived launches");
             eprintln!();
             eprintln!("Run `soldr logs list --json` for a machine-readable form.");
             guarded_exit(0);
