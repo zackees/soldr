@@ -1477,7 +1477,7 @@ soldr toolchain doctor [--json]   # run env-detection probes (musl-cc, shared ta
 1. `rustup toolchain install <channel> --profile minimal --no-self-update`
 2. `rustup component add --toolchain <channel> <component>` for every entry in `[toolchain].components`
 3. `rustup target add --toolchain <channel> <target>` for every entry in `[toolchain].targets`
-4. `cargo install <name> [--version V] [--locked] [--features ...] [--no-default-features]` for every entry in `[soldr.plugins]`
+4. a prebuilt `known_tools` fetch, else `cargo install <name> [--version V] [--locked] [--features ...] [--no-default-features]` for every entry in `[soldr.plugins]`
 
 The Cargo front door performs the toolchain/component/target portion
 automatically before launching the child build. A successful preparation is
@@ -1753,7 +1753,9 @@ Field semantics for the detailed shape:
 | `features`            | list of string | `--features <a,b,c>` when non-empty. |
 | `no_default_features` | bool           | `--no-default-features` when `true`. |
 
-Installs are dispatched to the cargo binary resolved by soldr's
+Pre-built first (soldr#3699): an entry whose crate is a `known_tools` cargo subcommand (`cargo-nextest`, `cargo-deny`, `cargo-zigbuild`, ...) is first fetched as a prebuilt release through soldr-fetch (install lock, trust sha, staged promotion) into soldr's tool cache, where `soldr cargo <sub>` runs it. The version requirement is always honoured: the prebuilt is used only when the version the cargo front door would run (the registry pin, else the latest release) satisfies it. A requirement the prebuilt cannot satisfy, `features` / `no_default_features`, an unregistered crate, or a failed fetch falls back to `cargo install` with the declared requirement; a different version is never silently installed. A prebuilt-served plugin is not placed in `$CARGO_HOME/bin`, so invoke it as `soldr cargo <sub>`.
+
+`cargo install` fallbacks are dispatched to the cargo binary resolved by soldr's
 toolchain probe (`resolve_toolchain_binary("cargo")`) and invoked
 directly — **not** through the rustc wrapper. This routes installs
 into soldr-managed `$CARGO_HOME` while letting the active cargo honor

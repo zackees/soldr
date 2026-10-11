@@ -8,7 +8,7 @@
 use crate::core::{SoldrError, SoldrPaths};
 
 use crate::toolchain::{
-    cargo_install_plugin, format_plugin_label, rustup_component_add, rustup_target_add,
+    format_plugin_label, rustup_component_add, rustup_target_add,
     rustup_toolchain_install_with_profile,
 };
 
@@ -74,7 +74,7 @@ pub(crate) fn run_prepare_inner(
     if let Some(soldr_section) = manifest.soldr.as_ref() {
         if !soldr_section.plugins.is_empty() {
             for (name, spec) in &soldr_section.plugins {
-                let code = cargo_install_plugin(name, spec)?;
+                let code = crate::toolchain_plugins::install_plugin(name, spec)?;
                 if code != 0 {
                     return Ok((code, summary));
                 }
