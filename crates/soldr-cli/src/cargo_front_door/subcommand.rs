@@ -418,18 +418,58 @@ pub(crate) fn cargo_args_specify_target(args: &[String]) -> bool {
     false
 }
 
-pub(super) fn cargo_args_target_value(args: &[String]) -> Option<String> {
+/// The single `--target` extractor for the cargo front door (soldr#3694).
+///
+/// Returns the first `--target <triple>` / `--target=<triple>` that cargo
+/// itself would parse. Scanning stops at `--`: everything after it is
+/// forwarded to the program or test harness (`cargo run -- --target foo`),
+/// never interpreted by cargo.
+pub(super) fn cargo_args_target(args: &[String]) -> Option<&str> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if arg == "--" {
             break;
         }
         if arg == "--target" {
-            return iter.next().cloned();
+            return iter.next().map(String::as_str);
         }
         if let Some(rest) = arg.strip_prefix("--target=") {
-            return Some(rest.to_string());
+            return Some(rest);
         }
     }
     None
+}
+
+/// Owned form of [`cargo_args_target`].
+pub(super) fn cargo_args_target_value(args: &[String]) -> Option<String> {
+    cargo_args_target(args).map(str::to_owned)
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::{cargo_args_target, cargo_args_target_value};
+
+    fn argvec(s: &str) -> Vec<String> {
+        s.split_whitespace().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn handles_space_separated_and_equals_forms() {
+        let space = argvec("xwin build --release --target aarch64-pc-windows-msvc");
+        assert_eq!(cargo_args_target(&space), Some("aarch64-pc-windows-msvc"));
+        let equals = argvec("xwin build --release --target=x86_64-pc-windows-msvc");
+        assert_eq!(cargo_args_target(&equals), Some("x86_64-pc-windows-msvc"));
+        assert_eq!(cargo_args_target(&argvec("xwin build --release")), None);
+    }
+
+    /// soldr#3694: `--target` after `--` is a program argument, not cargo's.
+    #[test]
+    fn ignores_program_args_after_double_dash() {
+        let args = argvec("run -- --target foo");
+        assert_eq!(cargo_args_target(&args), None);
+        assert_eq!(cargo_args_target_value(&args), None);
+        assert_eq!(cargo_args_target(&argvec("run -- --target=foo")), None);
+        let before = argvec("run --target bar -- --target foo");
+        assert_eq!(cargo_args_target(&before), Some("bar"));
+    }
 }
