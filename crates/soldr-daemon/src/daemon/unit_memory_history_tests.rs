@@ -192,3 +192,43 @@ fn record_overwrites_an_undecodable_row() {
     assert_eq!(unit.samples, 1);
     assert_eq!(unit.peak_rss_bytes, 10 * MIB);
 }
+
+fn seed_trusted_row(db_path: &std::path::Path, key: &str, samples: u64) {
+    let db = crate::cache_lib::state_store::open_state_db(db_path).expect("open");
+    for i in 0..samples {
+        record_in(&db, key, 900 * MIB, 4_000 * MIB, i64::try_from(i).unwrap()).expect("seed");
+    }
+}
+
+/// soldr#3686: a record that lands before the warm load must not reset the
+/// stored sample count below `MIN_TRUSTED_SAMPLES`. On a current-thread
+/// runtime the owner task cannot run until the test awaits, so `record`
+/// deterministically precedes the load.
+#[tokio::test]
+async fn a_record_during_the_warm_load_keeps_the_stored_sample_count() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db_path = temp.path().join("state.sqlite3");
+    seed_trusted_row(&db_path, "heavy/abcd", 5);
+
+    let history = UnitMemoryHistory::start(db_path);
+    history.record("heavy/abcd", 100 * MIB, 200 * MIB);
+    history.ready().await.expect("warm load");
+    let unit = history.lookup("heavy/abcd").expect("unit");
+    assert!(unit.samples >= 6, "samples reset to {}", unit.samples);
+    assert_eq!(unit.tree_peak_rss_bytes, 4_000 * MIB);
+}
+
+/// soldr#3686: admission's bounded wait sees the trusted history right after
+/// a restart instead of an empty map.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admission_lookup_waits_for_the_warm_load() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db_path = temp.path().join("state.sqlite3");
+    seed_trusted_row(&db_path, "heavy/abcd", 5);
+
+    let history = UnitMemoryHistory::start(db_path);
+    let unit = history
+        .lookup_after_load("heavy/abcd", std::time::Duration::from_secs(30))
+        .expect("trusted history visible to admission after restart");
+    assert_eq!(unit.samples, 5);
+}
