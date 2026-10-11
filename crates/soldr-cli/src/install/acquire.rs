@@ -16,7 +16,7 @@ use super::cache;
 use super::fill;
 use super::place::binary_ext_for_triple;
 use super::plan::{AcquisitionPlan, ResolvedInstall};
-use super::refs::codeload_zip_url_for_sha;
+use super::refs::{codeload_zip_url_for_sha, Ref};
 use super::target::InstallTarget;
 
 pub(crate) const INSTALL_TIMEOUT_ENV_VAR: &str = "SOLDR_INSTALL_BUILD_TIMEOUT_SECS";
@@ -133,22 +133,54 @@ fn acquire_shallow_clone(
     };
 
     let checkout = slot.staging().join("checkout");
-    let mut command = std::process::Command::new("git");
-    command.arg("clone").arg("--depth").arg("1");
-    if let Some(git_ref) = resolved.git_ref.as_api_ref() {
-        command.arg("--branch").arg(git_ref);
-    }
-    command.arg(clone_url).arg(&checkout);
-    suppress_windows_console_window(&mut command);
-
-    let status = command
-        .status()
-        .map_err(|e| SoldrError::Other(format!("install: failed to spawn git clone: {e}")))?;
-    if !status.success() {
-        // Dropping `slot` removes the unpublished staging dir.
-        return Err(SoldrError::Other(format!(
-            "install: git clone {clone_url} failed with status {status}"
-        )));
+    // soldr#3690: `git clone --branch` accepts only branches and tags, so a
+    // commit (`Ref::Rev`) is fetched by sha into a fresh repo instead.
+    let steps: Vec<Vec<std::ffi::OsString>> = match &resolved.git_ref {
+        Ref::Rev(sha) => vec![
+            vec!["init".into(), "-q".into(), checkout.clone().into()],
+            vec![
+                "-C".into(),
+                checkout.clone().into(),
+                "fetch".into(),
+                "--depth".into(),
+                "1".into(),
+                clone_url.into(),
+                sha.into(),
+            ],
+            vec![
+                "-C".into(),
+                checkout.clone().into(),
+                "checkout".into(),
+                "-q".into(),
+                "--detach".into(),
+                "FETCH_HEAD".into(),
+            ],
+        ],
+        other => {
+            let mut args: Vec<std::ffi::OsString> =
+                vec!["clone".into(), "--depth".into(), "1".into()];
+            if let Some(git_ref) = other.as_api_ref() {
+                args.push("--branch".into());
+                args.push(git_ref.into());
+            }
+            args.push(clone_url.into());
+            args.push(checkout.clone().into());
+            vec![args]
+        }
+    };
+    for args in steps {
+        let mut command = std::process::Command::new("git");
+        command.args(&args);
+        suppress_windows_console_window(&mut command);
+        let status = command
+            .status()
+            .map_err(|e| SoldrError::Other(format!("install: failed to spawn git: {e}")))?;
+        if !status.success() {
+            // Dropping `slot` removes the unpublished staging dir.
+            return Err(SoldrError::Other(format!(
+                "install: git {args:?} for {clone_url} failed with status {status}"
+            )));
+        }
     }
 
     Ok(slot.publish()?.join("checkout"))
@@ -280,7 +312,7 @@ pub(crate) fn cargo_install_from_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::install::refs::{Form, Ref};
+    use crate::install::refs::Form;
 
     fn resolved_local(path: &str) -> ResolvedInstall {
         ResolvedInstall {
@@ -348,5 +380,77 @@ mod tests {
             plan_acquisition(&r),
             AcquisitionPlan::ShallowClone { .. }
         ));
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .expect("spawn git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// soldr#3690: `--rev <sha>` on the ShallowClone lane must check out
+    /// exactly that commit; `git clone --branch <sha>` rejects a sha.
+    #[test]
+    fn shallow_clone_rev_checks_out_exact_sha() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        git(&work, &["init", "-q", "-b", "main"]);
+        std::fs::write(work.join("Cargo.toml"), "[package]\nname = \"foo\"\n").unwrap();
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-q", "-m", "first"]);
+        let first = git(&work, &["rev-parse", "HEAD"]);
+        std::fs::write(work.join("second.txt"), "2").unwrap();
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-q", "-m", "second"]);
+        let bare = tmp.path().join("bare.git");
+        git(
+            tmp.path(),
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                work.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+        let url = format!("file://{}", bare.display());
+
+        let root = tmp.path().join("soldr-home");
+        let paths = SoldrPaths::with_root(root);
+        paths.ensure_dirs().unwrap();
+        let mut r = resolved_local(".");
+        r.target = InstallTarget::GitHub {
+            host: "git.example.com".into(),
+            owner: "o".into(),
+            repo: "r".into(),
+            url_ref: None,
+            url_release: None,
+            run_id: None,
+        };
+        r.git_ref = Ref::Rev(first.clone());
+        r.sha = first.clone();
+
+        let checkout = acquire_shallow_clone(&paths, &r, &url).expect("rev clone");
+        assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), first);
+        assert!(checkout.join("Cargo.toml").is_file());
+        assert!(!checkout.join("second.txt").exists());
     }
 }
