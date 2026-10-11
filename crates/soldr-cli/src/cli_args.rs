@@ -543,8 +543,14 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: Option<LogsSubcommand>,
     },
-    /// Show or set soldr configuration
-    Config,
+    /// Show or set soldr configuration (`~/.soldr/config.toml`)
+    ///
+    /// `list` (default) prints every set key, `get <key>` / `set <key>
+    /// <value>` read and write one dotted key, `path` prints the file.
+    Config {
+        #[command(subcommand)]
+        command: Option<crate::config_cmd::ConfigSubcommand>,
+    },
     /// Clear the embedded zccache build cache
     Clean,
     /// Purge all soldr-managed cache artifacts

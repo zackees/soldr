@@ -1254,7 +1254,27 @@ session state directory.
 
 ### `soldr config`
 
-Show or set configuration.
+Show or set keys in Soldr's `config.toml` (`<soldr root>/config.toml`,
+normally `~/.soldr/config.toml`; `SOLDR_CACHE_DIR` moves it). Keys are dotted
+paths into the file (`linker`, `cook.max_total_gb`, `pins.zccache`).
+
+```bash
+soldr config                         # same as `soldr config list`
+soldr config list                    # every key set in the file, `key = value`
+soldr config get cook.max_total_gb   # one value; exit 1 when the key is unset
+soldr config set cook.max_total_gb 12
+soldr config set linker rust-lld
+soldr config path                    # print the config file path
+```
+
+- `get` and `list` report only what the file sets; they do not print
+  defaults.
+- `set` parses the value as a TOML value (`12`, `false`, `"x"`) and falls
+  back to a plain string (`rust-lld`, `1.12.5`). The top-level key must be
+  one Soldr knows (`gc`, `auto_gc`, `linker`, `cook`, `pins`, `jobs`,
+  `zccache`, `install`), and the edited file must load through the same
+  `SoldrConfig` loader the rest of Soldr uses; otherwise nothing is written.
+- Writes keep existing comments and layout and replace the file atomically.
 
 ### `soldr cache`
 

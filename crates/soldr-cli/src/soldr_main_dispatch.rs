@@ -152,10 +152,7 @@ async fn dispatch_state_command(command: Commands, flags: DispatchFlags) -> Resu
         Commands::Status { json } => run_status_command(json, flags.cache_enabled),
         Commands::Clean => cache::clear_zccache_cache(),
         Commands::Purge => cache::purge_soldr_cache(),
-        Commands::Config => {
-            println!("(config not yet implemented)");
-            Ok(())
-        }
+        Commands::Config { command } => crate::config_cmd::run_config_command(command),
         Commands::Logs { command } => run_logs_command(command),
         Commands::Cache { json, command } => run_cache_command(json, command).await,
         Commands::Version { json } => run_version_command(json),
