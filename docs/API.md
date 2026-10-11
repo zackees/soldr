@@ -1267,6 +1267,35 @@ soldr status --json
 Clear the local embedded-zccache artifact cache and remove Soldr's zccache
 session state directory.
 
+### `soldr logs`
+
+Inspect soldr's runtime activity (soldr#820, soldr#3698).
+
+```
+soldr logs list [--limit N] [--json]     # recent launches (daemon-owned history)
+soldr logs show <launch-id> [--json]     # one launch summary + log paths
+soldr logs paths [--json]                # every directory soldr writes logs into
+soldr logs view <launch-id>              # stream a launch's archived JSONL journal(s)
+soldr logs prune --keep N [--dry-run] [--json]
+```
+
+A *launch* is one per-build archive directory, named by its decimal session
+id, under the `zccache-build-history` entry that `soldr logs paths` reports
+(`<cache>/zccache/history/<session-id>/`). `view` and `prune` resolve that
+directory through the same inventory; there is no second log location.
+
+- `view` accepts an exact id or a unique decimal prefix and copies every
+  `*.jsonl` file in the launch directory (sorted by name) to stdout. It fails
+  when the id is unknown, ambiguous, or the launch has no journal.
+- `prune --keep N` keeps the newest N launches (by directory mtime, session id
+  as tie-break) and removes the rest. It only removes direct, non-symlink,
+  all-digit children of the history directory, never touches any other file,
+  and skips launches still being published (`.publishing-v2`). `--dry-run`
+  reports without deleting. `--json` emits `schema_version: 1` with
+  `history_root`, `keep`, `dry_run`, `kept`, `removed`, `skipped_active`, and
+  `failed`. Exit code is 1 when any removal failed. Daemon-side build-history
+  rows are left as-is; the daemon's own history GC reconciles them.
+
 ### `soldr config`
 
 Show or set keys in Soldr's `config.toml` (`<soldr root>/config.toml`,
