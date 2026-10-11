@@ -228,12 +228,8 @@ pub fn save_with_projection(
     // Stream tar -> zstd encoder -> file. We append the manifest first
     // (cheap, ~hundreds of KB) and the cache files second so a streaming
     // load can read the manifest without buffering the whole archive.
-    if let Some(parent) = opts.out.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
-        }
-    }
-    let out_file = File::create(opts.out).map_err(|e| io(opts.out, e))?;
+    let mut cache_files: u64 = 0;
+    write_archive_file(opts.out, |out_file| {
     let out_buf = BufWriter::with_capacity(8 * 1024 * 1024, out_file);
     let mut zstd_encoder =
         zstd::stream::write::Encoder::new(out_buf, opts.zstd_level).map_err(SaveLoadError::Zstd)?;
@@ -241,7 +237,6 @@ pub fn save_with_projection(
         .multithread(num_cpus_for(opts.threads))
         .map_err(SaveLoadError::Zstd)?;
 
-    let mut cache_files: u64 = 0;
     {
         let mut tar_builder = tar::Builder::new(&mut zstd_encoder);
         tar_builder.mode(tar::HeaderMode::Deterministic);
@@ -285,7 +280,8 @@ pub fn save_with_projection(
     let writer = zstd_encoder.finish().map_err(SaveLoadError::Zstd)?;
     writer
         .into_inner()
-        .map_err(|e| SaveLoadError::BareIo(e.into_error()))?;
+        .map_err(|e| SaveLoadError::BareIo(e.into_error()))
+    })?;
 
     let archive_bytes = std::fs::metadata(opts.out).map(|m| m.len()).unwrap_or(0);
 
@@ -597,12 +593,7 @@ fn write_delta_archive(
     cache_files_paths: &[(PathBuf, String, std::fs::Metadata)],
 ) -> Result<()> {
     let manifest_bytes = encode_manifest(manifest)?;
-    if let Some(parent) = out.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
-        }
-    }
-    let out_file = File::create(out).map_err(|e| io(out, e))?;
+    write_archive_file(out, |out_file| {
     let out_buf = BufWriter::with_capacity(8 * 1024 * 1024, out_file);
     let mut zstd_encoder =
         zstd::stream::write::Encoder::new(out_buf, zstd_level).map_err(SaveLoadError::Zstd)?;
@@ -625,7 +616,30 @@ fn write_delta_archive(
     let writer = zstd_encoder.finish().map_err(SaveLoadError::Zstd)?;
     writer
         .into_inner()
-        .map_err(|e| SaveLoadError::BareIo(e.into_error()))?;
+        .map_err(|e| SaveLoadError::BareIo(e.into_error()))
+    })
+}
+
+/// Produce the archive at `out` atomically (soldr#3687): `write` streams into
+/// a temp file in `out`'s directory, which is synced and renamed over `out`
+/// only on success. A failed save leaves any previous archive intact, and
+/// the temp file is removed when dropped, so no partial archive remains for
+/// a CI cache step to upload.
+fn write_archive_file<T>(out: &Path, write: impl FnOnce(File) -> Result<T>) -> Result<()> {
+    let parent = match out.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
+    let tmp = tempfile::Builder::new()
+        .prefix(".soldr-save-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .map_err(|e| io(parent, e))?;
+    let handle = tmp.reopen().map_err(|e| io(tmp.path(), e))?;
+    write(handle)?;
+    tmp.as_file().sync_all().map_err(|e| io(tmp.path(), e))?;
+    tmp.persist(out).map_err(|e| io(out, e.error))?;
     Ok(())
 }
 

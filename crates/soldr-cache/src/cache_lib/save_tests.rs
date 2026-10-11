@@ -1268,3 +1268,41 @@ fn cook_profile_walk_archives_the_dep_graph_of_a_real_target_tree() {
     assert_eq!(full.included_paths.len(), 9);
     assert_eq!(full.excluded_files, 0);
 }
+
+// soldr#3687: a save that fails partway must leave the previous good
+// archive byte-for-byte intact and no partial file beside it.
+#[test]
+fn a_failed_save_preserves_the_previous_archive_and_leaves_no_partial() {
+    let root = tempfile::tempdir().unwrap();
+    let out = root.path().join("cache.tar.zst");
+    std::fs::write(&out, b"previous good archive").unwrap();
+    let err = write_archive_file(&out, |mut file| -> Result<()> {
+        file.write_all(b"partial").unwrap();
+        Err(SaveLoadError::BareIo(std::io::Error::other(
+            "injected write failure",
+        )))
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("injected write failure"), "{err}");
+    assert_eq!(std::fs::read(&out).unwrap(), b"previous good archive");
+    let entries: Vec<_> = std::fs::read_dir(root.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, vec![std::ffi::OsString::from("cache.tar.zst")]);
+}
+
+#[test]
+fn a_successful_save_replaces_the_previous_archive() {
+    let root = tempfile::tempdir().unwrap();
+    let out = root.path().join("nested").join("cache.tar.zst");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    std::fs::write(&out, b"old").unwrap();
+    write_archive_file(&out, |mut file| -> Result<()> {
+        file.write_all(b"new archive")
+            .map_err(SaveLoadError::BareIo)
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), b"new archive");
+    assert_eq!(std::fs::read_dir(out.parent().unwrap()).unwrap().count(), 1);
+}
