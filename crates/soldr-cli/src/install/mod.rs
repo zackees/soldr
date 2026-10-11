@@ -17,6 +17,7 @@ pub(crate) mod fill;
 pub(crate) mod place;
 pub(crate) mod plan;
 pub(crate) mod refs;
+pub(crate) mod remote_ref;
 pub(crate) mod target;
 
 use crate::core::{SoldrError, SoldrPaths, TargetTriple};
@@ -277,9 +278,9 @@ async fn resolve(args: &InstallArgs, paths: &SoldrPaths) -> Result<ResolvedInsta
                 )
                 .await?
             } else {
-                // Non-GitHub host (Phase 1): no API resolution, key the cache
-                // on the ref token so the shallow-clone lane still caches.
-                sanitize_ref_key(&git_ref)
+                // soldr#3691: non-GitHub host — resolve with `git ls-remote`
+                // so the cache key and the printed sha are the real commit.
+                remote_ref::resolve_remote_sha(&acquire::clone_url(host, owner, repo), &git_ref)?
             };
 
             Ok(ResolvedInstall {
@@ -315,25 +316,6 @@ async fn resolve_release_tag(
             crate::fetch::install_api::resolve_release_at_offset(owner, repo, *n, token).await
         }
     }
-}
-
-/// A filesystem-safe cache key for a non-resolved ref (non-GitHub hosts).
-fn sanitize_ref_key(git_ref: &Ref) -> String {
-    let raw = match git_ref {
-        Ref::Head => "HEAD".to_string(),
-        Ref::Branch(b) => format!("branch-{b}"),
-        Ref::Tag(t) => format!("tag-{t}"),
-        Ref::Rev(r) => r.clone(),
-    };
-    raw.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 /// Read `[package] name` from a local crate's `Cargo.toml`, if present.
