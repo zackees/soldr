@@ -13,6 +13,7 @@
 
 pub(crate) mod acquire;
 pub(crate) mod cache;
+pub(crate) mod fill;
 pub(crate) mod place;
 pub(crate) mod plan;
 pub(crate) mod refs;

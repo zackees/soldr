@@ -13,6 +13,7 @@ use crate::core::{
 };
 
 use super::cache;
+use super::fill;
 use super::place::binary_ext_for_triple;
 use super::plan::{AcquisitionPlan, ResolvedInstall};
 use super::refs::codeload_zip_url_for_sha;
@@ -98,17 +99,11 @@ async fn acquire_codeload_zip(
         .ok_or_else(|| SoldrError::Other("install: codeload requires a GitHub target".into()))?;
 
     // Cache hit: a completed, content-addressed extraction is immutable.
-    if cache::is_complete(&cache_dir) {
-        cache::touch_last_use(&cache_dir);
-        return single_crate_root(&cache_dir);
-    }
-
-    // Fresh acquisition: mark in-flight, extract, then publish.
-    // Clear any stale partial dir first.
-    if cache_dir.exists() {
-        let _ = std::fs::remove_dir_all(&cache_dir);
-    }
-    cache::mark_partial(&cache_dir)?;
+    // Otherwise extract into a locked private staging dir (soldr#3689).
+    let slot = match fill::begin(&cache_dir)? {
+        fill::Fill::Hit(dir) => return single_crate_root(&dir),
+        fill::Fill::Fill(slot) => slot,
+    };
 
     // soldr#3639: repo-scoped token, never the workflow token for a foreign repo.
     let token = match &resolved.target {
@@ -117,13 +112,11 @@ async fn acquire_codeload_zip(
         }
         _ => None,
     };
-    let extracted =
-        crate::fetch::source_zip::stream_and_extract_source_zip(url, &cache_dir, token.as_deref())
-            .await?;
+    crate::fetch::source_zip::stream_and_extract_source_zip(url, slot.staging(), token.as_deref())
+        .await?;
 
-    cache::clear_partial(&cache_dir)?;
-    cache::touch_last_use(&cache_dir);
-    Ok(extracted.root)
+    let published = slot.publish()?;
+    single_crate_root(&published)
 }
 
 fn acquire_shallow_clone(
@@ -134,17 +127,12 @@ fn acquire_shallow_clone(
     let cache_dir = cache_dir_for(paths, resolved)
         .ok_or_else(|| SoldrError::Other("install: clone requires a remote target".into()))?;
 
-    if cache::is_complete(&cache_dir) {
-        cache::touch_last_use(&cache_dir);
-        return single_crate_root(&cache_dir);
-    }
-    if cache_dir.exists() {
-        let _ = std::fs::remove_dir_all(&cache_dir);
-    }
-    cache::mark_partial(&cache_dir)?;
-    std::fs::create_dir_all(&cache_dir)?;
+    let slot = match fill::begin(&cache_dir)? {
+        fill::Fill::Hit(dir) => return single_crate_root(&dir),
+        fill::Fill::Fill(slot) => slot,
+    };
 
-    let checkout = cache_dir.join("checkout");
+    let checkout = slot.staging().join("checkout");
     let mut command = std::process::Command::new("git");
     command.arg("clone").arg("--depth").arg("1");
     if let Some(git_ref) = resolved.git_ref.as_api_ref() {
@@ -157,15 +145,13 @@ fn acquire_shallow_clone(
         .status()
         .map_err(|e| SoldrError::Other(format!("install: failed to spawn git clone: {e}")))?;
     if !status.success() {
-        let _ = std::fs::remove_dir_all(&cache_dir);
+        // Dropping `slot` removes the unpublished staging dir.
         return Err(SoldrError::Other(format!(
             "install: git clone {clone_url} failed with status {status}"
         )));
     }
 
-    cache::clear_partial(&cache_dir)?;
-    cache::touch_last_use(&cache_dir);
-    Ok(checkout)
+    Ok(slot.publish()?.join("checkout"))
 }
 
 /// A codeload extraction yields a single `repo-<sha>/` dir; a resumed

@@ -159,10 +159,7 @@ pub async fn ensure_syslib_bundle(
 /// Blocking (not `try_lock`) on purpose: the right behavior for a
 /// second `soldr` process is to wait for the first install to finish
 /// and then reuse it, not to fail or duplicate the download.
-pub(crate) fn acquire_install_lock(
-    lock_dir: &Path,
-    key: &str,
-) -> Result<std::fs::File, SoldrError> {
+pub fn acquire_install_lock(lock_dir: &Path, key: &str) -> Result<std::fs::File, SoldrError> {
     use fs2::FileExt;
     std::fs::create_dir_all(lock_dir)?;
     let lock_path = lock_dir.join(format!(".{key}.lock"));
